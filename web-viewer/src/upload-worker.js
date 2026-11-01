@@ -2,6 +2,21 @@
 // R2 multipart via binding, gated by a dedicated UPLOAD_TOKEN secret because
 // `cf r2 objects put` caps at 300 MB and no S3 token can be minted here.
 // `replay.r2_worker` deploys the same file to offload and restore render intermediates.
+// `Range: bytes=START-END` lets a dropped readback resume where it stopped (replay.r2_worker).
+async function ranged(env, key, header) {
+  const match = /^bytes=(\d+)-(\d+)$/.exec(header);
+  const offset = match ? Number(match[1]) : 0;
+  const length = match ? Number(match[2]) - offset + 1 : 0;
+  if (length < 1) return new Response("Invalid range", { status: 416 });
+  const object = await env.MEDIA.get(key, { range: { offset, length } });
+  if (!object) return new Response("Not found", { status: 404 });
+  const end = Math.min(offset + length, object.size) - 1;
+  return new Response(object.body, {
+    status: 206,
+    headers: { "Content-Length": String(end - offset + 1), "Content-Range": `bytes ${offset}-${end}/${object.size}` },
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.headers.get("X-Upload-Token") !== env.UPLOAD_TOKEN) {
@@ -23,6 +38,8 @@ export default {
           : new Response("Not found", { status: 404 });
       }
       if (url.pathname === "/get") { // streamed download for restoring offloaded files
+        const range = request.headers.get("Range");
+        if (range !== null) return ranged(env, url.searchParams.get("key"), range);
         const object = await env.MEDIA.get(url.searchParams.get("key"));
         return object
           ? new Response(object.body, { headers: { "Content-Length": String(object.size) } })

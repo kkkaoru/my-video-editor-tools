@@ -45,6 +45,12 @@ HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 HTTP_OK_LIMIT = 300
 HTTP_NOT_FOUND = 404
 DOWNLOAD_BLOCK_BYTES = 1 << 20
+# Readbacks go in ranges so a dropped or stalled stream resumes where it stopped.
+RANGE_BYTES = 1 << 30
+RANGE_ATTEMPTS = 8
+# A read that yields no bytes for this long is a stall and is retried from the current offset.
+STALL_TIMEOUT = httpx.Timeout(60.0, connect=30.0)
+HTTP_PARTIAL_CONTENT = 206
 # Cloudflare blocks the default HTTP client signature at the edge.
 USER_AGENT = "curl/8.7.1"
 WORKERS_DEV_URL = re.compile(r"https://[\w.-]+\.workers\.dev")
@@ -55,6 +61,7 @@ NAME_PREFIX = "replay-offload-"
 
 Runner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
 Sleep = Callable[[float], None]
+Sink = Callable[[bytes], object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,36 +271,66 @@ class WorkerStore:
                 ) from error
             raise
 
+    def _size(self, key: str) -> int:
+        remote = self.head(key)
+        if remote is None:
+            raise ReplayError(f"R2 object {key} does not exist")
+        return remote.size
+
+    def _read_range(self, key: str, span: tuple[int, int, int], sink: Sink) -> None:
+        """Pass bytes `start..end` of a `size`-byte object to `sink`, resuming after drops."""
+        offset, end, size = span
+        for attempt in range(RANGE_ATTEMPTS):
+            headers = {**self._headers(), "Range": f"bytes={offset}-{end}"}
+            try:
+                with self.client.stream(
+                    "GET",
+                    f"{self.url}/get",
+                    params={"key": key},
+                    headers=headers,
+                    timeout=STALL_TIMEOUT,
+                ) as response:
+                    _require_range(response, f"bytes {offset}-{end}/{size}")
+                    for block in response.iter_bytes(DOWNLOAD_BLOCK_BYTES):
+                        if offset + len(block) > end + 1:
+                            raise ReplayError(f"R2 Worker /get sent more than bytes {end} of {key}")
+                        sink(block)
+                        offset += len(block)
+            except httpx.TransportError:
+                pass  # peer closed or stalled: the next attempt resumes from `offset`
+            if offset == end + 1:
+                return
+            # Backing off (3 s doubling, about 13 min in all) rides out a network gap after wake.
+            self.sleep(RETRY_DELAY_SECONDS * 2**attempt)
+        raise ReplayError(f"R2 Worker /get of {key} stopped at byte {offset} of {size}")
+
+    def _read(self, key: str, size: int, sink: Sink) -> int:
+        for start in range(0, size, RANGE_BYTES):
+            self._read_range(key, (start, min(start + RANGE_BYTES, size) - 1, size), sink)
+        return size
+
     def digest(self, key: str) -> tuple[int, str]:
         """Read an object back in full and return its byte count and SHA-256; nothing is stored."""
-        total = 0
         hasher = hashlib.sha256()
-        with self.client.stream(
-            "GET", f"{self.url}/get", params={"key": key}, headers=self._headers()
-        ) as response:
-            if response.status_code >= HTTP_OK_LIMIT:
-                raise ReplayError(f"R2 Worker /get failed with HTTP {response.status_code}")
-            for block in response.iter_bytes(DOWNLOAD_BLOCK_BYTES):
-                hasher.update(block)
-                total += len(block)
-        return total, hasher.hexdigest()
+        return self._read(key, self._size(key), hasher.update), hasher.hexdigest()
 
     def get(self, key: str, destination: Path) -> int:
         """Stream an object into a new file and return its byte count; never overwrites."""
-        written = 0
-        url = f"{self.url}/get"
-        with self.client.stream(
-            "GET", url, params={"key": key}, headers=self._headers()
-        ) as response:
-            if response.status_code >= HTTP_OK_LIMIT:
-                raise ReplayError(f"R2 Worker /get failed with HTTP {response.status_code}")
-            with destination.open("xb") as stream:
-                for block in response.iter_bytes(DOWNLOAD_BLOCK_BYTES):
-                    stream.write(block)
-                    written += len(block)
-                stream.flush()
-                os.fsync(stream.fileno())
+        size = self._size(key)
+        with destination.open("xb") as stream:
+            written = self._read(key, size, stream.write)
+            stream.flush()
+            os.fsync(stream.fileno())
         return written
+
+
+def _require_range(response: httpx.Response, content_range: str) -> None:
+    """Only the exact requested range counts; a Worker that ignores Range would restart at 0."""
+    if response.status_code >= HTTP_OK_LIMIT:
+        raise ReplayError(f"R2 Worker /get failed with HTTP {response.status_code}")
+    answered = response.headers.get("Content-Range")
+    if response.status_code != HTTP_PARTIAL_CONTENT or answered != content_range:
+        raise ReplayError(f"R2 Worker /get answered {answered!r} for {content_range!r}")
 
 
 @contextmanager

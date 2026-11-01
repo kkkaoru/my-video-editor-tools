@@ -2,7 +2,7 @@ import hashlib
 import json
 import secrets
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +16,18 @@ from replay.r2_worker import Part, Project, RemoteObject, WorkerStore
 URL = "https://replay-offload-test.example.workers.dev"
 
 
+class DroppingStream(httpx.SyncByteStream):
+    """A body whose connection closes after `keep` bytes, like the edge dropping a readback."""
+
+    def __init__(self, body: bytes, keep: int) -> None:
+        self.body = body
+        self.keep = keep
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self.body[: self.keep]
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete body")
+
+
 class FakeWorker:
     """The token-gated upload Worker's HTTP contract, held in memory."""
 
@@ -24,8 +36,23 @@ class FakeWorker:
         self.metadata: dict[str, dict[str, str]] = {}
         self.parts: dict[int, bytes] = {}
         self.paths: list[str] = []
+        self.ranges: list[str] = []
+        self.drops: list[int] = []  # bytes each next ranged answer delivers before dropping
         self.bad_etag = bad_etag
         self.failing = failing
+
+    def _get(self, request: httpx.Request, body: bytes) -> httpx.Response:
+        header = request.headers["Range"]
+        self.ranges.append(header)
+        start, end = (int(value) for value in header.removeprefix("bytes=").split("-"))
+        end = min(end, len(body) - 1)
+        headers = {"Content-Range": f"bytes {start}-{end}/{len(body)}"}
+        chunk = body[start : end + 1]
+        if self.drops:
+            return httpx.Response(
+                206, headers=headers, stream=DroppingStream(chunk, self.drops.pop(0))
+            )
+        return httpx.Response(206, headers=headers, content=chunk)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -43,13 +70,11 @@ class FakeWorker:
             body = {
                 "size": len(self.objects[key]),
                 "uploaded": "2026-10-17T03:00:00.000Z",
-                "metadata": self.metadata[key],
+                "metadata": self.metadata.get(key, {}),
             }
             return httpx.Response(200, json=body)
         if path == "/get":
-            if key not in self.objects:
-                return httpx.Response(404)
-            return httpx.Response(200, content=self.objects[key])
+            return self._get(request, self.objects[key])
         if path == "/part":
             number = int(request.url.params["n"])
             self.parts[number] = request.content
@@ -205,7 +230,7 @@ def test_get_streams_into_a_new_file(tmp_path: Path) -> None:
 
 
 def test_get_reports_a_missing_object(tmp_path: Path) -> None:
-    with pytest.raises(ReplayError, match="/get failed with HTTP 404"):
+    with pytest.raises(ReplayError, match="R2 object missing does not exist"):
         store(FakeWorker()).get("missing", tmp_path / "restored.mov")
     assert not (tmp_path / "restored.mov").exists()
 
@@ -317,5 +342,124 @@ def test_digest_reads_the_whole_object_back_without_storing_it() -> None:
 
 
 def test_digest_reports_a_missing_object() -> None:
-    with pytest.raises(ReplayError, match="/get failed with HTTP 404"):
+    with pytest.raises(ReplayError, match="R2 object missing does not exist"):
         store(FakeWorker()).digest("missing")
+
+
+def test_digest_reads_in_ranges(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(r2_worker, "RANGE_BYTES", 4)
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    assert store(worker).digest("k") == (10, hashlib.sha256(b"abcdefghij").hexdigest())
+    assert worker.ranges == ["bytes=0-3", "bytes=4-7", "bytes=8-9"]
+
+
+def test_digest_resumes_from_the_offset_after_a_dropped_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(r2_worker, "DOWNLOAD_BLOCK_BYTES", 1)  # blocks reach the hash per byte
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    worker.drops = [4, 3]
+    assert store(worker).digest("k") == (10, hashlib.sha256(b"abcdefghij").hexdigest())
+    assert worker.ranges == ["bytes=0-9", "bytes=4-9", "bytes=7-9"]
+
+
+def test_get_resumes_after_a_drop_and_writes_every_byte_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(r2_worker, "DOWNLOAD_BLOCK_BYTES", 1)
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    worker.drops = [6]
+    destination = tmp_path / "restored.mov"
+    assert store(worker).get("k", destination) == 10
+    assert destination.read_bytes() == b"abcdefghij"
+    assert worker.ranges == ["bytes=0-9", "bytes=6-9"]
+
+
+def test_digest_resumes_after_a_stall() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    stalled = iter([True])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/get" and next(stalled, False):
+            raise httpx.ReadTimeout("no bytes for 60 s", request=request)
+        return worker(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    digest = WorkerStore(client, URL, "token", lambda _seconds: None).digest("k")
+    assert digest == (10, hashlib.sha256(b"abcdefghij").hexdigest())
+    assert worker.ranges == ["bytes=0-9"]
+
+
+def test_digest_gives_up_after_bounded_attempts() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    worker.drops = [0, 0, 0, 0, 0, 0, 0, 0]
+    delays: list[float] = []
+    client = httpx.Client(transport=httpx.MockTransport(worker))
+    with pytest.raises(ReplayError, match="/get of k stopped at byte 0 of 10"):
+        WorkerStore(client, URL, "token", delays.append).digest("k")
+    assert len(worker.ranges) == 8
+    assert delays == [3.0, 6.0, 12.0, 24.0, 48.0, 96.0, 192.0, 384.0]
+
+
+def test_digest_retries_a_short_answer_without_an_error() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    short = iter([True])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/get" and next(short, False):
+            worker.ranges.append(request.headers["Range"])
+            return httpx.Response(206, headers={"Content-Range": "bytes 0-9/10"}, content=b"abc")
+        return worker(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    digest = WorkerStore(client, URL, "token", lambda _seconds: None).digest("k")
+    assert digest == (10, hashlib.sha256(b"abcdefghij").hexdigest())
+    assert worker.ranges == ["bytes=0-9", "bytes=3-9"]
+
+
+def test_digest_rejects_a_worker_that_ignores_the_range() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/get":
+            return httpx.Response(200, content=b"abcdefghij")
+        return worker(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ReplayError, match="answered None for 'bytes 0-9/10'"):
+        WorkerStore(client, URL, "token", lambda _seconds: None).digest("k")
+
+
+def test_digest_rejects_a_get_error_and_an_overlong_answer() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b"abcdefghij"
+    answers = iter(
+        [
+            httpx.Response(500),
+            httpx.Response(206, headers={"Content-Range": "bytes 0-9/10"}, content=b"x" * 11),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return next(answers) if request.url.path == "/get" else worker(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    store_ = WorkerStore(client, URL, "token", lambda _seconds: None)
+    with pytest.raises(ReplayError, match="/get failed with HTTP 500"):
+        store_.digest("k")
+    with pytest.raises(ReplayError, match="/get sent more than bytes 9 of k"):
+        store_.digest("k")
+
+
+def test_digest_of_an_empty_object_reads_nothing() -> None:
+    worker = FakeWorker()
+    worker.objects["k"] = b""
+    assert store(worker).digest("k") == (0, hashlib.sha256(b"").hexdigest())
+    assert worker.ranges == []
