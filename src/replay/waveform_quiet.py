@@ -8,6 +8,7 @@ from replay.caption_projection import MeasuredQuietSpan
 
 HEADER = re.compile(r"frame:(\d+)\s+pts:(\d+)\s+pts_time:[0-9.e+\-]+")
 PEAK_PREFIX = "lavfi.astats.Overall.Peak_level="
+MAXIMUM_WINDOWS = 4_000_000  # 20 ms windows: 22 h of source
 
 
 def measured_quiet_runs(
@@ -42,7 +43,9 @@ def measured_quiet_runs(
     ):
         raise ValueError("Invalid waveform measurement policy")
     count = (sample_count + window_samples - 1) // window_samples
-    if count > 1_100_000:
+    # The window count follows the measured sample count, and the caller bounds that length
+    # (quiet plan: 24 h), so this only rejects an absurd window size rather than a long source.
+    if count > MAXIMUM_WINDOWS:
         raise ValueError("Waveform measurement count exceeds budget")
     minimum_samples = ceil(minimum_seconds * sample_rate)
     quiet: list[MeasuredQuietSpan] = []

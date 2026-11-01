@@ -2,6 +2,7 @@
 
 import pytest
 
+from replay import waveform_quiet
 from replay.caption_projection import MeasuredQuietSpan
 from replay.waveform_quiet import measured_quiet_runs
 
@@ -88,8 +89,11 @@ def test_invalid_minimum(minimum: float) -> None:
 
 
 def test_measurement_budget() -> None:
+    # The window count follows the measured length; a ten-hour stem (about 1.84M windows at
+    # 20 ms) is inside it, while an absurd window size is still refused.
+    budget = waveform_quiet.MAXIMUM_WINDOWS
     with pytest.raises(ValueError, match="budget"):
-        measured_quiet_runs([], sample_count=1_100_001, window_samples=1)
+        measured_quiet_runs([], sample_count=budget + 1, window_samples=1)
 
 
 @pytest.mark.parametrize(
