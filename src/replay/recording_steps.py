@@ -548,11 +548,19 @@ def cleanup(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         remove(work / "consumer")
         remove(media / "assembly")
         run(module(pipeline, "source_clean_run", str(description), "assemble"), log)
+    # The joined source now holds every byte the chunks held, and no later step reads them;
+    # waiting for retire-intermediates (which also waits for ASR) would keep both copies for
+    # hours. The receipts and configs stay, so a forced cleanup rebuilds them the same way.
+    chunks = media / "sampled"
+    retired = (
+        sum(remove(chunk) for chunk in sorted(chunks.glob("chunk-*"))) if chunks.exists() else 0
+    )
     return {
         "description": pin(description),
         "sourceCleanup": pin(consumer),
         "cleanSource": str(media / "assembly" / "source.mov"),
-        "chunkMedia": str(media / "sampled"),
+        "chunkMedia": str(chunks),
+        "retiredChunkMediaBytes": retired,
     }
 
 
@@ -693,7 +701,14 @@ def separation(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         resume = ["--resume"] if (namespace / "pipeline").exists() else []
         command = module(pipeline, "separation_window_pipeline", str(plan), *resume, provider=True)
         run([*provider_environment(namespace), *command], log)
-    return {"plan": pin(plan), "vocals": pin(vocals)}
+    # The assembled vocals hold every byte the windows and the model input held, and the only
+    # consumer (ASR) decodes mono from the vocals. Keeping the windows until
+    # retire-intermediates (which waits for cleanup too) would hold ~50 GB for hours.
+    retired = sum(
+        remove(target)
+        for target in (namespace / "pipeline" / "chunks", namespace / "model-input.wav")
+    )
+    return {"plan": pin(plan), "vocals": pin(vocals), "retiredSeparationBytes": retired}
 
 
 def asr(pipeline: Pipeline, run: Runner) -> dict[str, object]:

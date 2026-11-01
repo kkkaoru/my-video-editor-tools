@@ -574,6 +574,27 @@ def test_separation_uses_a_gpu_copy_of_the_reference_template(tmp_path: Path) ->
     ]
 
 
+def test_separation_retires_its_windows_once_the_vocals_exist(
+    tmp_path: Path,
+) -> None:
+    path = configure(tmp_path)
+    clocked(path, tmp_path)
+    namespace = tmp_path / "replay-123/separation-v1"
+    (namespace / "pipeline").mkdir(parents=True)
+    (namespace / "PIPELINE-PLAN-v1.json").write_text("{}", encoding="utf-8")
+    (namespace / "pipeline/vocals.wav").write_bytes(b"vocals")
+    chunk = namespace / "pipeline/chunks/chunk-00000"
+    chunk.mkdir(parents=True)
+    (chunk / "vocals.npy").write_bytes(b"12345")
+    (namespace / "model-input.wav").write_bytes(b"123")
+    receipt = steps.execute("separation", path, run=Producers(tmp_path))
+    assert chunk.exists() is False
+    assert (namespace / "model-input.wav").exists() is False
+    outputs = json.loads(receipt.read_text("utf-8"))["outputs"]
+    assert outputs["retiredSeparationBytes"] == 8
+    assert outputs["vocals"]["path"].endswith("vocals.wav")
+
+
 def test_an_interrupted_separation_resumes(tmp_path: Path) -> None:
     path = configure(tmp_path)
     clocked(path, tmp_path)
@@ -795,6 +816,32 @@ def test_cleanup_describes_and_assembles_a_new_recording(
         "p1",
     ]
     assert [command[-1] for command in commands[1:]] == ["configs", "run", "assemble"]
+
+
+def test_the_joined_source_retires_the_chunk_media_right_away(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = configure(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    media = tmp_path / "media/r/sampled/chunk-00000"
+    media.mkdir(parents=True)
+    (media / "candidate.mp4").write_bytes(b"12345")
+    (tmp_path / "media/r/assembly").mkdir(parents=True)
+
+    def run(command: Sequence[str], log: Path) -> None:
+        if "describe" in command:
+            write_cleanup(tmp_path)
+            (tmp_path / "clean/consumer/source-cleanup.json").unlink()
+        if command[-1] == "assemble":
+            (tmp_path / "clean/consumer").mkdir()
+            (tmp_path / "clean/consumer/source-cleanup.json").write_text("{}", encoding="utf-8")
+
+    upstream(tmp_path, "cleanup-bootstrap")
+    receipt = steps.execute("cleanup", path, run=run)
+    assert (media).exists() is False
+    outputs = json.loads(receipt.read_text("utf-8"))["outputs"]
+    assert outputs["retiredChunkMediaBytes"] == 5
+    assert outputs["cleanSource"].endswith("assembly/source.mov")
 
 
 def test_a_caption_free_cleanup_retires_only_separation_intermediates(tmp_path: Path) -> None:
