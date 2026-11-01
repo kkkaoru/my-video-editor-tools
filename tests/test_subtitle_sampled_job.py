@@ -3,6 +3,8 @@
 import json
 import subprocess
 import sys
+import threading
+from collections.abc import Sequence
 from fractions import Fraction
 from pathlib import Path
 
@@ -11,13 +13,19 @@ import pytest
 import torch
 from numpy.typing import NDArray
 
+from replay import subtitle_band_audit as band_audit
+from replay import subtitle_colour_audit as colour_audit
+from replay import subtitle_colour_scene as colour_scene
 from replay import subtitle_detector_mps as mps
 from replay import subtitle_sampled_job as job
 from replay import subtitle_sampled_run as runner
 from replay import subtitle_yolo_regions as yolo_regions
 from replay import yolo_boxes
+from replay.caption_io import FrameObservation
+from replay.caption_masks import TextDetection, TextRectangle
 from replay.local_asr import fingerprint
 from replay.recordings import record
+from replay.subtitle_clock import VideoFrameClock
 from replay.subtitle_repair_audit import Residual
 from replay.subtitle_stream import SubtitleSpan
 from replay.subtitle_video import VideoRepairJob
@@ -131,6 +139,9 @@ def test_sampled_attempt_runs_plan_render_and_audit(tmp_path: Path) -> None:
     )
     assert admission["sampling"]["sampledFrames"][0] == 0
     assert pins["native"] == fingerprint(tmp_path / "native")
+    learning = receipt["learning"]
+    assert isinstance(learning, dict)
+    assert (learning["noSeedReason"], learning["seededFrames"]) == ("no band confirmed yet", [0])
 
 
 def test_the_video_may_live_in_a_separate_media_root(tmp_path: Path) -> None:
@@ -197,6 +208,51 @@ def test_main_loads_the_pinned_network_and_runs(
         "accepted": "attempt-sampled",
         "escalated": False,
     }
+
+
+def test_main_stores_the_candidates_of_a_chunk_that_failed_every_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config.update(output=str(tmp_path / "work" / "state" / "chunk-00007"), stride=13)
+    config.update(detectorProgram=str(tmp_path / "x.pt2"), detectorProgramSHA256="0")
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(mps, "lazy_network", lambda *_args, **_kw: _bar)
+    line = {"frame": 1, "text": "X", "confidence": 1.0, "box": [10.0, 20.0, 30.0, 8.0]}
+
+    def failed(output: Path, *_args: object, **_kwargs: object) -> dict[str, object]:
+        output.mkdir(parents=True)
+        receipt = {"accepted": None, "attempts": [{"directory": "a", "residualLines": [line]}]}
+        (output / "chunk-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+        raise ValueError("Audit failed after escalation; receipt retained, nothing accepted")
+
+    monkeypatch.setattr(runner, "run", failed)
+    with pytest.raises(ValueError, match="nothing accepted"):
+        job.main([str(path)])
+    stored = (tmp_path / "work" / "learned" / "residuals.jsonl").read_text(encoding="utf-8")
+    assert [json.loads(row) for row in stored.splitlines()] == [
+        {"chunk": "chunk-00007", "box": [10, 20, 40, 28], "status": "verified", "seconds": 5.033333}
+    ]
+
+
+def test_main_without_a_retained_receipt_stores_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config.update(output=str(tmp_path / "work" / "state" / "chunk-00007"), stride=13)
+    config.update(detectorProgram=str(tmp_path / "x.pt2"), detectorProgramSHA256="0")
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(mps, "lazy_network", lambda *_args, **_kw: _bar)
+
+    def broken(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("Native OCR session failed; evidence retained")
+
+    monkeypatch.setattr(runner, "run", broken)
+    with pytest.raises(ValueError, match="Native OCR"):
+        job.main([str(path)])
+    assert not (tmp_path / "work" / "learned").exists()
 
 
 def test_main_rejects_an_oversized_configuration(tmp_path: Path) -> None:
@@ -278,6 +334,67 @@ def test_colour_gate_collaborator_counts_unchanged_caption_colour(tmp_path: Path
     config["colourGate"] = True
     tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
     assert tools.colour is not None
+
+
+def test_colour_regions_collaborator_reads_only_the_flagged_frames(tmp_path: Path) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert tools.colour_regions is not None
+    admitted: dict[str, object] = {"frames": [{"lineBoxes": [[10, 10, 40, 20]]}] * 240}
+    # The black source has no caption colour: nothing left to repair in the flagged frames.
+    assert tools.colour_regions(admitted, Path(str(config["source"])), [5, 2, 5]) == []
+    with pytest.raises(ValueError, match="per-frame entries"):
+        tools.colour_regions({"frames": 3}, Path(str(config["source"])), [2])
+
+
+def test_the_moving_interface_rule_uses_the_profile_vocabulary(tmp_path: Path) -> None:
+    tools, _ = job.real_collaborators(
+        _configuration(tmp_path, residual=0.3), network=_bar, render=_fake_render
+    )
+    assert tools.moving_interface is not None
+    lone = FrameObservation(
+        0, 0, WIDTH, HEIGHT, (TextDetection("決着", 1.0, TextRectangle(1, 2, 30, 20)),)
+    )
+    assert tools.moving_interface({0: lone}, 0, 0) is False
+
+
+def test_a_misread_still_label_is_interface_when_its_label_read_holds_no_caption_colour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert tools.moving_interface is not None
+    misread = TextDetection("上分に目", 0.3, TextRectangle(10, 10, 60, 20))
+    label = TextDetection("桐おさき", 1.0, TextRectangle(12, 10, 60, 20))
+    observed = {0: FrameObservation(0, 0, WIDTH, HEIGHT, (misread,))}
+    assert tools.moving_interface(observed, 0, 0) is False  # no label read at its place
+    monkeypatch.setattr(job, "still_label_reads", lambda *_args: [(5, label)])
+    assert tools.moving_interface(observed, 0, 0) is True  # the black source holds no pink
+
+
+def test_interface_boxes_grow_by_their_height_and_skip_any_another_line_overlaps() -> None:
+    gift = TextDetection("星降りメリー", 1.0, TextRectangle(100, 1400, 200, 40))
+    beside = TextDetection("星降りメリー", 1.0, TextRectangle(600, 1300, 200, 40))
+    caption = TextDetection("無理だった", 1.0, TextRectangle(560, 1290, 300, 40))
+    observed = {0: FrameObservation(0, 0, WIDTH, HEIGHT, (gift, beside, caption))}
+    excluded: list[list[tuple[int, int, int, int]]] = [[]]
+
+    def interface(_observed: object, _frame: int, index: int) -> bool:
+        return index < 2
+
+    assert job._interface_boxes(observed, 0, excluded, interface) is True
+    assert excluded == [[(60, 1360, 341, 1481)]]  # the one beside the caption is kept counted
+    none: list[list[tuple[int, int, int, int]]] = [[]]
+    assert job._interface_boxes(observed, 0, none, lambda *_args: False) is False
+
+
+def test_without_the_colour_gate_there_are_no_colour_regions(tmp_path: Path) -> None:
+    tools, _ = job.real_collaborators(
+        _configuration(tmp_path, residual=0.3), network=_bar, render=_fake_render
+    )
+    assert tools.colour_regions is None
 
 
 def test_entry_boxes_reject_non_list_boxes() -> None:
@@ -424,6 +541,206 @@ def test_the_band_audit_reads_tiled_bands_and_is_pinned(tmp_path: Path) -> None:
     assert band["tile"] == 2 and band["indices"][0] == 0
 
 
+def test_the_colour_gate_counts_during_the_band_ocr_with_identical_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    calls: list[tuple[str, bool]] = []
+    counts = colour_audit.colour_counts
+
+    def recorded(
+        *,
+        ffmpeg: str,
+        source: Path,
+        source_start: float,
+        cleaned: Path,
+        indices: Sequence[int],
+        boxes: Sequence[Sequence[tuple[int, int, int, int]]],
+        size: tuple[int, int],
+        band: tuple[int, int] | None = None,
+        cleaned_bands: Sequence[NDArray[np.uint8]] | None = None,
+        source_bands: Sequence[NDArray[np.uint8]] | None = None,
+        outlined: bool = False,
+    ) -> list[int]:
+        calls.append((threading.current_thread().name, cleaned_bands is not None))
+        return counts(
+            ffmpeg=ffmpeg, source=source, source_start=source_start, cleaned=cleaned,
+            indices=indices, boxes=boxes, size=size, band=band, cleaned_bands=cleaned_bands,
+            source_bands=source_bands, outlined=outlined,
+        )  # fmt: skip
+
+    monkeypatch.setattr(colour_audit, "colour_counts", recorded)
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.colour is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    plan = tools.plan(13, directory)
+    video = tools.render(plan, directory)
+    indices = [0, 5, 10]
+    tools.audit(video, indices)
+    during = tools.colour(plan, video, indices)
+    afterwards = tools.colour(plan, video, indices)  # no audit before it: decoded on its own
+    assert during == afterwards
+    assert [(name == "MainThread", banded) for name, banded in calls] == [
+        (False, True),
+        (True, False),
+    ]
+
+
+def test_flagged_frames_are_counted_again_without_the_interface_boxes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    asked: list[tuple[list[int], bool]] = []
+
+    def counted(
+        *,
+        ffmpeg: str,
+        source: Path,
+        source_start: float,
+        cleaned: Path,
+        indices: Sequence[int],
+        boxes: Sequence[Sequence[tuple[int, int, int, int]]],
+        size: tuple[int, int],
+        band: tuple[int, int] | None = None,
+        cleaned_bands: Sequence[NDArray[np.uint8]] | None = None,
+        source_bands: Sequence[NDArray[np.uint8]] | None = None,
+        excluded: Sequence[Sequence[tuple[int, int, int, int]]] | None = None,
+        outlined: bool = False,
+    ) -> list[int]:
+        asked.append((list(indices), excluded is not None))
+        # Scene caption colour beside the interface text: flagged until its boxes are left out.
+        return [0 if excluded is not None else (10 if index == 10 else 60) for index in indices]
+
+    monkeypatch.setattr(colour_audit, "colour_counts", counted)
+    monkeypatch.setattr(job, "audited_interface", lambda *_args: True)  # every line: interface
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.colour is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    plan = tools.plan(13, directory)
+    video = tools.render(plan, directory)
+    observed = tools.audit(video, [0, 5, 10])
+    assert [len(observed[index].detections) for index in (0, 5, 10)] == [1, 0, 1]
+    assert tools.colour(plan, video, [0, 5, 10]) == [0, 60, 10]
+    # Only the flagged frame with interface text is counted again; frame 5 has none to leave out.
+    assert asked == [([0, 5, 10], False), ([0], True)]
+
+
+def test_frames_still_flagged_are_counted_again_without_what_the_source_shows_as_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    asked: list[tuple[list[int], list[int], list[int], bool, bool]] = []
+
+    def counted(
+        *,
+        indices: Sequence[int],
+        excluded: Sequence[Sequence[tuple[int, int, int, int]]] | None = None,
+        **_kwargs: object,
+    ) -> list[int]:
+        # Frames 0 and 10 hold interface text and fall under the gate once it is left out.
+        return [0 if excluded is not None else 60 for _ in indices]
+
+    def scened(
+        *,
+        indices: Sequence[int],
+        counts: Sequence[int],
+        evidence: colour_scene.Evidence,
+        excluded: Sequence[Sequence[tuple[int, int, int, int]]] | None = None,
+        **_kwargs: object,
+    ) -> list[int]:
+        asked.append((list(indices), list(counts), sorted(evidence.lines), evidence.interface(0, 0),
+                      evidence.interface(0, 0)))  # fmt: skip
+        assert excluded is not None and len(evidence.presence) == len(excluded)
+        return [value if value < 40 else 1 for value in counts]
+
+    monkeypatch.setattr(colour_audit, "colour_counts", counted)
+    monkeypatch.setattr(colour_scene, "scene_counts", scened)
+    monkeypatch.setattr(job, "audited_interface", lambda *_args: True)  # every line: interface
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.colour is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    plan = tools.plan(13, directory)
+    video = tools.render(plan, directory)
+    tools.audit(video, [0, 5, 10])
+    assert tools.colour(plan, video, [0, 5, 10]) == [0, 1, 0]
+    assert asked == [([0, 5, 10], [0, 60, 0], [0, 5, 10], True, True)]
+
+
+def test_a_below_floor_label_read_is_no_caption_read_but_a_confident_read_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    label = TextDetection("ゆーかみーな", 0.3, TextRectangle(0.0, 90.0, 120.0, 20.0))
+    caption = TextDetection("こんにちは", 0.95, TextRectangle(60.0, 90.0, 120.0, 20.0))
+    reads = {0: (label, caption), 5: (), 10: ()}
+    judged: list[tuple[bool, bool]] = []
+
+    def audited(_video: Path, indices: Sequence[int], **_kwargs: object) -> dict[int, object]:
+        return {index: FrameObservation(0.0, 0.0, WIDTH, HEIGHT, reads[index]) for index in indices}
+
+    def scened(*, counts: Sequence[int], evidence: colour_scene.Evidence, **_: object) -> list[int]:
+        judged.append((evidence.interface(0, 0), evidence.interface(0, 1)))
+        return list(counts)
+
+    monkeypatch.setattr(band_audit, "band_audit", audited)
+    monkeypatch.setattr(colour_audit, "colour_counts", lambda **_kwargs: [60, 0, 0])
+    monkeypatch.setattr(colour_scene, "scene_counts", scened)
+    monkeypatch.setattr(job, "audited_interface", lambda *_args: False)
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.colour is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    plan = tools.plan(13, directory)
+    video = tools.render(plan, directory)
+    tools.audit(video, [0, 5, 10])
+    assert tools.colour(plan, video, [0, 5, 10]) == [60, 0, 0]
+    assert judged == [(True, False)]
+
+
+def test_frames_under_the_gate_skip_the_scene_recount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    monkeypatch.setattr(colour_audit, "colour_counts", lambda **_kwargs: [3, 3, 3])
+    monkeypatch.setattr(colour_scene, "scene_counts", lambda **_kwargs: pytest.fail("decoded"))
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.colour is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    plan = tools.plan(13, directory)
+    video = tools.render(plan, directory)
+    tools.audit(video, [0, 5, 10])
+    assert tools.colour(plan, video, [0, 5, 10]) == [3, 3, 3]
+
+
 def test_an_invalid_audit_tile_is_refused(tmp_path: Path) -> None:
     config = _configuration(tmp_path, residual=0.3)
     config["auditTile"] = 9
@@ -431,41 +748,56 @@ def test_an_invalid_audit_tile_is_refused(tmp_path: Path) -> None:
         job.real_collaborators(config, network=_bar)
 
 
-def test_residual_boxes_join_caption_frames_only() -> None:
+CLOCK2 = VideoFrameClock((0, 3000), Fraction(1, 90000), 3000)
+
+
+def test_residual_boxes_join_caption_frames_and_promote_unknown_ones() -> None:
     region = {"x": 0, "y": 0, "width": 10, "height": 10}
     admitted: dict[str, object] = {
         "frames": [
+            {"classification": "unknown", "region": {"x": 0, "y": 0, "width": 99, "height": 99}},
             {"classification": "overlay-subtitle", "lineBoxes": [[1, 2, 3, 4]], "region": region},
-            {"classification": "unknown"},
         ],
-        "masks": [{"startSeconds": 0, "endSeconds": 1, "region": dict(region)}],
+        "masks": [{"startSeconds": 1 / 30, "endSeconds": 2 / 30, "region": dict(region)}],
     }
     merged = job.with_residual(
         admitted,
-        [[(0.0, 0.0, 9.0, 9.0)], []],
-        {0: [(5, 6, 7, 8)], 1: [(5, 6, 7, 8)], 4: [(1, 1, 2, 2)]},
+        [[], [(0.0, 0.0, 9.0, 9.0)]],
+        {1: [(5, 6, 7, 8)], 0: [(20, 30, 40, 36)], 4: [(1, 1, 2, 2)], -1: [(1, 1, 2, 2)]},
+        CLOCK2,
     )
-    assert merged == [[(0.0, 0.0, 9.0, 9.0), (5.0, 6.0, 7.0, 8.0)], []]
-    frames = admitted["frames"]
-    assert isinstance(frames, list)
-    assert frames[0]["lineBoxes"] == [(1, 2, 3, 4), [5, 6, 7, 8]]
-    assert "lineBoxes" not in frames[1]
-    assert frames[0]["region"] == {"x": 0, "y": 0, "width": 10, "height": 10}
-    masks = admitted["masks"]
-    assert isinstance(masks, list)
-    assert masks[0]["region"] == {"x": 0, "y": 0, "width": 10, "height": 10}
+    assert merged == [[(20.0, 30.0, 40.0, 36.0)], [(0.0, 0.0, 9.0, 9.0), (5.0, 6.0, 7.0, 8.0)]]
+    assert admitted["frames"] == [
+        {
+            "classification": "overlay-subtitle",
+            "region": {"x": 20, "y": 24, "width": 20, "height": 18},
+            "lineBoxes": [[20, 30, 40, 36]],
+            "sampled": False,
+        },
+        {
+            "classification": "overlay-subtitle",
+            "lineBoxes": [(1, 2, 3, 4), [5, 6, 7, 8]],
+            "region": {"x": 0, "y": 0, "width": 10, "height": 10},
+        },
+    ]
+    assert admitted["masks"] == [
+        {"startSeconds": 0.0, "endSeconds": 1 / 30,
+         "region": {"x": 20, "y": 24, "width": 20, "height": 18}},
+        {"startSeconds": 1 / 30, "endSeconds": 2 / 30,
+         "region": {"x": 0, "y": 0, "width": 10, "height": 10}},
+    ]  # fmt: skip
     above: dict[str, object] = {
         "frames": [{"classification": "overlay-subtitle", "lineBoxes": [], "region": dict(region)}],
         "masks": [{"region": dict(region)}],
     }
-    job.with_residual(above, [[]], {0: [(-5, -8, 4, 2), (6, 20, 30, 24)]})
+    job.with_residual(above, [[]], {0: [(-5, -8, 4, 2), (6, 20, 30, 24)]}, CLOCK2)
     above_frames, above_masks = above["frames"], above["masks"]
     assert isinstance(above_frames, list)
     assert isinstance(above_masks, list)
     assert above_frames[0]["region"] == {"x": -5, "y": -18, "width": 35, "height": 46}
     assert above_masks[0]["region"] == {"x": -5, "y": -18, "width": 35, "height": 46}
     with pytest.raises(ValueError, match="per-frame entries"):
-        job.with_residual({"frames": 3}, [], {0: [(1, 1, 2, 2)]})
+        job.with_residual({"frames": 3}, [], {0: [(1, 1, 2, 2)]}, CLOCK2)
 
 
 def test_stored_yolo_boxes_supply_the_regions_without_decoding(
@@ -521,3 +853,136 @@ def test_main_uses_stored_boxes_and_skips_the_detector_model(
     assert job.main([str(path)]) == 0
     assert asked == [(tmp_path / "boxes", "5" * 64, "1" * 64, 640)]
     assert capsys.readouterr().out.splitlines()[0] == "YOLO_BOXES stored"
+
+
+def test_the_caption_style_is_measured_once_from_the_profile_and_cached(tmp_path: Path) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    directory = Path(str(config["profileDirectory"]))
+    frames = job._profile_frames(directory)
+    profile = job._profile(directory)
+    cache = tmp_path / "caption-style.json"
+    style = job.caption_style(
+        frames, profile, source=Path(str(config["source"])), ffmpeg="ffmpeg", cache=cache
+    )
+    # The black source holds no caption pink: not the outlined style, every residual counts.
+    assert style == {"outlined": False, "lines": 12, "medianOutlinedShare": 0.0}
+    assert json.loads(cache.read_text(encoding="utf-8")) == style
+    cache.write_text('{"outlined": true}', encoding="utf-8")  # read back, not measured again
+    assert job.caption_style(
+        frames, profile, source=Path(str(config["source"])), ffmpeg="ffmpeg", cache=cache
+    ) == {"outlined": True}
+
+
+def test_a_below_floor_line_is_a_caption_when_clearly_outlined_or_framed_or_long() -> None:
+    assert job._caption_styled("星降りメリー", 0.031) is True  # clearly outlined
+    assert job._caption_styled("なつとん", 0.019) is False  # a short unframed gift label
+    assert job._caption_styled("<いけると>>", 0.018) is True  # read with the caption frame
+    assert job._caption_styled("く3よいしょよいしょ", 0.018) is True
+    assert job._caption_styled("おいろつしゃいかけそありがろう", 0.023) is True  # long
+    assert job._caption_styled("<いけると>>", 0.01) is False  # framed, but not outlined
+
+
+def test_the_styled_caption_collaborator_measures_only_under_the_outlined_style(
+    tmp_path: Path,
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert tools.styled_caption is not None
+    lines = [
+        Residual(0, "こんにちは世界です", 0.3, (10.0, 10.0, 60.0, 20.0)),
+        Residual(0, "abc", 0.3, (10.0, 40.0, 60.0, 20.0)),
+    ]
+    assert tools.styled_caption(lines) == [False, False]  # the black source is not outlined
+    cache = Path(str(config["output"])).parent / "caption-style.json"
+    assert json.loads(cache.read_text(encoding="utf-8"))["outlined"] is False
+    cache.write_text('{"outlined": true}', encoding="utf-8")
+    fresh, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert fresh.styled_caption is not None
+    assert fresh.styled_caption(lines) == [False, False]  # measured: no caption pink there
+    assert fresh.styled_caption(lines[1:]) == [False]  # no Japanese line: nothing decoded
+
+
+def test_a_residual_pass_restores_the_unknown_list_from_its_frames() -> None:
+    # A residual pass rewrites frames and masks; the stored unknown list must describe the plan
+    # the audit and the eligibility check read, or the accepted chunk fails its own check.
+    clock = VideoFrameClock((0, 3000, 6000), Fraction(1, 30000), 3000)
+    admitted: dict[str, object] = {
+        "masks": [],
+        "frames": [
+            {"sourcePTS": 0, "classification": "overlay-subtitle"},
+            {"sourcePTS": 3000, "classification": "unknown"},
+        ],
+        "unknownSourcePTS": [999],
+    }
+    job.with_residual(admitted, [[], []], {}, clock)
+    assert admitted["unknownSourcePTS"] == [3000]
+
+
+def test_a_residual_fragment_grows_to_the_planned_caption_line_on_its_row() -> None:
+    entries: list[object] = [
+        {"lineBoxes": [[468, 1292, 716, 1321], [487, 1259, 649, 1297]]},
+        {"classification": "unknown"},
+        {"lineBoxes": [[470, 1293, 730, 1320]]},
+        {"lineBoxes": [[100, 1292, 900, 1321]]},  # beyond the reach
+    ]
+    region: list[object] = [{"lineBoxes": [[0, 1139, 1077, 1431]]}]  # a region keyed as one box
+    assert job.line_extent((465, 1296, 513, 1319), region, 0, 1) == (465, 1296, 513, 1319)
+    assert job.line_extent((465, 1296, 513, 1319), entries, 1, 1) == (465, 1292, 730, 1321)
+
+
+def test_a_residual_fragment_without_a_planned_line_on_its_row_stays_as_read() -> None:
+    entries: list[object] = [{"lineBoxes": [[487, 1259, 649, 1297], [900, 1296, 1000, 1319]]}]
+    assert job.line_extent((465, 1296, 513, 1319), entries, 0, 5) == (465, 1296, 513, 1319)
+
+
+def test_a_promoted_frame_keeps_whether_the_plan_read_it() -> None:
+    clock = VideoFrameClock((0, 3000, 6000), Fraction(1, 30000), 3000)
+    admitted: dict[str, object] = {
+        "masks": [],
+        "frames": [
+            {"sourcePTS": 0, "classification": "unknown"},
+            {"sourcePTS": 3000, "classification": "unknown"},
+            {"sourcePTS": 6000, "classification": "unknown"},
+        ],
+        "sampling": {"sampledFrames": [0, 2]},
+    }
+    job.with_residual(admitted, [[], [], []], {0: [(1, 2, 30, 20)], 1: [(1, 2, 30, 20)]}, clock)
+    assert admitted["frames"] == [
+        {"sourcePTS": 0, "classification": "overlay-subtitle", "lineBoxes": [[1, 2, 30, 20]],
+         "region": {"x": 1, "y": -16, "width": 29, "height": 54}, "sampled": True},
+        {"sourcePTS": 3000, "classification": "overlay-subtitle", "lineBoxes": [[1, 2, 30, 20]],
+         "region": {"x": 1, "y": -16, "width": 29, "height": 54}, "sampled": False},
+        {"sourcePTS": 6000, "classification": "unknown"},
+    ]  # fmt: skip
+
+
+def test_an_unread_english_line_counts_when_pink_filled_and_left_in_the_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert tools.styled_caption is not None
+    lines = [
+        Residual(0, "Thank you very much", 0.3, (10.0, 10.0, 200.0, 20.0)),
+        Residual(0, "Wow", 0.3, (10.0, 40.0, 60.0, 20.0)),  # too few letters
+        Residual(0, "POPULAR", 0.3, (10.0, 70.0, 100.0, 90.0)),  # not a horizontal line
+    ]
+    assert tools.styled_caption(lines) == [False, False, False]  # nothing rendered yet
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    tools.render(tools.plan(13, directory), directory)
+    assert tools.styled_caption(lines) == [False, False, False]  # the black source has no pink
+    monkeypatch.setattr(colour_audit, "source_pink_counts", lambda **_kwargs: [400])
+    monkeypatch.setattr(colour_audit, "colour_counts", lambda **_kwargs: [39])
+    assert tools.styled_caption(lines) == [False, False, False]  # too little left
+    monkeypatch.setattr(colour_audit, "colour_counts", lambda **_kwargs: [40])
+    assert tools.styled_caption(lines) == [True, False, False]
+
+
+def test_a_residual_heals_over_every_frame_its_caption_persists() -> None:
+    present = [False, False, True, True, True, False, False]  # frames 0, 5, ... 30
+    assert job.persistence(12, 35, 5, present) == (5, 25)
+    assert job.persistence(0, 35, 5, [False] * 7) == (0, 5)
+    assert job.persistence(34, 35, 5, [False] * 6 + [True]) == (25, 34)
