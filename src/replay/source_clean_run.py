@@ -26,8 +26,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from replay import cleanup_learning, failure_notify, gpu_lease, memory_admission, yolo_boxes
 from replay import delivery_source_assembly_parallel as assembly_runner
-from replay import failure_notify, gpu_lease, memory_admission, yolo_boxes
 from replay import recording_priority as priority
 from replay import subtitle_cleanup_assembly as preparation
 from replay import subtitle_sampled_consumer as consumer
@@ -93,6 +93,8 @@ JOB_PERCENT = math.ceil(
 # The settle waits for a started chunk to reach its peak; with free memory for two more peaks
 # above the floor that wait protects nothing and is skipped (bottleneck survey REPORT7 #4).
 SETTLE_FREE_PERCENT = MEMORY_FREE_MIN + 2 * JOB_PERCENT
+# Beside the lease directories: chunks waiting for a memory reservation, in lease rank.
+MEMORY_QUEUE = "memory-waiting"
 LEASE_POLL_SECONDS = 2.0  # an admitted chunk waiting only for a GPU lease (REPORT7 #5)
 
 Runner = Callable[[Sequence[str], Path], int]
@@ -320,6 +322,19 @@ def run(
 
     (recording.work / "logs").mkdir(mode=0o700, parents=True, exist_ok=True)
     stop = threading.Event()
+    retrying = threading.Event()  # the once-more pass of the chunks that failed
+    # Attempts per finished chunk against the other recordings' typical rate (cleanup_learning).
+    limit = cleanup_learning.threshold(
+        cleanup_learning.attempts(
+            path
+            for work in cleanup_learning.recent_works(recording.work)
+            for path in work.glob("state/chunk-*/chunk-receipt.json")
+        )
+    )
+    recent: list[int] = []
+    alerted: list[str] = []
+    history: list[tuple[int, str]] = []  # (attempts, learning version) in finish order
+    diverged: list[str] = []
     results: dict[int, dict[str, object]] = {}
     probed: list[Future[None]] = []
     started = time.time()
@@ -327,7 +342,7 @@ def run(
     def one(index: int) -> None:
         name = f"chunk-{index:05d}"
         config = recording.work / "configs" / f"{name}.json"
-        if (recording.work / "state" / name / "chunk-receipt.json").exists():
+        if finished(recording, name):
             results[index] = {"skipped": True}
             return
         if stop.is_set() or free() < floor:
@@ -347,10 +362,18 @@ def run(
             decisions.flush()
         held: int | None = None
         waiter = gpu_lease.Waiter(leases, replay_id, step=f"cleanup {name}", job=CHUNK_JOB)
+        memory_queue = gpu_lease.Waiter(
+            leases, replay_id, start=waiter.start, step=f"cleanup {name}", queue=MEMORY_QUEUE
+        )
         size = budgets.peaks[CHUNK_JOB]
         reservation = memory_admission.Reservation(reservations, CHUNK_JOB, replay_id, size)
         with admission:
             # Memory admits a job first; then it also needs one of the machine-wide GPU leases.
+            # Memory is served in the lease rank too: the job holds a marker in the memory queue
+            # while it waits and reserves nothing while an urgent or a higher-ranked recording
+            # waits there, so a freed reservation goes to the recording served first, not to
+            # whichever process asks again soonest (10-28: 10/22 re-reserved within ~50 ms).
+            memory_queue.register()
             try:
                 while held is None:
                     remaining = settle_seconds - (clock() - last_start[0])
@@ -360,8 +383,10 @@ def run(
                     if remaining > 0:
                         load = None
                     leased = False
-                    if (active[0] < 1 or (load is not None and admitted(load))) and (
-                        reservation.try_reserve(budgets, pressure)
+                    if (
+                        (active[0] < 1 or (load is not None and admitted(load)))
+                        and not memory_queue.yields()
+                        and reservation.try_reserve(budgets, pressure)
                     ):
                         leased = True
                         held = waiter.try_acquire()
@@ -387,16 +412,28 @@ def run(
                         )
             finally:
                 waiter.close()
+                memory_queue.close()
             active[0] += 1
             last_start[0] = clock()
         state = recording.work / "state" / name
+        # A rerun (of a failed, stopped or set-aside chunk) is harder than a first run: the
+        # attempt-rate anomaly counts first runs only.
+        rerun = (
+            state.exists()
+            or (recording.work / "logs" / f"{name}.log").exists()
+            or any((recording.work / "logs").glob(f"{name}.interrupted-*.log"))
+        )
         if state.exists():
-            # A stopped job left no receipt and its attempt cannot resume: keep its state as
-            # evidence, drop its partial media and run the chunk again.
+            # A stopped job left no receipt and its attempt cannot resume, or a job's audit
+            # failed after every attempt: keep its state as evidence, drop its media and run
+            # the chunk again.
             retired = recording.work / "interrupted" / f"{name}-{time.time_ns()}"
             retired.parent.mkdir(mode=0o700, exist_ok=True)
             state.rename(retired)
             shutil.rmtree(recording.media / "sampled" / name, ignore_errors=True)
+        log = recording.work / "logs" / f"{name}.log"
+        if log.exists():  # an earlier run of this chunk (the retry of a failed one) keeps its log
+            log.rename(log.with_name(f"{name}.interrupted-{time.time_ns()}.log"))
         began = time.time()
         job = [sys.executable, "-B", "-m", "replay.subtitle_sampled_job", str(config)]
         command = ["/usr/bin/env", *(f"{k}={v}" for k, v in caps.items()), *job] if caps else job
@@ -417,10 +454,41 @@ def run(
             "startedAt": round(began, 1),
             "wallSeconds": round(time.time() - began, 1),
         }
+        receipt_path = recording.work / "state" / name / "chunk-receipt.json"
+        tried = cleanup_learning.attempts([receipt_path])
+        with admission:
+            if not rerun:
+                recent.extend(tried)
+            history.extend((count, learning_version(receipt_path)) for count in tried)
+            if (
+                not diverged
+                and not cleanup_learning.braked(recording.work)
+                and cleanup_learning.diverged(history, limit)
+            ):
+                diverged.append(name)
+                brake = cleanup_learning.brake(
+                    recording.work, f"{replay_id}: attempts did not settle across replacements",
+                    [str(receipt_path), str(recording.work / "logs" / "admission.jsonl")],
+                )  # fmt: skip
+                failure_notify.notify(
+                    replay_id, f"cleanup {name}", cls="learning-diverged",
+                    cause=f"attempts per chunk rose or held above {limit:.2f} over the last "
+                    f"{cleanup_learning.DIVERGE_SEGMENTS} store/code/model versions "
+                    f"({receipt_path})",
+                    action=f"learning braked ({brake}); fix the cause, then remove the brake",
+                )  # fmt: skip
+            if limit is not None and not alerted and cleanup_learning.anomalous(recent, limit):
+                alerted.append(name)
+                failure_notify.notify(
+                    replay_id, f"cleanup {name}", cls="cleanup-attempts",
+                    cause=f"the last {cleanup_learning.WINDOW} chunks averaged more than "
+                    f"{limit:.2f} attempts ({state / 'chunk-receipt.json'})",
+                    action="the chunks continue; improve the plan for what they escalate on",
+                )  # fmt: skip
         if code == 0:
             probed.append(prober.submit(probe_ahead, recording, name))
-        else:
-            # A bulkhead: the other chunks go on, and a rerun redoes only the failed ones.
+        elif retrying.is_set():
+            # A bulkhead: the other chunks went on, and the failed one already ran twice.
             failure_notify.notify(
                 replay_id, f"cleanup {name}", cls="chunk", cause=f"chunk job exited {code}",
                 action="the other chunks continue; a rerun redoes only failed chunks",
@@ -434,12 +502,29 @@ def run(
         ThreadPoolExecutor(max_workers=recording.max_streams) as pool,
     ):
         list(pool.map(one, range(first, last + 1)))
+        # Failed chunks run once more, at once (fixes landed since their start then apply, and
+        # a transient fault clears); a second failure stays for a person.
+        failed = [index for index, result in sorted(results.items()) if result.get("exit", 0)]
+        # A chunk that failed although learned bands seeded its plan is not run again unchanged:
+        # it escalates to a person (and the plan's learning) instead.
+        learned = [index for index in failed if learned_applied(recording, index)]
+        for index in learned:
+            failure_notify.notify(
+                replay_id, f"cleanup chunk-{index:05d}", cls="cleanup-learned",
+                cause="failed with learned repair bands applied "
+                f"({recording.work / 'state' / f'chunk-{index:05d}' / 'chunk-receipt.json'})",
+                action="not retried; improve the plan or the audit for this case",
+            )  # fmt: skip
+        retried = [index for index in failed if index not in learned]
+        retrying.set()
+        list(pool.map(one, retried))
     for future in probed:
         future.result()  # an unexpected probe-ahead error is a bug: surface it
     summary: dict[str, object] = {
         "chunks": [first, last],
         "wallSeconds": round(time.time() - started, 1),
         "results": {str(key): value for key, value in sorted(results.items())},
+        "retried": retried,
     }
     # Each run (a retry after failed chunks too) keeps its own summary; earlier ones stay.
     name = f"queue-summary-{first}-{last}"
@@ -451,6 +536,28 @@ def run(
     return summary
 
 
+def learning_version(path: Path) -> str:
+    """The store/code/model version a chunk receipt says its plan used (``unknown`` without)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    learning = data.get("learning") if isinstance(data, dict) else None
+    version = learning.get("version") if isinstance(learning, dict) else None
+    return version if isinstance(version, str) else "unknown"
+
+
+def learned_applied(recording: Recording, index: int) -> bool:
+    """The chunk's receipt says learned repair bands seeded its plan."""
+    path = recording.work / "state" / f"chunk-{index:05d}" / "chunk-receipt.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    count = data.get("learnedBands") if isinstance(data, dict) else None
+    return isinstance(count, int) and count > 0
+
+
 def poll_wait(poll_seconds: float, *, leased: bool, settle_left: float) -> float:
     """How long an unadmitted chunk waits before it asks again.
 
@@ -459,6 +566,15 @@ def poll_wait(poll_seconds: float, *, leased: bool, settle_left: float) -> float
     """
     wait = min(poll_seconds, LEASE_POLL_SECONDS) if leased else poll_seconds
     return wait if settle_left <= 0 else min(wait, settle_left)
+
+
+def finished(recording: Recording, name: str) -> bool:
+    """The chunk has a receipt that is not an audit failure (``accepted: null``)."""
+    receipt = recording.work / "state" / name / "chunk-receipt.json"
+    if not receipt.exists():
+        return False
+    data = record(json.loads(receipt.read_text(encoding="utf-8")))
+    return not ("accepted" in data and data["accepted"] is None)
 
 
 def accepted_media(recording: Recording, name: str) -> Path | None:
@@ -639,9 +755,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         count = len(list((recording.work / "configs").glob("chunk-*.json")))
         last = count - 1 if args.last is None else args.last
         summary = run(recording, first=args.first, last=last)
-        failed = [k for k, v in record(summary["results"]).items() if record(v).get("exit", 0) != 0]
-        print(json.dumps({"failed": failed, "wallSeconds": summary["wallSeconds"]}))
-        return 1 if failed else 0
+        results = record(summary["results"])
+        failed = [k for k, v in results.items() if record(v).get("exit", 0) != 0]
+        # A drain, or low memory or disk, leaves chunks unstarted: not a finished run to assemble.
+        unstarted = [k for k, v in results.items() if record(v).get("notStarted") is True]
+        print(json.dumps({"failed": failed, "notStarted": unstarted,
+                          "wallSeconds": summary["wallSeconds"]}))  # fmt: skip
+        return 1 if failed or unstarted else 0
     else:
         print(assemble(recording))
     return 0

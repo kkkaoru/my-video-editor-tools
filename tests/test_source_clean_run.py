@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from replay import cleanup_learning, failure_notify, gpu_lease, memory_admission
 from replay import delivery_source_assembly_parallel as assembly_runner
-from replay import failure_notify, gpu_lease, memory_admission
 from replay import recording_priority as priority
 from replay import source_clean_run as runner
 from replay import subtitle_cleanup_assembly as preparation
@@ -147,7 +147,37 @@ def test_run_skips_finished_chunks_stops_below_the_floor_and_records_exits(tmp_p
     assert results["0"] == {"skipped": True}
     assert results["1"]["exit"] == 0
     assert results["2"]["exit"] == 3
-    assert sorted(seen) == ["chunk-00001.json", "chunk-00002.json"]
+    assert summary["retried"] == [2]  # a failed chunk runs once more, then stays failed
+    assert sorted(seen) == ["chunk-00001.json", "chunk-00002.json", "chunk-00002.json"]
+
+
+def test_an_audit_failed_chunk_is_redone_once_and_its_state_kept_as_evidence(
+    tmp_path: Path,
+) -> None:
+    recording = make(tmp_path)
+    runner.configs(recording)
+    state = recording.work / "state/chunk-00000"
+    state.mkdir(parents=True)
+    (state / "chunk-receipt.json").write_text('{"accepted": null}', encoding="utf-8")
+    seen: list[str] = []
+
+    def fake(command: Sequence[str], log: Path) -> int:
+        seen.append(Path(command[-1]).name)
+        if len(seen) == 1:
+            return 1  # fails again on its first run here; the retry passes
+        done = recording.work / "state/chunk-00000"
+        done.mkdir(parents=True)
+        (done / "chunk-receipt.json").write_text('{"accepted": "attempt-full"}', "utf-8")
+        return 0
+
+    summary = runner.run(recording, first=0, last=0, runner=fake, free=lambda: 100 * runner.GIB)
+    results = summary["results"]
+    assert isinstance(results, dict)
+    assert results["0"]["exit"] == 0
+    assert summary["retried"] == [0]
+    assert seen == ["chunk-00000.json", "chunk-00000.json"]
+    assert len(list((recording.work / "interrupted").iterdir())) == 1
+    assert runner.finished(recording, "chunk-00000") is True
 
 
 IDLE = Load(cpus=10, load=1.0, memory_free_percent=95, gpu_percent=10)
@@ -421,16 +451,27 @@ def test_chunks_lease_under_the_pipeline_recording_key(
 ) -> None:
     recording = make(tmp_path, recording="youtube-Eg9-gl3Z954-p1")
     runner.configs(recording)
-    keys: list[tuple[str, str, str]] = []
+    keys: list[tuple[str, str, str, str]] = []
     real = gpu_lease.Waiter
 
-    def waiter(directory: Path, replay_id: str, *, step: str, job: str) -> gpu_lease.Waiter:
-        keys.append((replay_id, step, job))
-        return real(directory, replay_id, step=step, job=job)
+    def waiter(
+        directory: Path,
+        replay_id: str,
+        *,
+        step: str,
+        job: str = "",
+        start: int | None = None,
+        queue: str = "waiting",
+    ) -> gpu_lease.Waiter:
+        keys.append((replay_id, step, job, queue))
+        return real(directory, replay_id, step=step, job=job, start=start, queue=queue)
 
     monkeypatch.setattr(gpu_lease, "Waiter", waiter)
     runner.run(recording, first=0, last=0, runner=lambda *_a: 0, free=lambda: 100 * runner.GIB)
-    assert keys == [("youtube-Eg9-gl3Z954", "cleanup chunk-00000", "cleanup-chunk")]
+    assert keys == [
+        ("youtube-Eg9-gl3Z954", "cleanup chunk-00000", "cleanup-chunk", "waiting"),
+        ("youtube-Eg9-gl3Z954", "cleanup chunk-00000", "", "memory-waiting"),
+    ]
 
 
 def test_a_settle_longer_than_the_poll_wakes_when_it_ends_and_is_logged(tmp_path: Path) -> None:
@@ -812,6 +853,18 @@ def test_a_drained_recording_starts_no_new_chunk(tmp_path: Path) -> None:
     }
 
 
+def test_main_run_fails_when_a_drain_left_chunks_unstarted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recording = make(tmp_path)
+    runner.configs(recording)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "free_bytes", lambda: 100 * runner.GIB)
+    priority.drain(tmp_path, "1", "relaunch")  # gpu_lease.root() is tmp_path / "gpu-leases"
+    assert runner.main([str(tmp_path / "description.json"), "run", "--last", "0"]) == 1
+    assert json.loads(capsys.readouterr().out)["notStarted"] == ["0"]
+
+
 def test_an_admitted_chunk_polls_fast_for_a_freed_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -839,3 +892,123 @@ def test_an_admitted_chunk_polls_fast_for_a_freed_lease(
     rows = (recording.work / "logs" / "admission.jsonl").read_text(encoding="utf-8").splitlines()
     held = [row["lease"] is not None for row in map(json.loads, rows)]
     assert held == [False, True]  # the second lease poll, not the 600 s one
+
+
+def test_a_chunk_reserves_no_memory_while_a_higher_rank_waits_for_memory(tmp_path: Path) -> None:
+    leases = tmp_path / "gpu-leases"
+    leases.mkdir()
+    (leases / "settings.json").write_text('{"capacity": 4, "priority": ["9"]}', "utf-8")
+    ahead = gpu_lease.Waiter(leases, "9", start=9, queue=runner.MEMORY_QUEUE)
+    ahead.register()  # a higher-ranked recording's chunk waits for a memory reservation
+    recording = make(tmp_path)
+    runner.configs(recording)
+    started: list[int] = []
+
+    def job(_command: Sequence[str], _log: Path) -> int:
+        started.append(1)
+        return 0
+
+    release = threading.Timer(0.3, ahead.close)
+    release.start()
+    runner.run(
+        recording, first=0, last=0, runner=job, free=lambda: 100 * runner.GIB,
+        poll_seconds=0.01, settle_seconds=0.0, leases=leases,
+    )  # fmt: skip
+    release.join()
+    rows = [
+        json.loads(line)
+        for line in (recording.work / "logs" / "admission.jsonl").read_text("utf-8").splitlines()
+    ]
+    waits = [row for row in rows if "lease" in row and row["lease"] is None]
+    assert started == [1]
+    assert waits != []  # it waited while the higher rank held the memory queue
+
+
+def test_a_chunk_failing_with_learned_bands_escalates_instead_of_a_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = make(tmp_path)
+    runner.configs(recording)
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        failure_notify, "notify", lambda _r, step, *, cls, **_k: notices.append((step, cls))
+    )
+    monkeypatch.setattr(cleanup_learning, "threshold", lambda _counts: 1.0)
+    monkeypatch.setattr(cleanup_learning, "anomalous", lambda _recent, _limit: True)
+    seen: list[str] = []
+
+    def fake(command: Sequence[str], log: Path) -> int:
+        seen.append(Path(command[-1]).name)
+        state = recording.work / "state/chunk-00000"
+        state.mkdir(parents=True, exist_ok=True)
+        receipt: dict[str, object] = {"accepted": None, "learnedBands": 1, "attempts": [{}] * 4}
+        (state / "chunk-receipt.json").write_text(json.dumps(receipt), "utf-8")
+        return 1
+
+    summary = runner.run(recording, first=0, last=0, runner=fake, free=lambda: 100 * runner.GIB)
+    assert summary["retried"] == []
+    assert seen == ["chunk-00000.json"]
+    assert notices == [
+        ("cleanup chunk-00000", "cleanup-attempts"),
+        ("cleanup chunk-00000", "cleanup-learned"),
+    ]
+    assert runner.learned_applied(recording, 1) is False
+
+
+def test_replacements_that_do_not_settle_brake_learning_and_record_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = make(tmp_path)
+    runner.configs(recording)
+    notices: list[str] = []
+    monkeypatch.setattr(
+        failure_notify, "notify", lambda _r, _step, *, cls, **_k: notices.append(cls)
+    )
+    monkeypatch.setattr(cleanup_learning, "threshold", lambda _counts: 1.0)
+    monkeypatch.setattr(cleanup_learning, "diverged", lambda _history, _limit: True)
+
+    def fake(command: Sequence[str], log: Path) -> int:
+        state = recording.work / "state" / Path(command[-1]).stem
+        state.mkdir(parents=True, exist_ok=True)
+        receipt: dict[str, object] = {
+            "accepted": "attempt-full",
+            "attempts": [{}, {}],
+            "learning": {"version": "s/c/m"},
+        }
+        (state / "chunk-receipt.json").write_text(json.dumps(receipt), "utf-8")
+        return 0
+
+    runner.run(recording, first=0, last=1, runner=fake, free=lambda: 100 * runner.GIB)
+    assert notices == ["learning-diverged"]
+    assert cleanup_learning.braked(recording.work) is True
+    assert (
+        runner.learning_version(recording.work / "state/chunk-00000/chunk-receipt.json") == "s/c/m"
+    )
+    assert runner.learning_version(recording.work / "missing.json") == "unknown"
+
+
+def test_reruns_do_not_count_in_the_attempt_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = make(tmp_path)
+    runner.configs(recording)
+    (recording.work / "logs").mkdir(parents=True, exist_ok=True)
+    (recording.work / "logs/chunk-00000.log").write_text("earlier run", "utf-8")
+    seen: list[list[int]] = []
+    monkeypatch.setattr(cleanup_learning, "threshold", lambda _counts: 1.0)
+
+    def anomalous(recent: Sequence[int], _limit: float | None) -> bool:
+        seen.append(list(recent))
+        return False
+
+    monkeypatch.setattr(cleanup_learning, "anomalous", anomalous)
+
+    def fake(command: Sequence[str], log: Path) -> int:
+        state = recording.work / "state" / Path(command[-1]).stem
+        state.mkdir(parents=True, exist_ok=True)
+        receipt: dict[str, object] = {"accepted": "attempt-full", "attempts": [{}, {}, {}]}
+        (state / "chunk-receipt.json").write_text(json.dumps(receipt), "utf-8")
+        return 0
+
+    runner.run(recording, first=0, last=1, runner=fake, free=lambda: 100 * runner.GIB)
+    assert max(seen, key=len) == [3]  # chunk 1 counted once; chunk 0 (a rerun) never
