@@ -1508,6 +1508,22 @@ def test_a_growing_caption_becomes_one_revealing_title(
     ]
 
 
+def test_a_title_is_held_after_its_speech_with_its_reveal_unchanged(
+    sequence_template: str, stage_plan: dict[str, object]
+) -> None:
+    # Two characters spoken over 1 s in a 2 s part: the title stays half a second longer
+    # (caption_display_hold); its graphemes still appear on frames 0 and 1.
+    titles: list[dict[str, object]] = []
+    root = ET.fromstring(
+        motion_reveal_stages.prepare(sequence_template, stage_plan | {"frames": 60}, titles=titles)
+    )
+    assert [timing.get("out") for timing in root.findall("scene/layer/scenenode/timing")] == [
+        "44 30 1 0",
+        "44 30 1 0",
+    ]
+    assert titles == [{"text": "字幕", "startFrame": 0, "endFrame": 45, "graphemeFrames": [0, 1]}]
+
+
 def test_the_entrance_is_added_only_when_the_style_enables_it(
     sequence_template: str, stage_plan: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:

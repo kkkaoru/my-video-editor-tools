@@ -25,7 +25,8 @@ def plan(**changes: object) -> dict[str, object]:
     }
 
 
-GROWING = {"text": "ちょっと待って", "startFrame": 0, "endFrame": 30,
+# Held two frames before the next title (caption_display_hold), as motion_reveal_stages records.
+GROWING = {"text": "ちょっと待って", "startFrame": 0, "endFrame": 38,
            "graphemeFrames": [0, 2, 4, 6, 10, 15, 20]}  # fmt: skip
 SINGLE = {"text": "東京", "startFrame": 40, "endFrame": 60, "graphemeFrames": [40, 50]}
 REVEAL = {"offsetFrame": 0, "titles": [GROWING, SINGLE]}
@@ -69,7 +70,7 @@ def test_style_refuses_a_nonpositive_scale() -> None:
 
 def test_each_growth_chain_becomes_one_title_at_its_motion_position() -> None:
     assert titles(plan(), REVEAL) == [
-        {"text": "ちょっと待って", "startFrame": 0, "endFrame": 30,
+        {"text": "ちょっと待って", "startFrame": 0, "endFrame": 38,
          "graphemeFrames": [0, 2, 4, 6, 10, 15, 20], "x": 0.0, "y": 420.0},
         {"text": "東京", "startFrame": 40, "endFrame": 60, "graphemeFrames": [40, 50],
          "x": -37.25, "y": -200.0},

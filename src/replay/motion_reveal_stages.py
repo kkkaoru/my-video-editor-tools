@@ -15,6 +15,9 @@ text when it ends. ``fcp_project``'s pop-in rule:
 ``(2k - 1) / 2N`` shows k of the final text's N graphemes; a hold key one frame earlier keeps every
 step a cut, with no fade. A reset, a gap or rebalanced line breaks start a new title.
 
+Each title's out point is then held after its speech (``caption_display_hold``): the keys above
+come from the unchanged stages, so only how long the finished text stays changes.
+
 Whether a title gets an entrance animation is the shared style setting
 ``caption_style_defaults.MOTION_ENTRANCE``; it is off.
 """
@@ -31,6 +34,7 @@ from pathlib import Path
 
 import regex
 
+from replay.caption_display_hold import held_frames
 from replay.caption_style_defaults import MOTION_ENTRANCE
 from replay.core import ReplayError
 from replay.motion_caption import (
@@ -242,10 +246,16 @@ def prepare(
     if not isinstance(entries, list) or not entries:
         raise ReplayError("Motion placements must be a nonempty array")
     placements: list[CaptionPlacement] = []
-    for chain in chains(stages_of(entries)):
+    grouped = chains(stages_of(entries))
+    # Each title stays readable after its speech (caption_display_hold); only its out point moves.
+    held = held_frames(
+        [(chain[-1].text, chain[0].start, chain[-1].end) for chain in grouped],
+        rate=rate, limit=_integer(data["frames"]),
+    )  # fmt: skip
+    for chain, end in zip(grouped, held, strict=True):
         first, last = chain[0], chain[-1]
         anchor = _placement(
-            {"text": last.text, "startFrame": first.start, "endFrame": last.end,
+            {"text": last.text, "startFrame": first.start, "endFrame": end,
              "x": first.x, "y": first.y},
             rate, coordinate_space=space, source_width=plan_width, source_height=plan_height,
             output_width=width, output_height=height,
@@ -256,7 +266,7 @@ def prepare(
         )  # fmt: skip
         if titles is not None:
             frames = onset_frames(chain, rate, tokens, offset)
-            titles.append({"text": last.text, "startFrame": first.start, "endFrame": last.end,
+            titles.append({"text": last.text, "startFrame": first.start, "endFrame": end,
                            "graphemeFrames": frames})  # fmt: skip
     if len(placements) > MAX_PART_SENTENCES:
         raise ReplayError("Too many Motion titles in one part")

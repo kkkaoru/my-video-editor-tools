@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Final
 
 from replay import caption_style_defaults as defaults
+from replay.caption_display_hold import held_frames
 from replay.caption_palette import Palette, validated
 from replay.core import ReplayError
 from replay.motion_reveal_stages import COORDINATE_SPACES, chains, stages_of
@@ -93,18 +94,23 @@ def titles(plan: object, reveal: object) -> list[dict[str, object]]:
     grouped = chains(stages_of(entries))
     if not isinstance(recorded, list) or len(recorded) != len(grouped):
         raise ReplayError("The reveal record does not match the plan's titles")
+    # The record holds each title's held out point (caption_display_hold), as the part does.
+    ends = held_frames(
+        [(chain[-1].text, chain[0].start, chain[-1].end) for chain in grouped],
+        rate=rate, limit=_integer(data["frames"]),
+    )  # fmt: skip
     result = []
-    for chain, value in zip(grouped, recorded, strict=True):
+    for chain, value, end in zip(grouped, recorded, ends, strict=True):
         item = record(value)
         first, last = chain[0], chain[-1]
         if (item.get("text"), item.get("startFrame"), item.get("endFrame")) != (
             last.text,
             first.start,
-            last.end,
+            end,
         ):
             raise ReplayError("The reveal record does not match the plan's titles")
         anchor = _placement(
-            {"text": last.text, "startFrame": first.start, "endFrame": last.end,
+            {"text": last.text, "startFrame": first.start, "endFrame": end,
              "x": first.x, "y": first.y},
             rate, coordinate_space=space, source_width=width, source_height=height,
             output_width=width, output_height=height,
