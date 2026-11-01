@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from replay import gpu_lease, subtitle_sttn, yolo_track
+from replay import gpu_lease, subtitle_sttn, video_config, yolo_track
 from replay.core import ReplayError
 from replay.edit_completion import load_config
 from replay.recordings import record
@@ -93,7 +93,11 @@ PERIODS = 8
 
 
 def intent(edit_root: Path) -> bool:
-    """Whether the recording asks for its comment boxes to be removed (strictly validated)."""
+    """Whether the recording asks for its comment boxes to be removed (strictly validated):
+    ``video-config.json`` cleanup.commentBoxes, else ``cleanup.json``."""
+    present, cleanup = video_config.setting(edit_root, "cleanup")
+    if present:
+        return record(cleanup).get("commentBoxes", False) is True
     path = edit_root / INTENT
     if not path.exists():
         return False

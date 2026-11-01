@@ -30,6 +30,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from replay import source_decodable as decodable
+from replay import video_config
 from replay.core import ReplayError
 from replay.recordings import record
 from replay.source_lead_in import BITRATE, COLOUR, sha256, video_pts, video_stream
@@ -68,7 +69,11 @@ FIGURE_DEAD_ZONE = 0.10
 
 
 def intent(edit_root: Path) -> tuple[int, int] | None:
-    """The recording's requested crop aspect (width, height), or None without the intent file."""
+    """The recording's requested crop aspect (width, height), or None without the intent
+    (``video-config.json`` orientation, else ``reframe.json``)."""
+    present, orientation = video_config.setting(edit_root, "orientation")
+    if present:
+        return None if orientation == "source" else (9, 16)
     path = edit_root / INTENT
     if not path.exists():
         return None

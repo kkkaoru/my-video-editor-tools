@@ -16,6 +16,7 @@ import json
 import re
 from pathlib import Path
 
+from replay import video_config
 from replay.caption_contrast import WHITE, contrast_ratio
 from replay.core import ReplayError
 from replay.motion_caption import COLOUR_INTENT_MARKER
@@ -53,7 +54,11 @@ def validated(value: object) -> Palette:
 
 
 def intent(edit_root: Path) -> Palette | None:
-    """The recording's caption palette, or None without ``caption-colors.json``."""
+    """The recording's caption palette (``video-config.json`` captions.palette, else
+    ``caption-colors.json``), or None without one."""
+    present, configured = video_config.setting(edit_root, "palette")
+    if present:
+        return validated(configured)
     path = edit_root / INTENT
     if not path.exists():
         return None
