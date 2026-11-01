@@ -21,6 +21,12 @@ roformer = ["mlx-audio==0.4.3", "numpy>=2.2,<3"]
 dialogue-separation = ["mlx-audio[sts]==0.5.7", "numpy>=2.2,<3", "scipy>=1.12,<2"]
 ja-alignment = ["nagisa==0.3.0", "pykakasi==2.3.0"]
 ctc-alignment = ["torch==2.14.1", "transformers==5.17.0", "numpy>=1.26,<3", "scipy>=1.12,<2"]
+# replay.voice_repair (edits/.venv-voice-repair): Polars analysis, WavLM-SV on the CPU;
+# NISQA_lib scoring for offline analysis (librosa, pandas, pyyaml, tqdm, matplotlib), pinned weights.
+voice-repair = [
+    "torch==2.14.1", "transformers==5.17.0", "polars==2.0.0", "numpy>=2.2,<3", "scipy>=1.12,<2",
+    "librosa==0.11.0", "pandas>=2.2,<4", "pyyaml>=6,<7", "tqdm>=4.66,<5", "matplotlib>=3.9,<4",
+]
 coreml-extraction = ["coremltools>=9,<10; sys_platform == 'darwin'"]
 yolo = [
     "ultralytics==8.4.177",
@@ -47,7 +53,7 @@ youtube = [
     "yt-dlp[default]>=2026.8.19",
 ]
 # The web viewer's clip points on the Mac (replay.clip_models): clef's MLX backbone and Bonsai.
-clips = ["mlx-lm==0.32.2", "mlx-vlm==0.7.10", "numpy>=2.2,<3"]
+clips = ["mlx-lm==0.32.2", "mlx-vlm>=0.7.10", "laya-mlx==0.5.0", "numpy>=2.2,<3"]
 
 [dependency-groups]
 dev = [
@@ -61,6 +67,7 @@ dev = [
     "numpy>=2.2,<3",
     "opencv-python-headless>=4.10,<5",
     "vibrato==0.2.3",
+    "polars==2.0.0",
 ]
 
 [project.scripts]
@@ -69,6 +76,10 @@ replay = "replay.cli:main"
 [build-system]
 requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+# LFM3 and the d1 decision models (merged 2026-10-27, after 0.7.10): main pinned until a release ships them.
+mlx-vlm = { git = "https://github.com/Blaizzy/mlx-vlm", rev = "230fc308efb577d87446306bfb8a3e9f1a129558" }
 
 [tool.uv]
 # Ultralytics only needs cv2; the GUI wheel would shadow the headless one used everywhere else.
@@ -100,6 +111,9 @@ conflicts = [
     [{ extra = "clips" }, { extra = "separation" }],
     [{ extra = "clips" }, { extra = "speaker-extraction" }],
     [{ extra = "clips" }, { extra = "usef-extraction" }],
+    [{ extra = "voice-repair" }, { extra = "separation" }],
+    [{ extra = "voice-repair" }, { extra = "speaker-extraction" }],
+    [{ extra = "voice-repair" }, { extra = "usef-extraction" }],
 ]
 
 [tool.hatch.build]
