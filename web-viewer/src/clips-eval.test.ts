@@ -15,13 +15,19 @@ import {
   judgeRequest,
   type Meter,
   markdown,
+  neighboursOf,
+  openCodeAi,
+  overlap,
   type Pair,
   parseGrade,
   played,
   type Store,
   shapeOf,
+  shippedRate,
   spliced,
+  strictJudge,
   summarize,
+  surrogateOf,
   type VideoEval,
 } from "./clips-eval.ts";
 
@@ -425,5 +431,164 @@ it("tabulates labelled runs side by side for both subsets", () => {
     "| clips / video | 0 | 0 | 0 | 0 |",
     "| good clips / video | 0 | 0 | 0 | 0 |",
     "| good rate | 0 | 0.8 | 0 | 0 |",
+  ]);
+});
+
+it("asks OpenCode's free DeepSeek first and the paid one when the free tier is refused", async () => {
+  const sent: { url: string; auth: string | undefined; body: string }[] = [];
+  const replies = [
+    { ok: false, status: 403, body: null },
+    { ok: true, status: 200, body: { choices: [{ message: { content: "{}" } }] } },
+    { ok: true, status: 200, body: { choices: [] } },
+  ];
+  const ai = openCodeAi(async (url, init) => {
+    sent.push({ url, auth: init.headers.Authorization, body: init.body });
+    const reply = replies.shift() ?? { ok: false, status: 599, body: null };
+    return { ok: reply.ok, status: reply.status, json: async () => reply.body };
+  }, "k3y");
+  const paid = await ai.run(JUDGE_MODEL, { messages: [] });
+  const free = await ai.run(JUDGE_MODEL, { messages: [] });
+  const none = await openCodeAi(
+    async () => ({ ok: false, status: 500, json: async () => null }),
+    "k3y",
+  )
+    .run(JUDGE_MODEL, {})
+    .catch((error: unknown) => String(error));
+  expect([paid, free, none, sent]).toStrictEqual([
+    { choices: [{ message: { content: "{}" } }] },
+    { choices: [] },
+    "Error: OpenCode answered none of the judge models",
+    [
+      {
+        url: "https://opencode.ai/inference/openai/v1/chat/completions",
+        auth: "Bearer k3y",
+        body: '{"messages":[],"model":"deepseek-v4.1-flash-free"}',
+      },
+      {
+        url: "https://opencode.ai/inference/openai/v1/chat/completions",
+        auth: "Bearer k3y",
+        body: '{"messages":[],"model":"deepseek-v4.1-flash"}',
+      },
+      {
+        url: "https://opencode.ai/inference/openai/v1/chat/completions",
+        auth: "Bearer k3y",
+        body: '{"messages":[],"model":"deepseek-v4.1-flash-free"}',
+      },
+    ],
+  ]);
+});
+
+it("adds the strict instructions to the judge's system message only", () => {
+  expect([
+    strictJudge({
+      messages: [
+        { role: "system", content: "S" },
+        { role: "user", content: "U" },
+      ],
+      x: 1,
+    }),
+    strictJudge({}),
+  ]).toStrictEqual([
+    {
+      messages: [
+        {
+          role: "system",
+          content:
+            "S\n採点は厳しく行う。各項目の平均は3になるように付け、5は欠点がまったくない場合だけ、迷ったら低い方を選ぶ。\n次のどれかに当てはまる項目は3以下にする: standaloneは前提（誰が・何の話か）が文字起こしにない、endingは最後の発話がオチ・結論・反応になっていない、flowは途中から始まる・話が飛ぶ、topicは主題と無関係な発話がある。",
+        },
+        { role: "user", content: "U" },
+      ],
+      x: 1,
+    },
+    { messages: [] },
+  ]);
+});
+
+const READING = {
+  answers: {
+    topic: { mean: 4 },
+    standalone: { mean: 3.5 },
+    hook: { mean: 3 },
+    ending: { mean: 3.5 },
+    flow: { mean: 3.5 },
+    punchline: { p_null: 0.01 },
+  },
+};
+const RUBRIC_ANSWERS = {
+  answers: {
+    topic: { score: 3 },
+    standalone: { score: 2 },
+    hook: { score: 2 },
+    ending: { score: 3 },
+    flow: { score: 3 },
+    good: { noul: 0.6 },
+    premise: { noul: 0.5 },
+    startsMid: { noul: 0.2 },
+    endsMid: { noul: 0.1 },
+    stray: { noul: 0.2 },
+  },
+};
+
+it("measures how much two clips play the same moments", () => {
+  expect([
+    overlap([{ start: 0, end: 10 }], [{ start: 0, end: 10 }]),
+    overlap([{ start: 0, end: 10 }], [{ start: 5, end: 15 }]),
+    overlap([{ start: 0, end: 10 }], [{ start: 20, end: 30 }]),
+  ]).toStrictEqual([1, 1 / 3, 0]);
+});
+
+it("weighs the judged clips of the same moment by IoU squared", () => {
+  const judged = [
+    { video: "v", ranges: [{ start: 0, end: 10 }], good: true },
+    { video: "v", ranges: [{ start: 0, end: 8 }], good: false },
+    { video: "w", ranges: [{ start: 0, end: 10 }], good: true },
+    { video: "v", ranges: [{ start: 6, end: 30 }], good: true },
+  ];
+  expect([
+    neighboursOf("v", [{ start: 0, end: 10 }], judged),
+    neighboursOf("v", [{ start: 40, end: 50 }], judged),
+  ]).toStrictEqual([
+    { signed: 0.36, count: 2 },
+    { signed: 0, count: 0 },
+  ]);
+});
+
+it("judges with clef, Laya and the judged neighbours, and abstains in between or without Laya", () => {
+  const none = { signed: 0, count: 0 };
+  const laya = (good: number) => ({ answers: { ...RUBRIC_ANSWERS.answers, good: { noul: good } } });
+  const verdicts = [
+    surrogateOf(RUBRIC_ANSWERS, laya(0.95), none, 20),
+    surrogateOf(RUBRIC_ANSWERS, laya(0.6), none, 20),
+    surrogateOf(RUBRIC_ANSWERS, laya(0.6), { signed: -1, count: 1 }, 20),
+    surrogateOf(RUBRIC_ANSWERS, laya(0.05), { signed: -1.5, count: 2 }, 20),
+    surrogateOf(
+      { answers: { ...RUBRIC_ANSWERS.answers, ending: { score: 0.5 }, endsMid: { noul: 0.9 } } },
+      laya(0.05),
+      none,
+      20,
+    ),
+    surrogateOf(RUBRIC_ANSWERS, READING, none, 20),
+    surrogateOf(RUBRIC_ANSWERS, laya(0.95), none, 8),
+    surrogateOf(RUBRIC_ANSWERS, laya(0.95), none, 100),
+  ];
+  expect(verdicts.map((v) => [v.chance, v.verdict, v.domain])).toStrictEqual([
+    [0.98, "good", "verified"],
+    [0.947, "good", "verified"],
+    // A bad judged neighbour of the same moment pulls the chance down.
+    [0.89, "good", "verified"],
+    [0.523, "unjudged", "verified"],
+    [0.106, "bad", "verified"],
+    // clairic's reply is not Laya's rubric answers, so it gives no verdict.
+    [0, "unjudged", "verified"],
+    [0.98, "good", "extrapolated"],
+    // Past 60 s the old labels showed the surrogate no better than chance, so it gives no verdict.
+    [0.98, "unjudged", "unverified"],
+  ]);
+});
+
+it("estimates the good rate of clips called good with the old residual and its interval", () => {
+  expect([shippedRate([0.9, 0.8]), shippedRate([])]).toStrictEqual([
+    { rate: 0.778, low: 0.61, high: 0.946 },
+    null,
   ]);
 });

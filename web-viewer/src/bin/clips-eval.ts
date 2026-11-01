@@ -1,8 +1,9 @@
 // Runs with bun. Entry point: `bun run clips:eval -- --label v5 --sets SETS.json --out DIR
 // --cache DIR [--records DIR] [--previous DIR] [--calibrate]` evaluates clip points offline.
-// Without --records it runs the shipping generate() on web-viewer/data/<id>.json; every model
-// call goes through `cf ai run` one at a time and is cached, and nothing is written to R2.
-import { spawnSync } from "node:child_process";
+// Without --records it runs the Mac's generate() on web-viewer/data/<id>.json against a running
+// `python -m replay.clip_models --judges` (port 8791), so no Cloudflare model runs. The judge is Bonsai
+// under STRICT_JUDGE, or DeepSeek V4.1 Flash on OpenCode with OPENCODE_API_KEY from --opencode-env. Every call is
+// cached, and nothing is written to R2.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -20,17 +21,22 @@ import {
   calibrate,
   calibration,
   evaluate,
+  JUDGE_MODEL,
+  LOCAL_JUDGE,
   type Meter,
   markdown,
+  openCodeAi,
   type Store,
   type Subset,
   type SubsetSummary,
+  strictJudge,
   summarize,
   type VideoEval,
 } from "../clips-eval.ts";
+import { BONSAI_MODEL, localAi } from "../clips-mac.ts";
+import { parseEnvFile } from "../sync/envFile.ts";
 
-const ATTEMPTS: number = 5;
-const RETRY_MS: number = 15_000;
+const LOCAL_SERVER: string = "http://127.0.0.1:8791";
 const UNKNOWN_KEY: string = "0".repeat(32);
 const SUBSETS: Subset[] = ["dev", "heldOut"];
 const setsSchema = z.object({ dev: z.array(z.string()), heldOut: z.array(z.string()) });
@@ -45,6 +51,7 @@ const argsSchema = z.object({
   records: z.string().optional(),
   previous: z.string().optional(),
   calibrate: z.boolean().optional(),
+  "opencode-env": z.string().optional(),
 });
 const { values } = parseArgs({
   options: {
@@ -55,11 +62,14 @@ const { values } = parseArgs({
     records: { type: "string" },
     previous: { type: "string" },
     calibrate: { type: "boolean" },
+    "opencode-env": { type: "string" },
   },
 });
 const parsed = argsSchema.safeParse(values);
 if (!parsed.success) {
-  console.error("usage: bun run clips:eval -- --label L --sets SETS.json --out DIR --cache DIR");
+  console.error(
+    "usage: bun run clips:eval -- --label L --sets SETS.json --out DIR --cache DIR [--opencode-env FILE]",
+  );
   process.exit(2);
 }
 const options = parsed.data;
@@ -75,25 +85,34 @@ const store: Store = {
   },
   write: async (key, text) => writeFileSync(join(cache, `${key}.json`), text),
 };
-const wait = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
-/** One `cf ai run` call; the CLI holds the credentials, so none pass through here. */
-async function cf(model: string, input: unknown, left: number): Promise<unknown> {
-  // One body file per process: concurrent harness runs share the cache directory.
-  const body = join(cache, `body-${process.pid}.json`);
-  writeFileSync(body, JSON.stringify(input));
-  const result = spawnSync(
-    join(projectDirectory, "node_modules", ".bin", "cf"),
-    ["ai", "run", model, "--body", `@${body}`],
-    { cwd: projectDirectory, encoding: "utf8", maxBuffer: 1 << 26 },
-  );
-  if (result.status === 0) return JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
-  if (left <= 1) throw new Error(`cf ai run ${model} failed: ${result.stderr.slice(-300)}`);
-  console.error(`retrying ${model}: ${result.stderr.slice(-120).trim()}`);
-  await wait(RETRY_MS);
-  return cf(model, input, left - 1);
-}
-const remote: Ai = { run: (model, input) => cf(model, input, ATTEMPTS) };
+const local = localAi(fetch, LOCAL_SERVER);
+// The judge: Bonsai on the Mac under STRICT_JUDGE (its own model name, so its answers are cached
+// apart), or DeepSeek on OpenCode with --opencode-env (the key is read from that file, never printed).
+const openCodeFile = options["opencode-env"];
+const openCodeKey = openCodeFile
+  ? parseEnvFile(readFileSync(openCodeFile, "utf8")).OPENCODE_API_KEY
+  : undefined;
+if (openCodeFile && !openCodeKey)
+  throw new Error("the --opencode-env file sets no OPENCODE_API_KEY");
+const judge: Ai = openCodeKey
+  ? openCodeAi(fetch, openCodeKey)
+  : { run: (_model, input) => local.run(BONSAI_MODEL, input) };
+const remote: Ai = {
+  run: (model, input) =>
+    [JUDGE_MODEL, LOCAL_JUDGE].includes(model) ? judge.run(model, input) : local.run(model, input),
+};
+/** What the judge is asked as: the local judge under its own name and with the strict instructions. */
+const judged = (ai: Ai): Ai =>
+  openCodeKey
+    ? ai
+    : {
+        run: (model, input) =>
+          ai.run(
+            model === JUDGE_MODEL ? LOCAL_JUDGE : model,
+            model === JUDGE_MODEL ? strictJudge(input) : input,
+          ),
+      };
 
 async function recordOf(id: string, meter: Meter): Promise<ClipRecord> {
   const data = videoDataSchema.parse(readJson(join(projectDirectory, "data", `${id}.json`)));
@@ -101,7 +120,7 @@ async function recordOf(id: string, meter: Meter): Promise<ClipRecord> {
   return options.records
     ? clipRecordSchema.parse(readJson(join(options.records, `${id}.json`)))
     : generate({
-        place: "cloudflare",
+        place: "mac",
         ai: cachedAi(remote, store, meter),
         data,
         movieKey: UNKNOWN_KEY,
@@ -118,7 +137,7 @@ async function videoOf(id: string, subset: Subset): Promise<VideoEval> {
   const data = videoDataSchema.parse(readJson(join(projectDirectory, "data", `${id}.json`)));
   const judgeMeter: Meter = { calls: 0, fresh: 0 };
   const result = await evaluate({
-    ai: cachedAi(remote, store, judgeMeter),
+    ai: judged(cachedAi(remote, store, judgeMeter)),
     record,
     said: utterances(data.cues),
     subset,
@@ -149,7 +168,7 @@ if (options.calibrate) {
     const meter: Meter = { calls: 0, fresh: 0 };
     pairs.push(
       ...(await calibrate({
-        ai: cachedAi(remote, store, meter),
+        ai: judged(cachedAi(remote, store, meter)),
         clips: record.clips,
         said: utterances(data.cues),
       })),

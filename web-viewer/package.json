@@ -11,7 +11,8 @@
     "deploy": "bun src/bin/deploy.ts",
     "debug": "bun src/bin/debug.ts",
     "clips:eval": "bun src/bin/clips-eval.ts",
-    "clips:mac": "bun src/bin/clips-mac.ts"
+    "clips:mac": "bun src/bin/clips-mac.ts",
+    "clips:judge": "bun src/bin/clips-judge.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

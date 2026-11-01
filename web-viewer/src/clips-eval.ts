@@ -7,7 +7,16 @@
 // that the judge must score lower before its grades are trusted.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { type Ai, BANDS, type ClipRecord, type Range, type Said, safeJson } from "./clips.ts";
+import {
+  type Ai,
+  BANDS,
+  type ClipRecord,
+  type Range,
+  type Reader,
+  readingLogit,
+  type Said,
+  safeJson,
+} from "./clips.ts";
 
 export type Rule = "band" | "overlap" | "replay" | "pattern";
 export type Negative = "spliced" | "cut";
@@ -76,6 +85,32 @@ export interface Meter {
   calls: number;
   fresh: number;
 }
+/** A clip the old DeepSeek judge graded: its video, ranges and whether it was good. */
+export interface Judged {
+  video: string;
+  ranges: Range[];
+  good: boolean;
+}
+/**
+ * The judged clips of the same video playing the same moment (IoU 0.5 or more): the sum of their
+ * verdicts (+1 good, -1 bad) weighted by IoU squared, and how many there are.
+ */
+export interface Neighbours {
+  signed: number;
+  count: number;
+}
+export interface Surrogate {
+  chance: number;
+  verdict: "good" | "bad" | "unjudged";
+  neighbours: Neighbours;
+  /** How far the old labels back a verdict at this clip's length (see domainOf). */
+  domain: Domain;
+}
+export type Domain = "verified" | "extrapolated" | "unverified";
+export type Post = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 export interface Pair {
   clip: string;
   negative: Negative;
@@ -94,7 +129,26 @@ export interface Played {
   text: string;
 }
 
-export const JUDGE_MODEL: string = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
+/**
+ * The judge: DeepSeek V4.1 Flash through OpenCode (the user allows no Cloudflare model but clairic),
+ * the free tier first and the paid one when OpenCode refuses it. The earlier judge was the same model
+ * on Workers AI; Ternary-Bonsai-2-9B, tried on the Mac, agreed with it only by chance (kappa 0.04).
+ */
+export const JUDGE_MODEL: string = "opencode/deepseek-v4.1-flash";
+export const OPENCODE_CHAT: string = "https://opencode.ai/inference/openai/v1/chat/completions";
+export const OPENCODE_MODELS: string[] = ["deepseek-v4.1-flash-free", "deepseek-v4.1-flash"];
+/** The judge on the Mac: Ternary-Bonsai-2-9B under STRICT_JUDGE, asked under its own model name. */
+export const LOCAL_JUDGE: string = "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit+strict";
+/**
+ * Appended to the judge's instructions for Bonsai, which called 93% of 191 judged clips good
+ * without it. With it Bonsai calls 52% good (DeepSeek 47%), but agrees with DeepSeek's verdicts
+ * only a little beyond chance (kappa 0.10, AUC 0.61 for the axis sum): it is strict, not sharp.
+ */
+export const STRICT_JUDGE: string = [
+  "採点は厳しく行う。各項目の平均は3になるように付け、5は欠点がまったくない場合だけ、迷ったら低い方を選ぶ。",
+  "次のどれかに当てはまる項目は3以下にする: standaloneは前提（誰が・何の話か）が文字起こしにない、" +
+    "endingは最後の発話がオチ・結論・反応になっていない、flowは途中から始まる・話が飛ぶ、topicは主題と無関係な発話がある。",
+].join("\n");
 const JUDGE_TOKENS: number = 6000;
 /** Within this many seconds an edge and an utterance boundary are the same moment. */
 const EDGE_SLACK: number = 0.05;
@@ -258,6 +312,170 @@ export function parseGrade(response: unknown): Grade | null {
   const json = content.slice(content.indexOf("{"), content.lastIndexOf("}") + 1);
   const parsed = gradeSchema.safeParse(json === "" ? null : safeJson(json));
   return parsed.success ? parsed.data : null;
+}
+
+/** The judge request with STRICT_JUDGE added to its instructions, for the local judge. */
+export function strictJudge(request: unknown): unknown {
+  const body = Object(request);
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  return {
+    ...body,
+    messages: messages.map((m, i) =>
+      i === 0 ? { ...Object(m), content: `${Object(m).content}\n${STRICT_JUDGE}` } : m,
+    ),
+  };
+}
+
+/**
+ * The judge on OpenCode: each of OPENCODE_MODELS in turn until one answers; the key travels only
+ * in the Authorization header.
+ */
+export function openCodeAi(post: Post, key: string): Ai {
+  const ask = async (input: unknown, models: readonly string[]): Promise<unknown> => {
+    const [model, ...rest] = models;
+    if (model === undefined) throw new Error("OpenCode answered none of the judge models");
+    const response = await post(OPENCODE_CHAT, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ...Object(input), model }),
+    });
+    return response.ok ? response.json() : ask(input, rest);
+  };
+  return { run: async (_model, input) => ask(input, OPENCODE_MODELS) };
+}
+
+/**
+ * The surrogate judge, all on the Mac: the local clef's rubric answers, Laya's answers to the same
+ * rubric (in clairic's place, the user's choice) and the IoU-weighted verdicts of the other judged
+ * clips of the same moment, fitted on the old DeepSeek grades of 191 clips (LOVO by video AUC 0.743;
+ * with Cloudflare's clairic it was 0.783). Only the neighbours' verdicts count, not their number,
+ * which had lifted clips with bad neighbours. Near-identical judged clips agreed only 60-75% with each
+ * other, so they are evidence, not the answer. Good at 0.75 or above, bad below 0.25, no verdict
+ * between: on the old clips that judged 39% of them at 79% accuracy.
+ */
+export const SURROGATE = {
+  bias: -5.6411,
+  clef: {
+    topic: 0.3993,
+    standalone: 0.0957,
+    hook: 0.1602,
+    ending: 0.88,
+    flow: 0.4512,
+    good: 0.8346,
+    premise: -0.1867,
+    startsMid: -0.0518,
+    endsMid: -1.5062,
+    stray: -0.1559,
+  },
+  reader: {
+    kind: "laya",
+    weights: {
+      topic: 0.3829,
+      standalone: 0.0464,
+      hook: -0.4079,
+      ending: -0.1305,
+      flow: 0.2876,
+      good: 2.9262,
+      premise: 0.2761,
+      startsMid: -0.2383,
+      endsMid: -0.2399,
+      stray: -0.5769,
+    },
+  },
+  neighbours: 0.7854,
+} satisfies {
+  bias: number;
+  clef: Record<string, number>;
+  reader: Reader;
+  neighbours: number;
+};
+export const SURROGATE_GOOD: number = 0.75;
+export const SURROGATE_BAD: number = 0.25;
+/**
+ * Prediction-powered correction of the good rate among clips called good: on the old clips at 0.75
+ * or above the judge was good 0.072 less often than the surrogate said (residual variance 0.183 over
+ * 30 clips); with clairic the same correction removed the surrogate's bias in 500 video splits and its
+ * 95% interval held 91% of the time. No threshold could be certified at 70-80% precision with these
+ * labels (Learn Then Test, delta 0.1), so the rate is an estimate, not a guarantee.
+ */
+export const SHIPPED_RECTIFIER = { mean: -0.0717, variance: 0.183, count: 30 };
+/**
+ * How well the old labels (10-90 s clips) back the surrogate at a length, from its LOVO chances per
+ * length: 15-60 s is verified (AUC 0.82 at 15-30 s over 107 clips, 0.95 at 35-60 s over 37), shorter
+ * clips extrapolate from 10-15 s (AUC 0.74, where it called fewer good than the judge did, so its
+ * "good" errs strict), and longer ones are unverified: at 60-90 s it ranked worse than chance (0.44
+ * over 19 clips), so it gives them no verdict. Length terms did not help (AUC 0.778).
+ */
+export function domainOf(duration: number): Domain {
+  if (duration > VERIFIED_UNTIL) return "unverified";
+  return duration < VERIFIED_FROM ? "extrapolated" : "verified";
+}
+const VERIFIED_FROM: number = 15;
+const VERIFIED_UNTIL: number = 60;
+/** Below this IoU two clips are not the same moment. */
+const SAME_MOMENT: number = 0.5;
+
+const seconds = (ranges: readonly Range[]): number =>
+  ranges.reduce((t, r) => t + r.end - r.start, 0);
+
+export function overlap(a: readonly Range[], b: readonly Range[]): number {
+  const shared = a.reduce(
+    (t, x) =>
+      t +
+      b.reduce((u, y) => u + Math.max(0, Math.min(x.end, y.end) - Math.max(x.start, y.start)), 0),
+    0,
+  );
+  return shared / (seconds(a) + seconds(b) - shared);
+}
+
+/** The judged clips of `video` playing the same moment as `ranges`, IoU-squared weighted. */
+export function neighboursOf(
+  video: string,
+  ranges: readonly Range[],
+  judged: readonly Judged[],
+): Neighbours {
+  const near = judged
+    .filter((j) => j.video === video)
+    .map((j) => ({ iou: overlap(ranges, j.ranges), sign: j.good ? 1 : -1 }))
+    .filter((n) => n.iou >= SAME_MOMENT);
+  return { signed: round(near.reduce((t, n) => t + n.iou ** 2 * n.sign, 0)), count: near.length };
+}
+
+/**
+ * The surrogate's chance and verdict for a clip of `duration` seconds; without a usable clairic
+ * reading, or at a length the old labels do not back, it gives no verdict.
+ */
+export function surrogateOf(
+  clef: unknown,
+  clairic: unknown,
+  neighbours: Neighbours,
+  duration: number,
+): Surrogate {
+  const domain = domainOf(duration);
+  const logit = readingLogit(clef, clairic, SURROGATE);
+  if (logit === null) return { chance: 0, verdict: "unjudged", neighbours, domain };
+  const chance = round(1 / (1 + Math.exp(-(logit + SURROGATE.neighbours * neighbours.signed))));
+  if (domain === "unverified") return { chance, verdict: "unjudged", neighbours, domain };
+  if (chance >= SURROGATE_GOOD) return { chance, verdict: "good", neighbours, domain };
+  return { chance, verdict: chance < SURROGATE_BAD ? "bad" : "unjudged", neighbours, domain };
+}
+
+/** The good rate among clips called good, PPI-corrected, with its 95% interval. */
+export function shippedRate(
+  chances: readonly number[],
+): { rate: number; low: number; high: number } | null {
+  if (chances.length === 0) return null;
+  const mean = chances.reduce((t, c) => t + c, 0) / chances.length;
+  const spread = chances.reduce((t, c) => t + (c - mean) ** 2, 0) / chances.length;
+  const rate = mean + SHIPPED_RECTIFIER.mean;
+  const half =
+    1.96 *
+    Math.sqrt(spread / chances.length + SHIPPED_RECTIFIER.variance / SHIPPED_RECTIFIER.count);
+  return {
+    rate: round(rate),
+    low: round(Math.max(0, rate - half)),
+    high: round(Math.min(1, rate + half)),
+  };
 }
 
 /** An Ai that answers repeated requests from `store` and counts every call in `meter`. */
