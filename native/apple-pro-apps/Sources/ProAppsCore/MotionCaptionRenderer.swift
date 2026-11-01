@@ -66,9 +66,16 @@ public struct MotionCaptionStyle: Codable, Equatable, Sendable {
   }
 }
 
+/// Motion's paragraph alignment of a title's lines.
+public enum MotionCaptionAlignment: String, Codable, Equatable, Sendable {
+  /// Every line starts at the title's position.
+  case left
+}
+
 /// One revealing title: its final text, frames [startFrame, endFrame) and the frame each
 /// grapheme (line breaks included) appears on, as `replay.motion_reveal_stages` records them.
-/// The position is Motion's: the first line's baseline centre, origin at the canvas centre, y up.
+/// The position is Motion's: the first line's baseline centre (its start when left-aligned),
+/// origin at the canvas centre, y up.
 public struct MotionCaptionTitle: Codable, Equatable, Sendable {
   public let text: String
   public let startFrame: Int
@@ -78,10 +85,12 @@ public struct MotionCaptionTitle: Codable, Equatable, Sendable {
   public let graphemeFrames: [Int]
   /// This title's own style when it differs from the part's (a title edited in Motion).
   public let style: MotionCaptionStyle?
+  /// Left-aligned lines; nil centres each line on the position (the template's default).
+  public let alignment: MotionCaptionAlignment?
 
   public init(
     text: String, startFrame: Int, endFrame: Int, x: Double, y: Double, graphemeFrames: [Int],
-    style: MotionCaptionStyle? = nil
+    style: MotionCaptionStyle? = nil, alignment: MotionCaptionAlignment? = nil
   ) {
     self.text = text
     self.startFrame = startFrame
@@ -90,6 +99,7 @@ public struct MotionCaptionTitle: Codable, Equatable, Sendable {
     self.y = y
     self.graphemeFrames = graphemeFrames
     self.style = style
+    self.alignment = alignment
   }
 
   /// Graphemes shown on `frame`: Type On End shows each from its onset frame onward.
@@ -118,7 +128,7 @@ public struct MotionCaptionBitmap: Sendable {
 }
 
 /// Lays a title out once with CoreText and draws any prefix of its graphemes in that fixed
-/// layout, as Motion's Type On does (the line and its centring never reflow).
+/// layout, as Motion's Type On does (the line and its centring or start never reflow).
 public struct MotionCaptionRenderer {
   struct Glyph {
     let grapheme: Int
@@ -149,7 +159,7 @@ public struct MotionCaptionRenderer {
     }
     let ascent = Double(CTFontGetAscent(font))
     let advance = ascent + Double(CTFontGetDescent(font))
-    let centreX = Double(canvasWidth) / 2 + title.x
+    let anchorX = Double(canvasWidth) / 2 + title.x
     let firstBaseline = Double(canvasHeight) / 2 - title.y
     var glyphs: [Glyph] = []
     var grapheme = 0
@@ -158,7 +168,8 @@ public struct MotionCaptionRenderer {
     {
       let baseline = firstBaseline + Double(index) * advance
       glyphs += Self.glyphs(
-        String(line), font: font, centreX: centreX, baseline: baseline, firstGrapheme: grapheme)
+        String(line), font: font, anchorX: anchorX, alignment: title.alignment,
+        baseline: baseline, firstGrapheme: grapheme)
       grapheme += line.count + 1
     }
     var bounds = CGRect.null
@@ -186,15 +197,19 @@ public struct MotionCaptionRenderer {
   }
 
   /// Positioned outlines (top-left output pixels) of one line's glyphs, each tagged with
-  /// the title-wide index of the grapheme it draws.
+  /// the title-wide index of the grapheme it draws; the line is centred on `anchorX` or, when
+  /// left-aligned, starts there.
   static func glyphs(
-    _ line: String, font: CTFont, centreX: Double, baseline: Double, firstGrapheme: Int
+    _ line: String, font: CTFont, anchorX: Double, alignment: MotionCaptionAlignment?,
+    baseline: Double, firstGrapheme: Int
   ) -> [Glyph] {
     guard !line.isEmpty else { return [] }
     let attributed = NSAttributedString(
       string: line, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
     let ctLine = CTLineCreateWithAttributedString(attributed)
-    let left = centreX - CTLineGetTypographicBounds(ctLine, nil, nil, nil) / 2
+    let left =
+      alignment == .left
+      ? anchorX : anchorX - CTLineGetTypographicBounds(ctLine, nil, nil, nil) / 2
     // UTF-16 offset -> grapheme index within the title.
     var graphemeAt: [Int] = []
     for (index, character) in line.enumerated() {

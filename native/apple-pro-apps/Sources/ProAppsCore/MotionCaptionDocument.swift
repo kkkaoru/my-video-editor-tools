@@ -48,6 +48,11 @@ public enum MotionCaptionDocument {
   static let outline = "/style/parameter[30]"
   static let shadow = "/style/parameter[21]"
   static let typeOn = "/parameter[2]/parameter[319]/parameter[321]/curve"
+  /// The paragraph alignment, held twice per object (0 left, 1 centred).
+  static let alignments = [
+    "/paragraphStyle/parameter[401]",
+    "/parameter[2]/parameter[354]/parameter[Paragraph]/parameter[401]",
+  ]
 
   /// Paths (suffixes, relative to a title object) whose attributes or text are read.
   static let titleValues: [(String, Set<String>)] = [
@@ -68,6 +73,8 @@ public enum MotionCaptionDocument {
     ("/style/parameter[21]/parameter[29]", Set(["value"])),
     ("/style/parameter[21]/parameter[75]/parameter[1]", Set(["value"])),
     ("/style/parameter[21]/parameter[75]/parameter[2]", Set(["value"])),
+    ("/paragraphStyle/parameter[401]", Set(["value"])),
+    ("/parameter[2]/parameter[354]/parameter[Paragraph]/parameter[401]", Set(["value"])),
   ]
 
   static let honouredInTitles: [(String, Set<String>)] = titleValues + gradientStops
@@ -135,7 +142,8 @@ public enum MotionCaptionDocument {
         ? title
         : MotionCaptionTitle(
           text: title.text, startFrame: title.startFrame, endFrame: title.endFrame, x: title.x,
-          y: title.y, graphemeFrames: title.graphemeFrames, style: own)
+          y: title.y, graphemeFrames: title.graphemeFrames, style: own,
+          alignment: title.alignment)
     }
     return MotionCaptionPart(
       width: settings.width, height: settings.height, rate: settings.rate,
@@ -350,7 +358,7 @@ public enum MotionCaptionDocument {
     let rim = group[2]
     let shared = [
       "/timing", "/parameter[1]/parameter[100]/parameter[101]", "/parameter[2]/parameter[369]",
-      typeOn, "/style/parameter[3]", "/style/parameter[83]",
+      typeOn, "/style/parameter[3]", "/style/parameter[83]", alignments[0], alignments[1],
     ]
     for path in shared {
       let reference = try element(keyline, path).xmlString
@@ -374,8 +382,18 @@ public enum MotionCaptionDocument {
       text: text, startFrame: start, endFrame: last + 1,
       x: try number(keyline, "/parameter[1]/parameter[100]/parameter[101]/parameter[1]"),
       y: try number(keyline, "/parameter[1]/parameter[100]/parameter[101]/parameter[2]"),
-      graphemeFrames: onsets)
+      graphemeFrames: onsets, alignment: try alignment(keyline, index: index))
     return (title, try style(keyline: keyline, face: face, rim: rim))
+  }
+
+  /// Left (0) or centred (1, nil) lines; both of the object's alignment controls must agree.
+  static func alignment(_ node: XMLElement, index: Int) throws -> MotionCaptionAlignment? {
+    let values = try alignments.map { try number(node, $0) }
+    switch values {
+    case [0, 0]: return .left
+    case [1, 1]: return nil
+    default: throw invalid("title \(index): only left or centred paragraphs are supported")
+    }
   }
 
   static func style(keyline: XMLElement, face: XMLElement, rim: XMLElement) throws

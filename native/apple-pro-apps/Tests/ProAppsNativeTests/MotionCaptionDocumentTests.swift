@@ -163,4 +163,18 @@ struct MotionCaptionDocumentTests {
     #expect(part.titles[1].style?.gradientTop == "#B0D8F7")
     #expect(part.style.gradientTop == "#97D8F7")
   }
+
+  @Test func readsLeftAlignedParagraphsAndRefusesMixedOnes() throws {
+    let centred = #"id="401" flags="8606777360" default="0" value="1""#
+    let left = #"id="401" flags="8606777360" default="0" value="0""#
+    let text = try Self.fixture()
+    #expect(try Self.read(text).titles.allSatisfy { $0.alignment == nil })
+    let part = try Self.read(text.replacingOccurrences(of: centred, with: left))
+    #expect(part.titles.allSatisfy { $0.alignment == .left })
+    let mixed = try Self.refusal { Self.replacingFirst($0, centred, left) }
+    #expect(mixed.contains("differ at /paragraphStyle/parameter[401]"))
+    let right = #"id="401" flags="8606777360" default="0" value="2""#
+    let other = try Self.refusal { $0.replacingOccurrences(of: centred, with: right) }
+    #expect(other.contains("only left or centred paragraphs are supported"))
+  }
 }

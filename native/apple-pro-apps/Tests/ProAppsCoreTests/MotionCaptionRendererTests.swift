@@ -52,6 +52,18 @@ struct MotionCaptionRendererTests {
     }
   }
 
+  @Test func leftAlignedLinesStartAtThePositionWhereCentredOnesStraddleIt() throws {
+    let left = MotionCaptionTitle(
+      text: "口I\n日", startFrame: 2, endFrame: 10, x: 0, y: 0, graphemeFrames: [2, 4, 4, 6],
+      alignment: .left)
+    let started = try Self.renderer(left).bitmap(visible: 4)
+    let centred = try Self.renderer().bitmap(visible: 4)
+    // The outline and shadow reach a few pixels left of the first glyph's start at x 160.
+    #expect((150..<160).contains(started.originX))
+    #expect(centred.originX < 150)
+    #expect((started.originY, started.height) == (centred.originY, centred.height))
+  }
+
   @Test func revealsGlyphsInTheirFinalLayout() throws {
     let renderer = try Self.renderer()
     let none = try renderer.bitmap(visible: 0)
