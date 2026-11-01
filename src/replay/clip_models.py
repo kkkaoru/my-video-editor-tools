@@ -30,19 +30,24 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
 from replay.core import ReplayError
+from replay.repository import root as checkout_root
 
 type Array = NDArray[np.float32]
 type Json = dict[str, object]
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 CLEF_DIR = CHECKOUT / "edits" / "models" / "clef-OptiQ-4bit"
 BONSAI_DIR = CHECKOUT / "edits" / "models" / "Ternary-Bonsai-2-9B-mlx-2bit"
+WRITER_DIR = CHECKOUT / "edits" / "models" / "LFM3-1.7B-MLX-8bit"
+FLASH_DIR = CHECKOUT / "edits" / "models" / "clef-flash-OptiQ-4bit"
+LAYA_DIR = CHECKOUT / "edits" / "models" / "laya-multilingual-mlx"
 SYSTEM_PROMPT = (
     "Read the complete state and schema. Decide every field jointly. Each answer "
     "must be exactly one of that field's allowed options."
@@ -84,8 +89,30 @@ class Backbone(Protocol):
     """The decision model's language backbone: tokens in, final hidden states out."""
 
     def tokenize(self, text: str) -> list[int]: ...
-    def hidden(self, ids: Sequence[int]) -> Array: ...
-    def lexicon(self, ids: Sequence[int]) -> Array: ...
+    def inputs(self, encoded: "Encoded", weights: Mapping[str, Array]) -> "HeadInputs": ...
+
+
+class LayerCache(Protocol):
+    """One layer's mlx-lm cache: (keys, values, offset) for attention, (list, ...) for recurrent."""
+
+    state: tuple[object, ...]
+
+
+class Quantized(Protocol):
+    """An mlx QuantizedLinear's packed weight and its quantization."""
+
+    weight: Sequence[object]
+    scales: object
+    biases: object
+    bits: int
+    group_size: int
+    mode: str
+
+
+class SwigluMlp(Protocol):
+    gate_proj: Quantized
+    up_proj: Quantized
+    down_proj: Callable[[object], object]
 
 
 class Answerer(Protocol):
@@ -122,9 +149,32 @@ def question_options(question: Mapping[str, object]) -> list[tuple[str, object]]
     raise ReplayError(f"Unsupported question {kind!r} or empty criteria")
 
 
-def encode(
-    tokenize: Callable[[str], list[int]], record: Mapping[str, object]
-) -> tuple[list[int], list[Question]]:
+@dataclass(frozen=True)
+class HeadInputs:
+    """What the joint head reads from a record's hidden states, all of it O(length) work that the
+    backbone can do where the states are (on the GPU) before only these small arrays leave it."""
+
+    #: (length, width): the normalized states projected for the head's attention.
+    memory: Array
+    #: The normalized final state.
+    last: Array
+    #: (questions, hidden): the normalized states averaged over each question's instruction.
+    questions: Array
+    #: Per question, (options, hidden): the normalized states averaged over each option.
+    options: list[Array]
+    #: Per question, (options, hidden): the output embedding rows averaged over each option.
+    lexical: list[Array]
+
+
+@dataclass(frozen=True)
+class Encoded:
+    ids: list[int]
+    questions: list[Question]
+    #: Where the state ends: requests about the same state share every token before it.
+    cut: int
+
+
+def encode(tokenize: Callable[[str], list[int]], record: Mapping[str, object]) -> Encoded:
     """Token ids and question spans, built piece by piece exactly as clef's encode_record does."""
     questions = _mapping(record.get("questions"), "questions")
     if not questions or "state" not in record:
@@ -174,7 +224,7 @@ def encode(
         )
         for q in parsed
     ]
-    return prefix + state + schema + suffix, shifted
+    return Encoded(prefix + state + schema + suffix, shifted, offset)
 
 
 def layer_norm(x: Array, w: Mapping[str, Array], name: str) -> Array:
@@ -220,9 +270,7 @@ def attention(q: Array, kv: Array, w: Mapping[str, Array], name: str, heads: int
     return linear(out, w, f"{name}.out_proj")
 
 
-def _routed(
-    w: Mapping[str, Array], config: HeadConfig, seq: Array, memory: Array, queries: Array
-) -> Array:
+def _routed(w: Mapping[str, Array], config: HeadConfig, memory: Array, queries: Array) -> Array:
     for n in range(config.routing_layers):
         p = f"evidence_layers.{n}"
         mem = layer_norm(memory, w, f"{p}.memory_norm")
@@ -245,21 +293,35 @@ def _decoded(w: Mapping[str, Array], config: HeadConfig, fields: Array, memory: 
     return layer_norm(fields, w, "field_norm")
 
 
-def head(
+def head_inputs(
     w: Mapping[str, Array],
-    config: HeadConfig,
     hidden: Array,
     questions: Sequence[Question],
     lexicon: Callable[[Sequence[int]], Array],
     ids: Sequence[int],
+) -> HeadInputs:
+    """The head's inputs from hidden states on the CPU (the reference the GPU path matches)."""
+    seq = layer_norm(hidden, w, "hidden_norm")
+    return HeadInputs(
+        memory=linear(seq, w, "memory_projection", bias=False),
+        last=seq[-1],
+        questions=np.stack([seq[s:e].mean(0) for s, e in (q.span for q in questions)]),
+        options=[np.stack([seq[b:e].mean(0) for _, (b, e) in q.options]) for q in questions],
+        lexical=[
+            np.stack([lexicon(ids[b:e]).mean(0) for _, (b, e) in q.options]) for q in questions
+        ],
+    )
+
+
+def head(
+    w: Mapping[str, Array],
+    config: HeadConfig,
+    inputs: HeadInputs,
+    questions: Sequence[Question],
 ) -> list[Array]:
     """JointSchemaHead.forward for one record: the option logits of every question."""
-    seq = layer_norm(hidden, w, "hidden_norm")
-    memory = linear(seq, w, "memory_projection", bias=False)
-    global_vector = seq[-1]
-    qvec = np.stack([seq[s:e].mean(0) for s, e in (q.span for q in questions)])
-    contexts = [np.stack([seq[b:e].mean(0) for _, (b, e) in q.options]) for q in questions]
-    lexical = [np.stack([lexicon(ids[b:e]).mean(0) for _, (b, e) in q.options]) for q in questions]
+    memory, global_vector, qvec = inputs.memory, inputs.last, inputs.questions
+    contexts, lexical = inputs.options, inputs.lexical
     queries = np.concatenate(
         [
             linear(c, w, "option_context_projection", bias=False)
@@ -269,7 +331,7 @@ def head(
         ]
     )
     routed = np.split(
-        _routed(w, config, seq, memory, queries),
+        _routed(w, config, memory, queries),
         np.cumsum([len(q.options) for q in questions])[:-1],
     )
     base = linear(qvec, w, "question_projection", bias=False)
@@ -331,9 +393,11 @@ class Decider:
 
     def respond(self, body: Json) -> Json:
         request = body
-        ids, questions = encode(self.backbone.tokenize, request)
-        hidden = self.backbone.hidden(ids)
-        logits = head(self.weights, self.config, hidden, questions, self.backbone.lexicon, ids)
+        encoded = encode(self.backbone.tokenize, request)
+        ids, questions = encoded.ids, encoded.questions
+        logits = head(
+            self.weights, self.config, self.backbone.inputs(encoded, self.weights), questions
+        )
         asked = _mapping(request["questions"], "questions")
         answers = {
             q.qid: answer(
@@ -349,6 +413,37 @@ class Decider:
         }
 
 
+class FusedMlp:
+    """A SwiGLU MLP whose gate and up projections, quantized alike, run as one quantized matmul.
+    Each output column is the same dot product as before, so the result is identical, and the
+    prefill is about 5% faster (gate+up 88 -> 77 ms per 2048-token chunk on an M5 Pro)."""
+
+    def __init__(self, mx: ModuleType, mlp: SwigluMlp):
+        gate, up = mlp.gate_proj, mlp.up_proj
+        self.mx, self.down = mx, mlp.down_proj
+        self.weight = mx.concatenate([gate.weight, up.weight])
+        self.scales = mx.concatenate([gate.scales, up.scales])
+        self.biases = mx.concatenate([gate.biases, up.biases])
+        self.width = len(gate.weight)
+        self.bits, self.group_size, self.mode = gate.bits, gate.group_size, gate.mode
+        self.swiglu = import_module("mlx_lm.models.activations").swiglu
+
+    def __call__(self, x: object) -> object:
+        both = self.mx.quantized_matmul(
+            x, self.weight, scales=self.scales, biases=self.biases, transpose=True,
+            group_size=self.group_size, bits=self.bits, mode=self.mode,
+        )  # fmt: skip
+        gate, up = self.mx.split(both, [self.width], axis=-1)
+        return self.down(self.swiglu(gate, up))
+
+
+def fusable(mlp: SwigluMlp) -> bool:
+    gate, up = mlp.gate_proj, mlp.up_proj
+    if not hasattr(gate, "scales") or not hasattr(up, "scales"):
+        return False
+    return (gate.bits, gate.group_size, gate.mode) == (up.bits, up.group_size, up.mode)
+
+
 class MlxBackbone:
     """The 4-bit clef backbone on MLX through mlx-lm (``uv sync --extra clips``)."""
 
@@ -358,19 +453,112 @@ class MlxBackbone:
         lm = self.model.language_model
         self.text = lm.model
         self.output = lm.model.embed_tokens if lm.args.tie_word_embeddings else lm.lm_head
+        # The previous request's ids up to its state's end, the cache there and the hidden states.
+        self.kept_ids: list[int] = []
+        self.kept: tuple[list[tuple[object, ...]], list[object]] | None = None
+        self.gpu_weights: dict[str, object] = {}
+        for layer in self.text.layers:
+            if hasattr(layer.mlp, "gate_proj") and fusable(layer.mlp):
+                layer.mlp = FusedMlp(self.mx, layer.mlp)
 
     def tokenize(self, text: str) -> list[int]:
         return list(self.tokenizer.encode(text, add_special_tokens=False))
 
-    def hidden(self, ids: Sequence[int]) -> Array:
-        mx = self.mx
+    def _snapshot(self, cache: Sequence[LayerCache]) -> list[tuple[object, ...]]:
+        """Each layer's state as it is now: attention keys/values cut at their offset (MLX arrays
+        never change in place, so a slice keeps these values), the recurrent layers' list copied
+        (they replace its items as they go)."""
+        out: list[tuple[object, ...]] = []
+        for layer in cache:
+            state = tuple(layer.state)
+            if isinstance(state[0], list):
+                out.append((list(state[0]), *state[1:]))
+            else:
+                keys, values, offset = state
+                take = self.mx.take
+                out.append(
+                    (
+                        take(keys, self.mx.arange(offset), 2),
+                        take(values, self.mx.arange(offset), 2),
+                        offset,
+                    )
+                )
+        return out
+
+    def _restored(self, states: Sequence[tuple[object, ...]]) -> list[LayerCache]:
         cache = self.model.make_cache()
-        parts = []
-        for at in range(0, len(ids), PREFILL_CHUNK):
-            out = self.text(mx.array(list(ids[at : at + PREFILL_CHUNK]))[None], cache=cache)[0]
-            parts.append(np.array(out.astype(mx.float32)))
-        mx.clear_cache()
-        return np.concatenate(parts).astype(np.float32)
+        for layer, state in zip(cache, states, strict=True):
+            layer.state = (list(state[0]), *state[1:]) if isinstance(state[0], list) else state
+        return list(cache)
+
+    def _prefill(self, ids: Sequence[int], cache: Sequence[LayerCache]) -> list[object]:
+        """Final hidden states chunk by chunk, left on the GPU."""
+        mx = self.mx
+        return [
+            self.text(mx.array(list(ids[at : at + PREFILL_CHUNK]))[None], cache=cache)[0]
+            for at in range(0, len(ids), PREFILL_CHUNK)
+        ]
+
+    def hidden(self, ids: Sequence[int], cut: int) -> object:
+        """Final hidden states of `ids` (float32, on the GPU), prefilled in chunks up to `cut` (the
+        state's end) and on from there, so every request is chunked the same way. The region
+        requests of one region share their state and differ only in the questions after it: when
+        the previous request had the same tokens up to `cut`, its cache there is restored rather
+        than computed again, and the result is the same."""
+        mx, ids = self.mx, list(ids)
+        if self.kept is not None and ids[:cut] == self.kept_ids:
+            states, before = self.kept
+            cache = self._restored(states)
+        else:
+            cache = list(self.model.make_cache())
+            before = self._prefill(ids[:cut], cache)
+            self.kept_ids, self.kept = ids[:cut], (self._snapshot(cache), before)
+        return mx.concatenate([*before, *self._prefill(ids[cut:], cache)]).astype(mx.float32)
+
+    def _on_gpu(self, weights: Mapping[str, Array], name: str) -> object:
+        if name not in self.gpu_weights:
+            self.gpu_weights[name] = self.mx.array(weights[name])
+        return self.gpu_weights[name]
+
+    def inputs(self, encoded: Encoded, weights: Mapping[str, Array]) -> HeadInputs:
+        """The head's O(length) work on the GPU: normalize the states, project them for the head's
+        attention, and average them over every question and option span with one matrix product;
+        the output embedding rows of all option tokens are dequantized in one gather. Only these
+        small arrays are copied to the CPU (the states themselves are 13k x 5120 floats)."""
+        mx, questions = self.mx, encoded.questions
+        states = self.hidden(encoded.ids, encoded.cut)
+        mean = mx.mean(states, axis=-1, keepdims=True)
+        spread = mx.mean((states - mean) ** 2, axis=-1, keepdims=True)
+        seq = (states - mean) / mx.sqrt(spread + LAYER_NORM_EPS)
+        seq = seq * self._on_gpu(weights, "hidden_norm.weight") + self._on_gpu(
+            weights, "hidden_norm.bias"
+        )
+        memory = seq @ mx.transpose(self._on_gpu(weights, "memory_projection.weight"))
+        spans = [q.span for q in questions] + [span for q in questions for _, span in q.options]
+        averaging = np.zeros((len(spans), len(encoded.ids)), np.float32)
+        for row, (start, end) in enumerate(spans):
+            averaging[row, start:end] = 1.0 / (end - start)
+        means = np.array(mx.array(averaging) @ seq)
+        last = np.array(seq[-1])
+        memory_np = np.array(memory)
+        self.mx.clear_cache()
+        tokens = sorted({t for q in questions for _, (b, e) in q.options for t in encoded.ids[b:e]})
+        rows = dict(zip(tokens, self.lexicon(tokens), strict=True))
+        counts = np.cumsum([len(q.options) for q in questions])[:-1]
+        option_means = np.split(means[len(questions) :], counts)
+        lexical = [
+            np.stack(
+                [np.mean([rows[t] for t in encoded.ids[b:e]], axis=0) for _, (b, e) in q.options]
+            )
+            for q in questions
+        ]
+        return HeadInputs(
+            memory=memory_np.astype(np.float32),
+            last=last.astype(np.float32),
+            questions=means[: len(questions)].astype(np.float32),
+            options=[o.astype(np.float32) for o in option_means],
+            lexical=[x.astype(np.float32) for x in lexical],
+        )
 
     def lexicon(self, ids: Sequence[int]) -> Array:
         mx, output = self.mx, self.output

@@ -2,7 +2,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from http.server import HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +109,13 @@ class FakeBackbone:
     def lexicon(self, ids: Sequence[int]) -> np.ndarray:
         return np.cos(np.outer(np.array(ids, dtype=np.float32), np.ones(HIDDEN, np.float32)))
 
+    def inputs(
+        self, encoded: clip_models.Encoded, weights: Mapping[str, np.ndarray]
+    ) -> clip_models.HeadInputs:
+        return clip_models.head_inputs(
+            weights, self.hidden(encoded.ids), encoded.questions, self.lexicon, encoded.ids
+        )
+
 
 def test_options_follow_clef_order_and_reject_unknown_types() -> None:
     assert clip_models.question_options({"type": "noul", "criteria": {"true": "yes"}}) == [
@@ -130,7 +137,8 @@ def test_options_follow_clef_order_and_reject_unknown_types() -> None:
 
 
 def test_encode_spans_cover_instructions_and_options_and_render_state_sorted() -> None:
-    ids, questions = clip_models.encode(characters, REQUEST)
+    encoded = clip_models.encode(characters, REQUEST)
+    ids, questions = encoded.ids, encoded.questions
     text = "".join(chr(i) for i in ids)
     assert text.startswith(
         "<|im_start|>system\nRead the complete state and schema. Decide every field jointly."
@@ -152,9 +160,10 @@ def test_encode_truncates_the_state_and_refuses_bad_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     small: dict[str, object] = {"state": "x" * 50, "questions": {"q": {"type": "noul"}}}
-    full, _ = clip_models.encode(characters, small)
+    full = clip_models.encode(characters, small).ids
     monkeypatch.setattr(clip_models, "MAX_LENGTH", len(full) - 10)
-    cut, questions = clip_models.encode(characters, small)
+    shortened = clip_models.encode(characters, small)
+    cut, questions = shortened.ids, shortened.questions
     assert len(cut) == len(full) - 10
     assert text_of(cut, questions[0].span) == "q"
     monkeypatch.setattr(clip_models, "MAX_LENGTH", 20)
@@ -170,9 +179,9 @@ def test_encode_truncates_the_state_and_refuses_bad_requests(
 
 def test_head_gives_one_logit_per_option() -> None:
     backbone = FakeBackbone()
-    ids, questions = clip_models.encode(backbone.tokenize, REQUEST)
+    encoded = clip_models.encode(backbone.tokenize, REQUEST)
     logits = clip_models.head(
-        weights(), CONFIG, backbone.hidden(ids), questions, backbone.lexicon, ids
+        weights(), CONFIG, backbone.inputs(encoded, weights()), encoded.questions
     )
     assert [[round(float(value), 3) for value in row] for row in logits] == [
         [0.714, 0.715],
@@ -261,7 +270,7 @@ def fake_mlx(quantized: bool, tied: bool) -> SimpleNamespace:
         return FakeArray(np.ones((1, inputs.value.shape[1], 3)))
 
     lm = SimpleNamespace(
-        model=SimpleNamespace(embed_tokens=plain),
+        model=SimpleNamespace(embed_tokens=plain, layers=[]),
         lm_head=output if quantized else plain,
         args=SimpleNamespace(tie_word_embeddings=tied),
     )
@@ -277,20 +286,118 @@ def fake_mlx(quantized: bool, tied: bool) -> SimpleNamespace:
     return SimpleNamespace(core=core, model=model, text=text, chunks=chunks)
 
 
-def test_mlx_backbone_prefills_in_chunks_and_dequantizes_lexicon_rows(
+class FakeKeys:
+    """An attention layer's cache: keys/values are the ids it has seen, as (1, 1, n, 1)."""
+
+    def __init__(self) -> None:
+        self.state: tuple[object, ...] = (np.zeros((1, 1, 0, 1)), np.zeros((1, 1, 0, 1)), 0)
+
+
+class FakeRecurrent:
+    """A recurrent layer's cache: its running sum of the ids, kept in a list it replaces."""
+
+    def __init__(self) -> None:
+        self.state: tuple[object, ...] = ([np.zeros(1)], None, None)
+
+
+def numpy_mlx(prefilled: list[int]) -> SimpleNamespace:
+    """mlx.core and a two-layer model on numpy: each output row depends on everything before it."""
+
+    def text(inputs: np.ndarray, cache: list[FakeKeys | FakeRecurrent]) -> np.ndarray:
+        keys, recurrent = cache
+        ids = inputs[0].astype(np.float32)
+        prefilled.append(len(ids))
+        past = np.asarray(keys.state[0])
+        seen = np.concatenate([past[0, 0, :, 0], ids])
+        keys.state = (seen[None, None, :, None], seen[None, None, :, None], len(seen))
+        carried = recurrent.state[0]
+        assert isinstance(carried, list)
+        total = np.asarray(carried[0]) + np.cumsum(ids)
+        recurrent.state = ([total[-1:]], None, None)
+        rows = np.stack([np.sin(total + k) for k in range(HIDDEN)], axis=-1)
+        return (rows * (1 + len(seen) / 100))[None].astype(np.float32)
+
+    output = SimpleNamespace(
+        weight=np.arange(60 * HIDDEN, dtype=np.float32).reshape(60, HIDDEN) / 60
+    )
+    lm = SimpleNamespace(
+        model=SimpleNamespace(embed_tokens=output, layers=[]),
+        lm_head=output,
+        args=SimpleNamespace(tie_word_embeddings=True),
+    )
+    model = SimpleNamespace(language_model=lm, make_cache=lambda: [FakeKeys(), FakeRecurrent()])
+    core = SimpleNamespace(
+        float32=np.float32,
+        array=np.asarray,
+        mean=np.mean,
+        sqrt=np.sqrt,
+        concatenate=np.concatenate,
+        transpose=np.transpose,
+        take=np.take,
+        arange=np.arange,
+        clear_cache=lambda: None,
+    )
+    return SimpleNamespace(core=core, model=model, text=text)
+
+
+def numpy_backbone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prefilled: list[int]
+) -> clip_models.MlxBackbone:
+    fake = numpy_mlx(prefilled)
+    tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens: [ord(c) % 50 for c in text])
+    modules = {
+        "mlx.core": fake.core,
+        "mlx_lm": SimpleNamespace(load=lambda path: (fake.model, tokenizer)),
+    }
+    monkeypatch.setattr(clip_models, "import_module", modules.__getitem__)
+    backbone = clip_models.MlxBackbone(tmp_path)
+    backbone.text = fake.text
+    return backbone
+
+
+def test_the_backbone_reuses_a_shared_state_and_chunks_every_request_the_same_way(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(clip_models, "PREFILL_CHUNK", 2)
+    prefilled: list[int] = []
+    backbone = numpy_backbone(monkeypatch, tmp_path, prefilled)
+    first = np.asarray(backbone.hidden([1, 2, 3, 4, 5], 3))
+    second = np.asarray(backbone.hidden([1, 2, 3, 9, 8, 7], 3))
+    fresh = numpy_backbone(monkeypatch, tmp_path, [])
+    assert prefilled == [2, 1, 2, 2, 1]
+    assert np.allclose(second, np.asarray(fresh.hidden([1, 2, 3, 9, 8, 7], 3)))
+    assert first.shape == (5, HIDDEN)
+    backbone.hidden([4, 2, 3, 1], 3)
+    assert prefilled == [2, 1, 2, 2, 1, 2, 1, 1]
+    assert backbone.tokenize("ab") == [47, 48]
+
+
+def test_the_gpu_head_inputs_match_the_cpu_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backbone = numpy_backbone(monkeypatch, tmp_path, [])
+    encoded = clip_models.encode(backbone.tokenize, REQUEST)
+    gpu = backbone.inputs(encoded, weights())
+    cpu = clip_models.head_inputs(
+        weights(), np.asarray(backbone.hidden(encoded.ids, encoded.cut)), encoded.questions,
+        backbone.lexicon, encoded.ids,
+    )  # fmt: skip
+    assert np.allclose(gpu.memory, cpu.memory, atol=1e-5)
+    assert np.allclose(gpu.last, cpu.last, atol=1e-5)
+    assert np.allclose(gpu.questions, cpu.questions, atol=1e-5)
+    assert all(np.allclose(a, b, atol=1e-5) for a, b in zip(gpu.options, cpu.options, strict=True))
+    assert all(np.allclose(a, b, atol=1e-5) for a, b in zip(gpu.lexical, cpu.lexical, strict=True))
+
+
+def test_the_backbone_dequantizes_lexicon_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake = fake_mlx(quantized=True, tied=False)
     lm_module = SimpleNamespace(load=lambda path: (fake.model, FakeTokenizer()))
-    modules = {"mlx.core": fake.core, "mlx_lm": lm_module}
-    monkeypatch.setattr(clip_models, "import_module", modules.__getitem__)
-    monkeypatch.setattr(clip_models, "PREFILL_CHUNK", 2)
-    backbone = clip_models.MlxBackbone(tmp_path)
-    backbone.text = fake.text
-    assert backbone.tokenize("abc") == [3]
-    assert backbone.hidden([1, 2, 3]).shape == (3, 3)
-    assert fake.chunks == [2, 1]
-    assert backbone.lexicon([1]).tolist() == [[74.0, 76.0, 78.0]]
+    monkeypatch.setattr(
+        clip_models, "import_module", {"mlx.core": fake.core, "mlx_lm": lm_module}.__getitem__
+    )
+    assert clip_models.MlxBackbone(tmp_path).lexicon([1]).tolist() == [[74.0, 76.0, 78.0]]
     plain = fake_mlx(quantized=False, tied=True)
     monkeypatch.setattr(
         clip_models,
@@ -301,6 +408,51 @@ def test_mlx_backbone_prefills_in_chunks_and_dequantizes_lexicon_rows(
         }.__getitem__,
     )
     assert clip_models.MlxBackbone(tmp_path).lexicon([2]).tolist() == [[6.0, 7.0, 8.0]]
+
+
+def quantized_linear(weight: np.ndarray, bits: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        weight=weight, scales=np.ones(len(weight)), biases=np.zeros(len(weight)),
+        bits=bits, group_size=64, mode="affine",
+    )  # fmt: skip
+
+
+def test_the_backbone_fuses_gate_and_up_where_they_are_quantized_alike(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    gate = np.array([[1.0, 0.0], [0.0, 2.0]], np.float32)
+    up = np.array([[3.0, 1.0], [1.0, 1.0]], np.float32)
+    alike = SimpleNamespace(
+        gate_proj=quantized_linear(gate, 4),
+        up_proj=quantized_linear(up, 4),
+        down_proj=lambda h: h * 10,
+    )
+    mixed = SimpleNamespace(gate_proj=quantized_linear(gate, 4), up_proj=quantized_linear(up, 8))
+    dense = SimpleNamespace(
+        gate_proj=SimpleNamespace(weight=gate), up_proj=SimpleNamespace(weight=up)
+    )
+    layers = [SimpleNamespace(mlp=alike), SimpleNamespace(mlp=mixed), SimpleNamespace(mlp=dense)]
+    layers.append(SimpleNamespace(mlp=SimpleNamespace(experts=[])))
+    lm = SimpleNamespace(
+        model=SimpleNamespace(embed_tokens=None, layers=layers),
+        args=SimpleNamespace(tie_word_embeddings=True),
+    )
+    core = SimpleNamespace(
+        concatenate=np.concatenate,
+        quantized_matmul=lambda x, w, scales, biases, transpose, group_size, bits, mode: x @ w.T,
+        split=lambda a, at, axis: np.split(a, at, axis=axis),
+    )
+    modules = {
+        "mlx.core": core,
+        "mlx_lm": SimpleNamespace(load=lambda path: (SimpleNamespace(language_model=lm), 0)),
+        "mlx_lm.models.activations": SimpleNamespace(swiglu=lambda g, x: g * x),
+    }
+    monkeypatch.setattr(clip_models, "import_module", modules.__getitem__)
+    clip_models.MlxBackbone(tmp_path)
+    assert isinstance(layers[0].mlp, clip_models.FusedMlp)
+    assert layers[1].mlp is mixed
+    assert layers[2].mlp is dense
+    assert np.asarray(layers[0].mlp(np.array([[1.0, 2.0]], np.float32))).tolist() == [[50.0, 120.0]]
 
 
 def test_load_decider_reads_the_head_config_and_weights(
