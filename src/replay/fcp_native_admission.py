@@ -28,9 +28,10 @@ from replay.foreground_evidence import _bound_bytes
 from replay.native_export_receipt import native_payload
 from replay.part_master_publication import verify_published
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits" / "work"
 MAX_ITEMS = 512
 MAX_BYTES = 8 * 1024 * 1024

@@ -27,10 +27,11 @@ from replay.fcp_part_assembly import Timeline
 from replay.fcp_part_followup import MAX_PARTS
 from replay.input_hash_cache import MAX_INPUTS
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import _read_receipt, file_digest
 from replay.workflow import MAX_STAGES, load_stages, parse_stages, stage_graph
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 # Each member may require its own two-argument --scope plus fixed digest flags.
 # Keep both declared paths and the complete command below workflow's 256 limit.
 GROUP_INPUTS = 96

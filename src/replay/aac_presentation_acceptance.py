@@ -27,6 +27,7 @@ from replay.bgm_separation import SeparationPolicy
 from replay.core import ReplayError
 from replay.delivery_audio_quality import MINIMUM_CORRELATION
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.youtube_delivery_validation import Box, _boxes
 
 MAX_TRACKS = 32
@@ -36,7 +37,7 @@ MAX_PROBE_BYTES = 128 * 1024**2
 MAX_PACKETS = 1_000_000
 MAX_SKIP = 65536
 TIMING_BOXES = frozenset({b"mvhd", b"tkhd", b"mdhd", b"hdlr", b"elst"})
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_REQUEST_BYTES = 1024**2
 PROCESS_ROLES = ("decode", "streams", "frames", "packets")
 

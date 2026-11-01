@@ -32,9 +32,10 @@ from replay.core import ReplayError
 from replay.fcp_native_admission import SystemHost as NativeHost
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.workflow import _stage
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_TOOL_BYTES = 64 * 1024 * 1024
 MAX_PROBE_BYTES = 2 * 1024 * 1024

@@ -29,6 +29,7 @@ from replay.head_image_plan import MAX_CELLS as PAGE_CELLS
 from replay.head_image_plan import ImageFrameCell, _fraction, _roi
 from replay.head_image_retained import read_image_binding
 from replay.input_hash_cache import InputHashCache, input_hash_context
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.tracking_retained import MAX_WINDOWS, verify_catalog
 from replay.vertical_captions import Box
@@ -73,7 +74,7 @@ CODE_FILES = (
     "stages.py",
     "core.py",
 )
-WORK_ROOT = Path(__file__).resolve().parents[2] / "edits" / "work"
+WORK_ROOT = checkout_root() / "edits" / "work"
 
 
 @dataclass(frozen=True, slots=True)

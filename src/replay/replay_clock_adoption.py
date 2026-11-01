@@ -24,9 +24,10 @@ from replay.code_dependency_inventory import capture
 from replay.core import ReplayError
 from replay.delivery_media import MAX_CLOCK_BYTES, parse_clock
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sha256_check import digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "retained-clock-adoption-v1"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_PHASE_BYTES = 16 * 1024 * 1024

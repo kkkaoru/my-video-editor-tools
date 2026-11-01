@@ -25,9 +25,10 @@ from replay.core import ReplayError
 from replay.delivery_captions import _write_new
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_PREVIEW_BYTES = 4 << 20
 MAX_TOKEN_BYTES = 128 << 20
 MAX_INVENTORY_BYTES = 16 << 20

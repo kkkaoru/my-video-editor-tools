@@ -31,9 +31,10 @@ from replay.artifact_json import _json, _path, _pin
 from replay.core import ReplayError
 from replay.delivery_render import load_config, read_cuts
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 PINS = (
     "movie",
     "master",

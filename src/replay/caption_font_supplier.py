@@ -32,9 +32,10 @@ from replay.caption_resource_inputs import ResourceInputs, _font_evidence, canon
 from replay.core import ReplayError
 from replay.motion_caption import MAX_XML_CHARACTERS, _parse
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_RESPONSE = 1024 * 1024
 MAX_FCPXML_BYTES = 256 * 1024 * 1024
 MAX_UNIQUE_LINES = 65_536

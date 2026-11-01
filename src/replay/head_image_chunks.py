@@ -17,6 +17,7 @@ from replay.core import ReplayError
 from replay.fcp_visible_arc import VisibleArc
 from replay.head_image_plan import MAX_CELLS, _fraction
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import _uncached_file_digest as file_digest
 from replay.stages import execution_lock
 
@@ -27,7 +28,7 @@ MANIFEST_BYTES = 16 * 1024 * 1024
 SUMMARY_BYTES = 64 * 1024 * 1024
 MAX_RUNS = 4096
 BOUNDARIES = frozenset({"first", "budget", "source-cut", "source-gap", "zoom"})
-WORK_ROOT = Path(__file__).resolve().parents[2] / "edits" / "work"
+WORK_ROOT = checkout_root() / "edits" / "work"
 CODE_FILES = (
     "head_image_chunks.py",
     "artifact_json.py",

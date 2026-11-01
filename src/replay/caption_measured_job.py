@@ -24,10 +24,11 @@ from replay.foreground_geometry import _check_box
 from replay.foreground_observations import _time
 from replay.foreground_retained import verify as verify_retained
 from replay.motion_native_envelope import CalibratedMotionEnvelope, _style
+from replay.repository import root as checkout_root
 from replay.stages import execute_command, file_digest
 from replay.vertical_captions import Box
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_INPUT_BYTES = 512 * 1024 * 1024
 MAX_NATIVE_CALLS = 128
 JOB_SECONDS = 300

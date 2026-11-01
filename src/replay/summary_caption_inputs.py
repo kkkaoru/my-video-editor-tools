@@ -20,9 +20,10 @@ from replay.delivery_captions import _write_new
 from replay.fcp_caption_srt import srt_text
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_MANIFEST_BYTES = 4 << 20
 MAX_REFLOW_BYTES = 64 << 20
 MAX_SRT_BYTES = 16 << 20

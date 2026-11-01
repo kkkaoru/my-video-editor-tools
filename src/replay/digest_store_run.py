@@ -17,13 +17,14 @@ from pathlib import Path
 from types import ModuleType
 
 from replay import digest_memo, digest_store, stages
+from replay.repository import root as checkout_root
 
 Digest = Callable[[Path], str]
 
 
 def default_store() -> Path:
     """The checkout-local digest store shared by every measurement and workflow process."""
-    return Path(__file__).resolve().parents[2] / "edits" / "work" / "digest-store"
+    return checkout_root() / "edits" / "work" / "digest-store"
 
 
 def persistent(original: Digest, store: Path) -> Digest:

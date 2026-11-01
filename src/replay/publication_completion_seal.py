@@ -16,9 +16,10 @@ from replay.core import ReplayError
 from replay.fcp_part_assembly import _reference, _save
 from replay.input_hash_cache import InputHashCache
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 FIELDS = frozenset(
     {
         "version",

@@ -21,6 +21,7 @@ from typing import NoReturn
 from replay.core import ReplayError
 from replay.input_hash_cache import MAX_INPUTS, InputHashCache, input_hash_context
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.source_caption_binding import validate_binding
 from replay.stages import (
     Stage,
@@ -32,7 +33,7 @@ from replay.stages import (
 )
 from replay.workflow import load_stages, run_plan, stage_graph
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_METADATA_BYTES = 8 * 1024 * 1024
 MAX_DECODER_THREADS = 256
 ROLE_NAMES = frozenset({"wholeJoin", "fullAV", "clock", "cleanup", "retirement"})

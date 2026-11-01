@@ -23,10 +23,11 @@ from replay.input_hash_cache import InputHashCache
 from replay.motion_caption import _one, _parse, _project_duration
 from replay.native_export_receipt import save_new
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.whole_technical_batch import reader_code_paths
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MEDIA_ROOT = Path("/Volumes/m.2-ssd/movie")
 PRESET_ROOT = Path("/Applications/Compressor Creator Studio.app")
 TOOL_ROOT = Path("/opt/homebrew/Cellar/ffmpeg")

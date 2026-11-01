@@ -29,6 +29,7 @@ from replay.fcp_visible_arc import VisibleArc
 from replay.foreground_evidence import _bound_bytes
 from replay.head_near_placement import caption_only_bottom
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.subtitle_clock import VideoFrameClock
 from replay.tracking_observations import TrackingJob
@@ -657,7 +658,7 @@ def read_motion_binding(value: object, *, job: TrackingJob) -> DerivedMotion:
             file_digest(descriptor),
             protocol=_motion_protocol(policy),
             source_names=ARCHIVED_CONSUMERS,
-            root=Path(__file__).resolve().parents[2],
+            root=checkout_root(),
             binding_fields=frozenset({"measurement"}),
         )
         if record(evidence.document.get("measurement")) != {

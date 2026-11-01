@@ -40,6 +40,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from replay import gpu_orchestra
+from replay.repository import root as checkout_root
 
 DEFAULT_CAPACITY = 4
 MAX_CAPACITY = 16
@@ -62,7 +63,7 @@ _holders_lock = threading.Lock()
 
 def root() -> Path:
     """The lease directory of this checkout, wherever the caller runs from (src/replay/..)."""
-    return Path(__file__).resolve().parents[2] / "edits" / "work" / "gpu-leases"
+    return checkout_root() / "edits" / "work" / "gpu-leases"
 
 
 def started() -> int:

@@ -27,10 +27,11 @@ from replay.core import ReplayError
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.native_export_receipt import save_new
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import execution_lock, file_digest
 from replay.whole_technical_batch import Reference
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MEDIA_ROOT = Path("/Volumes/m.2-ssd/movie")
 MAX_REFS = 1024
 MAX_PARTS = 128

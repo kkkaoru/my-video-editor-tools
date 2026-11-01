@@ -30,6 +30,7 @@ from replay.input_hash_snapshot import InputHashSnapshot
 from replay.native_invocation import canonical, pin, require, rows
 from replay.recordings import record
 from replay.replay_preparation_plan import Pin, _pin, _timeout
+from replay.repository import root as checkout_root
 from replay.sequence_journal import (
     MAX_BYTES,
     bounded_read,
@@ -42,7 +43,7 @@ from replay.sequence_journal import identity as stat_identity
 from replay.stages import Stage, StageError, _read_receipt
 from replay.workflow import MAX_PLAN_BYTES, parse_stages, stage_graph
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "device-vocal-metal-asr-plan-v1"
 PREREQUISITE_PROTOCOL = "resource-only-prerequisite-completion-v1"
 MAX_PREREQUISITE_WAIT_SECONDS = 8 * 3600

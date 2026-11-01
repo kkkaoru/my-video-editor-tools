@@ -32,6 +32,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 VARIABLE = "REPLAY_CODE_SNAPSHOT"
 # Steps whose producers pin runtime code paths across resumed runs (see the module docstring).
@@ -41,7 +42,7 @@ KEEP_HOURS = 24.0
 
 
 def root() -> Path:
-    return Path(__file__).resolve().parents[2] / "edits" / "work" / "code-snapshots"
+    return checkout_root() / "edits" / "work" / "code-snapshots"
 
 
 def enabled(directory: Path | None = None) -> bool:

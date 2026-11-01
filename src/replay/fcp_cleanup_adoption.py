@@ -18,9 +18,10 @@ from replay import fcp_part_followup as followup
 from replay.core import ReplayError
 from replay.input_hash_cache import MAX_INPUTS, InputHashCache, input_hash_context
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_JSON_BYTES = 8 * 1024 * 1024
 CODE_NAMES = tuple(dict.fromkeys((*followup.CODE_NAMES, "fcp_cleanup_adoption.py", "core.py")))
 

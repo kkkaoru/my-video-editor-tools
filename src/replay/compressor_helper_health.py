@@ -15,6 +15,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from replay.repository import root as checkout_root
+
 FIELDS = "pid=,ppid=,uid=,etime=,pcpu=,lstart=,comm="
 LIMITATIONS = (
     "Sampling misses short calls; first-seen is not creation time. "
@@ -182,7 +184,7 @@ def helper_events(
 def observe(executable: Path, output: Path, *, duration: float, interval: float) -> int:
     if not (1 <= duration <= 120 and 0.25 <= interval <= 10):
         raise ValueError("Require duration 1..120 seconds and interval 0.25..10 seconds")
-    root = Path(__file__).resolve().parents[2]
+    root = checkout_root()
     work = root / "edits" / "work"
     parent = output.absolute().parent.resolve(strict=True)
     if not work.resolve(strict=True).is_relative_to(root) or not parent.is_relative_to(

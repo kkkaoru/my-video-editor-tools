@@ -20,9 +20,10 @@ from replay.fcp_visible_arc import VisibleArc
 from replay.foreground_observations import MAX_SAMPLES
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "head-image-collection-v1"
 PRODUCER_FILES = tuple(dict.fromkeys((*collection.CODE_FILES, *planning.CODE_FILES)))
 READER_FILES = (

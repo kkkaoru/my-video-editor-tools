@@ -20,13 +20,14 @@ from typing import BinaryIO
 
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 CONTAINERS = frozenset({b"moov", b"trak", b"edts", b"mdia", b"minf", b"stbl", b"dinf"})
 MP4_BRANDS = frozenset({b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"M4V "})
 MAX_BOXES = 100_000
 MAX_DEPTH = 12
 MAX_PROBE_BYTES = 2_000_000
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 
 
 @dataclass(frozen=True)

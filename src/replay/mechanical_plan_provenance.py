@@ -26,6 +26,7 @@ from pathlib import Path
 from replay.core import ReplayError
 from replay.delivery_render import Config
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import Stage, StageError
 
 VERSION = 1
@@ -35,7 +36,7 @@ MAX_MODULES = 192
 MAX_INPUTS = 256
 MAX_PROBES = 4096
 PROBE_TIMEOUT = 60
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 SOURCE_ROOT = ROOT / "src/replay"
 SEEDS = (
     "__init__",

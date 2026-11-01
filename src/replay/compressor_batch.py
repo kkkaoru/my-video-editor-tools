@@ -25,6 +25,7 @@ from pathlib import Path
 from replay import compressor_helper_guard, core, recordings
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 COMPRESSOR = Path("/Applications/Compressor Creator Studio.app/Contents/MacOS/Compressor")
 SUBMIT_TIMEOUT_SECONDS = 120
@@ -38,7 +39,7 @@ MONITOR_RETRY_BACKOFF_SECONDS = (5.0, 15.0)
 POLL_SECONDS = 10.0
 SHARED_SNAPSHOT_SECONDS = 8.0
 LOST_POLLS = 30  # about 5 minutes absent from the history
-SHARED_MONITOR = Path(__file__).resolve().parents[2] / "edits/work/compressor-monitor"
+SHARED_MONITOR = checkout_root() / "edits/work/compressor-monitor"
 SUBMITTED_AT = "%Y/%m/%d %H:%M:%S"
 MAX_STDERR_CHARS = 2000
 MAX_JOBS = 20_000

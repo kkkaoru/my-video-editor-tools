@@ -29,8 +29,9 @@ import httpx
 
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 WORKER_SOURCE = REPOSITORY / "web-viewer" / "src" / "upload-worker.js"
 NODE_MODULES = REPOSITORY / "web-viewer" / "node_modules"
 PROJECT_ROOT = REPOSITORY / "edits" / "work" / "r2-worker"

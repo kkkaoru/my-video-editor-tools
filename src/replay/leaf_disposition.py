@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+from replay.repository import root as checkout_root
+
+CHECKOUT = checkout_root()
 MAX_JSON_BYTES = 128 * 1024 * 1024
 PROTECTED = frozenset({"private", "downloads", ".git", "models"})
 METADATA_SUFFIXES = frozenset({".json", ".jsonl", ".log", ".status", ".sha256", ".txt", ".md"})

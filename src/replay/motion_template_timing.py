@@ -16,8 +16,9 @@ from xml.etree import ElementTree as ET
 
 from replay.core import ReplayError
 from replay.motion_caption import MAX_XML_CHARACTERS, _one, _parse
+from replay.repository import root as checkout_root
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_RATE = 60
 MAX_SECONDS = 120
 PROJECT_LOOP_END = "7"

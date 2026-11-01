@@ -11,9 +11,10 @@ from replay import leaf_disposition, leaf_inventory
 from replay.native_sequence import ContractError
 from replay.pytest_lifecycle import canonical, load_finish
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sequence_journal import Pin, bounded_read, decode, encode, publish
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 EVIDENCE_SUFFIXES = frozenset(
     {".json", ".jsonl", ".log", ".status", ".sha256", ".txt", ".md", ".py", ".sh", ".toml", ".lock"}
 )

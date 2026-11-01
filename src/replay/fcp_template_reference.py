@@ -11,11 +11,12 @@ from replay.core import ReplayError
 from replay.fcp_output_window import MAX_XML_BYTES, MAX_XML_ELEMENTS
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
 
 def _local(path: Path) -> Path:
-    root = Path(__file__).resolve().parents[2]
+    root = checkout_root()
     if not path.is_relative_to(root) or path != path.resolve():
         raise ReplayError("Template reference paths must stay inside the checkout")
     return path

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TextIO
 
 from replay.core import ReplayError
+from replay.repository import root as checkout_root
 
 THRESHOLD = 300
 MIN_AGE_SECONDS = 300
@@ -114,7 +115,7 @@ def selected_helper(executable: Path) -> str:
 def guard_directory(directory: Path) -> Path:
     root = Path.cwd().resolve(strict=True)
     target = directory.resolve()
-    repository = Path(__file__).resolve().parents[2]
+    repository = checkout_root()
     if not root.is_relative_to(repository) or target == root or not target.is_relative_to(root):
         raise ReplayError("Guard directory must be inside the repository cwd")
     target.mkdir(mode=0o700, parents=True, exist_ok=True)

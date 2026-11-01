@@ -32,10 +32,11 @@ from replay.input_hash_cache import MAX_INPUTS, InputHashCache, input_hash_conte
 from replay.native_export_receipt import complete
 from replay.part_master_publication import _completed, publish, verify_retirement
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.source_caption_binding import clean_source
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_PARTS = 32
 MAX_OUTPUTS = 16
 

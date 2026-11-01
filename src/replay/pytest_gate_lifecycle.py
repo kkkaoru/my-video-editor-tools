@@ -15,10 +15,11 @@ from replay import pytest_lifecycle as lifecycle
 from replay import pytest_scratch_disposition as disposition
 from replay.native_sequence import ContractError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sequence_journal import Pin, bounded_read, decode, encode, publish
 from replay.stages import execution_lock
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 POLICY = pytest.StashKey[Pin]()
 
 

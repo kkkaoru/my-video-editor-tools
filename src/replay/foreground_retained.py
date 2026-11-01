@@ -16,9 +16,10 @@ from replay import tracking_observations as storage
 from replay.foreground_evidence import ForegroundWindow, _bound_bytes
 from replay.foreground_observations import MAX_SAMPLES, ForegroundFrame, foreground_frames
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 ARCHIVE_ROLES = frozenset(
     {
         "tracking_observations.py",

@@ -30,11 +30,12 @@ from replay.head_image_plan import MAX_CELLS, ImageFrameCell
 from replay.head_image_support import measured_upper_cells
 from replay.producer_code_evidence import _unique_object
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import _uncached_file_digest
 from replay.subtitle_clock import VideoFrameClock
 from replay.subtitle_inpaint import Image
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "approx-upper-texture-v1"
 RESET_REASONS = frozenset({"source-cut", "zoom-reset"})
 

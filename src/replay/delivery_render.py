@@ -44,6 +44,7 @@ from replay.core import ReplayError
 from replay.delivery_output_names import delivery_stem as original_delivery_stem
 from replay.delivery_output_names import encoded_name
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 MAX_CONFIG_BYTES = 1_048_576
 MAX_JSON_BYTES = 256 * 1024 * 1024
@@ -285,10 +286,7 @@ def preparation_inputs(config: Config, item: MotionPart) -> tuple[Path, ...]:
         evidence = tuple(
             caption_resource_inputs.preparation_inputs(config=config.path, plan=item.plan).pins
         )
-    elif any(
-        not path.is_relative_to(Path(__file__).resolve().parents[2])
-        for path in config.resolved_assets
-    ):
+    elif any(not path.is_relative_to(checkout_root()) for path in config.resolved_assets):
         raise ReplayError("External Motion assets require resourceEvidence before preparation")
     return tuple(
         dict.fromkeys(

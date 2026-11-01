@@ -30,6 +30,7 @@ from replay import stages as stage_runner
 from replay import workflow as workflow_runner
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import Stage, StageError, execution_lock
 from replay.workflow import MAX_STAGES, load_stages, stage_graph
 
@@ -117,7 +118,7 @@ class Request:
 
 
 def _repository() -> Path:
-    root = Path(__file__).resolve().parents[2]
+    root = checkout_root()
     if Path.cwd().resolve() != root:
         raise ReplayError("Reservation must run from the repository root")
     return root

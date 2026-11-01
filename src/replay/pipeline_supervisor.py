@@ -28,12 +28,13 @@ from replay import delivery_retention, workflow
 from replay import whole_technical_batch as technical_batch
 from replay.core import ReplayError, write_private_text
 from replay.delivery_pipeline import STEP_NAMES
+from replay.repository import root as checkout_root
 from replay.source_caption_binding import validate_binding
 from replay.stages import StageError, execute_command, execution_lock, file_digest
 
 MAX_STALLED = 3
 BACKOFF_SECONDS = 30
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits/work"
 MAX_METADATA = 1024 * 1024
 

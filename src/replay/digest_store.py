@@ -25,6 +25,7 @@ from tempfile import NamedTemporaryFile
 
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import execution_lock
 
 CHUNK_BYTES = 8 * 1024 * 1024
@@ -80,7 +81,7 @@ def _entry(store: Path, path: Path) -> Path:
 
 
 def _store(store: Path) -> Path:
-    root = Path(__file__).resolve().parents[2]
+    root = checkout_root()
     path = store.absolute()
     if (
         Path.cwd().resolve() != root

@@ -17,9 +17,10 @@ from replay import tracking_observations as storage
 from replay.head_observations import tracking_frames
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "tracking-observations-v1"
 MAX_WINDOWS = 512
 READER_FILES = (

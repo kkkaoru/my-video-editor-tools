@@ -34,10 +34,11 @@ from replay.fcp_part_assembly import _reference, _save
 from replay.foreground_evidence import _bound_bytes
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sequence_journal import bounded_read
 from replay.stages import Stage, file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_SOURCES = 512
 SHA256 = re.compile(r"[a-f0-9]{64}")

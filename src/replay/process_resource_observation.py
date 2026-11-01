@@ -16,12 +16,13 @@ from replay.core import ReplayError
 from replay.native_invocation import canonical, pin, require, rows
 from replay.process_family_observation import SystemHost, sample_family
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 MAX_REQUEST_BYTES = 65536
 MAX_FAMILIES = 16
 SAMPLE_COUNT = 3
 MAX_INTERVAL_SECONDS = 2.0
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 SOURCE_PATHS = (
     Path(__file__).resolve(),
     REPOSITORY / "src/replay/process_family_observation.py",

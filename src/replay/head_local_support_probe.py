@@ -23,10 +23,11 @@ from replay.foreground_evidence import _bound_bytes
 from replay.head_seed import Coordinates
 from replay.head_texture_track import Region, TextureFit, fit_texture_model
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import _uncached_file_digest
 from replay.subtitle_clock import VideoFrameClock
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "local-support-correspondence-replay-v1"
 PARTITION_POLICY = "measured-seed-area-median-v1"
 MAX_JSON_BYTES = 8 * 1024 * 1024

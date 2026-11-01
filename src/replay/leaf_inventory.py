@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from replay.disk_budget import BLOCK_BYTES
+from replay.repository import root as checkout_root
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 PROTECTED = frozenset({"private", "downloads", ".git", "models"})
 MAX_PLAN_BYTES = 1024 * 1024
 MAX_ROOTS = 1024

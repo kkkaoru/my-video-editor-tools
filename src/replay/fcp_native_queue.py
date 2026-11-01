@@ -24,10 +24,11 @@ from replay.artifact_json import _json, _path, _pin
 from replay.core import ReplayError
 from replay.native_export_receipt import _dispatch, native_payload
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
 MAX_BYTES = 8 * 1024 * 1024
-GUI_LEASE_ROOT = Path(__file__).resolve().parents[2] / "edits" / "work"
+GUI_LEASE_ROOT = checkout_root() / "edits" / "work"
 TOOLS = {
     "import": "app_open_document",
     "windows": "ui_windows",

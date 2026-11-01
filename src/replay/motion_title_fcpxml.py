@@ -25,8 +25,9 @@ from replay.motion_caption import (
 )
 from replay.motion_stages import _integer, _text
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 
 
 def _local(path: Path) -> Path:

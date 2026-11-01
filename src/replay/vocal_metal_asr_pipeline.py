@@ -27,10 +27,11 @@ from replay.local_asr import DEFAULT_CONFIG_SHA256, DEFAULT_WEIGHTS_SHA256
 from replay.native_invocation import canonical, identity, pin, require
 from replay.recordings import record
 from replay.replay_transcription_plan import mono_command
+from replay.repository import root as checkout_root
 from replay.sequence_journal import bounded_read, decode, encode, publish
 from replay.stages import execution_lock
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "vocal-metal-asr-pipeline-v1"
 RATE = 16000
 SOURCE_RATE = 44100

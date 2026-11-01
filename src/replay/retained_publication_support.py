@@ -13,6 +13,7 @@ from replay import retained_cleanup_finalization as retained
 from replay import workflow
 from replay.fcp_part_assembly import _save
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import Stage, _fingerprint
 
 
@@ -118,7 +119,7 @@ def child_inputs() -> tuple[Path, ...]:
 
 def prepare_adoption(operation: Path, output: Path) -> Path:
     """Prepare fresh readonly metadata; its normal check follows alias retirement."""
-    root = Path(__file__).resolve().parents[2] / "edits/work"
+    root = checkout_root() / "edits/work"
     if output != output.resolve() or not output.is_relative_to(root):
         raise ValueError("Adoption metadata must remain canonical checkout work")
     job = retained._load(operation)

@@ -13,6 +13,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from replay.repository import root as checkout_root
+
 Run = Callable[..., object]
 OSASCRIPT = "/usr/bin/osascript"
 TITLE = "Recording pipeline"
@@ -20,7 +22,7 @@ MAX_TEXT = 200
 
 
 def record_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "edits/work/recording-pipeline/failures.jsonl"
+    return checkout_root() / "edits/work/recording-pipeline/failures.jsonl"
 
 
 def _quoted(text: str) -> str:

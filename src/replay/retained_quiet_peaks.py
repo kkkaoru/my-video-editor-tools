@@ -24,12 +24,13 @@ from replay.delivery_media import read_clock
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.quiet_cuts import quiet_cut_frames
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sequence_journal import bounded_read, decode, encode
 from replay.stages import Stage, file_digest
 from replay.waveform_quiet import measured_quiet_runs
 from replay.workflow import load_stages
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PACKAGE = Path(__file__).resolve().parent
 KIND = "retained-quiet-peaks-request"
 SHA256 = re.compile(r"[a-f0-9]{64}")

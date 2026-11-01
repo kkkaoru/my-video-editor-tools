@@ -55,6 +55,7 @@ from replay.delivery import (
     require_new_delivery,
     retire_processed_source,
 )
+from replay.repository import root as checkout_root
 
 MINIMUM_SPEECH_CORRELATION = 0.995
 MUSIC_PROBE_SECONDS = 60
@@ -135,11 +136,7 @@ def _validate_paths(
     revision: Path,
     repository_root: Path | None = None,
 ) -> tuple[Path, Path, Path]:
-    repository = (
-        repository_root.resolve()
-        if repository_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
+    repository = repository_root.resolve() if repository_root is not None else checkout_root()
     edits = (repository / "edits").resolve()
     source = source.resolve(strict=True)
     revision = revision.resolve()

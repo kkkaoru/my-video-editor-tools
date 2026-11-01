@@ -16,6 +16,7 @@ from replay.caption_source_support import RetainedSourceSpan
 from replay.caption_timing import SpokenToken
 from replay.delivery_captions import read_cuts
 from replay.local_asr import DEFAULT_CONFIG_SHA256, DEFAULT_MODEL, DEFAULT_WEIGHTS_SHA256, pcm_audio
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.tracking_observations import _digest, _integer, _read, _write
 
@@ -247,7 +248,7 @@ def refine(config: Path, directory: Path, *, config_sha256: str) -> Path:
     source and installed model are not reread or used for inference here.
     """
     directory = _local(str(directory.absolute()))
-    if not directory.is_relative_to(Path(__file__).resolve().parents[2] / "edits" / "work"):
+    if not directory.is_relative_to(checkout_root() / "edits" / "work"):
         raise ValueError("Repair output must stay under edits/work")
     if directory.exists():
         raise FileExistsError(directory)

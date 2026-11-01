@@ -27,9 +27,10 @@ from replay.isolated_cpu_asr import Executor, IsolatedRuntime, execute_child
 from replay.local_asr import DEFAULT_CONFIG_SHA256, DEFAULT_WEIGHTS_SHA256
 from replay.native_invocation import canonical, durable, identity, pin, require
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import execution_lock
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 RATE = 16000
 WINDOW = RATE * 60
 STRIDE = RATE * 30

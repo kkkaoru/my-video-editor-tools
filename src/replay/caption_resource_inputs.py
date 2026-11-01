@@ -21,8 +21,9 @@ from replay.caption_font_identity import require_selected_identity
 from replay.caption_measured_job import _pairs
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 MAX_FILE = 256 * 1024 * 1024
 MAX_JSON = 8 * 1024 * 1024
 FONT_SIGNATURES = {b"\x00\x01\x00\x00", b"OTTO", b"ttcf"}

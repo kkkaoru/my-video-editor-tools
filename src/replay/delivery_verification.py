@@ -23,8 +23,9 @@ from replay.core import ReplayError
 from replay.delivery_clock_contract import ClockExpectation, load_clock_contract
 from replay.delivery_render import Config, load_config, read_cuts
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 MAX_BYTES = 256 * 1024 * 1024
 MAX_ROWS = 4_000_000
 MAX_SECONDS = 86_400

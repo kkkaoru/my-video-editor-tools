@@ -13,11 +13,12 @@ from typing import Protocol
 from replay import fcp_native_queue as native_queue
 from replay import sequence_journal as journal
 from replay.native_sequence import Checkpoint, Config, ContractError
+from replay.repository import root as checkout_root
 from replay.sequence_adapters import pin_value, reference, save_identical
 from replay.sequence_journal import Pin, bounded_read, decode, encode
 from replay.stages import execution_lock
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits/work"
 MAX_PARTS = 1024
 MAX_AGE_SECONDS = 30

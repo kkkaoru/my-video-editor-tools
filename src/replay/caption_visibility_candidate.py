@@ -18,9 +18,10 @@ from replay.caption_timing import CaptionPolicy, SpokenToken
 from replay.foreground_evidence import _bound_bytes
 from replay.input_hash_snapshot import InputHashSnapshot
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_BYTES = 64 * 1024 * 1024
 MAX_TOKENS = 100_000
 MAX_TARGETS = 16

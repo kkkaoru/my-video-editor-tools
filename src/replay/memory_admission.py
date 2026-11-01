@@ -51,6 +51,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from replay.repository import root as checkout_root
+
 GIB = 2**30
 # Estimated peaks (GiB) until a run of the job has measured one. A cleanup chunk's peak physical
 # footprint was 5.61 GB at 900 frames (2026-10-24; 7 GiB keeps a 1.25 margin), CPU separation
@@ -111,7 +113,7 @@ class Settings:
 
 def root() -> Path:
     """The reservation directory of this checkout (src/replay/..)."""
-    return Path(__file__).resolve().parents[2] / "edits" / "work" / "memory-reservations"
+    return checkout_root() / "edits" / "work" / "memory-reservations"
 
 
 def physical() -> int:

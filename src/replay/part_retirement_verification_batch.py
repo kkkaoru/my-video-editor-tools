@@ -20,10 +20,11 @@ from replay.core import ReplayError
 from replay.input_hash_cache import MAX_INPUTS, InputHashCache, input_hash_context
 from replay.native_export_receipt import save_new
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.whole_technical_batch import reader_code_paths
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MEDIA_ROOT = Path("/Volumes/m.2-ssd/movie")
 MAX_JSON_BYTES = 8 * 1024**2
 MAX_PARTS = 1024

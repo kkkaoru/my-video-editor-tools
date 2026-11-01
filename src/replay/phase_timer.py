@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from replay.core import ReplayError
+from replay.repository import root as checkout_root
 
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_ROW_BYTES = 4096
@@ -29,7 +30,7 @@ LOCK_BACKOFF = 0.01
 
 
 def _log_path(log: Path) -> Path:
-    repository = Path(__file__).resolve().parents[2]
+    repository = checkout_root()
     path = log.absolute()
     if (
         Path.cwd().resolve() != repository

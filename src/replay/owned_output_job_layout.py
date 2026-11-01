@@ -13,7 +13,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+from replay.repository import root as checkout_root
+
+REPOSITORY = checkout_root()
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_ROOTS = 64
 OWNED_FIELDS = ("outputDirectory", "workDirectory", "work")

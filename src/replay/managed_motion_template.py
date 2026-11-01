@@ -17,9 +17,10 @@ from typing import Protocol
 
 from replay.fcp_native_queue import SystemHost as ProcessHost
 from replay.native_sequence import ContractError
+from replay.repository import root as checkout_root
 from replay.sequence_journal import bounded_read, decode, encode, identity, publish
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 MAX_FILES = 4096
 MAX_TOTAL = 64 * 1024 * 1024
 MAX_AGE_NS = 30_000_000_000

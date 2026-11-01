@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from replay.core import ReplayError
+from replay.repository import root as checkout_root
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 CHECKOUT_WORK = CHECKOUT / "edits" / "work"
 DEFAULT_EXTERNAL_WORK = Path("/Volumes/m.2-ssd/movie/replay-work")
 EXTERNAL_ENVIRONMENT = "REPLAY_EXTERNAL_WORK_ROOT"

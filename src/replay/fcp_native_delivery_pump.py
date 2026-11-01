@@ -25,10 +25,11 @@ from replay.foreground_evidence import _bound_bytes
 from replay.native_export_receipt import native_payload, save_new
 from replay.phase_timer import run_timed
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import execution_lock, file_digest
 from replay.whole_technical_batch import reader_code_paths
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits" / "work"
 MAX_BYTES = 8 * 1024 * 1024
 FOLLOWUP_KEYS = frozenset(

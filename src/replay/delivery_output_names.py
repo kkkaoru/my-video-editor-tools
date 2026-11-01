@@ -17,9 +17,10 @@ from replay.compressor_preset import read as read_preset
 from replay.core import ReplayError
 from replay.edit_completion import CONFIG_NAME, load_config
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_CONFIG_BYTES = 65536
 RECORDING = re.compile(r"(?:replay-[0-9]{1,32}|youtube-[A-Za-z0-9_-]{11})")
 STAMP_FORMAT = "%Y-%m-%d_%H-%M-%S"

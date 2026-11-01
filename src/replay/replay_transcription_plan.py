@@ -30,10 +30,11 @@ from replay.input_hash_snapshot import InputHashSnapshot
 from replay.local_asr import DEFAULT_CONFIG_SHA256, DEFAULT_WEIGHTS_SHA256
 from replay.recordings import record
 from replay.replay_preparation_plan import Pin, _local, _path, _pin, _read, _require, _write
+from replay.repository import root as checkout_root
 from replay.stages import StageError, _fingerprint, execution_lock, file_digest
 from replay.workflow import parse_stages, stage_graph
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "replay-transcription-plan-v1"
 RATE = 16000
 MAX_INPUTS = 230

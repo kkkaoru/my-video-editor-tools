@@ -33,9 +33,10 @@ from replay.edit_config import CONFIG_NAME, load_config
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.input_hash_snapshot import InputHashSnapshot
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import StageError, file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "replay-preparation-v1"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_INPUTS = 220

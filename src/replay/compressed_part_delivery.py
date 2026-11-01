@@ -26,10 +26,11 @@ from replay.delivery_clock_contract import load_clock_contract
 from replay.foreground_evidence import _bound_bytes
 from replay.native_join import PartFile, concat_list
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 from replay.workflow import parse_stages, stage_graph
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_PARTS = 128
 MAX_FRAMES = 4_000_000
 MAX_TICKS = MAX_FRAMES * 1_000_000_000

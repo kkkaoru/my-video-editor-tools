@@ -28,9 +28,10 @@ from replay.core import ReplayError
 from replay.native_invocation import canonical, durable, pin, require, rows
 from replay.process_family_observation import SystemHost as ProcessHost
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import StageError, execution_lock
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits/work"
 MAX_JSON_BYTES = 1024 * 1024
 MAX_WAVES = 128

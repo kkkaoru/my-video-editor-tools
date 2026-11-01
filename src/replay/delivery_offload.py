@@ -30,6 +30,7 @@ from typing import Final, Protocol
 from replay import disk_budget, r2_worker
 from replay.core import ReplayError, write_private_text
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
 RECORD_NAME: Final[str] = "offload.json"
 ROLES: Final[frozenset[str]] = frozenset({"delivery", "original", "candidate"})
@@ -41,7 +42,7 @@ UPLOAD_METHOD: Final[str] = "upload-sha256-size-etag"
 METHODS: Final[frozenset[str]] = frozenset({METHOD, UPLOAD_METHOD})
 PARTIAL_SUFFIX: Final[str] = ".r2-partial"
 BLOCK_BYTES: Final[int] = 1 << 20
-REPOSITORY: Final[Path] = Path(__file__).resolve().parents[2]
+REPOSITORY: Final[Path] = checkout_root()
 SYNC_STATE: Final[Path] = REPOSITORY / "web-viewer" / "sync-state.json"
 
 Clock = Callable[[], datetime]

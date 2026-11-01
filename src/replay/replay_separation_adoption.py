@@ -25,11 +25,12 @@ from replay.core import ReplayError
 from replay.delivery_audio import verify_material
 from replay.delivery_media import MAX_CLOCK_BYTES
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sha256_check import digest
 from replay.stages import Stage, StageError, _fingerprint
 from replay.workflow import parse_stages
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 PROTOCOL = "retained-separation-adoption-v1"
 ROLES = frozenset({"source", "modelInput", "vocals", "result", "audioClock"})
 BOUNDARIES = frozenset(

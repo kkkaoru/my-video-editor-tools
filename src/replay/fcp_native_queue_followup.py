@@ -22,9 +22,10 @@ from replay.input_hash_cache import MAX_INPUTS, InputHashCache, input_hash_conte
 from replay.native_export_receipt import _dispatch, native_payload, save_new
 from replay.part_master_publication import verify_published
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import file_digest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits" / "work"
 MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_PARTS = 1024

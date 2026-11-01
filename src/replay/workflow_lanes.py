@@ -22,11 +22,12 @@ from pathlib import Path
 
 from replay import workflow
 from replay.core import ReplayError
+from replay.repository import root as checkout_root
 from replay.stages import StageError
 
 MAX_LANES = 16
 MANIFEST_KEYS = frozenset({"version", "stages"})
-TMUX_JOB = Path(__file__).resolve().parents[2] / "scripts" / "tmux-job.sh"
+TMUX_JOB = checkout_root() / "scripts" / "tmux-job.sh"
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,10 +15,11 @@ from replay.foreground_evidence import _bound_bytes
 from replay.input_hash_cache import InputHashCache, input_hash_context
 from replay.leaf_retirement import _row
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.stages import _fingerprint, file_digest
 from replay.workflow import load_stages
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 WORK = ROOT / "edits/work"
 MAX_BYTES = 8 * 1024 * 1024
 MAX_PINS = 512

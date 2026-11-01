@@ -13,6 +13,7 @@ from replay.audio_restore import apply_listening_approved, restore_delivery
 from replay.bgm_separation import MODEL_NAME, MODEL_REVISION, MODEL_SHA256
 from replay.core import ReplayError
 from replay.delivery import delivery_stem
+from replay.repository import root as checkout_root
 
 DEFAULT_REVISION_NAME = "audio-restore-mel-roformer-mlx"
 LISTENING_REVISION_NAME = "audio-mel-roformer-listening-approved"
@@ -151,7 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="use separate listening-approved revisions",
     )
     arguments = parser.parse_args(argv)
-    repository = Path(__file__).resolve().parents[2]
+    repository = checkout_root()
     name = arguments.revision_name or (
         LISTENING_REVISION_NAME if arguments.listening_approved else DEFAULT_REVISION_NAME
     )

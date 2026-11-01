@@ -22,9 +22,10 @@ from replay.edit_completion import CONFIG_NAME, load_config
 from replay.fcp_caption_srt import _time, caption_cues
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.tracking_observations import _read
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 MAX_CONTRACT_BYTES = 65536
 MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_FRAMES = 4_000_000

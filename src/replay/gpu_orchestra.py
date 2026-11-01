@@ -42,6 +42,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from replay.repository import root as checkout_root
+
 CLASSES = {
     "cleanup-chunk": 0,
     "onsets": 1,
@@ -123,7 +125,7 @@ class Waiting:
 
 
 def root() -> Path:
-    return Path(__file__).resolve().parents[2] / "edits" / "work" / "gpu-orchestra"
+    return checkout_root() / "edits" / "work" / "gpu-orchestra"
 
 
 def _units(value: object, name: str, upper: float) -> float:
