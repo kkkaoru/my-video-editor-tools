@@ -181,7 +181,9 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         bridge, "expected_pcm_digest", lambda config: hashlib.sha256(bytes(44100 * 4)).hexdigest()
     )
 
-    def ffmpeg_run(command: list[str], **options: object) -> subprocess.CompletedProcess[bytes]:
+    def ffmpeg_run(command: list[str], **options: object) -> subprocess.CompletedProcess[object]:
+        if command[-3:] == ["-f", "null", "-"]:  # the extraction's input peak measurement
+            return subprocess.CompletedProcess(command, 0, "", "Peak level dB: -6.0\n")
         assert command[-3:-1] == ["-c:a", "pcm_s16le"]
         with wave.open(str(directory / "model-input.wav"), "wb") as audio:
             audio.setnchannels(2)
