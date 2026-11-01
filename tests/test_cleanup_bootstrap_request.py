@@ -99,3 +99,32 @@ def test_main_prints_the_request_path(tmp_path: Path, capsys: pytest.CaptureFixt
     )  # fmt: skip
     assert code == 0
     assert capsys.readouterr().out.strip().endswith("BOOTSTRAP-REQUEST-v1.json")
+
+
+def test_a_long_source_keeps_the_reference_profile_density(tmp_path: Path) -> None:
+    work, source, reference, native, _ = setup(tmp_path)
+    ffprobe = tmp_path / "ffprobe-long"
+    ffprobe.write_text(
+        f"#!{sys.executable}\nimport json\n"
+        'print(json.dumps({"streams": [{"codec_type": "video"}],'
+        ' "format": {"duration": "36780.5"}}))\n',
+        encoding="utf-8",
+    )
+    ffprobe.chmod(ffprobe.stat().st_mode | stat.S_IXUSR)
+    request = bootstrap.build(work, source, reference, native, ffprobe, tmp_path / "out")
+    assert json.loads(request.read_text(encoding="utf-8"))["profileSamples"] == 307
+
+
+def test_profile_samples_keep_the_reference_count_and_stop_at_the_planner_cap() -> None:
+    assert bootstrap.profile_samples(64, {"format": {"duration": "7200"}}) == 64
+    assert bootstrap.profile_samples(64, {"format": {"duration": "9000"}}) == 75
+    assert bootstrap.profile_samples(64, {"format": {"duration": "200000"}}) == 512
+
+
+def test_profile_samples_need_a_count_and_a_duration() -> None:
+    with pytest.raises(ReplayError, match="source duration is missing"):
+        bootstrap.profile_samples(64, {"format": {}})
+    with pytest.raises(ReplayError, match="source duration is missing"):
+        bootstrap.profile_samples(64, {})
+    with pytest.raises(ReplayError, match="source duration is missing"):
+        bootstrap.profile_samples("64", {"format": {"duration": "1"}})

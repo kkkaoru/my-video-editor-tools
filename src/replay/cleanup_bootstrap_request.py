@@ -4,20 +4,30 @@ The request names the dated original, its frame clock, its stream metadata, the 
 tool and the policy fields (decoder, model, sample counts, chunking, workers) that every recording
 shares. Everything recording-specific is read from the recording's preparation root; the policy
 comes from a reference request, never from per-video values. Outputs are new files only.
+
+The one derived policy value is the profile sample count: the reference count keeps its density
+(one sample per ``PROFILE_SPACING`` seconds) on longer sources, up to the planner's cap. Measured
+2026-10-26 on a 10.2 h source: 64 samples (one per 575 s) learned one caption band and a 125 px
+envelope; 128 or more learned the second band, 307 (one per 120 s) a 159 px envelope.
 """
 
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 from replay.core import ReplayError
+from replay.replay_cleanup_plan import MAX_PROFILE_SAMPLES
+from replay.repository import root as checkout_root
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = checkout_root()
 POLICY = ("decoder", "model", "profileSamples", "nativeTimescale", "chunkFrames", "workers")
+# The reference's 64 profile samples were set on ~2 h recordings: about one per two minutes.
+PROFILE_SPACING = 120.0
 
 
 def sha256(path: Path) -> str:
@@ -55,6 +65,15 @@ def probe(source: Path, ffprobe: Path) -> dict[str, object]:
     return loaded
 
 
+def profile_samples(reference: object, probed: dict[str, object]) -> int:
+    """The reference sample count, raised to one per ``PROFILE_SPACING`` s of the source."""
+    form = probed.get("format")
+    duration = form.get("duration") if isinstance(form, dict) else None
+    if type(reference) is not int or not isinstance(duration, str):
+        raise ReplayError("The reference sample count or the source duration is missing")
+    return max(reference, min(MAX_PROFILE_SAMPLES, math.ceil(float(duration) / PROFILE_SPACING)))
+
+
 def build(
     work: Path, source: Path, reference: Path, native: Path, ffprobe: Path, output: Path
 ) -> Path:
@@ -70,6 +89,7 @@ def build(
     digest = source_digest(work / "preparation.json", source)
     clock = work / "video-clock.json"
     probed = probe(source, ffprobe)
+    samples = profile_samples(shared["profileSamples"], probed)
     output.mkdir(mode=0o700)
     metadata = output / "source-stream-metadata-v1.json"
     write_new(
@@ -88,6 +108,7 @@ def build(
         "sourceMetadata": pin(metadata),
         "native": pin(native),
         **{key: shared[key] for key in POLICY},
+        "profileSamples": samples,
     }
     target = output / "BOOTSTRAP-REQUEST-v1.json"
     write_new(target, request)
