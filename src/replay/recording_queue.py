@@ -31,6 +31,10 @@ lease directories, which read it at their next decision.
 (``memory_admits``): the GPU leases and the per-job memory reservations of ``memory_admission``
 then meter the running pipelines instead of a fixed number of them.
 ``paused`` stops new launches (running pipelines continue), e.g. for a quality gate.
+``redo QUEUE ID --from STEP [--from STEP ...] [--chunks N,M]`` restarts a recording from chosen
+steps (``recording_redo``): a running pipeline is drained to its next step boundary, and the next
+tick launches ``run --force STEP ...`` into a free slot (whatever the recording's state: done or
+held too) and clears the request; ``--chunks`` with ``--from cleanup`` redoes only those chunks.
 """
 
 import argparse
@@ -47,6 +51,8 @@ from pathlib import Path
 from replay import gpu_lease, memory_admission
 from replay import recording_pipeline as pipelines
 from replay import recording_priority as priority
+from replay import recording_redo as redo
+from replay import recording_steps as steps
 from replay.core import ReplayError
 from replay.recording_steps import recording_name
 from replay.recordings import JST, record
@@ -69,6 +75,8 @@ STEP_NAMES = (*pipelines.ORDER, "retire-intermediates")
 FAILURES = (ReplayError, StageError, OSError, ValueError)
 
 Launch = Callable[[str], str]
+Relaunch = Callable[[str, pipelines.Forcing], str]
+REDO_STATES = frozenset({"ready", "held", "done"})
 
 
 def load_queue(path: Path) -> tuple[int, bool, tuple[str, ...]]:
@@ -283,6 +291,7 @@ def tick(
     launch: Launch,
     admits: Callable[[], bool] = memory_admits,
     thrashing: Callable[[], bool] | None = None,
+    relaunch: Relaunch | None = None,
 ) -> list[dict[str, object]]:
     """Launch ready recordings into free slots; return every queued recording's row.
 
@@ -312,6 +321,11 @@ def tick(
     if free > 0 and (swap_thrashing if thrashing is None else thrashing)():
         free = min(free, 1 - running)
     for row in rows:
+        requested = redo.pending(queue, str(row["recording"]))
+        if requested is not None and relaunch is not None:
+            free -= redone(row, requested, queue, defaults, checkout=checkout,
+                           relaunch=relaunch, free=0 if paused else free)  # fmt: skip
+            continue
         if paused or free <= 0 or row["state"] != "ready" or row["recording"] in order.paused:
             continue
         if priority.drained(gpu_lease.root().parent, str(row["recording"])) is not None:
@@ -328,6 +342,47 @@ def tick(
     return rows
 
 
+def redone(
+    row: dict[str, object],
+    requested: redo.Request,
+    queue: Path,
+    defaults: dict[str, object],
+    *,
+    checkout: Path,
+    relaunch: Relaunch,
+    free: int,
+) -> int:
+    """Act on a recording's redo request; return the slots it took (0 or 1).
+
+    A running pipeline is drained first; a stopped one is launched with the forced steps (its
+    cleanup chunks set aside first) once a slot is free, and the request is then cleared.
+    """
+    replay_id, work = str(row["recording"]), gpu_lease.root().parent
+    if row["state"] == "running":
+        priority.drain(work, replay_id, "relaunch")
+        row["state"] = "redo-draining"
+        return 0
+    drained = priority.drained(work, replay_id)
+    if row["state"] not in REDO_STATES or drained not in (None, "relaunch") or free <= 0:
+        row["redo"] = "waiting"
+        return 0
+    forcing = redo.forcing(requested)
+    try:
+        if requested.chunks:
+            layout = pipelines.layout_of(replay_id, defaults, checkout)
+            redo.set_aside_chunks(steps.load(layout.pipeline), requested.chunks,
+                                  queue.parent / redo.LOG)  # fmt: skip
+            redo.write(queue, replay_id, redo.Request(forcing.names))  # chunks are set aside
+        priority.undrain(work, replay_id)
+        row["launch"] = relaunch(replay_id, forcing)
+    except (subprocess.CalledProcessError, *FAILURES) as error:
+        row["state"], row["redo"] = "redo-refused", f"{type(error).__name__}: {error}"
+        return 0
+    redo.clear(queue, replay_id)
+    row["state"] = "redo-launched"
+    return 1
+
+
 def launcher(defaults_path: Path, defaults: dict[str, object], checkout: Path) -> Launch:
     def launch(replay_id: str) -> str:
         layout = pipelines.layout_of(replay_id, defaults, checkout)
@@ -338,6 +393,16 @@ def launcher(defaults_path: Path, defaults: dict[str, object], checkout: Path) -
         )
 
     return launch
+
+
+def relauncher(defaults_path: Path, defaults: dict[str, object], checkout: Path) -> Relaunch:
+    def relaunch(replay_id: str, forcing: pipelines.Forcing) -> str:
+        layout = pipelines.layout_of(replay_id, defaults, checkout)
+        return pipelines.dispatch(layout, replay_id, defaults_path.resolve(),
+                                  python=str(defaults["python"]), checkout=checkout,
+                                  forcing=forcing)  # fmt: skip
+
+    return relaunch
 
 
 def order_leases(queue: Path, rows: Sequence[dict[str, object]]) -> None:
@@ -456,6 +521,33 @@ def prioritize(args: argparse.Namespace, checkout: Path) -> list[dict[str, objec
     return listed
 
 
+def chunk_numbers(text: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(item) for item in text.split(","))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("--chunks takes numbers like 12,145") from error
+
+
+def request_redo(
+    queue: Path,
+    replay_id: str,
+    request: redo.Request,
+    *,
+    defaults: dict[str, object],
+    checkout: Path,
+) -> str:
+    """Store a redo request for a queued recording and drain it if it is running."""
+    recording_name(replay_id)
+    if replay_id not in load_queue(queue)[2]:
+        raise ReplayError(f"{replay_id} is not in {queue}; add it first")
+    redo.write(queue, replay_id, request)
+    action = "the runner launches it"
+    if running(pipelines.layout_of(replay_id, defaults, checkout)):
+        priority.drain(gpu_lease.root().parent, replay_id, "relaunch")
+        action = "draining the running pipeline to its next step boundary first"
+    return f"redo of {replay_id} from {', '.join(request.names)} requested; {action}"
+
+
 def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = time.sleep) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -480,6 +572,18 @@ def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = 
     adding = commands.add_parser("add")
     adding.add_argument("queue", type=Path)
     adding.add_argument("replay_id")
+    redoing = commands.add_parser("redo")
+    redoing.add_argument("queue", type=Path)
+    redoing.add_argument("replay_id")
+    redoing.add_argument("--from", dest="steps", action="append", required=True,
+                         help="a step to redo with its dependents (repeatable)")  # fmt: skip
+    redoing.add_argument(
+        "--chunks",
+        type=chunk_numbers,
+        default=(),
+        help="with --from cleanup: only these cleanup chunks, e.g. 12,145",
+    )
+    redoing.add_argument("--defaults", type=Path, default=DEFAULT_DEFAULTS)
     for name in PRIORITY_COMMANDS:
         command = commands.add_parser(name)
         command.add_argument("--queue", type=Path, default=DEFAULT_QUEUE)
@@ -496,6 +600,12 @@ def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = 
     try:
         if args.command == "add":
             print("added" if add(args.queue, args.replay_id) else "already queued")
+            return 0
+        if args.command == "redo":
+            print(request_redo(args.queue, args.replay_id,
+                               redo.validated(tuple(args.steps), args.chunks),
+                               defaults=pipelines.load_defaults(args.defaults),
+                               checkout=checkout))  # fmt: skip
             return 0
         if args.command == "unhold":
             unhold(
@@ -522,9 +632,10 @@ def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = 
         print(f"Queue stopped ({type(error).__name__}): {error}", file=sys.stderr)
         return 1
     launch = launcher(args.defaults, defaults, checkout)
+    relaunch = relauncher(args.defaults, defaults, checkout)
     while True:
         try:
-            rows = tick(args.queue, defaults, checkout=checkout, launch=launch)
+            rows = tick(args.queue, defaults, checkout=checkout, launch=launch, relaunch=relaunch)
         except FAILURES as error:  # e.g. a queue file caught mid-edit: retried next tick
             print(f"Queue tick failed ({type(error).__name__}): {error}", file=sys.stderr)
             if args.once:

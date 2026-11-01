@@ -12,6 +12,8 @@ from replay import gpu_lease, memory_admission
 from replay import recording_pipeline as pipelines
 from replay import recording_priority as priority
 from replay import recording_queue as queue
+from replay import recording_redo as redo
+from replay import recording_steps as steps
 from replay.core import ReplayError
 from replay.stages import execution_lock
 
@@ -702,3 +704,81 @@ def test_drained_runs_do_not_count_as_failures(tmp_path: Path) -> None:
     rows = queue.tick(queue_file(tmp_path, "3"), defaults(tmp_path), checkout=root,
                       launch=recorder(started))  # fmt: skip
     assert (started, rows[0]["state"]) == (["3"], "launched")
+
+
+def relauncher(seen: list[tuple[str, tuple[str, ...]]]) -> queue.Relaunch:
+    def relaunch(replay_id: str, forcing: pipelines.Forcing) -> str:
+        seen.append((replay_id, forcing.names))
+        return "pipeline-v9"
+
+    return relaunch
+
+
+def test_a_redo_drains_a_running_pipeline_then_relaunches_it_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(gpu_lease, "root", lambda: tmp_path / "work" / "gpu-leases")
+    monkeypatch.setattr(pipelines, "load_defaults", lambda _path: defaults(tmp_path))
+    directory = recording(tmp_path, "3")
+    path = queue_file(tmp_path, "3", "2", slots=1)
+    seen: list[tuple[str, tuple[str, ...]]] = []
+    started: list[str] = []
+    with execution_lock(directory, "pipeline"):
+        assert queue.main(["redo", str(path), "3", "--from", "paging", "--from", "compose"]) == 0
+        assert capsys.readouterr().out.strip().endswith("next step boundary first")
+        assert priority.drained(tmp_path / "work", "3") == "relaunch"
+        rows = queue.tick(path, defaults(tmp_path), checkout=root, launch=recorder(started),
+                          relaunch=relauncher(seen))  # fmt: skip
+        assert (rows[0]["state"], seen) == ("redo-draining", [])
+    finished(tmp_path, "3")
+    rows = queue.tick(path, defaults(tmp_path), checkout=root, launch=recorder(started),
+                      relaunch=relauncher(seen))  # fmt: skip
+    assert (rows[0]["state"], rows[0]["launch"]) == ("redo-launched", "pipeline-v9")
+    assert seen == [("3", ("paging", "compose"))]
+    assert started == []  # the redo took the only slot
+    assert priority.drained(tmp_path / "work", "3") is None
+    assert not (tmp_path / "redo/3.json").exists()
+
+
+def test_cleanup_chunks_are_set_aside_once_and_a_refusal_keeps_the_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = checkout(tmp_path)
+    monkeypatch.setattr(gpu_lease, "root", lambda: tmp_path / "work" / "gpu-leases")
+    recording(tmp_path, "3")
+    path = queue_file(tmp_path, "3")
+    redo.write(path, "3", redo.validated(("cleanup",), (4, 7)))
+    aside: list[tuple[int, ...]] = []
+    monkeypatch.setattr(steps, "load", lambda _path: "pipeline")
+    monkeypatch.setattr(redo, "set_aside_chunks", lambda _p, chunks, _log: aside.append(chunks))
+
+    def refuse(_replay_id: str, _forcing: pipelines.Forcing) -> str:
+        raise ReplayError("Forcing would remove receipts the published delivery's gate reads")
+
+    rows = queue.tick(path, defaults(tmp_path), checkout=root, launch=recorder([]),
+                      relaunch=refuse)  # fmt: skip
+    assert rows[0]["state"] == "redo-refused"
+    assert "gate reads" in str(rows[0]["redo"])
+    assert aside == [(4, 7)]
+    assert redo.pending(path, "3") == redo.Request(("retire-intermediates", "compose"))
+
+
+def test_a_redo_waits_for_a_slot_and_refuses_an_unqueued_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = checkout(tmp_path)
+    monkeypatch.setattr(gpu_lease, "root", lambda: tmp_path / "work" / "gpu-leases")
+    recording(tmp_path, "3")
+    path = queue_file(tmp_path, "3", paused=True)
+    redo.write(path, "3", redo.Request(("compose",)))
+    rows = queue.tick(path, defaults(tmp_path), checkout=root, launch=recorder([]),
+                      relaunch=relauncher([]))  # fmt: skip
+    assert rows[0]["redo"] == "waiting"
+    with pytest.raises(ReplayError, match="is not in"):
+        queue.request_redo(path, "2", redo.Request(("compose",)),
+                           defaults=defaults(tmp_path), checkout=root)  # fmt: skip
+    with pytest.raises(SystemExit):
+        queue.main(["redo", str(path), "3", "--from", "cleanup", "--chunks", "a"])
+    assert queue.main(["redo", str(path), "3", "--from", "compos"]) == 1
