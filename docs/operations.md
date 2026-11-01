@@ -290,6 +290,25 @@ recording's files (receipts, pipeline lock, launch status); a recording whose la
 failed since `src/replay` last changed is held until the code changes. `"paused": true` in the
 queue stops new launches; `recording_queue add QUEUE ID` appends a recording.
 
+To restart a recording from a chosen point, run `python -m replay.recording_queue redo QUEUE ID
+--from STEP [--from STEP ...]` (steps of `recording_pipeline.ORDER`). The request is stored in
+`<queue dir>/redo/ID.json`. A running pipeline is drained (`relaunch`) to its next step boundary,
+then the runner's next tick launches `run --force STEP ...` into a free slot. This works whether
+the recording is ready, held or done, and the request is cleared once the launch is dispatched. A
+refusal stays in the tick row (`redo-refused` with its reason), and the request is kept.
+`--from cleanup --chunks 12,145` redoes only those cleanup chunks. Their state, media and log, the
+joined-source consumer and the cleanup receipt are renamed aside (`interrupted/`, logged to
+`<queue dir>/deletions.md`), and only the cleanup's consumers are forced. This is refused for a
+caption-free source, and for a recording whose other chunks' media was already retired after the
+join; redo the whole cleanup then.
+
+`python -m replay.pipeline_events --failures …/failures.jsonl --runner-log …/queue-runner-v8.log
+--recordings edits/work/recordings [--tail RESULT.txt]` prints one line per event and nothing
+otherwise: `FAIL` (a new failure record), `STATE` (a queue-state change), `STEP` (a new step
+receipt), the tailed file's new lines, and edge-triggered `ALERT`/`CLEAR` for a quiet runner log,
+free memory below 20% or boot-volume space below 30 GiB. Run it as one tmux job and watch its
+log, instead of agents polling status; the first pass only reports alerts already active.
+
 ### Native caption rendering from the Motion parts
 
 The finished `.moti` caption parts stay the editable master (open and edit them in Motion).
@@ -321,6 +340,156 @@ lowered so the true peak stays at the ceiling; there is no compression or limiti
 measurement and gain are written to `final/audio/tempo.m4a.loudness.json` and pinned in the
 compose receipt. The CTC alignment keeps reading the unscaled tempo PCM; the viewers' BGM
 level and the excitement loudness are measured from the delivered movie, so they follow it.
+
+### Clipped or distorted voice repair
+
+With `"voiceRepair": true` in `captions.json`, the `voice-repair` step (after `separation`, before
+`paging`) runs `replay.voice_repair` in `edits/.venv-voice-repair`, on the CPU. It finds clipped
+speech on separation's own decode of the mix and distorted frames on the voice (Polars tables).
+It repairs those segments by computation only: AR interpolation, then a natural compressor with
+loudness make-up and a −1 dBFS safety limiter. Each segment is kept only when its gate passes
+both the absolute and the recording-relative criteria. Paging, and so onsets, compose, finish and
+the loudness gain, read the repaired voice; ASR and the cuts keep the separated voice.
+`deliveryAudio: original-mix` delivers the mix and bypasses the voice entirely. Without the key the
+step passes the separated voice through, so recordings prepared before 2026-10-28 are unchanged.
+The receipt is `<work>/voice-repair-v1/receipt.json`; the copy `vocals.wav` exists only when a
+segment was kept. Method, gate and evaluation: [voice repair](voice-repair.md).
+
+### Audio-only redo of a finished delivery (`voice-remux`)
+
+The `voice-remux` step runs after `finish`. It is a pass-through unless `voice-remux.json`
+(`{"version": 1, "components": ["deesser"], "tempo": "resample"}`; `tempo` is optional, default
+`atempo`, and `components` may then be empty) sits beside the recording's `pipeline.json`, or the
+per-video `audio.judge` (captions `voiceJudge`) is set, which means no components and the
+resampled tempo. That file is kept separate so no receipt goes stale.
+
+When it runs, the step does five things:
+- restores the delivered voice with each listed component (`replay.voice_remux`);
+- re-renders the tempo audio on the paging tempo slots from the restored voice: FFmpeg `atempo`
+  (`clocked_tempo_audio`, the paging backend) or band-limited resampling (`replay.voice_tempo`);
+- rejects it unless the computed judge (`replay.voice_judge tempo`, report `judge.json`) passes;
+- encodes it under the recording's loudness policy;
+- stream-copies the finished video with the new audio into `<media>/final-remux/candidate.mp4`,
+  with the same frames and never overwriting.
+
+`publish` then takes that movie. Forcing `voice-remux` redoes only it and the publication steps
+after it (publish, excitement, upload, summarize, summary, clips, retire-renders), never the
+caption, cleanup or compose steps. Run the web-viewer sync dry-run before forcing it.
+
+New recordings get `voiceJudge` from the pipeline defaults (`DEFAULTS-v1.json` captions, since 2026-10-29; an existing `captions.json` keeps its settings). No setting runs ML resynthesis: Sidon (formerly `replay.voice_restore`) was removed on 2026-10-31 after the user heard its 10/28 spans as unnaturally processed; an old `<work>/voice-restore-v1/` is left as evidence. `audio.judge` also gates the `voice-repair` step: its voice (repaired or de-essed) must pass
+`replay.voice_judge same` against the separated voice (`<work>/voice-repair-v1/judge.json`).
+Measures, limits and the 10/28 evaluation: [voice repair](voice-repair.md#computed-judge).
+
+### Per-video config (`video-config.json`)
+
+Each new video is configured by one optional file, `edits/<recording>/video-config.json`
+(`replay.video_config`, strictly validated; `python -m replay.video_config edits/<recording>`
+checks and prints it). Every key is optional and falls back to the pipeline defaults, so a
+recording without the file behaves exactly as before. It replaces the per-feature side files
+(`reframe.json`, `cleanup.json`, `caption-colors.json`, `caption-layout.json`,
+`delivery-audio.json`, still read when the file does not set that item; setting one item in both
+is refused). Example (a YouTube recording):
+
+```json
+{
+  "version": 1,
+  "orientation": "source",
+  "speakers": {"count": 1, "name": "streamer", "icon": "/abs/avatar.png", "iconSha256": "…"},
+  "captions": {
+    "palette": {"gradientTop": "#97D8F7", "gradientBottom": "#2FB0EE"},
+    "layout": {"canvas": [1920, 1080], "align": "left", "originX": 780, "regionTop": 560,
+               "regionBottom": 1056, "regionRight": 1880,
+               "nameplate": {"font": "/abs/NotoSansJP.ttf", "fontSha256": "…", "iconX": 600,
+                             "iconY": 860, "iconSize": 150, "nameSize": 36}}
+  },
+  "audio": {"delivery": "original-mix", "intent": "music retained by user request",
+            "loudness": {"targetLufs": -18, "truePeakDbtp": -1}},
+  "cut": {"nonSpeech": true},
+  "cleanup": {"sourceCaptions": true, "commentBoxes": false},
+  "clips": false,
+  "channelLabel": "かしすみるく",
+  "asrGlossary": ["/abs/glossary.json"]
+}
+```
+
+- `orientation`: `"source"` keeps the frame; `{"aspect": [9, 16], "follow": "character"}` crops
+  around the character (`source-vertical`).
+- `speakers`: one speaker (several use the multi-speaker flow); `name` and `icon` feed the nameplate.
+- `captions.palette`: the gradient colours (`caption_palette`). `captions.layout`: the delivery
+  frame, every line starting at `originX` (`align: left`) or centred, each caption run anchored as
+  low as it fits in `[regionTop, regionBottom]` without crossing `regionRight`, person track
+  ignored; `nameplate` draws the round icon and name as a persistent full-frame alpha layer of
+  every compose group (`<media>/badge/`, retired with the renders). Left-aligned parts render with
+  Motion + Compressor until the pinned native renderer reads paragraph alignment.
+- `audio.delivery`: `vocals` (default) or `original-mix` with its `intent`: compose decodes the
+  source as separation did and runs `clocked_tempo_audio` on the voice's tempo selection rebound
+  to it (`delivery-audio-v1/`); cuts and onsets still come from the voice. `audio.loudness`
+  replaces `voiceLoudness`, whose gain is measured on the voice. The gate's `bgm_removal` passes a
+  kept mix only when compose and finish record the intent, named in `declaredIntents`.
+- `cut.nonSpeech` and `cleanup.sourceCaptions` accept only `true` (the pipeline always does both);
+  `cleanup.commentBoxes` removes chat comment boxes (`source_comment_clean`).
+- `clips: false` makes the clips step record a skip instead of computing clip points.
+- `channelLabel` sets the viewers' label of the original's YouTube channel at upload.
+- `asrGlossary` replaces the defaults' glossary for this recording.
+
+Copy into `captions.json`/`pipeline.json` happens at prepare (write-once): change the file before
+the first launch, or move the written settings aside before their steps run.
+
+### Cleanup learning within a recording
+
+`replay.cleanup_learning` keeps `<cleanup work>/learned/residuals.jsonl`. A chunk job appends
+the residual boxes of its failed attempts only when a later attempt of that chunk passed: these
+are confirmed caption residuals that the repair removed. A band (one 10-row class, columns
+united) that at least two chunks confirmed is added as extra repair line boxes to later chunks'
+plans, on frames whose caption region reaches it. The colour key still removes only
+caption-coloured pixels, and the audit gate (OCR and colour) never reads the store, so this
+widens repair only. Receipts record `learnedBands`.
+
+`source_clean_run` compares the mean attempts of a recording's last 20 chunks with a limit taken
+from the four latest other recordings' chunk receipts: their mean plus two standard errors,
+which was 2.14 on 10-28 for 10/22. When the limit is exceeded it appends a `cleanup-attempts` row to
+`failures.jsonl`. A chunk that fails with learned bands applied is not retried automatically;
+it gets a `cleanup-learned` row with its receipt path. Replacements apply at chunk boundaries, never inside a chunk. Each chunk job reads the store,
+its code and the pinned region model when it starts, and its receipt records them under
+`learning` (`store`, `code`, `model`, `version`). Chunks that already passed are kept. The
+limit comes from the four latest other cleanups of the same kind (`clean-replay-*` or
+`clean-youtube-*`). Replacements are expected to settle. When the last three version segments'
+mean attempts never fall and all stay above that limit, cleanup writes a `learning-diverged`
+row and the brake `edits/work/learning-brake.json`. While the brake exists no chunk is seeded and
+no promotion may run; an agent removes it once the cause is fixed.
+
+YOLO learning (`replay.yolo_learning`, loop job `edits/work/yolo-learning-v1/loop-v1`, run every
+30 min) is incremental. A cycle starts once 200 confirmed moments that no cycle trained on exist,
+and the brake is absent. Each cycle writes `decision.json` with per-phase wall seconds
+(labels, build, train, eval).
+1. It first screens the new moments with the current model on full-resolution frames. Moments
+   already detected (a detection covering half the residual box) are only marked as seen, and
+   near-identical misses (64-bit difference hash within 4 bits) count once. Labelling and
+   training wait while any cleanup chunk waits for memory.
+   It then labels each remaining moment with a one-second Vision face window. Windows are cached per moment
+   and never recomputed, and new ones stop when the 20-minute labelling budget is spent.
+2. It builds only those frames, plus a replay buffer from the v2 training list: as many frames
+   as are new, at most 20% of the base. Validation is the regression frames plus 40 frozen frames
+   per test recording.
+3. It updates the promoted (else pinned) weights with the backbone frozen (`--freeze 10`), for
+   5 epochs with patience 2, at 640 px (the deployed size), batch 16 with `cache=ram`, at nice 15,
+   under a `yolo-train` memory reservation and a GPU lease. The bar is pinned v2's 640-px eval.
+4. It evaluates in two stages. The first stage is the regression recordings `reg1023` (chunk
+   68's label) and `reg1024` (chunk 84's sticker and chunk 172's real caption) and the frozen
+   sample; a failure rejects at once. Only a passing candidate gets the full oct07/oct12 eval.
+5. It promotes only when every gate passes and glyph coverage and face detection are at least
+   the pinned v2 numbers. The weights go to `edits/models/yolo/learned-<sha12>/` and
+   `promoted.json` names them.
+Disk use is capped at 3 GiB, covering the learning work, cached face labels and learned
+weights. The face-label cache keeps the newest 2000 windows; regression windows are never
+evicted. A decided cycle keeps only `decision.json`, its eval metrics and the manifest, and
+stopped builds are removed before the next attempt. Only the promoted learned model and one
+earlier one are kept; pinned v2 lives elsewhere. Every removal is logged in
+`edits/work/rerender-20261023/deletions.md`. A cycle still over the cap after eviction stops
+with an error, which raises an alert.
+A chunk job that starts afterwards uses them, and with the brake present it uses the pinned
+weights. Its stored yolo-track boxes no longer match, so it detects with the promoted weights
+itself and no chunk mixes models. Its receipt pins the weights it used.
 
 ## Resumable processing and measured phases
 
@@ -485,8 +654,8 @@ the move need re-pinning, while content sha256 still verifies.
 ## Clip points
 
 The Mac computes clip points (切り抜き) per video by default and the Worker stores them in R2 under
-`clips/<movie key>.json` (same key as the excitement cache). Each clip lasts 10-30 s or 30-90 s in
-total and joins ranges of one stream in one of two stories: climax-first (the peak, then the
+`clips/<movie key>.json` (same key as the excitement cache). Each clip lasts 5-10, 15-30, 35-60 or 90-120 s in
+total (algorithm 10; records before it keep 10-30 or 30-90 s) and joins ranges of one stream in one of two stories: climax-first (the peak, then the
 lead-up to it) or hook-to-climax (a question or curious opening rising to the peak last). Its first
 3 s must be a strong hook (judged by `@cf/cloudflare/clef` for each possible opening; weak ones are
 dropped). A clip tells one topic only: the sync adds per-cue content nouns and clean-start hints
@@ -511,12 +680,14 @@ region's questions changes the clips; measure good clips per video with `bun run
 changing either. Range edges sit on sentence boundaries, and a climax that stops
 mid-story is carried on to the unit that settles it. Clips of one video never overlap or share a start or end. Both viewers loop a clip by
 default (or play it once) and list each clip's seconds, story, ranges and a title and summary from
-`@cf/zai-org/glm-5.3-flash`. The sync needs the repository's `uv` environment for the noun step. Cloudflare AI runs only when a
-user asks (切り抜きを再計算 or `POST /api/clips/<id>/reload`): an uploaded `data/<id>.json` only
-updates the video's movie-key pointer, and opening a video without clips reads `missing`. The
+`@cf/zai-org/glm-5.3-flash`. The sync needs the repository's `uv` environment for the noun step. The only Cloudflare model used is clairic; the
+Worker has no AI binding, an uploaded `data/<id>.json` only updates the video's movie-key pointer,
+opening a video without clips reads `missing`, and `POST /api/clips/<id>/reload` answers 410
+(recompute with the Mac viewer's 切り抜きを再計算, which runs `bun run clips:mac -- --force <id>`). The
 recording pipeline's `clips` step runs `bun run clips:mac` (one machine-wide, `clips-mac.lock`): it
-starts `python -m replay.clip_models` (clef-OptiQ-4bit and Ternary-Bonsai-2-9B from `edits/models/`,
-`uv run --isolated --locked --extra clips`, about 22 GB) unless one already answers on 8791, computes
+starts `python -m replay.clip_models` (clef-OptiQ-4bit, clef-flash and LFM3-1.7B for titles, from
+`edits/models/`; `uv run --isolated --locked --extra clips`, about 27 GB; the offline judges' Bonsai and
+Laya load only with `--judges`) unless one already answers on 8791, computes
 only videos with no record or changed data, stores through the bearer `PUT`, and stops the server.
 If the step fails with "Only N% of memory is free", wait for other model jobs to finish and retry;
 it never falls back to Cloudflare. TranscriptViewer reads them with
