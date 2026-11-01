@@ -9,16 +9,18 @@ public struct OCRFrameSessionRequest: Sendable {
   public let width: Int
   public let height: Int
   public let maximumSeconds: Double
+  public let computeDevice: TextComputeDevice
 
   public init(
     path: String, samples: [ForegroundTime], width: Int, height: Int,
-    maximumSeconds: Double
+    maximumSeconds: Double, computeDevice: TextComputeDevice = .cpu
   ) {
     self.path = path
     self.samples = samples
     self.width = width
     self.height = height
     self.maximumSeconds = maximumSeconds
+    self.computeDevice = computeDevice
   }
 
   func validate() throws {
@@ -66,8 +68,9 @@ actor NativeOCRFrameSessionWorker: OCRFrameSessionWorker {
     var setup = SourceTextSessionTiming()
     setup.assetSetupSeconds = SourceTextSession.seconds(assetStart.duration(to: clock.now))
     let recognitionStart = clock.now
-    let recognition = try CPUTextRecognition.request()
+    let recognition = try TextRecognition.request(request.computeDevice)
     setup.ocrSetupSeconds = SourceTextSession.seconds(recognitionStart.duration(to: clock.now))
+    setup.computeDevices = TextRecognition.devices(of: recognition)
     try await sink.prepared(setup)
     for index in indices {
       try await sink.check()
@@ -85,8 +88,10 @@ actor NativeOCRFrameSessionWorker: OCRFrameSessionWorker {
   }
 }
 
-/// At most two structured children; failure/cancellation never returns partial success.
+/// At most `maximumWorkers` structured children, each over one contiguous slice of the samples;
+/// failure/cancellation never returns partial success.
 public enum OCRFrameSession {
+  static let maximumWorkers = 8
   static let maximumSamples = SourceTextSession.maximumSamples
   static let maximumCanvasDimension = 16384
   static let maximumPixels = 16_777_216
@@ -94,22 +99,31 @@ public enum OCRFrameSession {
   static let maximumTextBytes = 32768
 
   public static func run(_ request: OCRFrameSessionRequest) async throws -> OCRFrameSessionResult {
-    try await run(request, factory: { NativeOCRFrameSessionWorker() })
+    try await run(request, workers: 2, factory: { NativeOCRFrameSessionWorker() })
+  }
+
+  /// Contiguous, ordered slices of `count` samples for up to `workers` children.
+  static func ranges(count: Int, workers: Int) -> [Range<Int>] {
+    let parts = max(1, min(workers, count))
+    // Ceiling starts: the first slices take the remainder, as the former two-way split did.
+    let start = { (part: Int) in (part * count + parts - 1) / parts }
+    return (0..<parts).map { start($0)..<start($0 + 1) }
   }
 
   static func run(
     _ request: OCRFrameSessionRequest,
+    workers: Int = 2,
     factory: @Sendable () -> any OCRFrameSessionWorker,
     beforeFrame: @escaping @Sendable () async throws -> Void = {}
   ) async throws -> OCRFrameSessionResult {
     try Task.checkCancellation()
     try request.validate()
     let sink = OCRFrameSessionSink(request, beforeFrame: beforeFrame)
-    let count = request.samples.count
-    let split = (count + 1) / 2
-    let ranges = count == 1 ? [0..<count] : [0..<split, split..<count]
+    guard (1...maximumWorkers).contains(workers) else {
+      throw ProAppsError.invalid("Invalid OCR worker count")
+    }
     try await withThrowingTaskGroup(of: Void.self) { group in
-      for indices in ranges {
+      for indices in ranges(count: request.samples.count, workers: workers) {
         let worker = factory()
         group.addTask { try await worker.process(request, indices: indices, sink: sink) }
       }
@@ -150,6 +164,7 @@ actor OCRFrameSessionSink {
     else { throw ProAppsError.invalid("Invalid ordered OCR setup timing") }
     setup.assetSetupSeconds += timing.assetSetupSeconds
     setup.ocrSetupSeconds += timing.ocrSetupSeconds
+    setup.computeDevices = timing.computeDevices
   }
 
   func receive(_ frame: SourceTextSessionFrame, index: Int) async throws {

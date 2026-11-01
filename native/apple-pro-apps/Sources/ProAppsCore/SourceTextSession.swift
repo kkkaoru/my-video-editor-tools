@@ -15,11 +15,14 @@ public struct SourceTextSessionRequest: Codable, Sendable {
   public let maximumSeconds: Double
   public let workers: Int?
   public let allowedSourceRoot: String?
+  /// Absent means `cpu` (`TextComputeDevice`).
+  public let computeDevice: TextComputeDevice?
 
   public init(
     checkoutRoot: String, path: String, checkpointDirectory: String,
     samples: [ForegroundTime], width: Int, height: Int, maximumSeconds: Double,
-    workers: Int? = nil, allowedSourceRoot: String? = nil
+    workers: Int? = nil, allowedSourceRoot: String? = nil,
+    computeDevice: TextComputeDevice? = nil
   ) {
     self.checkoutRoot = checkoutRoot
     self.path = path
@@ -30,6 +33,7 @@ public struct SourceTextSessionRequest: Codable, Sendable {
     self.maximumSeconds = maximumSeconds
     self.workers = workers
     self.allowedSourceRoot = allowedSourceRoot
+    self.computeDevice = computeDevice
   }
 }
 
@@ -52,6 +56,8 @@ public struct SourceTextSessionTiming: Codable, Sendable {
   public var serializationSeconds = 0.0
   public var checkpointWriteSeconds = 0.0
   public var elapsedSeconds = 0.0
+  /// The device each OCR compute stage ran on ("stage=device", sorted).
+  public var computeDevices = ""
 }
 
 public struct SourceTextSessionBlock: Codable, Sendable {
@@ -112,8 +118,9 @@ actor NativeSourceTextSessionWorker: SourceTextSessionWorker {
       path: request.path, samples: request.samples)
     timing.assetSetupSeconds = SourceTextSession.seconds(assetStart.duration(to: clock.now))
     let ocrStart = clock.now
-    let recognition = try CPUTextRecognition.request()
+    let recognition = try TextRecognition.request(request.computeDevice ?? .cpu)
     timing.ocrSetupSeconds = SourceTextSession.seconds(ocrStart.duration(to: clock.now))
+    timing.computeDevices = TextRecognition.devices(of: recognition)
     try await sink.begin(timing)
     for sample in request.samples {
       try await sink.beforeFrame()
@@ -180,7 +187,9 @@ public enum SourceTextSession {
     -> SourceTextSessionReport
   {
     let workers = request.workers ?? 1
-    guard (1...2).contains(workers) else { throw ProAppsError.invalid("Invalid OCR worker count") }
+    guard (1...OCRFrameSession.maximumWorkers).contains(workers) else {
+      throw ProAppsError.invalid("Invalid OCR worker count")
+    }
     if workers == 1 {
       return try await run(request, worker: NativeSourceTextSessionWorker())
     }
@@ -191,7 +200,8 @@ public enum SourceTextSession {
     let result = try await OCRFrameSession.run(
       OCRFrameSessionRequest(
         path: request.path, samples: request.samples, width: request.width, height: request.height,
-        maximumSeconds: request.maximumSeconds),
+        maximumSeconds: request.maximumSeconds, computeDevice: request.computeDevice ?? .cpu),
+      workers: workers,
       factory: { NativeOCRFrameSessionWorker() },
       beforeFrame: { try await sink.beforeFrame() })
     try await sink.begin(result.setup)
@@ -272,6 +282,7 @@ actor SourceTextSessionSink {
     else { throw ProAppsError.invalid("Invalid or repeated OCR setup") }
     timing.assetSetupSeconds = setup.assetSetupSeconds
     timing.ocrSetupSeconds = setup.ocrSetupSeconds
+    timing.computeDevices = setup.computeDevices
     prepared = true
     try beforeFrame()
   }

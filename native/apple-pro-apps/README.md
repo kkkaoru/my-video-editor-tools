@@ -131,8 +131,15 @@ Independent removal and output-quality checks remain required.
 Video OCR (`measure-media video_text_recognize`) retains the display-oriented
 decoded `CGImage` for full-frame recognition and uses CoreGraphics cropping for
 an explicit region. It does not create a CoreImage rendering context. Every
-compute stage exposed by Vision's text request selects an available CPU device;
-an unavailable CPU stage fails rather than silently choosing GPU execution.
+compute stage exposed by Vision's text request selects an available CPU device
+unless the session request names `computeDevice` (`gpu`, `neuralEngine`, or
+`fastest`: Neural Engine, then GPU, then CPU); a named device that a stage does
+not offer fails rather than being replaced. Measured 2026-11-01 on 61 tiled
+caption bands with 8 workers: every device took the same time and read
+identical text, but GPU and Neural Engine sessions crashed (SIGSEGV) in 2 of 20
+and 1 of 15 runs, CPU sessions in none of 20, so CPU stays the default.
+`video_text_recognize_session` accepts 1–8 workers; the report's
+`timing.computeDevices` names each stage's device.
 Japanese/English accurate recognition, disabled language correction, original
 frame timestamps and full-frame top-left observation coordinates are retained.
 Requested OCR seconds must be exactly representable on the existing 60000-tick

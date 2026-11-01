@@ -180,6 +180,34 @@ struct OCRFrameSessionTests {
     #expect(await gate.peak == 2)
   }
 
+  @Test func slicesAreContiguousOrderedAndTakeTheRemainderFirst() {
+    #expect(OCRFrameSession.ranges(count: 5, workers: 2) == [0..<3, 3..<5])
+    #expect(OCRFrameSession.ranges(count: 64, workers: 3) == [0..<22, 22..<43, 43..<64])
+    #expect(OCRFrameSession.ranges(count: 64, workers: 4) == [0..<16, 16..<32, 32..<48, 48..<64])
+    #expect(OCRFrameSession.ranges(count: 2, workers: 4) == [0..<1, 1..<2])
+    #expect(OCRFrameSession.ranges(count: 1, workers: 1) == [0..<1])
+  }
+
+  @Test func fourWorkersKeepTheInputOrder() async throws {
+    let gate = OrderGate()
+    let result = try await OCRFrameSession.run(
+      request(samples: (0..<64).map { .init(value: Int64($0), timescale: 25) }), workers: 4,
+      factory: { Worker(.success, gate: gate) })
+    #expect(result.measurements.map { $0.lines.first?.text } == (0..<64).map { "字\($0)" })
+    #expect(result.actual.map(\.value) == (0..<64).map { Int64($0) })
+    #expect(await gate.finished == 4)
+  }
+
+  @Test(arguments: [0, 9])
+  func workerCountOutsideTheBoundIsRefused(_ workers: Int) async {
+    let gate = OrderGate()
+    await #expect(throws: ProAppsError.invalid("Invalid OCR worker count")) {
+      try await OCRFrameSession.run(
+        request(), workers: workers, factory: { Worker(.success, gate: gate) })
+    }
+    #expect(await gate.peak == 0)
+  }
+
   @Test func cancelledParentStartsNoNativeWork() async {
     let gate = OrderGate()
     let task = Task {

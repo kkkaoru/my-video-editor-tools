@@ -36,6 +36,19 @@ struct SourceTextSessionServiceTests {
           "samples": .array(Array(repeating: .object(["timeSeconds": .int(0)]), count: 9)),
         ]), schema: old.tool.inputSchema)
     }
+    var eight = try #require(arguments().objectValue)
+    eight["workers"] = .int(8)
+    eight["computeDevice"] = .string("neuralEngine")
+    try validate(.object(eight), schema: ToolSpec.sourceTextSession.tool.inputSchema)
+    eight["workers"] = .int(9)
+    #expect(throws: (any Error).self) {
+      try validate(.object(eight), schema: ToolSpec.sourceTextSession.tool.inputSchema)
+    }
+    eight["workers"] = .int(8)
+    eight["computeDevice"] = .string("ane")
+    #expect(throws: (any Error).self) {
+      try validate(.object(eight), schema: ToolSpec.sourceTextSession.tool.inputSchema)
+    }
     var extra = try #require(arguments().objectValue)
     extra["region"] = .object([:])
     #expect(throws: (any Error).self) {
@@ -78,7 +91,7 @@ struct SourceTextSessionServiceTests {
     }
   }
 
-  @Test(arguments: [nil, 1, 2] as [Int?])
+  @Test(arguments: [nil, 1, 2, 4] as [Int?])
   func compiledCLIProcessesOnlyTwoSyntheticOriginalFrames(workers: Int?) async throws {
     let request = try Files.reserveOutput(
       directory: Files.temporaryDirectory().path,
@@ -122,7 +135,7 @@ struct SourceTextSessionServiceTests {
         == ["block-0-clocks.json", "block-0.json", "complete.json"])
   }
 
-  @Test(arguments: [0, 3, -1])
+  @Test(arguments: [0, 9, -1])
   func workerCountIsRejectedBeforeNativeWork(_ workers: Int) async throws {
     var values = try #require(arguments().objectValue)
     values["workers"] = .int(workers)

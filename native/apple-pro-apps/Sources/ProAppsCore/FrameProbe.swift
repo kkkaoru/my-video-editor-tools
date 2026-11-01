@@ -124,7 +124,7 @@ public actor FrameProbe {
     -> [FrameTextMeasurement]
   {
     let generator = try await source(path: path, samples: samples)
-    let request = try CPUTextRecognition.request()
+    let request = try TextRecognition.request()
     let maximumLinesPerFrame = 64
     let maximumTextBytes = 32768
     var bytes = 0
@@ -136,7 +136,7 @@ public actor FrameProbe {
       let selected = try Self.region(
         sample.region, width: frame.image.width, height: frame.image.height
       ).integral
-      let bitmap = try CPUTextRecognition.bitmap(frame.image, selected: selected)
+      let bitmap = try TextRecognition.bitmap(frame.image, selected: selected)
       let observations = try await request.perform(on: bitmap)
       guard observations.count <= maximumLinesPerFrame else { throw ProAppsError.outputLimit }
       var lines: [FrameTextLine] = []

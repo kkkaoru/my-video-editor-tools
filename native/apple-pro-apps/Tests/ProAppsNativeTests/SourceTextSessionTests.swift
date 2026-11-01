@@ -352,7 +352,7 @@ struct SourceTextSessionTests {
     let image = try #require(context.makeImage())
     let recognized = try await NativeSourceTextSessionWorker.textFrame(
       image: image, sample: .init(value: 0, timescale: 30), actual: .init(value: 0, timescale: 30),
-      imageGenerationSeconds: 0, recognition: CPUTextRecognition.request())
+      imageGenerationSeconds: 0, recognition: TextRecognition.request())
     #expect(recognized.measurement.lines.contains { $0.text == "TEST" })
     let cropped = try FrameProbe.textLine(
       text: "TEST", confidence: 0.75,

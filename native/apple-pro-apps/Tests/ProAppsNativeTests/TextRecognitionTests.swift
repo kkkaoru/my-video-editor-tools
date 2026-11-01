@@ -6,21 +6,29 @@ import Vision
 
 @testable import ProAppsCore
 
-struct CPUTextRecognitionTests {
-  @Test func cpuRequestRetainsLanguagesAndRefusesMissingCPU() throws {
-    let request = try CPUTextRecognition.request()
+struct TextRecognitionTests {
+  @Test func requestRetainsLanguagesAndPicksTheFastestOrNamedDevice() throws {
+    let request = try TextRecognition.request(.fastest)
     #expect(request.recognitionLevel == .accurate)
     #expect(!request.usesLanguageCorrection)
     #expect(
       request.recognitionLanguages == [
         Locale.Language(identifier: "ja-JP"), Locale.Language(identifier: "en-US"),
       ])
+    let order: [TextComputeDevice] = [.neuralEngine, .gpu, .cpu]
+    for (stage, devices) in request.supportedComputeStageDevices {
+      let offered = Set(devices.map(TextRecognition.kind))
+      let chosen = try #require(request.computeDevice(for: stage))
+      #expect(TextRecognition.kind(chosen) == order.first(where: offered.contains))
+    }
+    let cpu = try TextRecognition.request()  // the default
     #expect(
-      request.supportedComputeStageDevices.keys.allSatisfy { stage in
-        if case .cpu = request.computeDevice(for: stage) { return true }
-        return false
+      cpu.supportedComputeStageDevices.keys.allSatisfy { stage in
+        cpu.computeDevice(for: stage).map(TextRecognition.kind) == .cpu
       })
-    #expect(throws: ProAppsError.self) { try CPUTextRecognition.cpu(in: []) }
+    #expect(TextRecognition.devices(of: cpu).contains("=cpu"))
+    #expect(throws: ProAppsError.self) { try TextRecognition.device(.cpu, in: []) }
+    #expect(throws: ProAppsError.self) { try TextRecognition.device(.fastest, in: []) }
   }
 
   @Test func fullFrameAndCropUseDecodedPixelsWithCPURecognition() async throws {
@@ -42,19 +50,19 @@ struct CPUTextRecognitionTests {
     context.textPosition = CGPoint(x: 40, y: 160)
     CTLineDraw(CTLineCreateWithAttributedString(text), context)
     let image = try #require(context.makeImage())
-    let full = try CPUTextRecognition.bitmap(
+    let full = try TextRecognition.bitmap(
       image, selected: CGRect(x: 0, y: 0, width: 512, height: 256))
     #expect(full === image)
-    let crop = try CPUTextRecognition.bitmap(
+    let crop = try TextRecognition.bitmap(
       image, selected: CGRect(x: 20, y: 140, width: 300, height: 100))
     #expect(crop.width == 300 && crop.height == 100)
-    let request = try CPUTextRecognition.request()
+    let request = try TextRecognition.request()
     let fullText = try await request.perform(on: full)
     let cropText = try await request.perform(on: crop)
     #expect(fullText.flatMap { $0.topCandidates(1).map(\.string) }.contains("TEST"))
     #expect(cropText.flatMap { $0.topCandidates(1).map(\.string) }.contains("TEST"))
     #expect(throws: ProAppsError.self) {
-      try CPUTextRecognition.bitmap(image, selected: CGRect(x: -1, y: 0, width: 512, height: 256))
+      try TextRecognition.bitmap(image, selected: CGRect(x: -1, y: 0, width: 512, height: 256))
     }
   }
 

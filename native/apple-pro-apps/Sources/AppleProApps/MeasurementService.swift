@@ -20,12 +20,13 @@ extension ToolSpec {
   static let sourceTextSession: ToolSpec = .init(
     name: "video_text_recognize_session",
     description:
-      "CLI-only explicit CPU accurate Japanese/English OCR session, 1–64 strictly ordered original rational PTS. Optional workers 1–2; omission preserves serial execution. Full canvas only, independent generator/request per worker. Private repository-local eight-frame measurement/checkpoint pairs retain exact actual clocks; 64 lines/frame and 32 KiB text/block, never truncation. Two-worker opt-in additionally limits the whole batch to 32 KiB text and publishes blocks only after the complete batch. Maximum 60 seconds with parent disposable-process deadline still required. No quality approval or cryptographic source validation; fresh parent boundaries remain mandatory. Creates new checkpoint files; old eight-frame tool unchanged.",
+      "CLI-only accurate Japanese/English OCR session on the CPU unless computeDevice names another (gpu, neuralEngine, or fastest: Neural Engine, then GPU, then CPU), 1–64 strictly ordered original rational PTS. Optional workers 1–8; omission preserves serial execution. Full canvas only, independent generator/request per worker. Private repository-local eight-frame measurement/checkpoint pairs retain exact actual clocks; 64 lines/frame and 32 KiB text/block, never truncation. A multi-worker opt-in additionally limits the whole batch to 32 KiB text and publishes blocks only after the complete batch. Maximum 60 seconds with parent disposable-process deadline still required. No quality approval or cryptographic source validation; fresh parent boundaries remain mandatory. Creates new checkpoint files; old eight-frame tool unchanged.",
     properties: [
       "checkoutRoot": string(), "path": string(), "checkpointDirectory": string(),
       "width": integer(1, 16384), "height": integer(1, 16384),
-      "workers": integer(1, 2),
+      "workers": integer(1, 8),
       "allowedSourceRoot": string(),
+      "computeDevice": string(["fastest", "cpu", "gpu", "neuralEngine"]),
       "maximumSeconds": .object([
         "type": .string("number"), "exclusiveMinimum": .double(0), "maximum": .int(60),
       ]),
