@@ -335,5 +335,47 @@ def test_session_ocr_reports_a_band_that_cannot_be_cut(tmp_path: Path) -> None:
 
 
 def test_ocr_band_widens_the_envelope_inside_the_canvas() -> None:
-    assert chunk.ocr_band((0, 1299, 1077, 142), (1080, 1920)) == (1219, 302)
+    assert chunk.ocr_band((0, 1299, 1077, 142), (1080, 1920)) == (1218, 304)
     assert chunk.ocr_band((0, 20, 100, 40), (320, 240)) == (0, 140)
+
+
+def test_ocr_band_rows_are_even_for_the_4_2_0_crop() -> None:
+    assert chunk.ocr_band((0, 1179, 1077, 173), (1080, 1920)) == (1098, 334)
+    assert chunk.ocr_band((0, 1800, 1077, 101), (1080, 1921)) == (1720, 200)
+
+
+CRASHING_NATIVE = FAKE_NATIVE.replace(
+    'samples = request["samples"]\n',
+    'samples = request["samples"]\n'
+    "import os, signal\n"
+    'if "retry-{survive}" not in request["checkpointDirectory"]:\n'
+    "    os.kill(os.getpid(), signal.SIGSEGV)\n",
+)
+
+
+@pytest.mark.parametrize(("survive", "crashes"), [("1", False), ("9", True)])
+def test_a_crashed_native_child_runs_again_in_a_new_directory(
+    tmp_path: Path, survive: str, crashes: bool
+) -> None:
+    native = tmp_path / "native"
+    native.write_text(
+        CRASHING_NATIVE.replace("{survive}", survive).format(python=sys.executable),
+        encoding="utf-8",
+    )
+    native.chmod(0o700)
+
+    def read() -> dict[int, FrameObservation]:
+        return chunk.session_ocr(
+            native, tmp_path / "source.mp4", CLOCK, [0, 1], canvas=(WIDTH, HEIGHT),
+            work=tmp_path / "work", root=tmp_path,
+        )  # fmt: skip
+
+    if crashes:
+        with pytest.raises(chunk.NativeCrash):
+            read()
+        assert sorted(path.name for path in (tmp_path / "work").iterdir()) == [
+            "child-000", "child-000-retry-1", "child-000-retry-2",
+        ]  # fmt: skip
+    else:
+        assert sorted(read()) == [0, 1]
+        assert (tmp_path / "work" / "child-000" / "stderr.log").is_file()  # evidence kept

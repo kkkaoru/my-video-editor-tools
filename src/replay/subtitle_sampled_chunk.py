@@ -36,6 +36,11 @@ BAND_SCALE = (270, 105)
 DETECTOR_GRID = (416, 736)
 DETECTOR_BATCH = 8
 TIMEOUT_SECONDS = 600
+# Vision's text recognition crashes a multi-worker session now and then (SIGSEGV, no message:
+# 3 chunk failures in recent recordings' logs at 2 workers, 1 of 20 runs at 8 workers beside a
+# render, 2026-11-01). Its reads are deterministic, so a crashed child runs again, in a new
+# directory, at most this often.
+CRASH_RETRIES = 2
 
 
 class OutputLimitError(ValueError):
@@ -94,6 +99,36 @@ def _session_child(
     root: Path,
     workers: int,
 ) -> list[FrameObservation] | None:
+    """``_once``, run again in ``directory``-retry-N when the native child died of a signal."""
+    for attempt in range(CRASH_RETRIES):
+        target = (
+            directory if attempt == 0 else directory.with_name(f"{directory.name}-retry-{attempt}")
+        )
+        try:
+            return _once(native, source, clock, chunk, canvas=canvas, directory=target, root=root,
+                         workers=workers)  # fmt: skip
+        except NativeCrash:
+            continue
+    last = directory.with_name(f"{directory.name}-retry-{CRASH_RETRIES}")
+    return _once(native, source, clock, chunk, canvas=canvas, directory=last, root=root,
+                 workers=workers)  # fmt: skip
+
+
+class NativeCrash(ValueError):
+    """The native OCR child was killed by a signal; its evidence is retained."""
+
+
+def _once(
+    native: Path,
+    source: Path,
+    clock: VideoFrameClock,
+    chunk: Sequence[int],
+    *,
+    canvas: tuple[int, int],
+    directory: Path,
+    root: Path,
+    workers: int,
+) -> list[FrameObservation] | None:
     """Run one native session child; ``None`` when it exceeded its bounded capture limit."""
     (directory / "native").mkdir(parents=True, mode=0o700)
     (directory / "scratch").mkdir(mode=0o700)
@@ -130,6 +165,8 @@ def _session_child(
             timeout=TIMEOUT_SECONDS,
             check=False,
         ).returncode
+    if code < 0:
+        raise NativeCrash("Native OCR session failed; evidence retained")
     if code != 0:
         if OUTPUT_LIMIT in (directory / "stderr.log").read_text(encoding="utf-8", errors="replace"):
             return None
@@ -150,9 +187,15 @@ def _session_child(
 
 
 def ocr_band(envelope: tuple[int, int, int, int], canvas: tuple[int, int]) -> tuple[int, int]:
-    """(top, height) of the caption band, the envelope widened by BAND_MARGIN, inside the canvas."""
+    """(top, height) of the caption band, the envelope widened by BAND_MARGIN, inside the canvas.
+
+    Both are even: the 4:2:0 source crops to even rows, so an odd height cut a band one row short
+    and the native session refused the canvas it did not request (10/27 chunk 98).
+    """
     top = max(0, envelope[1] - BAND_MARGIN)
     bottom = min(canvas[1], envelope[1] + envelope[3] + BAND_MARGIN)
+    top -= top % 2
+    bottom = min(canvas[1] - canvas[1] % 2, bottom + bottom % 2)
     return top, bottom - top
 
 
