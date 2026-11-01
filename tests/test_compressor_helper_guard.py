@@ -425,7 +425,8 @@ def test_directory_containment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         guard.guard_directory(root / "escape/new")
     with pytest.raises(ReplayError):
         guard.guard_directory(root)
-    (root / "public").mkdir(mode=0o755)
+    (root / "public").mkdir()
+    os.chmod(root / "public", 0o755)  # a strict umask would otherwise make it 0o700
     with pytest.raises(ReplayError):
         guard.guard_directory(root / "public")
 
@@ -434,7 +435,8 @@ def test_directory_containment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_private_file_rejects_unsafe(tmp_path: Path, kind: str) -> None:
     path = tmp_path / "events"
     if kind == "public":
-        path.touch(mode=0o644)
+        path.touch()
+        os.chmod(path, 0o644)  # a strict umask would otherwise make it 0o600
     else:
         other = tmp_path / "other"
         other.touch(mode=0o600)
