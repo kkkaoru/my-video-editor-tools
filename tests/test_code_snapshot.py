@@ -2,8 +2,10 @@
 
 import json
 import os
+import stat
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,15 @@ import pytest
 from replay import code_snapshot
 
 LATE_IMPORT = "import time; time.sleep(0.5); import replay.probe as p; print(p.VALUE)"
+
+
+@pytest.fixture(autouse=True)
+def writable_after(tmp_path: Path) -> Iterator[None]:
+    """Snapshots are read-only by design; give the scratch back writable so it can be removed."""
+    yield
+    for path in (tmp_path, *tmp_path.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | stat.S_IWUSR | (stat.S_IXUSR if path.is_dir() else 0))
 
 
 def package(tmp_path: Path, value: int) -> Path:

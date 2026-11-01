@@ -9,10 +9,11 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,10 +115,23 @@ def sweep(default: Path, *, keep: int = KEEP_RUNS, min_age: float = MIN_AGE_SECO
     for run in runs[keep:]:
         if now - run.stat().st_mtime < min_age or not _finished(run, locks):
             continue
-        shutil.rmtree(run)
+        shutil.rmtree(run, onexc=_writable_retry)
         (locks / hashlib.sha256(os.fsencode(run / "pytest")).hexdigest()).unlink(missing_ok=True)
         removed.append(run)
     return removed
+
+
+def _writable_retry(function: Callable[[str], object], path: str, error: BaseException) -> None:
+    """Retry a removal refused for permission once the owner may write the entry and its folder.
+
+    Tests leave read-only trees on purpose (code snapshots, git objects); a sweep must not crash.
+    """
+    if not isinstance(error, PermissionError):
+        raise error
+    for entry in (Path(path).parent, Path(path)):
+        if entry.exists() and not entry.is_symlink():
+            entry.chmod(entry.stat().st_mode | stat.S_IRWXU)
+    function(path)
 
 
 def _base(value: object, *, root: Path) -> Path | None:

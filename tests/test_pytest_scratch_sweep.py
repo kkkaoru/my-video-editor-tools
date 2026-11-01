@@ -6,6 +6,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from replay import pytest_scratch
 
 OLD = time.time() - 7200
@@ -80,3 +82,21 @@ def test_sweep_ignores_symlinks_and_unrelated_names(tmp_path: Path) -> None:
     assert pytest_scratch.sweep(tmp_path, keep=0, min_age=0) == []
     assert target.is_dir()
     assert other.is_dir()
+
+
+def test_sweep_removes_a_run_holding_read_only_trees(tmp_path: Path) -> None:
+    old = tmp_path / ("run-" + "f" * 32)
+    frozen = old / "pytest" / "snapshots" / "abc" / "replay"
+    frozen.mkdir(parents=True)
+    (frozen / "probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (frozen / "probe.py").chmod(0o400)
+    for directory in (frozen, frozen.parent):
+        directory.chmod(0o500)  # a code snapshot is read-only by design
+    os.utime(old, (OLD, OLD))
+    assert pytest_scratch.sweep(tmp_path, keep=0, min_age=3600) == [old]
+    assert not old.exists()
+
+
+def test_a_removal_failing_for_another_reason_is_raised(tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="disk"):
+        pytest_scratch._writable_retry(os.remove, str(tmp_path / "x"), OSError("disk"))
