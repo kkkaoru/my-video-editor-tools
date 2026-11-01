@@ -1,0 +1,32 @@
+{
+ "schema": 2,
+ "record": {
+  "version": 10,
+  "videoId": "v1",
+  "movieKey": "mac",
+  "inputHash": "6e355345bd106fa442960f5d5a09e186e813330078fc1967c38103d8ff9ab7c5",
+  "models": {
+   "score": "mlx-community/clef-OptiQ-4bit",
+   "summary": "LiquidAI/LFM3-1.7B-MLX-8bit"
+  },
+  "createdAt": "2026-10-29T00:00:00.000Z",
+  "excitement": true,
+  "clips": [
+   {
+    "id": "c1",
+    "kind": "5-10",
+    "pattern": "hook-to-climax",
+    "duration": 8,
+    "score": 0.881,
+    "ranges": [
+     {
+      "start": 96,
+      "end": 104
+     }
+    ],
+    "title": "題",
+    "summary": "要約"
+   }
+  ]
+ }
+}

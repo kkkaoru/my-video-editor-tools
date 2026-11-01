@@ -97,6 +97,10 @@ BOOTSTRAP_TARGET = "profile-settings"
 CHUNK_CLOCK_MISMATCH = b"Actual decoded PTS differ from the supplied source clock"
 SILENCE_ARGUMENTS = ("--minimum-seconds", "5", "--maximum-amplitude", "8", "--clamp-partial")
 HALLUCINATION_LABELS = "labels-hallucination-v1.json"  # the asr step's labels
+# Optional pipeline key (new recordings since 2026-10-25): glossary files for replay.asr_kanji_fix,
+# applied to the asr labels without zenz rescoring. Without it the asr step is unchanged.
+GLOSSARY = "asrGlossary"
+GLOSSARY_LABELS, GLOSSARY_RECEIPT = "labels-glossary-v1.json", "glossary-receipt-v1.json"
 # Recognition: "context-streams" (pause-cut chunks with previous-text context, one persistent
 # model; replay.asr_context_streams, adopted 2026-10-18) or "windows" (60/30 s windows without
 # context, one process per window). Code is not a receipt input: switching needs --force asr.
@@ -189,8 +193,9 @@ class Graph:
 def load(path: Path) -> Pipeline:
     data = record(json.loads(path.read_text(encoding="utf-8")))
     references, yolo = record(data.get("references")), record(data.get("yolo"))
-    if set(data) != KEYS or data["version"] != 1:
+    if set(data) - {GLOSSARY} != KEYS or data["version"] != 1:
         raise ReplayError("Unsupported recording pipeline configuration")
+    glossary_files(data)
     if set(references) != REFERENCES or set(yolo) != YOLO_KEYS:
         raise ReplayError("Incomplete pipeline references or detector settings")
     pipeline = Pipeline(path.resolve(), data)
@@ -275,6 +280,18 @@ def failed_stage_tails(state: Path) -> str:
                     + "".join(f"{line}\n" for line in lines[-FAILED_TAIL_LINES:])
                 )
     return "".join(sections)
+
+
+def glossary_files(data: dict[str, object]) -> tuple[str, ...]:
+    """The ``asrGlossary`` files (absolute paths); none without the key."""
+    value = data.get(GLOSSARY, [])
+    if (
+        not isinstance(value, list)
+        or (GLOSSARY in data and not value)
+        or not all(isinstance(item, str) and Path(item).is_absolute() for item in value)
+    ):
+        raise ReplayError(f"{GLOSSARY} must list absolute glossary paths")
+    return tuple(str(item) for item in value)
 
 
 def module(pipeline: Pipeline, name: str, *arguments: str, provider: bool = False) -> list[str]:
@@ -722,7 +739,7 @@ def asr(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         run(module(pipeline, "metal_asr_config", reference, str(plan), str(config)), log)
     if ASR_METHOD == "context-streams":
         recognized(pipeline, run, config, prepared, log)
-        return silence_excluded(pipeline, run, prepared, log)
+        return glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log))
     clear_partial(prepared, prepared / "workflow.json")
     if not prepared.exists():
         prepared.mkdir(mode=0o700)
@@ -732,7 +749,7 @@ def asr(pipeline: Pipeline, run: Runner) -> dict[str, object]:
             log,
         )  # fmt: skip
     run(workflow(pipeline, prepared / "workflow.json", prepared / "state", "assemble"), log)
-    return silence_excluded(pipeline, run, prepared, log)
+    return glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log))
 
 
 def silence_excluded(
@@ -751,6 +768,26 @@ def silence_excluded(
     if not labels.exists():
         run(module(pipeline, "asr_hallucination", str(silence), mono, str(labels)), log)
     return {"labels": pin(labels), "mono": pin(prepared / "mono.wav")}
+
+
+def glossary_corrected(
+    pipeline: Pipeline, run: Runner, outputs: dict[str, object]
+) -> dict[str, object]:
+    """With ``asrGlossary``, the labels after the channel's glossary (``replay.asr_kanji_fix``,
+    no rescoring) and its receipt of every edit; without it, ``outputs`` unchanged."""
+    files = glossary_files(pipeline.data)
+    if not files:
+        return outputs
+    prepared = pipeline.work / "asr-v1" / "prepared"
+    labels, receipt = prepared / GLOSSARY_LABELS, prepared / GLOSSARY_RECEIPT
+    if not (labels.exists() and receipt.exists()):
+        labels.unlink(missing_ok=True)  # an interrupted run wrote the labels before the receipt
+        receipt.unlink(missing_ok=True)
+        glossaries = [f"--glossary={path}" for path in files]
+        command = module(pipeline, "asr_kanji_fix", str(prepared / HALLUCINATION_LABELS),
+                         str(labels), str(receipt), *glossaries)  # fmt: skip
+        run(command, pipeline.logs / "asr.log")
+    return {**outputs, "labels": pin(labels), "glossary": pin(receipt)}
 
 
 def recognized(pipeline: Pipeline, run: Runner, config: Path, prepared: Path, log: Path) -> None:
@@ -808,8 +845,27 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "yolo-track": ("clocks",),
     "retire-intermediates": ("asr", "cleanup"),
 }
-# The bindings receipts written before ``audio-clock`` existed (2026-10-24) carry; still accepted.
-LEGACY_DEPENDENCIES: dict[str, tuple[str, ...]] = {"clocks": (), "separation": ("clocks",)}
+# The bindings receipts written before ``audio-clock`` existed (2026-10-24) carry, and paging's
+# before ``voice-repair`` (2026-10-28); still accepted.
+LEGACY_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "clocks": (),
+    "separation": ("clocks",),
+    "paging": ("cut-plan",),
+    "publish": ("finish",),  # before ``voice-remux`` (2026-10-29)
+}
+# Upstream steps added after orchestrators were started that never schedule them: a step such an
+# orchestrator launches binds the upstream receipts that exist (its legacy set). The step itself
+# refuses to run without the added step when its setting needs it (``voiceRepair``,
+# ``voiceDeesser``).
+ADDED_UPSTREAM: dict[str, frozenset[str]] = {
+    "cut-plan": frozenset({"voice-repair"}),
+    "paging": frozenset({"voice-repair"}),
+    "publish": frozenset({"voice-remux"}),
+}
+# A step that is not applicable to a published recording (``recording_pipeline``: it was added
+# after the delivery, whose later receipts were computed without it) is marked here instead of
+# run; the steps after it bind the receipts that exist, as for ``ADDED_UPSTREAM``.
+LEGACY = Path("legacy")
 STEPS: dict[str, StepFunction] = {
     "audio-clock": audio_clock,
     "clocks": clocks,
@@ -830,7 +886,7 @@ def asr_outputs(work: Path) -> tuple[Path, ...]:
         return (root,)
     prepared = root / "prepared"
     names = ("mono.wav", "mono-receipt.json", "labels.json", "labels-silence-v1.json",
-             HALLUCINATION_LABELS)  # fmt: skip
+             HALLUCINATION_LABELS, GLOSSARY_LABELS, GLOSSARY_RECEIPT)  # fmt: skip
     return (root / "CONFIG-v1.json", *(prepared / name for name in names),
             prepared / "context-streams" / "labels.json")  # fmt: skip
 
@@ -884,11 +940,20 @@ def reset(pipeline: Pipeline, step: str, graph: Graph = FRONT) -> list[dict[str,
 def inputs(pipeline: Pipeline, step: str, graph: Graph = FRONT) -> dict[str, str]:
     """Digests of the configuration and the upstream receipts this step is computed from."""
     upstream = graph.dependencies[step]
+    missing = {name for name in upstream if not (pipeline.steps / f"{name}.json").is_file()}
+    marked = {name for name in missing if legacy(pipeline, name)}
+    if missing and missing - marked <= ADDED_UPSTREAM.get(step, frozenset()):
+        upstream = tuple(name for name in upstream if name not in missing)
     for name in upstream:
         if not (pipeline.steps / f"{name}.json").is_file():
             raise ReplayError(f"The {name} step has not passed; {step} waits for it")
     paths = [*graph.configurations(pipeline), *(pipeline.steps / f"{n}.json" for n in upstream)]
     return {str(path): sha256(path) for path in paths}
+
+
+def legacy(pipeline: Pipeline, step: str) -> bool:
+    """The step is marked not applicable to this published recording."""
+    return (pipeline.steps / LEGACY / f"{step}.json").is_file()
 
 
 def finished(pipeline: Pipeline, step: str, graph: Graph = FRONT) -> bool:

@@ -14,6 +14,7 @@ while its measured utilization leaves room:
         ── compose (+ cleanup) ── finish ── publish ── excitement ── upload (web viewer sync)
         ── summary (the completion gate and supersession, then on-device, then a data sync)
         ── clips (the viewer's clip points are ready) ; summary ── retire-renders (alpha, compose)
+        ; publish ── youtube-encode (Compressor's YouTube setting, beside the delivery)
 
 The caption half (``replay.recording_caption_steps``) reads ``captions.json``, written beside
 ``pipeline.json`` from the defaults' ``captions`` section; changing it marks only caption steps
@@ -47,20 +48,24 @@ from datetime import datetime
 from pathlib import Path
 from types import FrameType
 
-from replay import caption_palette as palette
 from replay import (
+    caption_layout,
     closure_guard,
     code_snapshot,
     gpu_lease,
     memory_admission,
     memory_sampler,
+    repository,
     step_retry,
+    video_config,
     volume_events,
 )
+from replay import caption_palette as palette
 from replay import recording_caption_steps as captions
 from replay import recording_priority as priority
 from replay import recording_retirement as retirement
 from replay import recording_steps as steps
+from replay import recording_viewer_steps as viewer
 from replay import source_decodable as decodable
 from replay import source_lead_in as lead_in
 from replay import source_vertical as vertical
@@ -98,45 +103,53 @@ LAUNCHER = Path("scripts/tmux-job.sh")
 MAX_LAUNCHES = 100
 ENV = "/usr/bin/env"
 DRAINED_EXIT = 75  # EX_TEMPFAIL: stopped by a drain, not failed (the queue does not count it)
-# Start order among ready steps: the longest branch first.
+# Start order among ready steps: the longest branch first (yolo-track -> cleanup).
 ORDER = (
-    "audio-clock", "clocks", "separation", "cleanup-bootstrap", "cleanup", "asr", "yolo-track",
+    "audio-clock", "clocks", "yolo-track", "separation", "cleanup-bootstrap", "cleanup", "asr",
     "upload-original",
-    "cut-plan",
+    "voice-repair", "cut-plan",
     "paging", "onsets", "placement", "caption-parts", "caption-render", "compose", "finish",
-    "publish",
-    "summarize", "excitement", "upload", "summary", "clips", "retire-renders",
+    "voice-remux", "publish",
+    "summarize", "excitement", "upload", "summary", "clips", "retire-renders", "youtube-encode",
 )  # fmt: skip
 DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
 # Start order only, not receipt inputs: summary reuses what summarize gated and generated, so it
 # never generates beside it.
-SCHEDULE = {**DEPENDENCIES, "summary": (*DEPENDENCIES["summary"], "summarize")}
-TIMEOUTS = {
-    "audio-clock": HOUR,
-    "clocks": 2 * HOUR,
-    "separation": 4 * HOUR,
-    "cleanup-bootstrap": 2 * HOUR,
-    "cleanup": 6 * HOUR,
-    "asr": 4 * HOUR,
-    "yolo-track": 2 * HOUR,
-    "retire-intermediates": HOUR,
-    "upload-original": 6 * HOUR,
-    "cut-plan": HOUR,
-    "paging": 2 * HOUR,
-    "placement": HOUR,
-    "onsets": HOUR,
-    "caption-parts": 2 * HOUR,
-    "caption-render": 12 * HOUR,
-    "compose": 6 * HOUR,
-    "finish": 2 * HOUR,
-    "publish": 2 * HOUR,
-    "excitement": HOUR,
-    "upload": 6 * HOUR,
-    "summarize": 2 * HOUR,
-    "summary": 2 * HOUR,
-    "clips": 2 * HOUR,
-    "retire-renders": HOUR,
+# cleanup starts after yolo-track so its chunks read the stored caption boxes instead of
+# detecting them again: a cleanup started first gave up waiting and ran YOLO twice (10-28).
+SCHEDULE = {
+    **DEPENDENCIES,
+    "summary": (*DEPENDENCIES["summary"], "summarize"),
+    "cleanup": (*DEPENDENCIES["cleanup"], "yolo-track"),
 }
+OUTER_CAP = 24 * HOUR  # a backstop (stages.Stage allows at most 24 h); IDLE_SECONDS bound each step
+TIMEOUTS = dict.fromkeys(
+    (
+        "audio-clock", "clocks", "separation", "cleanup-bootstrap", "cleanup", "asr", "yolo-track",
+        "retire-intermediates", "upload-original", "cut-plan", "voice-repair", "paging",
+        "placement", "onsets", "caption-parts", "caption-render", "compose", "finish",
+        "voice-remux", "publish",
+        "excitement", "upload", "summarize", "summary", "clips", "retire-renders",
+        "youtube-encode",
+    ),
+    OUTER_CAP,
+)  # fmt: skip
+# Every step is bounded by progress rather than a fixed time: it times out only when for this
+# long neither its output trees and logs grew nor its processes used a minute of CPU
+# (step_progress, workflow_parallel.cpu_minutes); a 10-hour recording's steps run past any fixed
+# bound while they keep working. The bounds are the former per-step timeouts, at most two hours
+# (a 10-24 cleanup chunk took at most ~16 min; caption-render and compose may wait for a lease).
+IDLE_SECONDS = {
+    "audio-clock": HOUR, "clocks": 2 * HOUR, "separation": 2 * HOUR,
+    "cleanup-bootstrap": 2 * HOUR, "cleanup": HOUR, "asr": 2 * HOUR, "yolo-track": 2 * HOUR,
+    "retire-intermediates": HOUR, "upload-original": 2 * HOUR, "cut-plan": HOUR,
+    "voice-repair": 2 * HOUR,
+    "paging": 2 * HOUR, "placement": HOUR, "onsets": HOUR, "caption-parts": 2 * HOUR,
+    "caption-render": 2 * HOUR, "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-remux": 2 * HOUR,
+    "publish": 2 * HOUR,
+    "excitement": HOUR, "upload": 2 * HOUR, "summarize": 2 * HOUR, "summary": 2 * HOUR,
+    "clips": 2 * HOUR, "retire-renders": HOUR, "youtube-encode": 2 * HOUR,
+}  # fmt: skip
 # caption-render only waits on Compressor, which renders one job at a time machine-wide and
 # used ~18% of the GPU (2026-10-22); holding a GPU lease for its 50-80 min starved cleanup
 # chunks. It takes the one Compressor lease instead, so the first-started recording renders
@@ -145,11 +158,13 @@ TIMEOUTS = {
 # out every group (2026-10-23, 10/6 and 10/2), so composes take one machine-wide lease too.
 # finish streams the whole movie through the same SSD: beside another compose or finish it took
 # 760-2,518 s against 110-330 s alone (2026-10-22/23), so it shares the compose lease.
+# voice-repair is computation only on the CPU (no GPU lease).
 GPU_STEPS = frozenset({"separation", "asr", "yolo-track", "onsets", "compose"})
 SERIAL_STEPS = {
     "caption-render": "compressor-leases",
     "compose": "compose-leases",
     "finish": "compose-leases",
+    "youtube-encode": "compressor-leases",
 }
 SERIAL_SETTINGS = '{"capacity": 1}\n'
 
@@ -186,8 +201,9 @@ NO_FORCING = Forcing()
 
 def load_defaults(path: Path) -> dict[str, object]:
     data = record(json.loads(path.read_text(encoding="utf-8")))
-    if set(data) != DEFAULT_KEYS or data["version"] != 1:
+    if set(data) - {steps.GLOSSARY} != DEFAULT_KEYS or data["version"] != 1:
         raise ReplayError("Unsupported recording pipeline defaults")
+    steps.glossary_files(data)
     references, yolo = record(data["references"]), record(data["yolo"])
     if set(references) != steps.REFERENCES or set(yolo) != steps.YOLO_KEYS:
         raise ReplayError("Incomplete pipeline references or detector settings")
@@ -217,7 +233,12 @@ def retirement_settings(defaults_path: Path) -> retirement.Settings:
 def force_retired_producers(
     pipeline: steps.Pipeline, names: tuple[str, ...]
 ) -> list[dict[str, object]]:
-    """Force again the producer of every retired intermediate a step about to run would read."""
+    """Force again the producer of every retired intermediate a step about to run would read.
+
+    Never past the published delivery's evidence: a step added after the delivery (no receipt yet)
+    reading a retired intermediate refused there, instead of cascading (10-29: voice-repair forced
+    separation and removed a delivered YouTube recording's receipts and render).
+    """
     removed: list[dict[str, object]] = []
     while True:
         pending = {name for name in names if not (pipeline.steps / f"{name}.json").is_file()}
@@ -228,6 +249,73 @@ def force_retired_producers(
             print(f"retired intermediates: forcing {producer} for {consumer} ({path})", flush=True)
         producers = tuple(sorted({producer for producer, _, _ in needed}))
         removed.extend(apply_forcing(pipeline, Forcing(names=producers)))
+
+
+def run_scope(forcing: Forcing, names: Sequence[str]) -> set[str]:
+    """The steps a run may run, force or remove: all of them, or the forced ones and their
+    dependents (a redo never runs, forces or removes a step outside them)."""
+    if forcing.every or not forcing.names:
+        return set(names)
+    return set(downstream(forcing.names))
+
+
+def not_applicable(
+    pipeline: steps.Pipeline,
+    names: Sequence[str],
+    scope: set[str],
+    *,
+    published: bool,
+    redo: bool,
+) -> dict[str, str]:
+    """Steps of a published recording the run takes as they are instead of running (step: why).
+
+    A step without a receipt whose dependents' receipts exist was added after them: they were
+    computed (and published) without it, so it does not apply, unless a redo's scope holds it.
+    Outside a redo's scope a step without a receipt is never run either. An unpublished
+    recording runs every unfinished step.
+    """
+    if not published:
+        return {}
+    found: dict[str, str] = {}
+    for name in names:
+        if (pipeline.steps / f"{name}.json").is_file():
+            continue
+        later = [after for after in downstream((name,)) if after != name
+                 and (pipeline.steps / f"{after}.json").is_file()]  # fmt: skip
+        if later and (name not in scope or not redo):
+            found[name] = f"added after the published receipts of {', '.join(later)}"
+        elif name not in scope:
+            found[name] = "outside the redo's scope"
+    return found
+
+
+def mark_legacy(pipeline: steps.Pipeline, names: Sequence[str], skipped: dict[str, str]) -> None:
+    """Mark the steps added after publication; clear the mark of every other step."""
+    directory = pipeline.steps / steps.LEGACY
+    for name in names:
+        marker = directory / f"{name}.json"
+        if skipped.get(name, "").startswith("added after"):
+            directory.mkdir(mode=0o700, exist_ok=True)
+            marker.write_text(json.dumps({"version": 1, "reason": skipped[name]}) + "\n",
+                              encoding="utf-8")  # fmt: skip
+        else:
+            marker.unlink(missing_ok=True)
+
+
+def refuse_out_of_scope_producers(
+    pipeline: steps.Pipeline, pending: set[str], scope: set[str]
+) -> None:
+    """Before anything is removed: a retired intermediate a pending step reads may be produced
+    again only by a step inside the run's scope."""
+    needed = retirement.forced_producers(pipeline, pending)
+    outside = sorted({(producer, consumer) for producer, consumer, _ in needed
+                      if producer not in scope})  # fmt: skip
+    if outside:
+        named = ", ".join(f"{producer} (for {consumer})" for producer, consumer in outside)
+        raise ReplayError(
+            f"Retired intermediates would need {named} outside this redo's scope; "
+            "redo from that producer instead"
+        )
 
 
 def broadcast(edit_root: Path) -> int:
@@ -315,6 +403,7 @@ def bind(replay_id: str, python: str, checkout: Path) -> Path:
 def pipeline_config(
     defaults: dict[str, object], layout: Layout, replay_id: str, edit_root: Path
 ) -> dict[str, object]:
+    glossary = video_config.value(edit_root, steps.GLOSSARY, defaults.get(steps.GLOSSARY))
     return {
         "version": 1,
         "recording": replay_id,
@@ -329,6 +418,9 @@ def pipeline_config(
         "ffprobe": defaults["ffprobe"],
         "references": defaults["references"],
         "yolo": defaults["yolo"],
+        # Copied only when set (the video's config, else the defaults): a recording prepared
+        # before keeps its asr receipt.
+        **({steps.GLOSSARY: glossary} if glossary is not None else {}),
     }
 
 
@@ -366,10 +458,21 @@ def prepare(replay_id: str, defaults_path: Path, *, checkout: Path) -> Layout:
     bind_delivery_storage(edit_root, Path(str(defaults["deliveryRoot"])))
     layout = layout_of(replay_id, defaults, checkout)
     layout.steps.mkdir(mode=0o700, parents=True, exist_ok=True)
-    write_once(layout.pipeline, pipeline_config(defaults, layout, replay_id, edit_root))
-    settings = palette.captions_settings(record(defaults["captions"]), palette.intent(edit_root))
+    write_pipeline(layout.pipeline, pipeline_config(defaults, layout, replay_id, edit_root))
+    settings = caption_layout.captions_settings(
+        palette.captions_settings(record(defaults["captions"]), palette.intent(edit_root)),
+        edit_root,
+    )
     write_captions(layout.directory / "captions.json", settings)
     return layout
+
+
+def write_pipeline(path: Path, config: dict[str, object]) -> None:
+    """``write_once``, except that an existing pipeline.json without ``asrGlossary`` is kept as
+    it is: a recording prepared before the defaults gained the key keeps its asr receipt."""
+    if path.exists() and steps.GLOSSARY not in record(json.loads(path.read_text("utf-8"))):
+        config = {key: value for key, value in config.items() if key != steps.GLOSSARY}
+    write_once(path, config)
 
 
 def write_captions(path: Path, settings: dict[str, object]) -> None:
@@ -406,12 +509,38 @@ def downstream(names: Sequence[str]) -> list[str]:
     return [name for name in DEPENDENCIES if name in chosen]
 
 
-def apply_forcing(pipeline: steps.Pipeline, forcing: Forcing) -> list[dict[str, object]]:
+def apply_forcing(
+    pipeline: steps.Pipeline, forcing: Forcing, *, rerun: bool = False
+) -> list[dict[str, object]]:
+    """Remove the forced steps' receipts and outputs, dependents first.
+
+    Unless the caller runs the recording again at once (``rerun``: ``run`` itself), a forcing that
+    would remove a receipt the published delivery's evidence names is refused: the delivery's
+    completion gate reads those files, and nothing would replace them (10-25: a fix-up forcing of
+    paused recordings left 10/02-10/08 deliveries without their evidence).
+    """
     names = list(DEPENDENCIES) if forcing.every else downstream(forcing.names)
+    if not rerun:
+        published = published_evidence(pipeline)
+        named = sorted(str(path) for path in published if path.parent == pipeline.steps
+                       and path.stem in names)  # fmt: skip
+        if named:
+            raise ReplayError(
+                "Forcing would remove receipts the published delivery's gate reads "
+                f"({', '.join(named)}); force them through `run --force` instead"
+            )
     removed: list[dict[str, object]] = []
     for name in reversed(names):  # dependents first, so no receipt outlives its inputs
         removed.extend(steps.reset(pipeline, name, graph_of(name)))
     return removed
+
+
+def published_evidence(pipeline: steps.Pipeline) -> set[Path]:
+    """Every path the recording's published delivery evidence names (none before publish)."""
+    if not (pipeline.steps / "publish.json").is_file():
+        return set()
+    storage = viewer.delivery(pipeline).parents[3]
+    return retirement.named(retirement.evidence_files(pipeline, storage))
 
 
 def stage_of(layout: Layout, python: str, name: str) -> Stage:
@@ -447,13 +576,28 @@ def run(
         if not acquired:
             raise ReplayError("Another run owns this recording's pipeline")
         names = (*ORDER, "retire-intermediates")
-        forced = apply_forcing(pipeline, forcing)
-        for item in [*forced, *force_retired_producers(pipeline, names)]:
+        scope = run_scope(forcing, names)
+        published = (pipeline.steps / "publish.json").is_file()
+        redo = forcing.every or bool(forcing.names)
+        skipped = not_applicable(pipeline, names, scope, published=published, redo=redo)
+        for name, why in skipped.items():
+            print(f"not applicable: {name} ({why})", flush=True)
+        active = tuple(name for name in names if name in scope and name not in skipped)
+        if published:
+            forced_names = set(names) if forcing.every else set(downstream(forcing.names))
+            pending = {name for name in active if name in forced_names
+                       or not (pipeline.steps / f"{name}.json").is_file()}  # fmt: skip
+            refuse_out_of_scope_producers(pipeline, pending, scope)
+        mark_legacy(pipeline, names, skipped)
+        forced = apply_forcing(pipeline, forcing, rerun=True)
+        for item in [*forced, *force_retired_producers(pipeline, active)]:
             print(f"forced: removed {item['path']} ({item['bytes']} bytes)", flush=True)
         python = str(defaults["python"])
         stages = tuple(stage_of(layout, python, name) for name in names)
 
         def execute(stage: Stage, _state: Path) -> Result:
+            if stage.name in skipped:
+                return "skipped"
             if steps.finished(pipeline, stage.name, graph_of(stage.name)):
                 return "reused"
             logs = layout.steps / "logs"
@@ -465,6 +609,7 @@ def run(
                 )
                 raise StageError(f"Drained ({reason}) before {stage.name}")
             started_at = time.time()
+            outputs = graph_of(stage.name).outputs(pipeline, stage.name)
             # Its own work and its cleanup work directories: where finished receipts appear.
             work_roots = (
                 layout.directory,
@@ -495,16 +640,29 @@ def run(
                             ),
                         )
                     )  # fmt: skip
-                step_retry.run_with_retry(
-                    lambda log: owned.execute(command, log, stage.timeout_seconds),
-                    lambda: logs / f"{stage.name}-{time.time_ns()}.run.log",
-                    logs=logs,
-                    step=stage.name,
-                    progress=lambda: step_retry.receipts(work_roots),
-                    recording=replay_id,
-                    volumes=volume_events.snapshot,
-                    receipt_roots=(*work_roots, layout.steps),
-                )
+                try:
+                    step_retry.run_with_retry(
+                        lambda log: owned.execute(
+                            command,
+                            log,
+                            stage.timeout_seconds,
+                            progress=lambda: step_progress(outputs, logs, stage.name),
+                            idle=IDLE_SECONDS[stage.name],
+                        ),
+                        lambda: logs / f"{stage.name}-{time.time_ns()}.run.log",
+                        logs=logs,
+                        step=stage.name,
+                        progress=lambda: step_retry.receipts(work_roots),
+                        recording=replay_id,
+                        volumes=volume_events.snapshot,
+                        receipt_roots=(*work_roots, layout.steps),
+                    )
+                except (ReplayError, StageError) as error:
+                    # A step drained mid-way (cleanup starts no new chunk) fails; the drain owns it.
+                    reason = priority.drained(gpu_lease.root().parent, replay_id)
+                    if reason is None:
+                        raise
+                    raise StageError(f"Drained ({reason}) during {stage.name}") from error
             return "completed"
 
         layout.steps.joinpath("logs").mkdir(mode=0o700, exist_ok=True)
@@ -528,13 +686,32 @@ def run(
         return results
 
 
+def step_progress(outputs: Sequence[Path], logs: Path, step: str) -> int:
+    """Files and bytes under the step's outputs plus the bytes of its logs: grows while it works."""
+    files = [*outputs, *logs.glob(f"{step}*.log")]
+    files += [Path(folder) / name for root in outputs for folder, _, names in os.walk(root)
+              for name in names]  # fmt: skip
+    total = 0
+    for path in files:
+        try:
+            if path.is_file():
+                total += 1 + path.stat().st_size
+        except FileNotFoundError:  # removed while the step works: it simply no longer counts
+            continue
+    return total
+
+
 def snapshotted(step: str, held: ExitStack) -> tuple[str, ...]:
     """``env`` arguments running the step from a code snapshot (none when not enabled)."""
     if not code_snapshot.enabled() or step in code_snapshot.UNSNAPSHOTTED:
         return ()
     sha, snapshot = code_snapshot.materialise(Path(__file__).resolve().parent)
     held.enter_context(code_snapshot.in_use(snapshot))
-    return (f"PYTHONPATH={snapshot}", f"{code_snapshot.VARIABLE}={sha}")
+    return (
+        f"PYTHONPATH={snapshot}",
+        f"{code_snapshot.VARIABLE}={sha}",
+        f"{repository.VARIABLE}={repository.root()}",
+    )
 
 
 def admitted_command(stage: Stage, replay_id: str, held: ExitStack) -> tuple[str, ...]:

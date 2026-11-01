@@ -2,13 +2,15 @@
 
 import json
 import time
+import wave
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from replay import caption_gradient_audit as gradient_audit
-from replay import compressor_guard, pipeline_completion, r2_fetch
+from replay import compressor_guard, pipeline_completion, r2_fetch, voice_remux
 from replay import recording_caption_steps as captions
 from replay import recording_steps as steps
 from replay import recording_viewer_steps as viewer
@@ -148,6 +150,35 @@ class Producers:
         elif name == "replay.caption_fixed_y_job":
             placed = {"plannedRuns": {"placedCues": 9, "failedRuns": [{}]}}
             Path(arguments[4]).write_text(json.dumps(placed), encoding="utf-8")
+        elif name == "replay.voice_repair":
+            repaired_root = Path(arguments[1])
+            repaired_root.mkdir(parents=True)
+            (repaired_root / "vocals.wav").write_bytes(b"r")
+            voice = {"path": str(repaired_root / "vocals.wav"), "sha256": "r"}
+            receipt = {"voice": voice, "repaired": True}
+            (repaired_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+        elif name == "replay.voice_remux":
+            restored = Path(arguments[2])
+            restored.mkdir(parents=True)
+            (restored / "vocals.wav").write_bytes(b"restored")
+        elif name == "replay.clocked_tempo_audio" and "voice-remux-v1" in arguments[1]:
+            tempo = Path(arguments[1])
+            tempo.mkdir(parents=True)
+            (tempo / "candidate.wav").write_bytes(b"tempo")
+            (tempo / "receipt.json").write_text("{}", encoding="utf-8")
+        elif name == "replay.voice_tempo":
+            tempo = Path(arguments[2])
+            tempo.mkdir(parents=True)
+            (tempo / "candidate.wav").write_bytes(b"resampled")
+            (tempo / "receipt.json").write_text("{}", encoding="utf-8")
+        elif name == "replay.voice_judge":
+            Path(arguments[-1]).write_text('{"passed": true}', encoding="utf-8")
+        elif name == "replay.voice_deesser":
+            deessed_root = Path(arguments[1])
+            deessed_root.mkdir(parents=True)
+            (deessed_root / "vocals.wav").write_bytes(b"d")
+            voice = {"path": str(deessed_root / "vocals.wav"), "sha256": "d"}
+            (deessed_root / "receipt.json").write_text(json.dumps({"voice": voice}), "utf-8")
         elif name == "replay.speech_onsets":
             Path(arguments[2]).write_text('{"tokens": []}', encoding="utf-8")
         elif name == "replay.caption_parts":
@@ -966,3 +997,655 @@ def test_captions_read_the_stock_phrase_filtered_labels_when_the_asr_step_wrote_
     assert captions.asr_labels(tmp_path) == tmp_path / "labels-silence-v1.json"
     (tmp_path / "labels-hallucination-v1.json").write_text("{}", encoding="utf-8")
     assert captions.asr_labels(tmp_path) == tmp_path / "labels-hallucination-v1.json"
+
+
+def test_captions_read_the_glossary_corrected_labels_when_the_asr_step_wrote_them(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "labels-hallucination-v1.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "labels-glossary-v1.json").write_text("{}", encoding="utf-8")
+    assert captions.asr_labels(tmp_path) == tmp_path / "labels-glossary-v1.json"
+
+
+class LayoutProducers(Producers):
+    """Also writes what the nameplate, the mix decode and the mix's tempo render would."""
+
+    def __call__(self, command: Sequence[str], log: Path) -> None:
+        if command[0] == "/ffmpeg":
+            Path(command[-1]).write_bytes(b"mix")
+            self.commands.append(list(command))
+            return
+        name = command[command.index("-m") + 1] if "-m" in command else ""
+        arguments = list(command[command.index("-m") + 2 :]) if name else []
+        if name == "replay.caption_layout":
+            Path(arguments[2]).parent.mkdir(parents=True, exist_ok=True)
+            Path(arguments[2]).write_bytes(b"badge")
+        elif name == "replay.clocked_tempo_audio":
+            Path(arguments[1]).mkdir()
+            (Path(arguments[1]) / "candidate.wav").write_bytes(b"mix tempo")
+            (Path(arguments[1]) / "receipt.json").write_text("{}", encoding="utf-8")
+        super().__call__(command, log)
+
+
+def layout_settings(tmp_path: Path) -> dict[str, object]:
+    icon, font = tmp_path / "icon.png", tmp_path / "font.ttf"
+    icon.write_bytes(b"icon")
+    font.write_bytes(b"font")
+    speaker = {
+        "name": "speaker", "icon": str(icon), "iconSha256": steps.sha256(icon), "font": str(font),
+        "fontSha256": steps.sha256(font), "iconX": 600, "iconY": 860, "iconSize": 150,
+        "nameSize": 36,
+    }  # fmt: skip
+    return {
+        "version": 1, "canvas": [1920, 1080], "align": "left", "originX": 780,
+        "regionTop": 560, "regionBottom": 1056, "regionRight": 1880, "speaker": speaker,
+    }  # fmt: skip
+
+
+def with_intents(tmp_path: Path, **intents: object) -> Path:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, **intents}), "utf-8")
+    return path
+
+
+def test_a_layout_places_left_aligned_bottom_captions_on_its_canvas(tmp_path: Path) -> None:
+    path = with_intents(tmp_path, layout=layout_settings(tmp_path))
+    producers = LayoutProducers(tmp_path)
+    run_through(path, producers, "cut-plan", "paging")
+    cuts = {"cuts": [{"source_start_frame": 10, "source_end_frame": 40, "output_start_frame": 60}]}
+    (tmp_path / "replay-123/cut-plan-v1/supported-cuts.json").write_text(json.dumps(cuts), "utf-8")
+    steps.execute("placement", path, run=producers, graph=captions.BACK)
+    command = producers.commands[-1]
+    assert command[command.index("--canvas") : command.index("--maximum-drift")] == [
+        "--canvas", "1920", "1080", "--align", "left", "--origin-x", "780",
+        "--region-top", "560", "--region-bottom", "1056", "--region-right", "1880",
+        "--clearance", "0", "--ignore-person",
+    ]  # fmt: skip
+    assert "--yolo-track" not in command
+
+
+def test_a_layout_reaches_the_parts_and_puts_its_nameplate_over_every_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = with_intents(tmp_path, layout=layout_settings(tmp_path))
+    producers = LayoutProducers(tmp_path)
+    (tmp_path / "replay-123/placement-v1.json").write_text("{}", encoding="utf-8")
+    for name in ("cut-plan", "paging", "placement", "onsets", "caption-render"):
+        (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
+    run_through(path, producers, "caption-parts")
+    parts = producers.commands[0]
+    assert parts[parts.index("--width") : parts.index("--")] == [
+        "--width", "1920", "--height", "1080", "--align", "left"
+    ]  # fmt: skip
+    monkeypatch.setattr(captions, "packet_count", lambda _p: -1)
+    run_through(path, producers, "compose")
+    badge = tmp_path / "media/replay-123/badge/badge.mov"
+    drawn, planned = producers.commands[1], producers.commands[2]
+    assert drawn[drawn.index("-m") + 1 :] == [
+        "replay.caption_layout", "badge", str(tmp_path / "captions.json"), str(badge),
+        "--ffmpeg", "/ffmpeg", "--seconds", "121",
+    ]  # fmt: skip
+    assert planned[-5:] == ["--canvas", "1920", "1080", "--badge", str(badge)]
+    composed = json.loads((tmp_path / "steps/compose.json").read_text(encoding="utf-8"))
+    assert composed["outputs"]["badge"]["path"] == str(badge)
+
+
+def test_a_layout_without_a_speaker_gives_compose_only_its_canvas(tmp_path: Path) -> None:
+    layout = layout_settings(tmp_path)
+    del layout["speaker"]
+    path = with_intents(tmp_path, layout=layout)
+    producers = LayoutProducers(tmp_path)
+    log = tmp_path / "log"
+    pipeline = steps.load(path)
+    settings = captions.load_captions(pipeline)
+    assert captions.compose_layout(pipeline, settings, producers, log) == [
+        "--canvas", "1920", "1080"
+    ]  # fmt: skip
+    assert producers.commands == []
+
+
+def mix_inputs(tmp_path: Path) -> Path:
+    path = with_intents(
+        tmp_path,
+        deliveryAudio={"version": 1, "source": "original-mix", "intent": "keep the music"},
+        voiceLoudness={"targetLufs": -18, "truePeakDbtp": -1},
+    )
+    work = tmp_path / "replay-123"
+    vocals = work / "separation-v1/pipeline/vocals.wav"
+    (work / "paging-v1/prepared").mkdir(parents=True)
+    selection = {"version": 1, "source": steps.pin(vocals), "intervals": []}
+    (work / "paging-v1/prepared/tempo-selection.json").write_text(json.dumps(selection), "utf-8")
+    gain = {"version": 1, "gainDB": -0.5, "peakDB": 0.4,
+            "source": {"path": str(tmp_path / "decodable.mp4"), "sha256": "d" * 64}}  # fmt: skip
+    (work / "separation-v1/input-gain.json").write_text(json.dumps(gain), "utf-8")
+    for name in ("cut-plan", "paging", "placement", "onsets", "caption-parts", "caption-render"):
+        (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
+    return path
+
+
+def test_kept_music_is_the_mix_cut_and_timed_as_the_voice_and_levelled_by_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = mix_inputs(tmp_path)
+    monkeypatch.setattr(captions, "pcm_layout", lambda _path: (44, 1000))
+    monkeypatch.setattr(captions, "packet_count", lambda _p: -1)
+    restored: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        captions, "restore_music", lambda *paths: restored.append(tuple(p.name for p in paths))
+    )
+    producers = LayoutProducers(tmp_path)
+    run_through(path, producers, "compose", "finish")
+    work = tmp_path / "replay-123"
+    root = work / "delivery-audio-v1"
+    decode = producers.commands[1]
+    assert decode[decode.index("-i") + 1] == str(tmp_path / "decodable.mp4")
+    assert "asetpts=N/SR/TB,aresample=44100,volume=-0.500000dB" in decode
+    assert (root / "mix.wav").read_bytes() == b"mix"
+    assert restored == [(".mix.partial.wav", "vocals.wav", "vocals.wav")]
+    rebound = json.loads((root / "tempo-selection.json").read_text(encoding="utf-8"))
+    assert rebound["source"] == steps.pin(root / "mix.wav")
+    tempo = producers.commands[2]
+    assert tempo[tempo.index("-m") + 1 : tempo.index("--sha256")] == [
+        "replay.clocked_tempo_audio", str(root / "tempo-selection.json"), str(root / "tempo")
+    ]  # fmt: skip
+    voice_tempo = str(work / "paging-v1/prepared/tempo/candidate.wav")
+    render, finished = producers.commands[3], producers.commands[4]
+    assert render[render.index("--tempo") + 1] == str(root / "tempo/candidate.wav")
+    assert render[-2:] == ["--loudness-reference", voice_tempo]
+    assert finished[finished.index("finish") + 2] == str(root / "tempo/candidate.wav")
+    assert finished[-2:] == ["--loudness-reference", voice_tempo]
+    finish = json.loads((tmp_path / "steps/finish.json").read_text(encoding="utf-8"))
+    composed = json.loads((tmp_path / "steps/compose.json").read_text(encoding="utf-8"))
+    assert finish["outputs"]["deliveryAudio"] == composed["outputs"]["deliveryAudio"]
+    assert finish["outputs"]["deliveryAudio"]["intent"] == "keep the music"
+    assert finish["outputs"]["deliveryAudio"]["tempo"]["path"] == str(root / "tempo/candidate.wav")
+
+
+def test_a_mix_of_another_length_than_the_voice_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = mix_inputs(tmp_path)
+    (tmp_path / "replay-123/separation-v1/input-gain.json").unlink()
+    monkeypatch.setattr(
+        captions, "pcm_layout", lambda path: (44, 999 if path.name.startswith(".mix") else 1000)
+    )
+    producers = LayoutProducers(tmp_path)
+    pipeline = steps.load(path)
+    with pytest.raises(ReplayError, match="differ in length"):
+        captions.delivery_tempo(pipeline, captions.load_captions(pipeline), producers, tmp_path)
+    decode = producers.commands[0]
+    assert decode[decode.index("-i") + 1] == str(tmp_path / "source.mp4")
+    assert "asetpts=N/SR/TB,aresample=44100,volume=-0.100000dB" in decode
+
+
+def test_a_tempo_selection_of_another_voice_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = mix_inputs(tmp_path)
+    monkeypatch.setattr(captions, "pcm_layout", lambda _path: (44, 1000))
+    monkeypatch.setattr(captions, "restore_music", lambda *_paths: None)
+    (tmp_path / "replay-123/separation-v1/pipeline/vocals.wav").write_bytes(b"changed")
+    pipeline = steps.load(path)
+    with pytest.raises(ReplayError, match="no longer names the separated voice"):
+        captions.delivery_tempo(
+            pipeline, captions.load_captions(pipeline), LayoutProducers(tmp_path), tmp_path
+        )
+
+
+def pcm16(path: Path, samples: list[int]) -> Path:
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(44100)
+        out.writeframes(np.array(samples, np.int16).tobytes())
+    return path
+
+
+def test_the_music_returns_under_the_processed_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(captions, "MUSIC_BLOCK", 3)  # several blocks, one partial
+    mix = pcm16(tmp_path / "mix.wav", [100, 200, 32700, -32700, 0, 50])
+    raw = pcm16(tmp_path / "raw.wav", [40, 200, -700, 700, 0, 0])
+    voice = pcm16(tmp_path / "voice.wav", [10, 100, 0, 0, 7, 0])
+    captions.restore_music(mix, raw, voice)
+    with wave.open(str(mix)) as done:
+        assert np.frombuffer(done.readframes(3), np.int16).tolist() == [
+            70, 100, 32767, -32768, 7, 50
+        ]  # fmt: skip
+    short = pcm16(tmp_path / "short.wav", [1, 2])
+    with pytest.raises(ReplayError, match="differ in layout"):
+        captions.restore_music(mix, raw, short)
+
+
+def test_a_rendered_mix_tempo_is_reused(tmp_path: Path) -> None:
+    path = mix_inputs(tmp_path)
+    tempo = tmp_path / "replay-123/delivery-audio-v1/tempo"
+    tempo.mkdir(parents=True)
+    (tempo / "receipt.json").write_text("{}", encoding="utf-8")
+    pipeline = steps.load(path)
+    producers = LayoutProducers(tmp_path)
+    found = captions.delivery_tempo(pipeline, captions.load_captions(pipeline), producers, tmp_path)
+    assert (found, producers.commands) == (tempo / "candidate.wav", [])
+
+
+@pytest.mark.parametrize(
+    ("intents", "message"),
+    [
+        ({"layout": {"version": 1}}, "caption-layout.json must hold exactly"),
+        ({"deliveryAudio": {"version": 1, "source": "voice", "intent": "x"}}, "delivery-audio"),
+    ],
+)
+def test_invalid_intents_are_refused(
+    tmp_path: Path, intents: dict[str, object], message: str
+) -> None:
+    path = with_intents(tmp_path, **intents)
+    with pytest.raises(ReplayError, match=message):
+        captions.load_captions(steps.load(path))
+
+
+def test_a_layouts_nameplate_is_retired_with_the_renders(tmp_path: Path) -> None:
+    pipeline = renders(tmp_path, gate={"complete": True}, evidence="{}")
+    badge = tmp_path / "media/replay-123/badge"
+    badge.mkdir()
+    (badge / "badge.mov").write_bytes(b"plate")
+    outputs = captions.retire_renders(pipeline, lambda _command, _log: None)
+    assert outputs == {
+        "removed": [
+            {"path": str(tmp_path / "media/replay-123/alpha"), "bytes": 5},
+            {"path": str(tmp_path / "media/replay-123/compose"), "bytes": 8},
+            {"path": str(badge), "bytes": 5},
+        ],
+        "bytes": 18,
+    }
+    assert not badge.exists()
+
+
+def repairing(tmp_path: Path) -> Path:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceRepair": True}), "utf-8")
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    return path
+
+
+def test_without_voice_repair_the_separated_voice_passes_through(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-repair", path, run=producers, graph=captions.BACK)
+    outputs = json.loads(receipt.read_text(encoding="utf-8"))["outputs"]
+    assert outputs == {
+        "voice": {
+            "path": str(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
+            "sha256": steps.sha256(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
+        },
+        "repaired": False,
+    }
+    assert producers.commands == []
+
+
+def test_voice_repair_runs_offline_and_paging_reads_the_repaired_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repairing(tmp_path)
+    producers = Producers(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    run_through(path, producers, "voice-repair", "cut-plan", "paging")
+    command = producers.commands[0]
+    assert "HF_HUB_OFFLINE=1" in command
+    assert f"TMPDIR={tmp_path / 'replay-123/voice-repair-scratch'}" in command
+    assert command[command.index("-m") - 2 :] == [
+        str(tmp_path / "edits/.venv-voice-repair/bin/python"), "-B",
+        "-m", "replay.voice_repair",
+        str(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
+        str(tmp_path / "replay-123/voice-repair-v1"),
+        "--source", str(tmp_path / "source.mp4"), "--gain-db", "-0.1", "--ffmpeg", "/ffmpeg",
+        "--speaker", str(tmp_path / "edits/models/wavlm-base-plus-sv"),
+    ]  # fmt: skip
+    repaired = tmp_path / "replay-123/voice-repair-v1/vocals.wav"
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    assert outputs["voice"] == {"path": str(repaired), "sha256": steps.sha256(repaired)}
+    assert outputs["repaired"] is True
+    config = json.loads((tmp_path / "replay-123/paging-v1/config.json").read_text("utf-8"))
+    assert config["inputs"]["stereoPCM"] == {
+        "path": str(repaired),
+        "sha256": "454349e422f05297191ead13e21d3db520e5abef52055e4964b82fb213f593a1",
+    }
+    (tmp_path / "steps/voice-repair.json").unlink()
+    steps.execute("voice-repair", path, run=producers, graph=captions.BACK)
+    assert len(producers.commands) == 4  # an existing repair receipt is reused
+    assert captions.step_outputs(steps.load(path), "voice-repair") == (
+        tmp_path / "replay-123/voice-repair-v1",
+        tmp_path / "replay-123/voice-repair-scratch",
+        tmp_path / "replay-123/voice-deesser-v1",
+        tmp_path / "replay-123/voice-restore-v1",
+    )
+
+
+def test_the_cut_plan_with_voice_repair_set_needs_the_repair_receipt(tmp_path: Path) -> None:
+    path = repairing(tmp_path)
+    with pytest.raises(ReplayError, match="voice-repair has not passed"):
+        run_through(path, Producers(tmp_path), "cut-plan")
+
+
+def test_a_paging_receipt_bound_before_voice_repair_existed_is_still_finished(
+    tmp_path: Path,
+) -> None:
+    path = configure(tmp_path)
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    run_through(path, producers, "cut-plan", "paging")
+    recorded = json.loads((tmp_path / "steps/paging.json").read_text("utf-8"))["inputs"]
+    assert str(tmp_path / "steps/voice-repair.json") not in recorded
+    run_through(path, producers, "voice-repair")
+    assert steps.finished(steps.load(path), "paging", graph=captions.BACK) is True
+
+
+def test_a_voice_repair_setting_other_than_true_is_refused(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceRepair": 1}), "utf-8")
+    with pytest.raises(ReplayError, match="voiceRepair takes only true"):
+        captions.load_captions(steps.load(path))
+
+
+def test_the_deesser_alone_turns_down_the_separated_voice_for_paging(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceDeesser": True}), "utf-8")
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    run_through(path, producers, "voice-repair", "cut-plan", "paging")
+    assert producers.commands[0] == [
+        "/py", "-B", "-m", "replay.voice_deesser",
+        str(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
+        str(tmp_path / "replay-123/voice-deesser-v1"),
+    ]  # fmt: skip
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    deessed = tmp_path / "replay-123/voice-deesser-v1/vocals.wav"
+    assert outputs["voice"] == {"path": str(deessed), "sha256": steps.sha256(deessed)}
+    assert outputs["repaired"] is False
+    config = json.loads((tmp_path / "replay-123/paging-v1/config.json").read_text("utf-8"))
+    assert config["inputs"]["stereoPCM"]["path"] == str(deessed)
+    lineage = json.loads(
+        (tmp_path / "replay-123/cut-plan-v1/lineage-template.json").read_text("utf-8")
+    )
+    assert lineage["artifactPaths"]["stereoPCM"] == str(deessed)
+
+
+def test_the_deesser_runs_on_the_repaired_voice_when_both_are_set(tmp_path: Path) -> None:
+    path = repairing(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceDeesser": True}), "utf-8")
+    producers = Producers(tmp_path)
+    run_through(path, producers, "voice-repair")
+    assert producers.commands[1][-2:] == [
+        str(tmp_path / "replay-123/voice-repair-v1/vocals.wav"),
+        str(tmp_path / "replay-123/voice-deesser-v1"),
+    ]
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    assert outputs["repaired"] is True
+    assert outputs["deesser"]["path"] == str(tmp_path / "replay-123/voice-deesser-v1/receipt.json")
+
+
+def test_a_deesser_setting_other_than_true_is_refused(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceDeesser": 1}), "utf-8")
+    with pytest.raises(ReplayError, match="voiceDeesser takes only true"):
+        captions.load_captions(steps.load(path))
+
+
+def finished(tmp_path: Path) -> Path:
+    path = configure(tmp_path)
+    movie = tmp_path / "media/replay-123/final/candidate.mp4"
+    movie.parent.mkdir(parents=True)
+    movie.write_bytes(b"movie")
+    (tmp_path / "steps/finish.json").write_text(
+        json.dumps({"outputs": {"movie": {"path": str(movie), "sha256": "m"}}}), encoding="utf-8"
+    )
+    return path
+
+
+def test_without_settings_voice_remux_passes_the_finished_movie_on(tmp_path: Path) -> None:
+    path = finished(tmp_path)
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-remux", path, run=producers, graph=captions.BACK)
+    outputs = json.loads(receipt.read_text(encoding="utf-8"))["outputs"]
+    assert outputs == {
+        "movie": {"path": str(tmp_path / "media/replay-123/final/candidate.mp4"), "sha256": "m"},
+        "remuxed": False,
+    }
+    assert producers.commands == []
+    assert captions.delivered_movie(steps.load(path)) == outputs["movie"]
+
+
+def test_voice_remux_restores_the_voice_and_remuxes_without_touching_the_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = finished(tmp_path)
+    vocals = tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"
+    prepared = tmp_path / "replay-123/paging-v1/prepared"
+    prepared.mkdir(parents=True)
+    selection = {"version": 1, "source": steps.pin(vocals), "intervals": []}
+    (prepared / "tempo-selection.json").write_text(json.dumps(selection), encoding="utf-8")
+    (tmp_path / "voice-remux.json").write_text(
+        json.dumps({"version": 1, "components": ["deesser"]}), encoding="utf-8"
+    )
+    encoded: list[object] = []
+
+    def encode(tempo: Path, audio: Path, *, ffmpeg: str, loudness: object) -> Path:
+        encoded.append((tempo, loudness))
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"aac")
+        return audio
+
+    def mux(movie: Path, audio: Path, output: Path, *, ffmpeg: str) -> int:
+        output.parent.mkdir(parents=True)
+        output.write_bytes(movie.read_bytes() + audio.read_bytes())
+        return 5
+
+    monkeypatch.setattr(captions, "encode_audio", encode)
+    monkeypatch.setattr(voice_remux, "remuxed", mux)
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-remux", path, run=producers, graph=captions.BACK)
+    assert modules(producers) == [
+        "replay.voice_remux", "replay.clocked_tempo_audio", "replay.voice_judge"
+    ]  # fmt: skip
+    restored = tmp_path / "replay-123/voice-remux-v1/voice/vocals.wav"
+    rebound = json.loads((tmp_path / "replay-123/voice-remux-v1/tempo-selection.json").read_text())
+    assert rebound == {**selection, "source": steps.pin(restored)}
+    assert encoded == [(tmp_path / "replay-123/voice-remux-v1/tempo/candidate.wav", None)]
+    outputs = json.loads(receipt.read_text(encoding="utf-8"))["outputs"]
+    remuxed = tmp_path / "media/replay-123/final-remux/candidate.mp4"
+    assert outputs["remuxed"] is True
+    assert outputs["movie"] == steps.pin(remuxed)
+    assert captions.delivered_movie(steps.load(path)) == steps.pin(remuxed)
+    assert captions.step_outputs(steps.load(path), "voice-remux") == (
+        tmp_path / "replay-123/voice-remux-v1",
+        tmp_path / "media/replay-123/final-remux",
+    )
+
+
+def remux_fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vocals = tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"
+    prepared = tmp_path / "replay-123/paging-v1/prepared"
+    prepared.mkdir(parents=True)
+    selection = {"version": 1, "source": steps.pin(vocals), "intervals": []}
+    (prepared / "tempo-selection.json").write_text(json.dumps(selection), encoding="utf-8")
+
+    def encode(tempo: Path, audio: Path, *, ffmpeg: str, loudness: object) -> Path:
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(tempo.read_bytes())
+        return audio
+
+    def mux(movie: Path, audio: Path, output: Path, *, ffmpeg: str) -> int:
+        output.parent.mkdir(parents=True)
+        output.write_bytes(movie.read_bytes() + audio.read_bytes())
+        return 5
+
+    monkeypatch.setattr(captions, "encode_audio", encode)
+    monkeypatch.setattr(voice_remux, "remuxed", mux)
+
+
+def test_voice_remux_resamples_the_tempo_of_the_delivered_voice_and_judges_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = finished(tmp_path)
+    remux_fakes(tmp_path, monkeypatch)
+    (tmp_path / "voice-remux.json").write_text(
+        json.dumps({"version": 1, "components": [], "tempo": "resample"}), encoding="utf-8"
+    )
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-remux", path, run=producers, graph=captions.BACK)
+    vocals = tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"
+    work = tmp_path / "replay-123/voice-remux-v1"
+    assert producers.commands == [
+        ["/py", "-B", "-m", "replay.voice_tempo", str(vocals),
+         str(tmp_path / "replay-123/paging-v1/prepared/tempo/receipt.json"), str(work / "tempo")],
+        ["/py", "-B", "-m", "replay.voice_judge", "tempo", str(vocals),
+         str(work / "tempo/candidate.wav"), str(work / "tempo/receipt.json"),
+         str(work / "judge.json")],
+    ]  # fmt: skip
+    outputs = json.loads(receipt.read_text(encoding="utf-8"))["outputs"]
+    assert outputs["tempoBackend"] == "resample"
+    assert outputs["voice"] == steps.pin(vocals)
+    assert outputs["judge"] == steps.pin(work / "judge.json")
+    assert outputs["settings"] == steps.pin(tmp_path / "voice-remux.json")
+    remuxed = tmp_path / "media/replay-123/final-remux/candidate.mp4"
+    assert remuxed.read_bytes() == b"movieresampled"
+
+
+def test_voice_judge_alone_delivers_the_judged_resampled_tempo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = finished(tmp_path)
+    remux_fakes(tmp_path, monkeypatch)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceJudge": True}), "utf-8")
+    vocals = tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"
+    (tmp_path / "steps/voice-repair.json").write_text(
+        json.dumps({"outputs": {"voice": steps.pin(vocals)}}), encoding="utf-8"
+    )
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-remux", path, run=producers, graph=captions.BACK)
+    assert modules(producers) == ["replay.voice_tempo", "replay.voice_judge"]
+    outputs = json.loads(receipt.read_text(encoding="utf-8"))["outputs"]
+    assert outputs["tempoBackend"] == "resample"
+    assert "settings" not in outputs
+
+
+def test_voice_judge_gates_the_deessed_voice(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(
+        json.dumps({**settings, "voiceDeesser": True, "voiceJudge": True}), "utf-8"
+    )
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    run_through(path, producers, "voice-repair")
+    report = tmp_path / "replay-123/voice-repair-v1/judge.json"
+    assert producers.commands[1] == [
+        "/py", "-B", "-m", "replay.voice_judge", "same",
+        str(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
+        str(tmp_path / "replay-123/voice-deesser-v1/vocals.wav"), str(report),
+    ]  # fmt: skip
+    assert len(producers.commands) == 2  # no ML resynthesis
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    assert outputs["judge"] == steps.pin(report)
+    assert outputs["voice"] == steps.pin(tmp_path / "replay-123/voice-deesser-v1/vocals.wav")
+    assert "restore" not in outputs
+
+
+def test_voice_judge_alone_runs_no_ml_restoration(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceJudge": True}), "utf-8")
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    run_through(path, producers, "voice-repair")
+    assert modules(producers) == []
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    assert "restore" not in outputs
+
+
+def test_a_voice_judge_setting_other_than_true_is_refused(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceJudge": "yes"}), "utf-8")
+    with pytest.raises(ReplayError, match="voiceJudge takes only true"):
+        captions.load_captions(steps.load(path))
+
+
+def test_voice_remux_refuses_a_tempo_selection_of_another_voice(tmp_path: Path) -> None:
+    path = finished(tmp_path)
+    prepared = tmp_path / "replay-123/paging-v1/prepared"
+    prepared.mkdir(parents=True)
+    (prepared / "tempo-selection.json").write_text(
+        json.dumps({"source": {"path": "/other.wav", "sha256": "x"}}), encoding="utf-8"
+    )
+    (tmp_path / "voice-remux.json").write_text(
+        json.dumps({"version": 1, "components": ["deesser"]}), encoding="utf-8"
+    )
+    with pytest.raises(ReplayError, match="no longer names the delivered voice"):
+        steps.execute("voice-remux", path, run=Producers(tmp_path), graph=captions.BACK)
+
+
+def test_the_judge_alone_passes_a_delivery_that_keeps_its_music_on(tmp_path: Path) -> None:
+    path = finished(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    intent = {"version": 1, "source": "original-mix", "intent": "kept"}
+    (tmp_path / "captions.json").write_text(
+        json.dumps({**settings, "deliveryAudio": intent, "voiceJudge": True})
+    )
+    producers = Producers(tmp_path)
+    receipt = steps.execute("voice-remux", path, run=producers, graph=captions.BACK)
+    assert json.loads(receipt.read_text(encoding="utf-8"))["outputs"]["remuxed"] is False
+    assert producers.commands == []
+
+
+def test_voice_remux_refuses_a_delivery_that_keeps_its_music(tmp_path: Path) -> None:
+    path = finished(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    intent = {"version": 1, "source": "original-mix", "intent": "kept"}
+    (tmp_path / "captions.json").write_text(json.dumps({**settings, "deliveryAudio": intent}))
+    (tmp_path / "voice-remux.json").write_text(
+        json.dumps({"version": 1, "components": ["deesser"]}), encoding="utf-8"
+    )
+    with pytest.raises(ReplayError, match="keeps its music has none"):
+        steps.execute("voice-remux", path, run=Producers(tmp_path), graph=captions.BACK)
+
+
+def test_publication_needs_a_finished_movie(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    with pytest.raises(ReplayError, match="Neither voice-remux nor finish"):
+        captions.delivered_movie(steps.load(path))
+
+
+def test_the_youtube_encode_step_encodes_the_published_delivery(tmp_path: Path) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    delivery = tmp_path / "storage/revisions/p/delivery/S_JST_r-review.mp4"
+    (tmp_path / "steps" / "publish.json").write_text(
+        json.dumps({"outputs": {"delivery": str(delivery)}}), encoding="utf-8"
+    )
+    encoded = tmp_path / "storage/revisions/p/youtube/S_JST_r-review-youtube.mov"
+    commands: list[list[str]] = []
+
+    def run(command: Sequence[str], _log: Path) -> None:
+        commands.append(list(command))
+        encoded.parent.mkdir(parents=True)
+        encoded.write_bytes(b"encoded")
+
+    outputs = captions.youtube_encode_step(pipeline, run)
+    assert commands[0][3:] == [
+        "replay.youtube_encode", str(delivery), "--state",
+        str(pipeline.work / "youtube-encode-v1"), "--ffprobe", pipeline.text("ffprobe"),
+    ]  # fmt: skip
+    assert outputs == {
+        "youtube": {
+            "path": str(encoded),
+            "sha256": "766adc67b02bf315b9b5057994bfe6cfbd9354c433f259b29ba415dbe0f7afa5",
+        }
+    }

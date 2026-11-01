@@ -18,6 +18,7 @@ from replay import (
     memory_admission,
     recording_caption_steps,
     recording_steps,
+    step_retry,
     volume_events,
 )
 from replay import recording_pipeline as pipeline
@@ -152,6 +153,32 @@ def test_prepare_writes_the_pipeline_configuration(tmp_path: Path) -> None:
     assert config.steps == layout.steps
 
 
+def test_prepare_copies_the_glossary_key_only_when_the_defaults_set_it(tmp_path: Path) -> None:
+    edit_root(tmp_path)
+    layout = pipeline.prepare("42", defaults(tmp_path), checkout=tmp_path)
+    assert ("asrGlossary" in json.loads(layout.pipeline.read_text("utf-8"))) is False
+    other = tmp_path / "other"
+    other.mkdir()
+    edit_root(other)
+    glossary = defaults(other, asrGlossary=["/g/common.json"])
+    assert pipeline.load_defaults(glossary)["asrGlossary"] == ["/g/common.json"]
+    layout = pipeline.prepare("42", glossary, checkout=other)
+    assert recording_steps.load(layout.pipeline).data["asrGlossary"] == ["/g/common.json"]
+
+
+def test_a_recording_prepared_before_the_glossary_key_keeps_its_pipeline(tmp_path: Path) -> None:
+    edit_root(tmp_path)
+    layout = pipeline.prepare("42", defaults(tmp_path), checkout=tmp_path)
+    before = layout.pipeline.read_bytes()
+    pipeline.prepare("42", defaults(tmp_path, asrGlossary=["/g/common.json"]), checkout=tmp_path)
+    assert layout.pipeline.read_bytes() == before
+
+
+def test_defaults_with_an_invalid_glossary_key_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(ReplayError, match="asrGlossary"):
+        pipeline.load_defaults(defaults(tmp_path, asrGlossary=["relative.json"]))
+
+
 def test_prepare_writes_captions_with_the_recordings_palette(tmp_path: Path) -> None:
     root = edit_root(tmp_path)
     path = defaults(tmp_path)
@@ -167,6 +194,16 @@ def test_prepare_writes_captions_with_the_recordings_palette(tmp_path: Path) -> 
     assert written["motionFinish"][:4] == [
         "--top", "0.7137254901960784", "0.8745098039215686", "0.6196078431372549"
     ]  # fmt: skip
+
+
+def test_prepare_writes_captions_with_the_recordings_kept_music(tmp_path: Path) -> None:
+    root = edit_root(tmp_path)
+    audio = {"version": 1, "source": "original-mix", "intent": "kept by request"}
+    (root / "delivery-audio.json").write_text(json.dumps(audio), encoding="utf-8")
+    layout = pipeline.prepare("42", defaults(tmp_path), checkout=tmp_path)
+    written = json.loads((layout.directory / "captions.json").read_text(encoding="utf-8"))
+    assert written["deliveryAudio"] == audio
+    assert "layout" not in written
 
 
 def test_prepare_is_idempotent_and_refuses_changed_content(tmp_path: Path) -> None:
@@ -208,9 +245,11 @@ def test_run_executes_every_step_then_skips_them_all(
     assert sorted(ran(tmp_path)[1:3]) == ["clocks", "separation"]
     assert ran(tmp_path).index("finish") > ran(tmp_path).index("compose")
     assert ran(tmp_path).index("summary") > ran(tmp_path).index("summarize")
+    # cleanup reads yolo-track's stored caption boxes, so YOLO runs once per recording.
+    assert ran(tmp_path).index("cleanup") > ran(tmp_path).index("yolo-track")
     second = pipeline.run("42", path, checkout=tmp_path)
     assert set(second.values()) == {"reused"}
-    assert len(ran(tmp_path)) == 24
+    assert len(ran(tmp_path)) == 27
 
 
 def test_forcing_a_step_redoes_it_and_its_dependents(
@@ -231,6 +270,7 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "upload-original": "reused",
         "retire-intermediates": "completed",
         "cut-plan": "completed",
+        "voice-repair": "completed",
         "paging": "completed",
         "onsets": "completed",
         "placement": "completed",
@@ -238,7 +278,9 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "caption-render": "completed",
         "compose": "completed",
         "finish": "completed",
+        "voice-remux": "completed",
         "publish": "completed",
+        "youtube-encode": "completed",
         "summarize": "completed",
         "excitement": "completed",
         "upload": "completed",
@@ -256,7 +298,7 @@ def test_forcing_everything_redoes_every_step(
     pipeline.run("42", path, checkout=tmp_path)
     results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(every=True))
     assert set(results.values()) == {"completed"}
-    assert len(ran(tmp_path)) == 48
+    assert len(ran(tmp_path)) == 54
 
 
 def test_a_second_run_of_the_same_recording_is_refused(
@@ -278,7 +320,9 @@ def test_downstream_includes_every_dependent_step() -> None:
         "retire-intermediates",
         "compose",
         "finish",
+        "voice-remux",
         "publish",
+        "youtube-encode",
         "excitement",
         "upload",
         "summarize",
@@ -643,7 +687,7 @@ def test_the_clips_step_reserves_its_model_footprint_until_measured(
     directory = tmp_path / "memory-reservations"
     with ExitStack() as held:
         assert pipeline.admitted_command(ml_stage("clips"), "1", held) == ("py", "-m", "x", "clips")
-        assert memory_admission.reserved(directory) == 24 * 2**30
+        assert memory_admission.reserved(directory) == 30 * 2**30
     memory_admission.record_peak(directory, "clips", 22 * 2**30)
     with ExitStack() as held:
         pipeline.admitted_command(ml_stage("clips"), "1", held)
@@ -669,6 +713,21 @@ def test_a_drained_run_exits_with_its_own_status(
     assert capsys.readouterr().err.count("Drained (drain) before asr") == 2
 
 
+def test_a_step_that_fails_while_drained_reports_the_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    pipeline.prepare("42", path, checkout=tmp_path)
+
+    def drained_midway(*_a: object, **_k: object) -> None:
+        priority.drain(tmp_path, "42", "relaunch")  # gpu_lease.root() is tmp_path / "gpu-leases"
+        raise StageError("Stage command failed; inspect the log")
+
+    monkeypatch.setattr(step_retry, "run_with_retry", drained_midway)
+    with pytest.raises(StageError, match=r"Drained \(relaunch\) during audio-clock"):
+        pipeline.run("42", path, checkout=tmp_path)
+
+
 def test_a_step_runs_from_a_code_snapshot_once_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -685,6 +744,7 @@ def test_a_step_runs_from_a_code_snapshot_once_enabled(
         assert pipeline.snapshotted("paging", held) == (
             f"PYTHONPATH={tmp_path / 'snapshots' / 'x'}",
             "REPLAY_CODE_SNAPSHOT=" + "ab" * 32,
+            f"REPLAY_REPOSITORY_ROOT={Path(pipeline.__file__).resolve().parents[2]}",
         )
         assert len(list((tmp_path / "snapshots").glob("x.in-use.*"))) == 1
         assert pipeline.snapshotted("caption-render", held) == ()
@@ -753,9 +813,206 @@ def test_a_finished_run_retires_and_a_later_run_forces_what_a_step_needs_back(
     )  # fmt: skip
     # Nothing to run: nothing is forced.
     assert set(pipeline.run("42", path, checkout=tmp_path).values()) == {"reused"}
+    # Published, compose's redo may not force cleanup (outside its scope): nothing is removed.
+    with pytest.raises(ReplayError, match=r"cleanup \(for compose\) outside this redo's scope"):
+        pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(("compose",)))
+    assert (layout.steps / "compose.json").is_file()
+    assert (layout.steps / "cleanup.json").is_file()
+    # Unpublished, the redo forces the producer as before.
+    (layout.steps / "publish.json").unlink()
     results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(("compose",)))
     out = capsys.readouterr().out
     assert f"retired intermediates: forcing cleanup for compose ({gone})" in out
     assert results["cleanup"] == "completed"
     assert results["compose"] == "completed"
     assert results["separation"] == "reused"
+
+
+def test_step_progress_counts_output_files_bytes_and_the_step_logs(tmp_path: Path) -> None:
+    outputs = tmp_path / "out"
+    (outputs / "part").mkdir(parents=True)
+    (outputs / "part" / "a.bin").write_bytes(b"12345")
+    single = tmp_path / "receipt.json"
+    single.write_bytes(b"{}")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "compose.log").write_bytes(b"abc")
+    (logs / "other.log").write_bytes(b"ignored")
+    progress = pipeline.step_progress([outputs, single, tmp_path / "missing"], logs, "compose")
+    assert progress == (1 + 5) + (1 + 2) + (1 + 3)
+    (outputs / "part" / "b.bin").write_bytes(b"x")
+    assert pipeline.step_progress([outputs], logs, "compose") == (1 + 5) + (1 + 1) + (1 + 3)
+
+
+def test_every_step_is_bounded_by_progress_under_the_outer_cap() -> None:
+    assert (
+        set(pipeline.IDLE_SECONDS)
+        == set(pipeline.TIMEOUTS)
+        == set(pipeline.ORDER) | {"retire-intermediates"}
+    )
+    assert set(pipeline.TIMEOUTS.values()) == {pipeline.OUTER_CAP}
+    layout = pipeline.Layout(Path("/checkout/edits/work/recordings/replay-1"))
+    # Every step's stage is valid: stages.Stage refuses a timeout over 24 h (10-26 regression).
+    assert [
+        pipeline.stage_of(layout, "py", name).timeout_seconds for name in pipeline.TIMEOUTS
+    ] == [24 * pipeline.HOUR] * len(pipeline.TIMEOUTS)
+    assert max(pipeline.IDLE_SECONDS.values()) == 2 * pipeline.HOUR
+    assert pipeline.IDLE_SECONDS["cleanup"] == pipeline.HOUR
+
+
+def test_a_video_config_glossary_replaces_the_defaults(tmp_path: Path) -> None:
+    root = edit_root(tmp_path)
+    (root / "video-config.json").write_text(
+        '{"version": 1, "asrGlossary": ["/g/video.json"]}', encoding="utf-8"
+    )
+    layout = pipeline.prepare("42", defaults(tmp_path, asrGlossary=["/g/common.json"]),
+                              checkout=tmp_path)  # fmt: skip
+    written = json.loads(layout.pipeline.read_text("utf-8"))
+    assert written["asrGlossary"] == ["/g/video.json"]
+
+
+def test_forcing_outside_a_run_refuses_receipts_the_published_evidence_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    pipeline.run("42", path, checkout=tmp_path)
+    loaded = recording_steps.load(layout.pipeline)
+    receipt = loaded.steps / "placement.json"
+    monkeypatch.setattr(pipeline, "published_evidence", lambda _pipeline: {receipt})
+    with pytest.raises(ReplayError, match="placement.json"):
+        pipeline.apply_forcing(loaded, pipeline.Forcing(("placement",)))
+    assert receipt.is_file()
+    removed = pipeline.apply_forcing(loaded, pipeline.Forcing(("placement",)), rerun=True)
+    assert str(receipt) in [item["path"] for item in removed]
+
+
+def test_retired_producers_are_not_forced_past_the_published_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    pipeline.run("42", path, checkout=tmp_path)
+    loaded = recording_steps.load(layout.pipeline)
+    receipt = loaded.steps / "compose.json"
+    monkeypatch.setattr(pipeline, "published_evidence", lambda _pipeline: {receipt})
+    monkeypatch.setattr(
+        retirement, "forced_producers",
+        lambda _pipeline, _pending: [("cleanup", "compose", tmp_path / "gone.mov")],
+    )  # fmt: skip
+    with pytest.raises(ReplayError, match="compose.json"):
+        pipeline.force_retired_producers(loaded, ("compose",))
+    assert receipt.is_file()
+
+
+def test_unpublished_recordings_have_no_published_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    assert pipeline.published_evidence(recording_steps.load(layout.pipeline)) == set()
+
+
+def published_without(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, added: str) -> Path:
+    """A published fake recording whose receipts were computed before ``added`` existed."""
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    pipeline.run("42", path, checkout=tmp_path)
+    loaded = recording_steps.load(layout.pipeline)
+    (layout.steps / f"{added}.json").unlink()
+    marker = layout.steps / recording_steps.LEGACY / f"{added}.json"
+    marker.parent.mkdir()
+    marker.write_text("{}", encoding="utf-8")
+    for name in pipeline.DEPENDENCIES:  # rebind every later receipt without it, in graph order
+        receipt = layout.steps / f"{name}.json"
+        if receipt.is_file():
+            data = json.loads(receipt.read_text(encoding="utf-8"))
+            data["inputs"] = recording_steps.inputs(loaded, name, pipeline.graph_of(name))
+            receipt.write_text(json.dumps(data), encoding="utf-8")
+    marker.unlink()
+    (layout.steps / "ran.txt").unlink()
+    return path
+
+
+def test_a_redo_of_a_published_recording_runs_only_its_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 10-29 (a YouTube recording): voice-repair, added after publication, read a retired voice;
+    # `redo --from clips` forced separation and removed the delivery's receipts and render.
+    path = published_without(tmp_path, monkeypatch, "voice-repair")
+    steps_dir = tmp_path / "edits/work/recordings/replay-42/steps"
+    (steps_dir / retirement.RECORD).write_text(
+        json.dumps({"version": 1, "retired": [
+            {"category": "separated-voice", "path": str(tmp_path / "vocals.wav"),
+             "producer": "separation", "consumers": ["voice-repair", "paging"]},
+        ]}),
+        encoding="utf-8",
+    )  # fmt: skip
+    receipts = sorted(p.name for p in steps_dir.glob("*.json"))
+    capsys.readouterr()
+    results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(("clips",)))
+    out = capsys.readouterr().out
+    assert ran(tmp_path) == ["clips"]
+    assert results["clips"] == "completed"
+    assert results["voice-repair"] == "skipped"
+    assert {name for name, result in results.items() if result == "completed"} == {"clips"}
+    assert "not applicable: voice-repair (added after the published receipts of" in out
+    assert "retired intermediates" not in out
+    forced = [line for line in out.splitlines() if line.startswith("forced:")]
+    assert forced and all("clips" in line for line in forced)
+    assert sorted(p.name for p in steps_dir.glob("*.json")) == receipts
+    assert (steps_dir / recording_steps.LEGACY / "voice-repair.json").is_file()
+
+
+def test_a_plain_run_of_a_published_recording_never_runs_a_later_added_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = published_without(tmp_path, monkeypatch, "voice-repair")
+    results = pipeline.run("42", path, checkout=tmp_path)
+    assert results["voice-repair"] == "skipped"
+    assert set(results.values()) == {"reused", "skipped"}
+    assert not (tmp_path / "edits/work/recordings/replay-42/steps/ran.txt").exists()
+
+
+def test_a_redo_including_the_added_step_runs_it_and_clears_its_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = published_without(tmp_path, monkeypatch, "voice-repair")
+    pipeline.run("42", path, checkout=tmp_path)  # marks it
+    marker = tmp_path / "edits/work/recordings/replay-42/steps" / recording_steps.LEGACY
+    assert (marker / "voice-repair.json").is_file()
+    results = pipeline.run(
+        "42", path, checkout=tmp_path, forcing=pipeline.Forcing(("voice-repair",))
+    )
+    assert results["voice-repair"] == "completed"
+    assert results["separation"] == "reused"
+    assert not (marker / "voice-repair.json").exists()
+
+
+def test_a_redo_of_a_published_recording_leaves_a_missing_step_outside_its_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    pipeline.run("42", path, checkout=tmp_path)
+    (layout.steps / "retire-renders.json").unlink()  # a leaf without dependents' receipts
+    results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(("clips",)))
+    assert results["retire-renders"] == "skipped"
+    assert results["clips"] == "completed"
+    assert not (layout.steps / recording_steps.LEGACY / "retire-renders.json").exists()
+
+
+def test_an_unpublished_redo_from_cut_plan_keeps_the_normal_behaviour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = fake_steps(tmp_path, monkeypatch)
+    layout = pipeline.prepare("42", path, checkout=tmp_path)
+    pipeline.run("42", path, checkout=tmp_path)
+    (layout.steps / "publish.json").unlink()
+    (layout.steps / "retire-renders.json").unlink()
+    results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(("cut-plan",)))
+    assert results["cut-plan"] == "completed"
+    assert results["publish"] == "completed"
+    assert results["separation"] == "reused"
+    assert results["retire-renders"] == "completed"
+    assert "skipped" not in results.values()

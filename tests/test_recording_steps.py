@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -118,6 +119,9 @@ class Producers:
             Path(command[6]).write_text("{}", encoding="utf-8")
         elif name == "replay.asr_hallucination":
             Path(command[-1]).write_text("{}", encoding="utf-8")
+        elif name == "replay.asr_kanji_fix":
+            Path(command[5]).write_text('{"labels": []}', encoding="utf-8")
+            Path(command[6]).write_text('{"edits": []}', encoding="utf-8")
 
 
 def upstream(tmp_path: Path, *names: str) -> None:
@@ -665,6 +669,103 @@ def test_asr_prepares_runs_and_excludes_silence(tmp_path: Path) -> None:
         str(prepared / "labels-silence-v1.json"), str(prepared / "mono.wav"),
         str(prepared / "labels-hallucination-v1.json"),
     ]  # fmt: skip
+
+
+def glossary_pipeline(tmp_path: Path, value: object) -> Path:
+    path = configure(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**data, "asrGlossary": value}), encoding="utf-8")
+    return path
+
+
+def test_asr_without_the_glossary_key_writes_the_same_receipt_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(time, "time", lambda: 1000.0)
+    path = configure(tmp_path)
+    clocked(path, tmp_path)
+    upstream(tmp_path, "separation")
+    receipt = steps.execute("asr", path, run=Producers(tmp_path))
+    prepared = tmp_path / "replay-123/asr-v1/prepared"
+    pipeline_sha = steps.sha256(path)
+    separation_sha = steps.sha256(tmp_path / "steps/separation.json")
+    expected = {
+        "version": 1,
+        "step": "asr",
+        "recording": "123",
+        "inputs": {
+            str(path): pipeline_sha,
+            str(tmp_path / "steps/separation.json"): separation_sha,
+        },
+        "startedAt": 1000.0,
+        "endedAt": 1000.0,
+        "wallSeconds": 0.0,
+        "outputs": {
+            "labels": {
+                "path": str(prepared / "labels-hallucination-v1.json"),
+                "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            },
+            "mono": {
+                "path": str(prepared / "mono.wav"),
+                "sha256": "62c66a7a5dd70c3146618063c344e531e6d4b59e379808443ce962b3abd63c5a",
+            },
+        },
+        "qualityApproved": False,
+    }
+    assert receipt.read_bytes() == (json.dumps(expected, indent=2) + "\n").encode()
+    assert (prepared / "labels-glossary-v1.json").exists() is False
+
+
+def test_asr_with_the_glossary_key_corrects_the_labels_and_pins_the_edit_receipt(
+    tmp_path: Path,
+) -> None:
+    path = glossary_pipeline(tmp_path, ["/g/common.json", "/g/channel.json"])
+    clocked(path, tmp_path)
+    upstream(tmp_path, "separation")
+    producers = Producers(tmp_path)
+    receipt = steps.execute("asr", path, run=producers)
+    prepared = tmp_path / "replay-123/asr-v1/prepared"
+    assert modules(producers)[-2:] == ["replay.asr_hallucination", "replay.asr_kanji_fix"]
+    assert producers.commands[-1][4:] == [
+        str(prepared / "labels-hallucination-v1.json"), str(prepared / "labels-glossary-v1.json"),
+        str(prepared / "glossary-receipt-v1.json"), "--glossary=/g/common.json",
+        "--glossary=/g/channel.json",
+    ]  # fmt: skip
+    outputs = json.loads(receipt.read_text("utf-8"))["outputs"]
+    assert outputs["labels"]["path"] == str(prepared / "labels-glossary-v1.json")
+    assert outputs["glossary"]["path"] == str(prepared / "glossary-receipt-v1.json")
+    assert sorted(outputs) == ["glossary", "labels", "mono"]
+
+
+def test_asr_reruns_a_glossary_correction_interrupted_before_its_receipt(
+    tmp_path: Path,
+) -> None:
+    path = glossary_pipeline(tmp_path, ["/g/common.json"])
+    prepared = tmp_path / "replay-123/asr-v1/prepared"
+    prepared.mkdir(parents=True)
+    (prepared / "labels-glossary-v1.json").write_text("partial", encoding="utf-8")
+    producers = Producers(tmp_path)
+    outputs = steps.glossary_corrected(steps.load(path), producers, {"mono": "m"})
+    assert modules(producers) == ["replay.asr_kanji_fix"]
+    assert (prepared / "labels-glossary-v1.json").read_text("utf-8") == '{"labels": []}'
+    assert outputs["mono"] == "m"
+
+
+def test_asr_reuses_a_finished_glossary_correction(tmp_path: Path) -> None:
+    path = glossary_pipeline(tmp_path, ["/g/common.json"])
+    prepared = tmp_path / "replay-123/asr-v1/prepared"
+    prepared.mkdir(parents=True)
+    (prepared / "labels-glossary-v1.json").write_text("{}", encoding="utf-8")
+    (prepared / "glossary-receipt-v1.json").write_text("{}", encoding="utf-8")
+    producers = Producers(tmp_path)
+    steps.glossary_corrected(steps.load(path), producers, {})
+    assert producers.commands == []
+
+
+@pytest.mark.parametrize("value", [[], "/g.json", ["relative.json"], [3]])
+def test_an_invalid_glossary_key_is_refused(tmp_path: Path, value: object) -> None:
+    with pytest.raises(ReplayError, match="asrGlossary must list absolute glossary paths"):
+        steps.load(glossary_pipeline(tmp_path, value))
 
 
 def write_cleanup(tmp_path: Path) -> Path:

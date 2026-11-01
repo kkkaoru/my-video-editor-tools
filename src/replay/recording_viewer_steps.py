@@ -30,13 +30,19 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from replay import delivery_offload, r2_fetch
+from replay import delivery_offload, r2_fetch, video_config
 from replay.core import ReplayError
-from replay.edit_completion import completion_report, delivery_label, supersede_incomplete
+from replay.edit_completion import (
+    completion_report,
+    delivery_label,
+    supersede_incomplete,
+    supersede_replaced,
+)
 from replay.recording_steps import Pipeline, Runner, module, pin, sha256
 from replay.recordings import record
+from replay.repository import root as checkout_root
 
-CHECKOUT = Path(__file__).resolve().parents[2]
+CHECKOUT = checkout_root()
 SUMMARY_CLI = CHECKOUT / "TranscriptViewer" / ".build" / "release" / "transcript-summary"
 WEB_VIEWER = CHECKOUT / "web-viewer"
 GATE_KEPT = "summarize-gate.json"
@@ -151,10 +157,12 @@ def kept_gate(pipeline: Pipeline) -> dict[str, object] | None:
 
 
 def release_older(root: Path, published: Path) -> None:
-    """Supersede the older incomplete revisions of a new publication before it is gated, so the
-    web viewer's catalog and the summary CLI see only it. The publication itself is left to the
-    gate; every record still re-checks the movie's identity before it is written."""
+    """Supersede the older revisions of a new publication before it is gated, so the web viewer's
+    catalog and the summary CLI see only it: the incomplete ones, and those it replaces under the
+    same name. The publication itself is left to the gate; every record still re-checks the
+    movie's identity before it is written."""
     supersede_incomplete(root, {delivery_label(root, published): {}})
+    supersede_replaced(root, published)
 
 
 def summarize(pipeline: Pipeline, run: Runner) -> dict[str, object]:
@@ -209,13 +217,14 @@ def duration(movie: Path, ffprobe: str) -> float:
     return float(result.stdout.strip())
 
 
-def excitement(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+def excitement(pipeline: Pipeline, run: Runner, *, levels: Path | None = None) -> dict[str, object]:
+    """Clip points; ``levels`` (audio on the delivery clock) replaces the movie's own audio."""
     srt, movie = transcript(pipeline), delivery(pipeline)
     r2_fetch.restore_if_offloaded(movie, root=pipeline.path_of("editRoot"))  # needs the bytes
     seconds = duration(movie, pipeline.text("ffprobe"))
     run(
         module(pipeline, "excitement", "build", "--transcript", str(srt),
-               "--duration", f"{seconds:.3f}", "--movie", str(movie)),
+               "--duration", f"{seconds:.3f}", "--movie", str(levels or movie)),
         pipeline.logs / "excitement.log",
     )  # fmt: skip
     return {"excitement": pin(srt.parent / f"{srt.name}.excitement.json")}
@@ -246,9 +255,12 @@ def _fetch(request: urllib.request.Request) -> dict[str, object]:
 def clips(pipeline: Pipeline, run: Runner, *, fetch: Fetch = _fetch) -> dict[str, object]:
     """The Mac computes the clip points from the uploaded data, then the viewer must report them.
 
-    ``bun run clips:mac`` runs one at a time machine-wide (its local models take about 22 GB).
-    Cloudflare AI is never asked here: it runs only for a user's reload.
+    ``bun run clips:mac`` runs one at a time machine-wide (its local models take about 29 GB).
+    Cloudflare AI is never asked here: it runs only for a user's reload. A recording whose
+    ``video-config.json`` sets ``clips: false`` makes none.
     """
+    if video_config.value(pipeline.path_of("editRoot"), "clips", True) is False:
+        return {"skipped": "video-config.json clips: false"}
     domain, token = _viewer()
     video = delivery(pipeline).stem
     bun = shutil.which("bun")

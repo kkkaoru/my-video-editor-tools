@@ -192,11 +192,17 @@ def test_releasing_older_revisions_leaves_the_publication_to_the_gate(
         calls.append((root, assessed))
         return []
 
+    def replaced(root: Path, published: Path) -> list[Path]:
+        calls.append((root, published.name))
+        return []
+
     monkeypatch.setattr(viewer, "supersede_incomplete", supersede)
+    monkeypatch.setattr(viewer, "supersede_replaced", replaced)
     monkeypatch.setattr(viewer, "delivery_label", lambda _root, path: f"storage:{path.name}")
     viewer.release_older(tmp_path / "edit", viewer.delivery(pipeline))
     assert calls == [
-        (tmp_path / "edit", {"storage:2026-10-21_18-30-00_JST_replay-123-review.mp4": {}})
+        (tmp_path / "edit", {"storage:2026-10-21_18-30-00_JST_replay-123-review.mp4": {}}),
+        (tmp_path / "edit", "2026-10-21_18-30-00_JST_replay-123-review.mp4"),
     ]
 
 
@@ -309,6 +315,9 @@ def test_excitement_builds_from_the_delivered_transcript_and_movie(
             "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         }
     }
+    commands.clear()
+    viewer.excitement(pipeline, run, levels=tmp_path / "voice.wav")
+    assert commands[0][-2:] == ["--movie", str(tmp_path / "voice.wav")]
 
 
 def test_sync_without_bun_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -355,6 +364,21 @@ def test_clips_are_computed_on_the_mac_then_read_ready_without_a_reload(
             "Bearer t0ken",
         )
     ]
+
+
+def test_clips_read_the_record_the_mac_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same contract fixture web-viewer's clips test makes from its record (clips.test.ts).
+    fixture = Path(__file__).parents[1] / "web-viewer/src/fixtures/clip-record-contract.json"
+    contract = json.loads(fixture.read_text(encoding="utf-8"))
+    pipeline = published(tmp_path)
+    monkeypatch.setattr(viewer, "WEB_VIEWER", clip_data(web(tmp_path)))
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+    answer = {"status": "ready", "record": contract["record"], "schema": contract["schema"]}
+    outputs = viewer.clips(pipeline, lambda _c, _l: None, fetch=lambda _request: answer)
+    assert outputs == {"video": "2026-10-21_18-30-00_JST_replay-123-review", "clips": 1}
+    assert contract["schema"] == 2
 
 
 def test_clips_not_ready_after_the_mac_run_fail(
@@ -503,3 +527,13 @@ def test_an_offloaded_movie_is_settled_by_its_record(
     viewer.require_uploaded("m", movie, root=tmp_path / "replay-1")
     with pytest.raises(FileNotFoundError):
         viewer.require_uploaded("m", movie, root=tmp_path / "replay-2")
+
+
+def test_a_video_config_without_clips_makes_none(tmp_path: Path) -> None:
+    pipeline = published(tmp_path)
+    root = pipeline.path_of("editRoot")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "video-config.json").write_text('{"version": 1, "clips": false}', encoding="utf-8")
+    assert viewer.clips(pipeline, lambda _command, _log: None) == {
+        "skipped": "video-config.json clips: false"
+    }
