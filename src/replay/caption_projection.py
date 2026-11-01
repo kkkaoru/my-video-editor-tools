@@ -6,6 +6,10 @@ from math import isfinite
 
 from replay.caption_timing import SpokenToken
 
+MAXIMUM_TOKENS = 2_000_000  # a 24 h source of dense speech stays below this
+MAXIMUM_CUTS = 200_000
+MAXIMUM_SPANS = 2_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class CutSpan:
@@ -53,7 +57,7 @@ def project_tokens(
     conflict and not displayed. No text or word times are proportionally split.
     Raw/omitted/conflicting tokens must remain available for review.
     """
-    if not 1 <= fps <= 120 or len(cuts) > 3000 or len(tokens) > 100_000:
+    if not 1 <= fps <= 120 or len(cuts) > MAXIMUM_CUTS or len(tokens) > MAXIMUM_TOKENS:
         raise ValueError("Caption projection budget exceeded")
     starts = _cut_starts(cuts, fps=fps)
     projected: list[SpokenToken] = []
@@ -101,7 +105,7 @@ def project_tokens_over_quiet(
     result for review. Callers must retain raw clocks and independent measurement
     provenance; ASR gaps or low sound-classification scores are not quiet evidence.
     """
-    if not 1 <= fps <= 120 or len(cuts) > 3000 or len(tokens) > 100_000:
+    if not 1 <= fps <= 120 or len(cuts) > MAXIMUM_CUTS or len(tokens) > MAXIMUM_TOKENS:
         raise ValueError("Caption projection budget exceeded")
     starts = _cut_starts(cuts, fps=fps)
     quiet = _quiet_ranges(quiet_runs)
@@ -143,7 +147,7 @@ def _cut_starts(cuts: tuple[CutSpan, ...], *, fps: int) -> list[float]:
 
 
 def _quiet_ranges(spans: tuple[MeasuredQuietSpan, ...]) -> list[MeasuredQuietSpan]:
-    if len(spans) > 100_000:
+    if len(spans) > MAXIMUM_SPANS:
         raise ValueError("Quiet evidence budget exceeded")
     result: list[MeasuredQuietSpan] = []
     for span in spans:

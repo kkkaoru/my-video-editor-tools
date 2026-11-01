@@ -7,12 +7,15 @@ artifact identity, not semantic correctness of an arbitrary producer command.
 
 import argparse
 import json
+import math
 import os
 import wave
+from collections.abc import Sequence
 from dataclasses import asdict, replace
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
+from typing import TextIO
 
 from replay.audio_clock import AudioFrameClock
 from replay.caption_repair import ClockLabel
@@ -23,6 +26,10 @@ from replay.stages import file_digest
 
 MAX_JSON_BYTES = 128 * 1024 * 1024
 CLOCK_DIGITS = 6
+# The label count is bounded by the source's own duration instead of a fixed wall, so a longer
+# stream needs no code change: Japanese word timestamps stay far below 8 labels per second.
+LABELS_PER_SECOND = 8
+MINIMUM_LABELS = 100_000
 
 
 def project_labels(
@@ -59,13 +66,21 @@ def _number(value: object) -> float:
     return float(value)
 
 
+MAX_LABELS = 1_000_000  # ~140k words for a 10-hour stream (a 1-2 hour replay has ~20-40k)
+
+
+def label_budget(clock: AudioFrameClock) -> int:
+    """Labels this source may carry: its length times the per-second ceiling."""
+    seconds = clock.sample_ends[-1] / clock.sample_rate
+    return max(MINIMUM_LABELS, math.ceil(seconds * LABELS_PER_SECOND))
+
+
 def _labels(document: dict[str, object]) -> tuple[ClockLabel, ...]:
     values = document.get("labels")
     if (
         document.get("version") != 1
         or document.get("clock") != "input-pcm-not-projected"
         or not isinstance(values, list)
-        or len(values) > 100_000
     ):
         raise ReplayError("Expected bounded unprojected assembled recognition")
     labels: list[ClockLabel] = []
@@ -153,12 +168,14 @@ def run(config: Path, output: Path) -> int:
             > Fraction(1, rate)
         ):
             raise ReplayError("PCM is not duration-preserving mono PCM16/16k recognition input")
-    projected = project_labels(_labels(assembled), clock)
+    labels = _labels(assembled)
+    if len(labels) > label_budget(clock):
+        raise ReplayError("Recognition carries more labels than its audio length allows")
+    projected = project_labels(labels, clock)
     snapshot.finish()
     result = {
         "version": 1,
         "clock": "source-presentation",
-        "labels": [asdict(label) for label in projected],
         "parentSHA256": {str(path): digest for path, digest in bindings.values()},
         "configSHA256": config_digest,
         "projectionSHA256": file_digest(Path(__file__)),
@@ -172,8 +189,19 @@ def run(config: Path, output: Path) -> int:
     }
     with output.open("x", encoding="utf-8") as stream:
         os.fchmod(stream.fileno(), 0o600)
-        json.dump(result, stream, ensure_ascii=False, allow_nan=False, indent=2)
+        _write(stream, {key: value for key, value in result.items() if key != "labels"}, projected)
     return len(projected)
+
+
+def _write(stream: TextIO, result: dict[str, object], labels: Sequence[ClockLabel]) -> None:
+    """Write the receipt with its labels one at a time: a ten-hour stream's array never
+    becomes one in-memory string, so peak memory follows the label size, not the recording."""
+    stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2)[:-2])
+    stream.write(',\n  "labels": [')
+    for index, label in enumerate(labels):
+        prefix = ",\n    " if index else "\n    "
+        stream.write(prefix + json.dumps(asdict(label), ensure_ascii=False, allow_nan=False))
+    stream.write("\n  ]\n}\n")
 
 
 def main(argv: list[str] | None = None) -> int:

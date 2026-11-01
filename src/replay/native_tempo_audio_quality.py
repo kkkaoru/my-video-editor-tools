@@ -34,6 +34,7 @@ from replay.caption_measured_job import _json, _local, _object, _rational
 from replay.clocked_cut_audio import CutSlot, plan_slots, sample_boundary
 from replay.clocked_tempo_audio import TempoPolicy
 from replay.foreground_evidence import _bound_bytes
+from replay.pcm_wav_extent import pcm_extent
 from replay.process_family_observation import SystemHost
 from replay.recordings import record
 from replay.stages import _fingerprint, file_digest
@@ -731,12 +732,12 @@ def inspect_pcm_clock(request: Path, *, sha256: str) -> dict[str, object]:
     if not 44 <= before.st_size <= 8 * 1024**3 or file_digest(source) != source_sha:
         raise ValueError("PCM source byte bound or original SHA differs")
     with wave.open(str(source), "rb") as pcm:
-        rate, channels, count, width = (
+        rate, channels, width = (
             pcm.getframerate(),
             pcm.getnchannels(),
-            pcm.getnframes(),
             pcm.getsampwidth(),
         )
+        count = pcm_extent(source).frames
         if not (
             pcm.getcomptype() == "NONE"
             and 8000 <= rate <= 192000

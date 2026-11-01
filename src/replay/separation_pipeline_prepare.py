@@ -15,7 +15,6 @@ import os
 import re
 import subprocess
 import sys
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,7 +26,7 @@ from replay.delivery_audio import PEAK_HEADROOM_DB, input_command
 from replay.input_hash_snapshot import InputHashSnapshot
 from replay.native_invocation import canonical, durable, identity, pin, read, require
 from replay.recordings import record
-from replay.separation_window_pipeline import context, load_plan, pcm_info
+from replay.separation_window_pipeline import context, load_plan, pcm_info, pcm_layout
 from replay.stages import StageError
 
 GAIN_DB = -0.1
@@ -286,10 +285,16 @@ def _pcm_detail(config: Preparation) -> dict[str, object]:
     before = identity(config.pcm)
     decoded_bytes = 0
     payload = hashlib.sha256()
-    with config.pcm.open("rb") as stream, wave.open(stream, "rb") as audio:
-        while block := audio.readframes(BLOCK_SAMPLES):
+    # Raw payload reads: the wave module truncates >4 GiB files at their placeholder size.
+    offset, frames = pcm_layout(config.pcm)
+    require(frames == samples, "Prepared PCM frame count changed")
+    with config.pcm.open("rb") as stream:
+        stream.seek(offset)
+        remaining = samples * 4
+        while remaining and (block := stream.read(min(BLOCK_SAMPLES * 4, remaining))):
             decoded_bytes += len(block)
             payload.update(block)
+            remaining -= len(block)
     require(
         decoded_bytes == samples * 4 and identity(config.pcm) == before,
         "Prepared PCM is truncated or changed",

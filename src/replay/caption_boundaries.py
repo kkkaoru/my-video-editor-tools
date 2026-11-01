@@ -7,6 +7,9 @@ from math import ceil, floor, inf, isfinite, nextafter
 from replay.caption_projection import CutSpan
 from replay.caption_timing import SpokenToken
 
+MAXIMUM_CORES = 100_000
+MAXIMUM_WORDS = 2_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class AudioSpan:
@@ -59,7 +62,11 @@ def protect_boundaries(
     """
     if not 1 <= fps <= 120 or not 1 <= source_frames <= fps * 21600:
         raise ValueError("Invalid frame clock")
-    if len(speech_cores) > 3000 or len(words) > 100_000 or len(quiet_runs) > 100_000:
+    if (
+        len(speech_cores) > MAXIMUM_CORES
+        or len(words) > MAXIMUM_WORDS
+        or len(quiet_runs) > MAXIMUM_WORDS
+    ):
         raise ValueError("Boundary planning budget exceeded")
     duration = source_frames / fps
     _validate_spans(speech_cores, duration)

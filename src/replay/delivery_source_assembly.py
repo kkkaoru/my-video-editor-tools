@@ -26,9 +26,9 @@ from replay.recordings import record
 from replay.subtitle_clock import VideoFrameClock
 
 MAX_JSON = 256 * 1024 * 1024
-MAX_MEDIA = 256 * 1024**3
-MAX_FRAMES = 1_000_000
-MAX_CHUNKS = 512
+MAX_MEDIA = 768 * 1024**3  # three 256 GiB tiers, measured per join
+MAX_FRAMES = 8_000_000  # 24 h at 90 fps, so a long source needs no change
+MAX_CHUNKS = 4096  # 4096 x 30 s chunks = 34 h, so a longer source needs no code change
 MAX_SOURCE_REFERENCE_LENGTH = 4096
 PROCESS_SECONDS = 1800
 JOB_SECONDS = 6 * 3600

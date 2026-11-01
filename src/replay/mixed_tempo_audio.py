@@ -138,10 +138,10 @@ def prepare(config: Path, *, policy: TempoPolicy = DEFAULT_POLICY) -> Prepared:
         wave.open(str(stem), "rb") as voice,
         wave.open(str(fallback), "rb") as old,
     ):
-        rate, channels, reference_samples = _format(ref)
-        candidate_format, fallback_format = _format(mix), _format(old)
+        rate, channels, reference_samples = _format(ref, reference)
+        candidate_format, fallback_format = _format(mix, mixture), _format(old, fallback)
         if (
-            candidate_format != _format(voice)
+            candidate_format != _format(voice, stem)
             or candidate_format[:2] != (rate, channels)
             or fallback_format[:2] != (rate, channels)
         ):
@@ -282,7 +282,7 @@ def run(config: Path, output: Path, receipt: Path, *, ffmpeg: Path, check: bool 
         if any(file_digest(Path(path)) != digest for path, digest in prepared.pins.items()):
             raise ValueError("Mixed audio inputs changed during rendering")
         with wave.open(str(output), "rb") as reader:
-            if _format(reader) != (
+            if _format(reader, output) != (
                 prepared.rate,
                 prepared.channels,
                 prepared.choices[-1].slot.output_end,

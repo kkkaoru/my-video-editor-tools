@@ -9,7 +9,7 @@ from replay.foreground_geometry import interval_top
 from replay.subtitle_clock import MAX_CLOCK_SECONDS, MAX_CLOCK_TIMESCALE
 
 MAX_WINDOWS = 32
-MAX_CUTS = 3000
+MAX_CUTS = 200_000  # a 24 h source with frequent pauses stays below this
 MAX_OUTPUT_SECONDS = 120
 
 

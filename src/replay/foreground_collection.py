@@ -21,7 +21,7 @@ from replay.subtitle_clock import VideoFrameClock
 
 MAX_BATCHES = 16
 MAX_FRAMES = MAX_BATCHES * MAX_SAMPLES
-RESPONSE_BYTES = 1_048_576
+RESPONSE_BYTES = 268_435_456  # one batch of 300 tracked frames is a few MB per hour of source
 BATCH_TIMEOUT_SECONDS = 60
 STAGE_TIMEOUT_SECONDS = 1200
 CODE_FILES = (*storage.CODE_FILES, "foreground_observations.py", "foreground_collection.py")

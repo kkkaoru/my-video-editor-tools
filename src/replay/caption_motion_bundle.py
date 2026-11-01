@@ -19,8 +19,8 @@ from replay.core import ReplayError
 from replay.recordings import record
 
 MAX_BYTES = 64 * 1024 * 1024
-MAX_CUES = 100_000
-MAX_CUTS = 3_000
+MAX_CUES = 1_000_000
+MAX_CUTS = 200_000  # a 24 h source with frequent pauses stays below this
 MAX_TITLE_CUES = 32
 MAX_TITLE_SECONDS = 120
 

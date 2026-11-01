@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import struct
 import subprocess
 import wave
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from time import monotonic
+from typing import Protocol
 
 from replay.audio_clock import AudioFrameClock
 from replay.caption_io import _string
@@ -24,6 +27,7 @@ from replay.caption_native_layout import NativeCaptionLayout
 from replay.clocked_cut_audio import CutSlot, identity, plan_slots, sample_boundary
 from replay.continuous_cut_job import MAX_CLOCK_BYTES, MAX_CONFIG_BYTES, MAX_PCM_BYTES
 from replay.foreground_evidence import _bound_bytes
+from replay.pcm_wav_extent import pcm_extent
 from replay.stages import file_digest
 from replay.tracking_observations import _checked_output, _digest
 
@@ -92,8 +96,19 @@ class TempoMeasurement:
     filter_applied: bool
 
 
+class PcmSource(Protocol):
+    """The PCM16 read surface tempo cutting needs, whatever resolves the true size."""
+
+    def getsampwidth(self) -> int: ...
+    def getframerate(self) -> int: ...
+    def getnchannels(self) -> int: ...
+    def getnframes(self) -> int: ...
+    def setpos(self, pos: int) -> None: ...
+    def readframes(self, frames: int) -> bytes: ...
+
+
 def tempo_cut(
-    reader: wave.Wave_read,
+    reader: PcmSource,
     slot: CutSlot,
     *,
     ffmpeg: Path,
@@ -202,6 +217,65 @@ def pieces(slot: CutSlot, low: int, high: int, width: int) -> Iterator[CutSlot]:
         )
 
 
+def _placeholder_header(reader: PcmSource) -> bytes:
+    """FFmpeg-style 4 GiB placeholder header; readers resolve the size through pcm_extent."""
+    channels, width, rate = reader.getnchannels(), reader.getsampwidth(), reader.getframerate()
+    block = channels * width
+    return struct.pack(
+        "<4sL4s4sLHHLLHH4sL",
+        b"RIFF",
+        0xFFFFFFFF,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        rate,
+        rate * block,
+        block,
+        width * 8,
+        b"data",
+        0xFFFFFFFF,
+    )
+
+
+class PcmFileReader:
+    """Read PCM16 by byte offset, so a >4 GiB stem keeps its true frame count."""
+
+    def __init__(self, path: Path) -> None:
+        with wave.open(str(path), "rb") as probe:
+            self._width, self._channels = probe.getsampwidth(), probe.getnchannels()
+            self._rate = probe.getframerate()
+        extent = pcm_extent(path)
+        self._offset, self._frames = extent.offset, extent.frames
+        self._block = self._channels * self._width
+        self._stream = path.open("rb")
+
+    def getsampwidth(self) -> int:
+        return self._width
+
+    def getframerate(self) -> int:
+        return self._rate
+
+    def getnchannels(self) -> int:
+        return self._channels
+
+    def getnframes(self) -> int:
+        return self._frames
+
+    def setpos(self, pos: int) -> None:
+        self._stream.seek(self._offset + pos * self._block)
+
+    def readframes(self, frames: int) -> bytes:
+        return self._stream.read(frames * self._block)
+
+    def __enter__(self) -> PcmFileReader:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stream.close()
+
+
 def render(
     source: Path,
     output: Path,
@@ -219,10 +293,28 @@ def render(
         raise ValueError("Invalid tempo output window")
     before = identity(source)
     measurements: list[TempoMeasurement] = []
-    with wave.open(str(source), "rb") as reader, output.open("xb") as handle:
+    with PcmFileReader(source) as reader, output.open("xb") as handle:
         width = reader.getnchannels() * 2
-        with wave.open(handle, "wb") as writer:
-            writer.setparams(reader.getparams())
+        expected = (
+            sum(
+                max(0, min(end, slot.output_end) - max(output_start, slot.output_start))
+                for slot in slots
+            )
+            * width
+        )
+        # A whole 10 h candidate passes 4 GiB, where wave cannot pack its 32-bit sizes: write
+        # FFmpeg-style placeholder sizes instead, which readers resolve through pcm_layout.
+        write: Callable[[bytes], object]
+        with ExitStack() as stack:
+            if expected >= 4 * 1024**3 - 64:
+                handle.write(_placeholder_header(reader))
+                write = handle.write
+            else:
+                writer = stack.enter_context(wave.open(handle, "wb"))
+                writer.setnchannels(reader.getnchannels())
+                writer.setsampwidth(reader.getsampwidth())
+                writer.setframerate(reader.getframerate())
+                write = writer.writeframesraw
             for slot in slots:
                 low, high = max(output_start, slot.output_start), min(end, slot.output_end)
                 if low >= high:
@@ -230,12 +322,10 @@ def render(
                 for piece in pieces(slot, low, high, width):
                     raw, measured = tempo_cut(reader, piece, ffmpeg=ffmpeg, policy=policy)
                     first, last = max(low, piece.output_start), min(high, piece.output_end)
-                    writer.writeframesraw(
-                        raw[
-                            (first - piece.output_start) * width : (last - piece.output_start)
-                            * width
-                        ]
-                    )
+                    frames = raw[
+                        (first - piece.output_start) * width : (last - piece.output_start) * width
+                    ]
+                    write(frames)
                     measurements.append(measured)
     if identity(source) != before:
         raise ValueError("Source changed during tempo rendering")
@@ -296,7 +386,9 @@ def run(
         path = Path(__file__).with_name(name).resolve()
         bindings[str(path)] = file_digest(path)
     with wave.open(str(source), "rb") as reader:
-        rate, samples, channels = reader.getframerate(), reader.getnframes(), reader.getnchannels()
+        rate, channels = reader.getframerate(), reader.getnchannels()
+    # A >4 GiB stem carries the placeholder size that wave reports truncated.
+    samples = pcm_extent(source).frames
     slots = plan_slots(
         clock, intervals, rate=rate, samples=samples, maximum_rate_change=maximum_rate_change
     )

@@ -8,7 +8,7 @@ from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
 from replay.stages import file_digest
 
-MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_JSON_BYTES = 1024 * 1024 * 1024  # 24 h of projected tokens is about 45 MB, tracking 270 MB
 MAX_REFLOW_JSON_BYTES = 64 * 1024 * 1024
 
 

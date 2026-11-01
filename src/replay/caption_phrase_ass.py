@@ -247,7 +247,7 @@ def restyle(
     """Reuse verified timing/layout data for a new, independently tested style render."""
     document = record(json.loads(plan_path.read_text(encoding="utf-8")))
     rows = document.get("captions")
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 100_000:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 2_000_000:
         raise ReplayError("Expected bounded phrase plan")
     captions: list[CaptionCue] = []
     for raw in rows:

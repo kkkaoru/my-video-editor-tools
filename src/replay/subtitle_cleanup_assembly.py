@@ -21,7 +21,7 @@ from replay.subtitle_cleanup_plan import clock_chunks
 from replay.subtitle_clock import VideoFrameClock
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_CHUNKS = 512
+MAX_CHUNKS = 4096  # 4096 x 30 s chunks = 34 h, so a longer source needs no code change
 CODE_FILES = (
     "delivery_source_assembly.py",
     "subtitle_cleanup_assembly.py",

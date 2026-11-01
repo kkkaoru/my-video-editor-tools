@@ -20,6 +20,7 @@ from replay.delivery_media import read_clock
 from replay.input_hash_snapshot import InputHashSnapshot
 from replay.quiet_cuts import quiet_cut_frames
 from replay.recordings import record
+from replay.separation_window_pipeline import pcm_layout
 from replay.stages import file_digest
 from replay.waveform_quiet import measured_quiet_runs
 
@@ -204,11 +205,7 @@ def prepare_config(template: Path, output: Path) -> None:
 
 def _labels(data: dict[str, object]) -> tuple[ClockLabel, ...]:
     raw = data.get("labels")
-    if (
-        data.get("clock") != "source-presentation"
-        or not isinstance(raw, list)
-        or len(raw) > 100_000
-    ):
+    if data.get("clock") != "source-presentation" or not isinstance(raw, list):
         raise ReplayError("Expected source-presentation recognition")
     result: list[ClockLabel] = []
     for entry in raw:
@@ -340,13 +337,15 @@ def run(config: Path, output: Path, *, ffmpeg: str) -> tuple[CutSpan, ...]:
         raise ReplayError("Quiet and recognition do not bind the same decoded clock")
     clock = AudioFrameClock.from_probe(_read(bindings["audioClock"][0]))
     with wave.open(str(bindings["stereoPCM"][0]), "rb") as stream:
-        samples, rate = stream.getnframes(), stream.getframerate()
+        rate = stream.getframerate()
+        # A ten-hour stem carries the >4 GiB placeholder size, which wave reports truncated.
+        samples = pcm_layout(bindings["stereoPCM"][0])[1]
         if (
             stream.getnchannels() != 2
             or stream.getsampwidth() != 2
             or stream.getcomptype() != "NONE"
             or not 8000 <= rate <= 192000
-            or not 0 < samples <= rate * 21600
+            or not 0 < samples <= rate * 86400
             or abs(Fraction(samples, rate) - Fraction(clock.sample_ends[-1], clock.sample_rate))
             > Fraction(1, rate)
         ):

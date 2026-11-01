@@ -12,6 +12,7 @@ from replay.caption_projection import CutSpan
 from replay.caption_repair import ClockLabel
 from replay.clocked_tempo_audio import TempoPolicy
 from replay.core import ReplayError
+from replay.cut_audio_support import MAX_LABELS
 from replay.partial_audio_edge import plan, render
 from replay.stages import StageError, file_digest
 
@@ -295,7 +296,7 @@ def test_label_budget() -> None:
     with pytest.raises(ReplayError, match="budget"):
         plan(
             (CutSpan(0, 30, 0),),
-            (ClockLabel("a", 0.3, 0.4, "r"),) * 100001,
+            (ClockLabel("a", 0.3, 0.4, "r"),) * (MAX_LABELS + 1),
             AudioFrameClock((0,), (10000,), 10000, Fraction(1, 10000)),
             fps=30,
             rate=10000,

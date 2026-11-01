@@ -6,11 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from replay import artifact_json, workflow
 from replay import completion_barrier as barrier
 from replay import pending_source_binding as pending
 from replay import source_caption_binding as binding
-from replay import workflow
-from replay.artifact_json import MAX_JSON_BYTES
 from replay.caption_consumer_binding import MAX_JSON_BYTES as MAX_CAPTION_RECEIPT_BYTES
 from replay.core import ReplayError
 from replay.fcp_part_assembly import _reference
@@ -102,8 +101,11 @@ def test_bind_verify_nonoverwrite(pending_request: Path) -> None:
         pending.bind(pending_request, sha256=digest)
 
 
-@pytest.mark.parametrize("padding", [32, MAX_JSON_BYTES + 1])
-def test_semantic_measurement_receipt_budget(pending_request: Path, padding: int) -> None:
+@pytest.mark.parametrize("padding", [32, 131072])
+def test_semantic_measurement_receipt_budget(
+    pending_request: Path, padding: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(artifact_json, "MAX_JSON_BYTES", 65536)
     head = pending_request.with_name("head-completion.json")
     document = json.loads(head.read_text())
     document["measurementLineage"] = "x" * padding
@@ -113,10 +115,13 @@ def test_semantic_measurement_receipt_budget(pending_request: Path, padding: int
     assert pending.verify(pending_request, sha256=digest) == result
 
 
-def test_cleanup_completion_keeps_ordinary_budget(pending_request: Path) -> None:
+def test_cleanup_completion_keeps_ordinary_budget(
+    pending_request: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(artifact_json, "MAX_JSON_BYTES", 65536)
     cleanup = pending_request.with_name("cleanup-completion.json")
     document = json.loads(cleanup.read_text())
-    document["padding"] = "x" * (MAX_JSON_BYTES + 1)
+    document["padding"] = "x" * 131072
     cleanup.write_text(json.dumps(document))
     with pytest.raises(ValueError, match="byte budget"):
         pending.bind(pending_request, sha256=file_digest(pending_request))

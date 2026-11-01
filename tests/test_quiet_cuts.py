@@ -1,5 +1,6 @@
 import pytest
 
+from replay import quiet_cuts
 from replay.caption_projection import CutSpan, MeasuredQuietSpan
 from replay.caption_repair import ClockLabel
 from replay.quiet_cuts import quiet_cut_frames
@@ -97,7 +98,7 @@ def test_bad_label_clock() -> None:
         quiet_cut_frames((), (ClockLabel("声", 3, 5, "raw"),), source_frames=120)
 
 
-@pytest.mark.parametrize("frames", [0, True, 30 * 21600 + 1])
+@pytest.mark.parametrize("frames", [0, True, 30 * quiet_cuts.MAXIMUM_SOURCE_SECONDS + 1])
 def test_bad_frame_budget(frames: int) -> None:
     with pytest.raises(ValueError, match="policy"):
         quiet_cut_frames((), (), source_frames=frames)

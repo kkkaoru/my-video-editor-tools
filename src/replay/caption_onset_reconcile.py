@@ -16,13 +16,14 @@ from replay.core import ReplayError
 from replay.delivery_captions import Token, _local_token
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
+from replay.repository import root as checkout_root
 from replay.sequence_journal import encode, publish
 from replay.stages import file_digest
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = checkout_root()
 MAX_BYTES = 64 << 20
 MAX_TOTAL_BYTES = 256 << 20
-MAX_TOKENS = 100_000
+MAX_TOKENS = 2_000_000
 
 
 def _path(path: Path) -> Path:

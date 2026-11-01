@@ -569,6 +569,37 @@ def test_an_over_range_blend_gets_one_static_gain_instead_of_flat_tops() -> None
     assert int((np.abs(pcm) >= 32766).sum()) <= 4  # the crest, not a clipped plateau
 
 
+def test_a_placeholder_sized_wav_reports_its_real_frame_count(tmp_path: Path) -> None:
+    # FFmpeg writes 0xFFFFFFFF RIFF/data sizes for >4 GiB WAVs; the payload length
+    # (and so the frame count) comes from the file size, not the header fields.
+    payload = np.arange(8, dtype="<i2").tobytes()
+    header = (
+        b"RIFF" + (0xFFFFFFFF).to_bytes(4, "little") + b"WAVEfmt "
+        + (16).to_bytes(4, "little") + (1).to_bytes(2, "little") + (2).to_bytes(2, "little")
+        + MODEL_SAMPLE_RATE.to_bytes(4, "little") + (MODEL_SAMPLE_RATE * 4).to_bytes(4, "little")
+        + (4).to_bytes(2, "little") + (16).to_bytes(2, "little")
+        + b"data" + (0xFFFFFFFF).to_bytes(4, "little")
+    )  # fmt: skip
+    path = tmp_path / "big.wav"
+    path.write_bytes(header + payload)
+    assert pipeline.pcm_layout(path) == (len(header), 4)
+    assert pipeline.pcm_info(path) == 4
+    chunk = pipeline.read_chunk(path, start=1, count=2)
+    assert chunk.shape == (2, 2)
+    assert chunk[0].tolist() == pytest.approx([2 / 32768, 4 / 32768])
+    assert chunk[1].tolist() == pytest.approx([3 / 32768, 5 / 32768])
+
+
+def test_write_pcm_round_trips_through_the_wave_module(tmp_path: Path) -> None:
+    path = tmp_path / "out.wav"
+    payload = np.arange(6, dtype="<i2").tobytes()
+    pipeline.write_pcm(path, samples=3, blocks=iter([payload]))
+    with wave.open(str(path), "rb") as stream:
+        assert stream.getnframes() == 3
+        assert stream.readframes(3) == payload
+    assert pipeline.pcm_info(path) == 3
+
+
 def test_a_blend_within_full_scale_keeps_unit_gain() -> None:
     assert pipeline.output_scale(iter([np.full((4, 2), 0.5, dtype=np.float32)])) == 1.0
     assert pipeline.output_scale(iter([np.zeros((0, 2), dtype=np.float32)])) == 1.0

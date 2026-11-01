@@ -8,7 +8,9 @@ from replay.core import ReplayError
 from replay.stages import StageError, file_digest
 
 
-def test_reflow_accepts_large_lineage_without_raising_default_budget(tmp_path: Path) -> None:
+def test_reflow_accepts_large_lineage_without_raising_default_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "reflow.json"
     path.write_text(
         json.dumps({"version": 1, "lineage": "x" * (9 * 1024 * 1024)}), encoding="utf-8"
@@ -18,9 +20,9 @@ def test_reflow_accepts_large_lineage_without_raising_default_budget(tmp_path: P
     lineage = result["lineage"]
     assert isinstance(lineage, str)
     assert len(lineage) == 9437184
+    monkeypatch.setattr(artifact_json, "MAX_JSON_BYTES", 8388608)
     with pytest.raises(ValueError, match="byte budget"):
         artifact_json._json(path)
-    assert artifact_json.MAX_JSON_BYTES == 8388608
 
 
 def test_reflow_budget_remains_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

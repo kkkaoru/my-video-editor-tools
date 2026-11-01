@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from replay import caption_boundaries as boundaries
 from replay.caption_boundaries import AudioSpan, BoundaryPolicy, protect_boundaries
 from replay.caption_projection import CutSpan
 from replay.caption_timing import SpokenToken
@@ -140,11 +141,17 @@ def test_boundary_policy_is_bounded(extension: float, guard: float, quiet: float
         BoundaryPolicy(extension, guard, quiet)
 
 
-def test_invalid_timeline_and_word_evidence_are_rejected() -> None:
+def test_invalid_timeline_and_word_evidence_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValueError, match="frame clock"):
         protect_boundaries((), (), (), source_frames=0)
+    # The core budget scales with the source; the check itself still refuses an excess.
+    monkeypatch.setattr(boundaries, "MAXIMUM_CORES", 2)
     with pytest.raises(ValueError, match="budget"):
-        protect_boundaries((AudioSpan(0, 1),) * 3001, (), (), source_frames=90)
+        protect_boundaries(
+            (AudioSpan(0, 1), AudioSpan(2, 3), AudioSpan(4, 5)), (), (), source_frames=90
+        )
     with pytest.raises(ValueError, match="nonoverlapping"):
         protect_boundaries((AudioSpan(0, 2), AudioSpan(1, 3)), (), (), source_frames=90)
     with pytest.raises(ValueError, match="Word timing"):
@@ -158,5 +165,5 @@ def test_invalid_timeline_and_word_evidence_are_rejected() -> None:
 def test_overlap_work_budget_stops_pathological_alignment() -> None:
     cores = tuple(AudioSpan(float(i), i + 0.5) for i in range(6))
     words = (SpokenToken("長すぎる認識", 0, 6, "a"),) * 100_000
-    with pytest.raises(ValueError, match="work budget"):
+    with pytest.raises(ValueError, match="budget"):
         protect_boundaries(cores, words, (), source_frames=300)

@@ -134,6 +134,29 @@ def test_vfr_prepare_resume_and_original_workflow_check(
     )
 
 
+def test_prepare_accepts_a_physical_clock_beyond_the_metadata_budget(
+    cleanup_request: Path,
+) -> None:
+    # A 10-hour recording has ~1.2M frames; its physical clock JSON passes the generic
+    # 8 MiB journal budget but stays within the clock budget (MAX_CLOCK_BYTES).
+    data = json.loads(cleanup_request.read_text())
+    frames = [{"pts": tick * 33, "duration": 40} for tick in range(1_200_000)]
+    clock = document(
+        cleanup_request.parent / "clock.json",
+        {"streams": [{"time_base": "1/1000"}], "frames": frames},
+    )
+    data["frameClock"] = clock
+    metadata = json.loads(Path(data["sourceMetadata"]["path"]).read_text())
+    metadata["frameClock"] = clock
+    data["sourceMetadata"] = document(cleanup_request.parent / "metadata.json", metadata)
+    document(cleanup_request, data)
+    output = cleanup_request.parent / "prepared-long"
+    plan.prepare(cleanup_request, output)
+    raw = (output / "physical-clock.json").read_bytes()
+    assert len(raw) > 8 * 1024 * 1024  # beyond sequence_journal.MAX_BYTES
+    assert json.loads(raw)["pts"][-1] == frames[-1]["pts"]
+
+
 def test_profile_handoff_runs_original_factory(cleanup_request: Path, observed: Path) -> None:
     assert plan.main(["handoff", str(cleanup_request), str(observed)]) == 0
     result = json.loads((observed / "classification.json").read_text())

@@ -18,7 +18,7 @@ from replay.code_dependency_inventory import capture
 from replay.delivery_media import MAX_CLOCK_BYTES, FrameClock, parse_clock
 from replay.foreground_evidence import _bound_bytes
 from replay.recordings import record
-from replay.sequence_journal import bounded_read, decode, encode, publish, unique_pairs
+from replay.sequence_journal import MAX_BYTES, bounded_read, decode, encode, publish, unique_pairs
 from replay.subtitle_cleanup_plan import clock_chunks, search_profile
 
 MAX_PROFILE_SAMPLES = 512
@@ -158,18 +158,18 @@ def load(path: Path) -> Request:
     )
 
 
-def _pin(path: Path) -> dict[str, str]:
-    return Reference(path, hashlib.sha256(bounded_read(path)).hexdigest()).document()
+def _pin(path: Path, maximum: int = MAX_BYTES) -> dict[str, str]:
+    return Reference(path, hashlib.sha256(bounded_read(path, maximum)).hexdigest()).document()
 
 
-def _write(path: Path, value: object) -> None:
+def _write(path: Path, value: object, maximum: int = MAX_BYTES) -> None:
     _local(path)
-    raw = encode(value)
+    raw = encode(value, maximum)
     if path.exists() or path.is_symlink():
-        if bounded_read(path) != raw:
+        if bounded_read(path, maximum) != raw:
             raise ValueError("Prepared checkpoint changed; preserve the previous generation")
         return
-    publish(path, raw)
+    publish(path, raw, maximum)
 
 
 def _command(operation: str, request: Path, output: Path) -> list[str]:
@@ -201,7 +201,9 @@ def prepare(path: Path, output: Path) -> Path:
     _write(output / "request-pin.json", _pin(path))
     codes = _code_paths()
     _write(output / "code-pins.json", [_pin(item) for item in codes])
-    _write(output / "physical-clock.json", _physical(job.clock))
+    # A long recording's frame clock exceeds the generic metadata budget; clocks already
+    # use MAX_CLOCK_BYTES (delivery_media), so the checkpoint uses the same bound.
+    _write(output / "physical-clock.json", _physical(job.clock), MAX_CLOCK_BYTES)
     _write(output / "profile-times.json", list(job.times))
     native = reference(job.data["native"])
     profile = output / "profile"
@@ -294,7 +296,9 @@ def verify_profile(path: Path, output: Path) -> dict[str, object]:
             raise ValueError("Cleanup producer code changed")
     if decode(bounded_read(output / "request-pin.json")) != _pin(path):
         raise ValueError("Bootstrap request changed")
-    if decode(bounded_read(output / "physical-clock.json")) != _physical(job.clock):
+    if decode(
+        bounded_read(output / "physical-clock.json", MAX_CLOCK_BYTES), MAX_CLOCK_BYTES
+    ) != _physical(job.clock):
         raise ValueError("Physical clock checkpoint changed")
     profile = output / "profile"
     producer = decode(bounded_read(profile / "inputs.json"))
@@ -345,7 +349,7 @@ def profile(path: Path, output: Path) -> None:
     }
     settings.update(
         version=1,
-        sourceClock=_pin(output / "physical-clock.json"),
+        sourceClock=_pin(output / "physical-clock.json", MAX_CLOCK_BYTES),
         classificationEvidence=_pin(output / "classification.json"),
         profileInputs=classification["profileInputs"],
         profileComplete=classification["profileComplete"],

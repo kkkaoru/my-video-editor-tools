@@ -1,6 +1,7 @@
 """Context-aware interleaved recognition: chunking, streams, guards, rounds and labels."""
 
 import json
+import subprocess
 import wave
 from pathlib import Path
 
@@ -337,6 +338,32 @@ def test_mono_is_decoded_from_the_vocals_with_a_receipt(tmp_path: Path) -> None:
     assert streams.prepare_mono(vocals, ffmpeg, mono, receipt) == written
     with pytest.raises(ReplayError, match="receipt path"):
         streams.main(["mono", str(vocals), str(ffmpeg), str(mono)])
+
+
+def test_mono_duration_uses_the_payload_size_of_a_placeholder_wav(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A >4 GiB stem reports a truncated frame count through wave; the decoded duration is
+    # compared with the payload length instead, so a 10-hour vocal track is accepted.
+    vocals = tmp_path / "vocals.wav"
+    with wave.open(str(vocals), "wb") as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(44100)
+        out.writeframes(np.zeros(400, dtype=np.int16).tobytes())
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_bytes(b"synthetic ffmpeg")
+    mono, receipt = tmp_path / "mono.wav", tmp_path / "mono-receipt.json"
+    monkeypatch.setattr(streams, "pcm_layout", lambda _path: (44, 36000 * 44100))
+    monkeypatch.setattr(streams, "read_pcm", lambda _path: np.zeros(36000 * 16000, dtype=np.int16))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(streams, "file_digest", lambda _path: "0" * 64)
+    written = streams.prepare_mono(vocals, ffmpeg, mono, receipt)
+    assert written["samples"] == 36000 * 16000
+    receipt.unlink()
+    monkeypatch.setattr(streams, "pcm_layout", lambda _path: (44, 36000 * 44100 + 44100))
+    with pytest.raises(ReplayError, match="continuous sample duration"):
+        streams.prepare_mono(vocals, ffmpeg, mono, receipt)
 
 
 def test_long_word_clocks_shrink_to_their_loudest_voiced_run() -> None:

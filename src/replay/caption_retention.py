@@ -73,8 +73,8 @@ def retain_nonquiet_support(
         type(source_frames) is not int
         or type(fps) is not int
         or not 1 <= fps <= 120
-        or not 1 <= source_frames <= fps * 21600
-        or len(base) > 3000
+        or not 1 <= source_frames <= fps * 86400
+        or len(base) > 200_000
         or len(supports) > 100_000
         or len(quiet) > 100_000
     ):
@@ -124,6 +124,6 @@ def retain_nonquiet_support(
     for start, end in merged:
         cuts.append(CutSpan(start, end, offset))
         offset += end - start
-    if len(cuts) > 3000:
+    if len(cuts) > 200_000:
         raise ValueError("Retained timeline exceeds native cut budget")
     return RetentionPlan(tuple(cuts), tuple(requests), offset - cursor)

@@ -72,7 +72,7 @@ from replay.stateful_guard import saved_bytes
 
 CHUNK = 600 * MODEL_SAMPLE_RATE
 OVERLAP = 5 * MODEL_SAMPLE_RATE
-MAX_SAMPLES = 21600 * MODEL_SAMPLE_RATE
+MAX_SAMPLES = 86400 * MODEL_SAMPLE_RATE
 MAX_COMPARISON_SAMPLES = 90 * MODEL_SAMPLE_RATE
 # The blend's largest magnitude after the static output gain: 32766 of 32767, so no sample of
 # the 16-bit stem is written at full scale.
@@ -120,6 +120,29 @@ class PipelinePlan:
     device: str = "cpu"
 
 
+def pcm_layout(path: Path) -> tuple[int, int]:
+    """(data offset, frame count) of a PCM WAV, including >4 GiB files whose RIFF/data
+    chunk sizes are the 0xFFFFFFFF placeholder (as FFmpeg writes them), which the wave
+    module reports as a truncated frame count."""
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        header = stream.read(12)
+        require(
+            len(header) == 12 and header[:4] == b"RIFF" and header[8:] == b"WAVE",
+            "Expected a RIFF/WAVE PCM file",
+        )
+        while True:
+            chunk = stream.read(8)
+            require(len(chunk) == 8, "WAV has no data chunk")
+            chunk_size = int.from_bytes(chunk[4:], "little")
+            offset = stream.tell()
+            if chunk[:4] == b"data":
+                data_bytes = size - offset if chunk_size == 0xFFFFFFFF else chunk_size
+                require(data_bytes >= 0 and data_bytes % 4 == 0, "Invalid WAV data size")
+                return offset, data_bytes // 4
+            stream.seek(offset + chunk_size + chunk_size % 2)
+
+
 def pcm_info(path: Path) -> int:
     before = identity(path)
     with path.open("rb") as stream, wave.open(stream, "rb") as audio:
@@ -130,7 +153,7 @@ def pcm_info(path: Path) -> int:
             and audio.getcomptype() == "NONE",
             "Expected original stereo PCM16/44100",
         )
-        samples = audio.getnframes()
+    samples = pcm_layout(path)[1]
     require(0 < samples <= MAX_SAMPLES and identity(path) == before, "Invalid/changing PCM clock")
     return samples
 
@@ -141,10 +164,11 @@ def read_chunk(path: Path, *, start: int, count: int) -> NDArray[np.float32]:
         "Invalid chunk extent",
     )
     before = identity(path)
-    with path.open("rb") as stream, wave.open(stream, "rb") as audio:
-        require(start + count <= audio.getnframes(), "Chunk exceeds source")
-        audio.setpos(start)
-        raw = audio.readframes(count)
+    offset, frames = pcm_layout(path)
+    require(start + count <= frames, "Chunk exceeds source")
+    with path.open("rb") as stream:
+        stream.seek(offset + start * 4)
+        raw = stream.read(count * 4)
     require(len(raw) == count * 4 and identity(path) == before, "Truncated/changing source chunk")
     decoded = np.frombuffer(raw, dtype="<i2").reshape(count, 2).T.astype(np.float32)
     decoded /= 32768.0
@@ -454,19 +478,33 @@ def pcm_blocks(
 
 
 def write_pcm(path: Path, *, samples: int, blocks: Iterator[bytes]) -> None:
+    # Written directly (not via wave) so >4 GiB outputs get the same 0xFFFFFFFF
+    # placeholder sizes FFmpeg uses; readers derive the payload from the file size.
+    data_bytes = samples * 4
+    placeholder = 0xFFFFFFFF
+    header = (
+        b"RIFF"
+        + (36 + data_bytes if 36 + data_bytes <= placeholder else placeholder).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (2).to_bytes(2, "little")
+        + MODEL_SAMPLE_RATE.to_bytes(4, "little")
+        + (MODEL_SAMPLE_RATE * 4).to_bytes(4, "little")
+        + (4).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + (data_bytes if data_bytes <= placeholder else placeholder).to_bytes(4, "little")
+    )
     with path.open("xb") as stream:
         os.fchmod(stream.fileno(), 0o600)
-        with wave.open(stream, "wb") as audio:
-            audio.setnchannels(2)
-            audio.setsampwidth(2)
-            audio.setframerate(MODEL_SAMPLE_RATE)
-            audio.setnframes(samples)
-            written = 0
-            for block in blocks:
-                require(len(block) % 4 == 0, "Partial stereo sample")
-                audio.writeframesraw(block)
-                written += len(block) // 4
-            require(written == samples, "Incomplete PCM assembly")
+        stream.write(header)
+        written = 0
+        for block in blocks:
+            require(len(block) % 4 == 0, "Partial stereo sample")
+            stream.write(block)
+            written += len(block) // 4
+        require(written == samples, "Incomplete PCM assembly")
         stream.flush()
         os.fsync(stream.fileno())
 
@@ -528,7 +566,11 @@ def verify(plan_path: Path) -> None:
     if type(recorded) is not float or not (0 < recorded <= 1 and math.isfinite(recorded)):
         raise ReplayError("Pipeline receipt output gain is invalid")
     scale = recorded
-    with (plan.directory / "vocals.wav").open("rb") as stream, wave.open(stream, "rb") as audio:
+    vocals = plan.directory / "vocals.wav"
+    offset, frames = pcm_layout(vocals)
+    require(frames == plan.samples, "Final PCM has the wrong sample count")
+    with vocals.open("rb") as stream:
+        stream.seek(offset)
         for expected in pcm_blocks(
             plan.bounds,
             samples=plan.samples,
@@ -539,10 +581,10 @@ def verify(plan_path: Path) -> None:
             scale=scale,
         ):
             require(
-                audio.readframes(len(expected) // 4) == expected,
+                stream.read(len(expected)) == expected,
                 "Final PCM differs from original ordered blend",
             )
-        require(not audio.readframes(1), "Final PCM has extra samples")
+        require(not stream.read(1), "Final PCM has extra samples")
     verify_material(plan.source, plan.directory)
     require(
         context(plan) == bound

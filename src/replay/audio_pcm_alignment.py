@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from replay.audio_clock import AudioFrameClock
 from replay.caption_measured_job import _rational
 from replay.clocked_cut_audio import CutSlot, plan_slots
+from replay.pcm_wav_extent import pcm_extent
 from replay.recordings import record
 from replay.stages import file_digest
 
@@ -143,10 +144,11 @@ def match_window(
     )
 
 
-def _format(stream: wave.Wave_read) -> tuple[int, int, int]:
+def _format(stream: wave.Wave_read, path: Path) -> tuple[int, int, int]:
     if stream.getsampwidth() != 2 or stream.getcomptype() != "NONE":
         raise ValueError("Alignment requires PCM16 WAV")
-    return stream.getframerate(), stream.getnchannels(), stream.getnframes()
+    # A >4 GiB stem carries the placeholder size that wave reports truncated.
+    return stream.getframerate(), stream.getnchannels(), pcm_extent(path).frames
 
 
 def _read_window(stream: wave.Wave_read, *, start: int, count: int) -> PCM:
@@ -231,7 +233,7 @@ def diagnose(
     if any(file_digest(Path(path)) != digest for path, digest in pins.items()):
         raise ValueError("Alignment input hash mismatch")
     with wave.open(str(paths[0]), "rb") as left, wave.open(str(paths[1]), "rb") as right:
-        left_format, right_format = _format(left), _format(right)
+        left_format, right_format = _format(left, paths[0]), _format(right, paths[1])
         if left_format[:2] != right_format[:2]:
             raise ValueError("PCM sample rate/channels differ")
         observations = [_anchor(left, right, centers=pair, policy=policy) for pair in anchors]
@@ -659,7 +661,10 @@ def map_selection(
     ):
         raise ValueError("Invalid mapping PCM bindings")
     with wave.open(str(reference), "rb") as left, wave.open(str(candidate), "rb") as right:
-        reference_format, candidate_format = _format(left), _format(right)
+        reference_format, candidate_format = (
+            _format(left, reference),
+            _format(right, candidate),
+        )
         if reference_format[:2] != candidate_format[:2]:
             raise ValueError("Mapping PCM formats differ")
         rate, channels, samples = reference_format

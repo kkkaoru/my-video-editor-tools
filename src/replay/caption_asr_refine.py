@@ -209,7 +209,7 @@ def _ranges(
     cuts = tuple(
         CutSpan(c.source_start, c.source_end, c.output_start) for c in read_cuts(cuts_path)
     )
-    if len(cuts) > 3000:
+    if len(cuts) > 200_000:
         raise ValueError("Caption projection cut budget exceeded")
     spans = tuple(_span(value) for value in _array(manifest["spans"], 3000))
     if not spans or any(

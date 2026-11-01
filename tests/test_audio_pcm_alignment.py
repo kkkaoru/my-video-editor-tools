@@ -234,7 +234,7 @@ def test_format_and_truncated_pcm(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             alignment._read_window(reader, start=0, count=10)
         monkeypatch.setattr(reader, "getsampwidth", lambda: 3)
         with pytest.raises(ValueError, match="PCM16"):
-            alignment._format(reader)
+            alignment._format(reader, path)
 
 
 def test_bad_anchor_syntax() -> None:

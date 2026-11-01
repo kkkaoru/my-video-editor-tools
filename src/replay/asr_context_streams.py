@@ -53,6 +53,7 @@ from replay import asr_decode_patches, caption_io, caption_linguistics
 from replay.core import ReplayError
 from replay.recordings import record
 from replay.replay_transcription_plan import mono_command
+from replay.separation_window_pipeline import pcm_layout
 from replay.stages import file_digest
 
 RATE = 16000
@@ -687,7 +688,10 @@ def prepare_mono(vocals: Path, ffmpeg: Path, mono: Path, receipt: Path) -> dict[
     command = list(mono_command(vocals, mono, ffmpeg))
     subprocess.run(command, check=True)
     with wave.open(str(vocals), "rb") as source:
-        seconds = source.getnframes() / source.getframerate()
+        rate = source.getframerate()
+    # A >4 GiB stem (a 10-hour vocal track) carries the 0xFFFFFFFF placeholder size, which
+    # the wave module reports as a truncated frame count; the payload length is the truth.
+    seconds = pcm_layout(vocals)[1] / rate
     samples = len(read_pcm(mono))
     if abs(seconds - samples / RATE) > 1 / RATE:
         raise ReplayError("Mono decoding changed the continuous sample duration")

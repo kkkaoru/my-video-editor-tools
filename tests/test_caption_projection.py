@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from replay import caption_projection as projection
 from replay.caption_projection import (
     CutSpan,
     MeasuredQuietSpan,
@@ -134,11 +135,15 @@ def test_measured_quiet_intervals_are_finite_and_positive(start: float, end: flo
         MeasuredQuietSpan(start, end)
 
 
-def test_quiet_projection_validates_order_and_budgets() -> None:
+def test_quiet_projection_validates_order_and_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValueError, match="ordered"):
         project_tokens_over_quiet((), (), (MeasuredQuietSpan(1, 3), MeasuredQuietSpan(2, 4)))
+    # The span budget scales with the source; the check itself still refuses an excess.
+    monkeypatch.setattr(projection, "MAXIMUM_SPANS", 1)
     with pytest.raises(ValueError, match="budget"):
-        project_tokens_over_quiet((), (), (MeasuredQuietSpan(0, 1),) * 100_001)
+        project_tokens_over_quiet((), (), (MeasuredQuietSpan(0, 1), MeasuredQuietSpan(2, 3)))
     with pytest.raises(ValueError, match="budget"):
         project_tokens_over_quiet((), (), (), fps=0)
     with pytest.raises(ValueError, match="ordered"):
@@ -148,7 +153,7 @@ def test_quiet_projection_validates_order_and_budgets() -> None:
 
 
 def test_quiet_projection_bounds_intersection_work() -> None:
-    with pytest.raises(ValueError, match="work budget"):
+    with pytest.raises(ValueError, match="budget"):
         project_tokens_over_quiet(
             (SpokenToken("long", 0, 11, "a"),) * 100_000,
             (

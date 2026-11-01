@@ -42,7 +42,7 @@ def number(value: object) -> float:
 
 
 def rows(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or not 1 <= len(value) <= 100_000:
+    if not isinstance(value, list) or not 1 <= len(value) <= 2_000_000:
         raise ReplayError("ASS measurement rows are missing or unbounded")
     return [record(item) for item in value]
 

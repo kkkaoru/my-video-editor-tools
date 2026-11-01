@@ -29,26 +29,26 @@ def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
-def bounded_read(path: Path) -> bytes:
+def bounded_read(path: Path, maximum: int = MAX_BYTES) -> bytes:
     """Read one regular metadata FD within budget; detect grow/replace/symlink races."""
     if not path.is_absolute() or path != path.resolve():
         raise ContractError("Expected canonical metadata path")
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_BYTES:
+        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
             raise ContractError("Expected bounded regular metadata")
         if identity(path.lstat()) != identity(before):
             raise ContractError("Metadata changed before read")
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = os.read(descriptor, min(65536, MAX_BYTES + 1 - total))
+            chunk = os.read(descriptor, min(65536, maximum + 1 - total))
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
-            if total > MAX_BYTES:
+            if total > maximum:
                 raise ContractError("Metadata grew beyond byte budget")
         if (
             total != before.st_size
@@ -75,8 +75,8 @@ def invalid_constant(value: str) -> object:
     raise ContractError("Nonfinite JSON value")
 
 
-def decode(data: bytes | str) -> dict[str, object]:
-    if len(data) > MAX_BYTES:
+def decode(data: bytes | str, maximum: int = MAX_BYTES) -> dict[str, object]:
+    if len(data) > maximum:
         raise ContractError("JSON exceeds byte budget")
     return _record(
         json.loads(data, object_pairs_hook=unique_pairs, parse_constant=invalid_constant)
@@ -93,19 +93,19 @@ class Pin:
             raise ContractError("Pinned metadata/code changed")
 
 
-def encode(value: object) -> bytes:
+def encode(value: object, maximum: int = MAX_BYTES) -> bytes:
     data = (
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
     ).encode()
-    if len(data) > MAX_BYTES:
+    if len(data) > maximum:
         raise ContractError("Journal item exceeds byte budget")
     return data
 
 
-def publish(path: Path, data: bytes) -> None:
+def publish(path: Path, data: bytes, maximum: int = MAX_BYTES) -> None:
     """Atomic no-replace publication; all temporary bytes live beside target."""
     if (
-        len(data) > MAX_BYTES
+        len(data) > maximum
         or path != path.resolve()
         or path.is_symlink()
         or not path.parent.is_dir()
@@ -131,7 +131,7 @@ def publish(path: Path, data: bytes) -> None:
             raise ContractError("Publication parent changed")
         os.link(name, path.name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
         os.fsync(directory)
-        if bounded_read(path) != data:
+        if bounded_read(path, maximum) != data:
             raise ContractError("Published bytes changed")
     finally:
         if created:

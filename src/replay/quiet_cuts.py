@@ -5,6 +5,9 @@ from math import ceil, floor, isfinite
 from .caption_projection import CutSpan, MeasuredQuietSpan
 from .caption_repair import ClockLabel
 
+MAXIMUM_SOURCE_SECONDS = 86400  # 24 h: a ten-hour stream needs no change
+MAXIMUM_SPANS = 2_000_000
+
 
 def _protected(
     labels: tuple[ClockLabel, ...], *, frames: int, fps: int, guard: float
@@ -47,9 +50,9 @@ def quiet_cut_frames(
         type(source_frames) is not int
         or type(fps) is not int
         or not 1 <= fps <= 120
-        or not 1 <= source_frames <= fps * 21600
-        or len(quiet) > 100_000
-        or len(labels) > 100_000
+        or not 1 <= source_frames <= fps * MAXIMUM_SOURCE_SECONDS
+        or len(quiet) > MAXIMUM_SPANS
+        or len(labels) > MAXIMUM_SPANS
         or isinstance(minimum_cut_seconds, bool)
         or not isfinite(minimum_cut_seconds)
         or not 0.02 <= minimum_cut_seconds <= 10

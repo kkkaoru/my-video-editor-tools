@@ -1,10 +1,12 @@
 import json
+import math
 import wave
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
+from replay import asr_clock_projection as projection
 from replay.asr_clock_projection import main, project_labels, run
 from replay.audio_clock import AudioFrameClock
 from replay.caption_repair import ClockLabel
@@ -190,3 +192,31 @@ def test_float_noise_in_equal_onsets_is_not_a_reversal() -> None:
     labels = (ClockLabel("ー", 0.1 + 0.2, 0.1 + 0.2, "a"), ClockLabel("エ", 0.3, 0.6, "b"))
     result = project_labels(labels, clock)
     assert [(label.start, label.end) for label in result] == [(0.3, 0.3), (0.3, 0.6)]
+
+
+def test_the_label_budget_follows_the_source_length() -> None:
+    # A fixed wall would need a code change for every longer stream; the source's own length
+    # decides, so a ten-hour recording is accepted at the same code revision.
+    short = AudioFrameClock((0, 1), (160, 160), 16000, Fraction(1, 16000))
+    assert projection.label_budget(short) == 100_000
+    frames = 3052  # 3052 x 65536 / 16000 s = 3.5 h ... x 8 labels/s passes the floor
+    long = AudioFrameClock(tuple(range(frames)), (65536,) * frames, 16000, Fraction(1, 16000))
+    seconds = frames * 65536 / 16000
+    assert projection.label_budget(long) == math.ceil(seconds * projection.LABELS_PER_SECOND)
+    assert projection.label_budget(long) > 100_000
+
+
+def test_a_long_stream_writes_its_labels_without_one_giant_array(tmp_path: Path) -> None:
+    labels = tuple(ClockLabel(f"w{index}", 0.0, 0.5, "asr") for index in range(120_000))
+    stream = tmp_path / "receipt.json"
+    with stream.open("x", encoding="utf-8") as handle:
+        projection._write(handle, {"version": 1, "clock": "source-presentation"}, labels)
+    written = json.loads(stream.read_text(encoding="utf-8"))
+    assert len(written["labels"]) == 120_000
+    assert written["labels"][-1] == {
+        "text": "w119999",
+        "start": 0.0,
+        "end": 0.5,
+        "provenance": "asr",
+    }
+    assert written["clock"] == "source-presentation"

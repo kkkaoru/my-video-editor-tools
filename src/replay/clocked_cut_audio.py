@@ -25,6 +25,7 @@ from replay.caption_measured_job import _json, _local, _object, _pin, _rational
 from replay.caption_native_layout import NativeCaptionLayout
 from replay.continuous_cut_job import MAX_CLOCK_BYTES, MAX_CONFIG_BYTES, MAX_PCM_BYTES
 from replay.foreground_evidence import _bound_bytes
+from replay.pcm_wav_extent import pcm_extent
 from replay.stages import file_digest
 
 BLOCK = 65536
@@ -97,7 +98,7 @@ def plan_slots(
         or not math.isfinite(maximum_rate_change)
         or not 0 <= maximum_rate_change < 1
         or not 1 <= len(intervals) <= 100000
-        or any(not 0 <= start < end <= 21600 for start, end in intervals)
+        or any(not 0 <= start < end <= 86400 for start, end in intervals)
         or any(right[0] < left[1] for left, right in pairwise(intervals))
     ):
         raise ValueError("Invalid PCM correspondence, cuts or rate-change bound")
@@ -240,7 +241,9 @@ def run(
         path = Path(__file__).with_name(name).resolve()
         bindings[str(path)] = file_digest(path)
     with wave.open(str(source), "rb") as reader:
-        rate, samples = reader.getframerate(), reader.getnframes()
+        rate = reader.getframerate()
+    # A >4 GiB stem carries the placeholder size that wave reports truncated.
+    samples = pcm_extent(source).frames
     slots = plan_slots(
         clock, intervals, rate=rate, samples=samples, maximum_rate_change=maximum_rate_change
     )

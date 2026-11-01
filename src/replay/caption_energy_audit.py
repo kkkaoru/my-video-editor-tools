@@ -70,7 +70,7 @@ def onset_lag(
 
 def audit(plan: dict[str, object], energy: NDArray[np.float64]) -> dict[str, object]:
     rows = plan.get("captions")
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 100_000:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 2_000_000:
         raise ReplayError("Expected bounded phrase captions")
     results: list[dict[str, object]] = []
     absolute_lags: list[float] = []

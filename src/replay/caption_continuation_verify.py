@@ -13,10 +13,13 @@ from replay.audio_clock import AudioFrameClock
 from replay.core import ReplayError
 from replay.delivery_media import read_clock
 from replay.input_hash_snapshot import InputHashSnapshot
+from replay.pcm_wav_extent import pcm_extent
 from replay.quiet_cuts import quiet_cut_frames
 from replay.recordings import record
 from replay.stages import file_digest
 from replay.waveform_quiet import measured_quiet_runs
+
+MAXIMUM_PEAK_BYTES = 2 * 1024**3  # 24 h of 20 ms windows is about 390 MB
 
 
 def verify(kind: str, config: Path, output: Path) -> None:
@@ -99,13 +102,17 @@ def _verify_quiet(
     if type(fps) is not int or not 1 <= fps <= 120:
         raise ReplayError("Invalid continuation frame rate")
     peaks = output.parent / "peaks.txt"
-    if peaks.stat().st_size > 128 * 1024 * 1024:
+    # Two text lines per 20 ms window: a 24-hour source is about 390 MB, so a fixed 128 MB
+    # wall refused legitimate long recordings while still bounding the read.
+    if peaks.stat().st_size > MAXIMUM_PEAK_BYTES:
         raise ReplayError("Quiet evidence exceeds byte budget")
     peak_sha = file_digest(peaks)
     if result.get("peakSHA256") != peak_sha:
         raise ReplayError("Quiet measurement identity mismatch")
     with wave.open(str(bindings["stereoPCM"][0]), "rb") as stream:
-        samples, rate = stream.getnframes(), stream.getframerate()
+        rate = stream.getframerate()
+    # A >4 GiB stem carries the placeholder size that wave reports truncated.
+    samples = pcm_extent(bindings["stereoPCM"][0]).frames
     with peaks.open(encoding="utf-8") as lines:
         measured = measured_quiet_runs(
             lines, sample_count=samples, sample_rate=rate, window_samples=max(1, rate // 50),

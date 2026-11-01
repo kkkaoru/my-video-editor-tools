@@ -21,8 +21,12 @@ from replay.continuous_quiet_plan import _labels as source_labels
 from replay.core import ReplayError
 from replay.cut_audio_support import _cuts, _local, _read
 from replay.input_hash_snapshot import InputHashSnapshot
+from replay.pcm_wav_extent import pcm_extent
 from replay.recordings import record
 from replay.stages import file_digest
+
+# A 24 h source with frequent pauses stays below this; the previous 3000 wall refused it.
+MAX_TEMPO_ROWS = 200_000
 
 RECOGNITION_ROLES = frozenset({"producerConfig", "inputLabels", "outputLabels", "audioClock"})
 TEMPO_ROLES = frozenset(
@@ -117,7 +121,9 @@ def _wave(path: Path) -> tuple[int, int, int]:
     with wave.open(str(path), "rb") as reader:
         if reader.getsampwidth() != 2 or reader.getcomptype() != "NONE":
             raise ReplayError("Clock contract requires PCM16 WAV")
-        return reader.getframerate(), reader.getnchannels(), reader.getnframes()
+        rate, channels = reader.getframerate(), reader.getnchannels()
+    # A >4 GiB stem carries the placeholder size that wave reports truncated.
+    return rate, channels, pcm_extent(path).frames
 
 
 def _tempo(
@@ -156,7 +162,7 @@ def _tempo(
     ):
         raise ReplayError("Tempo producer must bind native cuts and the original continuous PCM")
     rows = config.get("intervals")
-    if not isinstance(rows, list) or len(rows) > 3000:
+    if not isinstance(rows, list) or len(rows) > MAX_TEMPO_ROWS:
         raise ReplayError("Invalid bounded tempo selection")
     if legacy and any(
         record(record(row).get(boundary)).get("timescale") != fps

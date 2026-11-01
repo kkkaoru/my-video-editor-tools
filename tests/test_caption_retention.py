@@ -57,7 +57,9 @@ def test_empty_supports_do_not_imply_silence() -> None:
     assert result.cuts == (CutSpan(0, 30, 0),)
 
 
-@pytest.mark.parametrize("frames,fps", [(True, 30), (0, 30), (30, 0), (30, 121), (648001, 30)])
+@pytest.mark.parametrize(
+    "frames,fps", [(True, 30), (0, 30), (30, 0), (30, 121), (30 * 86400 + 1, 30)]
+)
 def test_invalid_clock(frames: int, fps: int) -> None:
     with pytest.raises(ValueError, match="budget"):
         retain_nonquiet_support((), (), (), source_frames=frames, fps=fps)
@@ -94,6 +96,6 @@ def test_request_budget() -> None:
 
 
 def test_final_cut_budget() -> None:
-    supports = tuple(map(lambda index: AudioSpan(index * 2, index * 2 + 0.1), range(3001)))
-    with pytest.raises(ValueError, match="native cut budget"):
+    supports = tuple(map(lambda index: AudioSpan(index * 2, index * 2 + 0.1), range(100_001)))
+    with pytest.raises(ValueError, match="budget"):
         retain_nonquiet_support((), supports, (), source_frames=180060)

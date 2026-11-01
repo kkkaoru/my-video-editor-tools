@@ -25,6 +25,7 @@ from replay.continuous_quiet_plan import _labels
 from replay.core import ReplayError
 from replay.cut_audio_support import MAX_CUTS, MAX_LABELS, _cuts, _protect_labels
 from replay.input_hash_snapshot import InputHashSnapshot
+from replay.pcm_wav_extent import pcm_extent
 from replay.recordings import record
 from replay.stages import file_digest
 
@@ -286,7 +287,8 @@ def _load(
     if type(fps) is not int or not isinstance(bound, (float, int)) or isinstance(bound, bool):
         raise ReplayError("Invalid partial-edge frame/rate contract")
     with wave.open(str(paths["source"]), "rb") as reader:
-        rate, samples, channels = reader.getframerate(), reader.getnframes(), reader.getnchannels()
+        rate, channels = reader.getframerate(), reader.getnchannels()
+        samples = pcm_extent(paths["source"]).frames
         if reader.getsampwidth() != 2 or channels not in (1, 2):
             raise ReplayError("Partial-edge renderer requires mono/stereo PCM16")
     original = _cuts(cuts)

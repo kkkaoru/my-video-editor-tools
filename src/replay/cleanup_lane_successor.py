@@ -27,7 +27,7 @@ from replay.stages import Stage, _fingerprint, execution_lock, file_digest
 from replay.subtitle_cleanup_plan import clock_chunks
 from replay.workflow import load_stages, parse_stages, stage_graph
 
-MAX_CHUNKS = 512
+MAX_CHUNKS = 4096  # 4096 x 30 s chunks = 34 h, so a longer source needs no code change
 MAX_PREFIX_FILES = 10000
 
 
