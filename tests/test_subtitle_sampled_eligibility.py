@@ -189,10 +189,10 @@ def test_attempt_count_is_bounded() -> None:
     plan = _admission([None] * 10)
     receipt = _receipt(plan)
     receipt["attempts"] = []
-    with pytest.raises(ValueError, match="one to three"):
+    with pytest.raises(ValueError, match="one to four"):
         _check(receipt, plan)
-    receipt["attempts"] = [{}] * 4
-    with pytest.raises(ValueError, match="one to three"):
+    receipt["attempts"] = [{}] * 5
+    with pytest.raises(ValueError, match="one to four"):
         _check(receipt, plan)
 
 

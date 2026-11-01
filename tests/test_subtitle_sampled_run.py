@@ -146,7 +146,7 @@ def test_a_caption_coloured_residual_still_fails_the_audit(tmp_path: Path) -> No
         runner.run(tmp_path / "chunk", _coloured_tools([True], []))
 
 
-def test_residual_boxes_get_one_more_attempt_when_a_collaborator_takes_them(
+def test_a_failed_sampled_attempt_is_healed_with_its_own_plan_before_full_ocr(
     tmp_path: Path,
 ) -> None:
     strides: list[int] = []
@@ -162,9 +162,37 @@ def test_residual_boxes_get_one_more_attempt_when_a_collaborator_takes_them(
 
     tools = runner.Collaborators(base.plan, base.render, audit, residual=residual)
     receipt = runner.run(tmp_path / "chunk", tools)
-    assert strides == [6, 1, 1]
+    assert strides == [6]  # no full OCR plan: the sampled plan is reused
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert [(a["directory"], a["replanned"], a["passed"]) for a in attempts] == [
+        ("attempt-sampled", True, False),
+        ("attempt-sampled-residual", False, True),
+    ]
+    assert receipt["accepted"] == "attempt-sampled-residual"
+    assert taken == [(0, 5), (2, 5)]
+
+
+def test_attempts_run_sampled_healed_full_then_healed_full(tmp_path: Path) -> None:
+    strides: list[int] = []
+    base = _tools(0, strides)
+
+    def audit(video: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
+        line = SMEAR if video.parent.name == "attempt-residual" else CAPTION
+        return {index: FrameObservation(0.0, 0.0, 1080, 1920, (line,)) for index in indices}
+
+    tools = runner.Collaborators(base.plan, base.render, audit, residual=lambda *_a: None)
+    receipt = runner.run(tmp_path / "chunk", tools)
+    assert strides == [6, 1]
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert [(a["directory"], a["stride"], a["replanned"]) for a in attempts] == [
+        ("attempt-sampled", 6, True),
+        ("attempt-sampled-residual", 6, False),
+        ("attempt-full", 1, True),
+        ("attempt-residual", 1, False),
+    ]
     assert receipt["accepted"] == "attempt-residual"
-    assert taken and all(stride == runner.AUDIT_STRIDE for _, stride in taken)
 
 
 def test_no_residual_attempt_without_boxes_or_collaborator(tmp_path: Path) -> None:
@@ -189,3 +217,176 @@ def test_a_caption_line_stacked_above_the_region_still_fails_the_audit(tmp_path:
     attempts = receipt["attempts"]
     assert isinstance(attempts, list)
     assert attempts[0]["residualLines"][0]["text"] == "ならちょ待って"
+
+
+def _colour_failing_tools(
+    strides: list[int], found: list[Residual], seen: list[tuple[str, list[int]]], taken: list[int]
+) -> runner.Collaborators:
+    """OCR finds nothing, but the colour gate flags frame 2 until boxes are taken."""
+    base = _tools(6, strides)
+
+    def colour(_plan: dict[str, object], video: Path, indices: Sequence[int]) -> Sequence[int]:
+        return [0, 0 if taken else 838][: len(indices)]
+
+    def regions(plan: dict[str, object], video: Path, frames: Sequence[int]) -> Sequence[Residual]:
+        assert plan == PLAN
+        seen.append((video.parent.name, list(frames)))
+        return found
+
+    def residual(lines: Sequence[Residual], audit_stride: int) -> None:
+        taken.extend(line.frame for line in lines)
+
+    return runner.Collaborators(
+        base.plan, base.render, base.audit, colour, residual=residual, colour_regions=regions
+    )
+
+
+def test_a_colour_only_failure_repairs_just_its_flagged_frames(tmp_path: Path) -> None:
+    strides: list[int] = []
+    seen: list[tuple[str, list[int]]] = []
+    taken: list[int] = []
+    found = [Residual(2, "caption colour", 0.0, (100.0, 150.0, 12.0, 6.0))]
+    tools = _colour_failing_tools(strides, found, seen, taken)
+    receipt = runner.run(tmp_path / "chunk", tools)
+    assert strides == [6]
+    assert seen == [("attempt-sampled", [2])]
+    assert taken == [2]
+    assert receipt["accepted"] == "attempt-sampled-residual"
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert attempts[0]["colourResidual"] == {"gate": 40, "flaggedFrames": [2], "maximum": 838}
+    assert attempts[0]["colourRegions"] == [
+        {"frame": 2, "text": "caption colour", "confidence": 0.0, "box": [100.0, 150.0, 12.0, 6.0]}
+    ]
+    assert attempts[1]["colourResidual"] == {"gate": 40, "flaggedFrames": [], "maximum": 0}
+    # Each audit check's wall time is recorded apart: the OCR, the colour gate, the regions.
+    assert set(attempts[0]["auditSeconds"]) == {"ocr", "colourGate", "colourRegions"}
+    assert set(attempts[1]["auditSeconds"]) == {"ocr", "colourGate"}
+
+
+def test_a_colour_only_failure_without_components_escalates_and_still_fails(
+    tmp_path: Path,
+) -> None:
+    strides: list[int] = []
+    seen: list[tuple[str, list[int]]] = []
+    with pytest.raises(ValueError, match="nothing accepted"):
+        runner.run(tmp_path / "chunk", _colour_failing_tools(strides, [], seen, []))
+    assert seen == [("attempt-sampled", [2]), ("attempt-full", [2])]
+    assert strides == [6, 1]
+
+
+def test_a_chunk_that_passes_never_asks_for_colour_regions(tmp_path: Path) -> None:
+    strides: list[int] = []
+    seen: list[tuple[str, list[int]]] = []
+    base = _tools(6, strides)
+    tools = _colour_failing_tools(strides, [], seen, [])
+    receipt = runner.run(
+        tmp_path / "chunk",
+        runner.Collaborators(
+            base.plan, base.render, base.audit, residual=tools.residual,
+            colour_regions=tools.colour_regions,
+        ),
+    )  # fmt: skip
+    assert receipt["accepted"] == "attempt-sampled"
+    assert seen == []
+
+
+def test_moving_interface_text_is_recorded_and_not_a_residual(tmp_path: Path) -> None:
+    strides: list[int] = []
+    base = _tools(0, strides)  # every audited frame reads the caption-like line
+    asked: list[tuple[int, int]] = []
+
+    def moving(observed: Mapping[int, FrameObservation], frame: int, index: int) -> bool:
+        asked.append((frame, index))
+        return index == 0 and frame in observed
+
+    tools = runner.Collaborators(base.plan, base.render, base.audit, moving_interface=moving)
+    receipt = runner.run(tmp_path / "chunk", tools)
+    assert receipt["accepted"] == "attempt-sampled"
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert attempts[0]["residualLines"] == []
+    assert attempts[0]["interfaceText"] == [
+        {"frame": 0, "text": "決着", "confidence": 1.0, "box": [100.0, 150.0, 60.0, 30.0]},
+        {"frame": 2, "text": "決着", "confidence": 1.0, "box": [100.0, 150.0, 60.0, 30.0]},
+    ]
+    assert asked == [(0, 0), (2, 0)]
+
+
+def test_a_residual_the_rule_does_not_name_stays_a_residual(tmp_path: Path) -> None:
+    strides: list[int] = []
+    base = _tools(0, strides)
+    tools = runner.Collaborators(
+        base.plan, base.render, base.audit, moving_interface=lambda _observed, _frame, _index: False
+    )
+    with pytest.raises(ValueError, match="nothing accepted"):
+        runner.run(tmp_path / "chunk", tools)
+
+
+def test_measured_decisions_are_recorded_in_the_receipt(tmp_path: Path) -> None:
+    base = _tools(6, [])
+    tools = runner.Collaborators(
+        base.plan, base.render, base.audit,
+        notes=lambda: {"captionStyle": {"outlined": False, "shareBesideWhite": 0.0}},
+    )  # fmt: skip
+    receipt = runner.run(tmp_path / "chunk", tools)
+    assert receipt["captionStyle"] == {"outlined": False, "shareBesideWhite": 0.0}
+
+
+def test_a_below_floor_caption_styled_line_counts_and_a_gift_label_does_not(
+    tmp_path: Path,
+) -> None:
+    strides: list[int] = []
+    base = _tools(6, strides)  # the confident audit lines are smears: nothing above the floor
+    caption = TextDetection("<< 俺今日何回連れてかれるの >>", 0.3, TextRectangle(100, 150, 400, 30))
+    gift = TextDetection("星降りメリー", 0.3, TextRectangle(100, 200, 200, 30))
+
+    def audit(video: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
+        lines = (gift,) if video.parent.name != "attempt-sampled" else (caption, gift)
+        return {index: FrameObservation(0.0, 0.0, 1080, 1920, lines) for index in indices}
+
+    asked: list[list[str]] = []
+
+    def styled(lines: Sequence[Residual]) -> list[bool]:
+        asked.append([line.text for line in lines])
+        return [line.text.startswith("<<") for line in lines]  # the source styles, measured
+
+    tools = runner.Collaborators(base.plan, base.render, audit, styled_caption=styled)
+    receipt = runner.run(tmp_path / "chunk", tools)
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert [line["text"] for line in attempts[0]["residualLines"]] == [
+        "<< 俺今日何回連れてかれるの >>",
+        "<< 俺今日何回連れてかれるの >>",
+    ]
+    assert attempts[0]["passed"] is False
+    assert receipt["accepted"] == "attempt-full"  # the gift label alone never fails the audit
+    assert asked[0] == [caption.text, gift.text, caption.text, gift.text]
+    assert "styledCaption" in attempts[0]["auditSeconds"]
+
+
+def test_a_caption_the_plan_never_saw_counts_when_caption_styled(tmp_path: Path) -> None:
+    # The caption sits above the learned band (frame 2 is the last audited frame, frame 1 the one
+    # the plan left without a region): it touches no search region, yet a caption-styled source
+    # makes it a residual.
+    strides: list[int] = []
+    base = _tools(6, strides)
+    above = TextDetection("<< 俺今日何回連れてかれるの >>", 0.95, TextRectangle(100, 20, 400, 30))
+    label = TextDetection("星降りメリー", 0.95, TextRectangle(100, 900, 200, 30))
+
+    def audit(video: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
+        lines = (above, label) if video.parent.name == "attempt-sampled" else (label,)
+        return {index: FrameObservation(0.0, 0.0, 1080, 1920, lines) for index in indices}
+
+    def styled(lines: Sequence[Residual]) -> list[bool]:
+        return [line.text.startswith("<<") for line in lines]
+
+    tools = runner.Collaborators(base.plan, base.render, audit, styled_caption=styled)
+    receipt = runner.run(tmp_path / "chunk", tools)
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert [(line["frame"], line["text"]) for line in attempts[0]["residualLines"]] == [
+        (0, "<< 俺今日何回連れてかれるの >>"),
+        (2, "<< 俺今日何回連れてかれるの >>"),
+    ]
+    assert receipt["accepted"] == "attempt-full"  # an unplanned interface label alone never fails

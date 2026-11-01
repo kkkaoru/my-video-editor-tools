@@ -30,6 +30,7 @@ RECEIPT_KIND = "sampled-ocr-repair-chunk"
 SAMPLING_KIND = "sampled-ocr-observation"
 YOLO_SAMPLING_KIND = "yolo-caption-boxes"
 MAX_STRIDE = 30
+MAX_ATTEMPTS = 4
 
 
 def _record(value: object, label: str) -> dict[str, object]:
@@ -105,9 +106,9 @@ def _accepted_attempt(
     ):
         raise ValueError("Chunk receipt identity, pins or approval flags are invalid")
     attempts = receipt.get("attempts")
-    # sampled, then full OCR, then once more with the residual boxes the full audit found
-    if not isinstance(attempts, list) or not 1 <= len(attempts) <= 3:
-        raise ValueError("Chunk receipt must list one to three attempts")
+    # sampled, its healing, full OCR and its healing (subtitle_sampled_run's order)
+    if not isinstance(attempts, list) or not 1 <= len(attempts) <= MAX_ATTEMPTS:
+        raise ValueError("Chunk receipt must list one to four attempts")
     records = [_record(item, "attempt") for item in attempts]
     accepted = [item for item in records if item.get("directory") == receipt.get("accepted")]
     if len(accepted) != 1:

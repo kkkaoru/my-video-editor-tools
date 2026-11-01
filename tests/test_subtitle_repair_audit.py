@@ -47,3 +47,14 @@ def test_escalation_frames_cover_the_intervals_around_failures() -> None:
     residuals = [audit.Residual(20, "x", 1.0)]
     assert audit.escalation_frames(residuals, 25, 5) == (16, 17, 18, 19, 20, 21, 22, 23, 24)
     assert audit.escalation_frames([], 25, 5) == ()
+
+
+def test_unplanned_lines_are_those_touching_no_region() -> None:
+    inside = TextDetection("内", 0.2, TextRectangle(10, 10, 5, 5))
+    outside = TextDetection("外", 0.99, TextRectangle(100, 100, 5, 5))
+    observed = {
+        0: FrameObservation(0, 0, 200, 200, (inside, outside)),
+        1: FrameObservation(0, 0, 200, 200, (inside,)),
+    }
+    found = audit.unplanned_lines(observed, [(0, 0, 50, 50), None])
+    assert [(item.frame, item.text) for item in found] == [(0, "外"), (1, "内")]

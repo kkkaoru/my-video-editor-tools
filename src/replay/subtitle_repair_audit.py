@@ -65,6 +65,25 @@ def residual_lines(
     return tuple(found)
 
 
+def unplanned_lines(
+    observed: Mapping[int, FrameObservation], regions: Sequence[Region | None]
+) -> tuple[Residual, ...]:
+    """Lines of the repaired frames, of any confidence, that touch no search region (on frames
+    without a region: every line). Only a caller's caption-style test can make them residuals."""
+    found: list[Residual] = []
+    for index, frame in sorted(observed.items()):
+        region = regions[index]
+        for line in frame.detections:
+            box = line.rectangle
+            if region is None or not _touches(box.x, box.y, box.width, box.height, region):
+                found.append(
+                    Residual(
+                        index, line.text, line.confidence, (box.x, box.y, box.width, box.height)
+                    )
+                )
+    return tuple(found)
+
+
 def escalation_frames(residuals: Sequence[Residual], count: int, stride: int) -> tuple[int, ...]:
     """Frames of the audit intervals around every failing audit frame (to rerun with full OCR)."""
     frames: set[int] = set()
