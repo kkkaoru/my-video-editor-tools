@@ -106,3 +106,83 @@ def test_a_source_without_one_video_and_one_audio_stream_is_refused(
     )
     with pytest.raises(ReplayError, match="one video and one audio stream"):
         decodable.streams(tmp_path / "x.mp4", "ffprobe")
+
+
+def spliced(tmp_path: Path, lost: str = "41,53") -> Path:
+    """4 s of H.264 with B frames whose packets 41-53 (inside a GOP) were lost, as in a live
+    splice: the software decoder then emits a frame out of presentation order."""
+    full = tmp_path / "full.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x96:rate=30:d=4",
+         "-f", "lavfi", "-i", "sine=duration=4:sample_rate=48000", "-c:v", "libx264",
+         "-x264-params", "bframes=3:b-adapt=0:b-pyramid=none:scenecut=0", "-g", "60",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", str(full)],
+        check=True,
+    )  # fmt: skip
+    output = tmp_path / "2026-10-27_18-30-29_JST_replay-1.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(full), "-c", "copy", "-bsf:v",
+         f"noise=drop='between(n,{lost})'", str(output)],
+        check=True,
+    )  # fmt: skip
+    return output
+
+
+def test_a_spliced_source_is_reencoded_keeping_only_frames_decoded_in_order(
+    tmp_path: Path,
+) -> None:
+    source = spliced(tmp_path)
+    decoded = decodable.decoded_pts(source, "ffprobe")
+    assert any(later <= earlier for earlier, later in zip(decoded, decoded[1:], strict=False))
+    assert decodable.splices(source, "ffprobe") == [27136]
+    store = tmp_path / "store"
+    output = decodable.prepared(source, store, ffmpeg="ffmpeg", ffprobe="ffprobe")
+    assert output == store / source.name
+    kept = decodable.decoded_pts(output, "ffprobe")
+    assert kept == video_pts(output, "ffprobe")
+    assert all(later > earlier for earlier, later in zip(kept, kept[1:], strict=False))
+    receipt = json.loads((store / "decodable.json").read_text(encoding="utf-8"))
+    assert receipt["splices"] == [27136]
+    assert receipt["droppedPts"] == sorted(set(video_pts(source, "ffprobe")) - set(kept))
+    assert receipt["restampedPts"] == sorted(set(kept) - set(video_pts(source, "ffprobe")))
+    assert decodable.hardware_pts(output, "ffmpeg") == kept
+    assert receipt["outputCodecs"] == ["hevc", "aac"]
+    assert decodable.prepared(source, store, ffmpeg="/missing", ffprobe="ffprobe") == output
+
+
+def test_a_repair_that_loses_too_much_or_decodes_otherwise_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = spliced(tmp_path)
+    monkeypatch.setattr(decodable, "DROPS_PER_SPLICE", 0)
+    with pytest.raises(ReplayError, match="would lose"):
+        decodable.prepared(source, tmp_path / "store", ffmpeg="ffmpeg", ffprobe="ffprobe")
+    monkeypatch.setattr(decodable, "hardware_pts", lambda _movie, _ffmpeg: [2, 1])
+    with pytest.raises(ReplayError, match="does not decode its frames in order"):
+        decodable.prepared(source, tmp_path / "store2", ffmpeg="ffmpeg", ffprobe="ffprobe")
+
+
+def test_a_source_with_one_packet_has_no_splice(tmp_path: Path) -> None:
+    source = tmp_path / "one.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x96:rate=30:d=0.034",
+         "-frames:v", "1", "-c:v", "libx264", str(source)],
+        check=True,
+    )  # fmt: skip
+    assert decodable.splices(source, "ffprobe") == []
+
+
+def test_a_splice_that_decodes_in_order_keeps_the_source_and_is_checked_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = spliced(tmp_path, "0,0")
+    store = tmp_path / "store"
+    monkeypatch.setattr(decodable, "splices", lambda _source, _ffprobe: [512])
+    assert decodable.prepared(source, store, ffmpeg="ffmpeg", ffprobe="ffprobe") == source
+    assert json.loads((store / "splice-check.json").read_text(encoding="utf-8"))["splices"] == [512]
+
+    def decoded(_movie: Path, _ffprobe: str) -> list[int]:
+        raise AssertionError("a checked source is not decoded again")
+
+    monkeypatch.setattr(decodable, "decoded_pts", decoded)
+    assert decodable.prepared(source, store, ffmpeg="ffmpeg", ffprobe="ffprobe") == source
