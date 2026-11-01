@@ -52,7 +52,9 @@ extension NativeEditor {
         width: video.width, height: video.height))
     try Self.require(writer.canAdd(input), "The encoder rejected the requested video settings")
     writer.add(input)
-    try Self.require(reader.startReading(), "Cannot start reading the composed video")
+    try Self.require(
+      reader.startReading(),
+      "Cannot start reading the composed video: \(Self.describe(reader.error))")
     try Self.require(writer.startWriting(), "Cannot start the native encoder")
     writer.startSession(atSourceTime: .zero)
     let context = CIContext()
@@ -161,6 +163,15 @@ extension NativeEditor {
   }
 
   /// Native framework refusals become explicit, non-retryable errors.
+  /// The reader's error with its domain, code and underlying error, for diagnosis.
+  static func describe(_ error: Error?) -> String {
+    guard let error = error as NSError? else { return "no error reported" }
+    let underlying = (error.userInfo[NSUnderlyingErrorKey] as? NSError).map {
+      "; underlying \($0.domain) \($0.code)"
+    }
+    return "\(error.domain) \(error.code) \(error.localizedDescription)\(underlying ?? "")"
+  }
+
   static func require(_ condition: Bool, _ reason: String) throws {
     guard condition else { throw ProAppsError.unavailable(reason) }
   }

@@ -427,6 +427,10 @@ public actor NativeEditor {
   }
 
   func time(_ seconds: Double) -> CMTime {
-    CMTime(seconds: seconds, preferredTimescale: EditPlan.timeScale)
+    // Nearest tick: CMTime(seconds:) truncates, so 4.3666… s became 261999 ticks and the clips
+    // summed one tick short of the timeline, an invalid video composition (-11841).
+    CMTime(
+      value: CMTimeValue((seconds * Double(EditPlan.timeScale)).rounded()),
+      timescale: EditPlan.timeScale)
   }
 }
