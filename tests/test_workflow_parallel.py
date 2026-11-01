@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,54 @@ def test_a_group_ignoring_sigterm_is_killed_after_the_grace(tmp_path: Path) -> N
     children.stop_all(grace_seconds=0.5)
     thread.join(timeout=10)
     assert failure == [f"Stage command failed; inspect {tmp_path / 'k.log'}"]
+
+
+def test_a_command_that_keeps_finishing_work_outlives_the_idle_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(parallel, "PROGRESS_POLL_SECONDS", 0.05)
+    done = iter(range(1000))
+    children = parallel.Children()
+    children.execute(
+        (sys.executable, "-c", "import time; time.sleep(1.0)"), tmp_path / "p.log", 30,
+        progress=lambda: next(done), idle=0.3,
+    )  # fmt: skip
+
+
+def test_a_command_without_progress_times_out_after_the_idle_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(parallel, "PROGRESS_POLL_SECONDS", 0.05)
+    children = parallel.Children()
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        children.execute(
+            (sys.executable, "-c", "import time; time.sleep(60)"), tmp_path / "i.log", 30,
+            progress=lambda: 7, idle=0.3,
+        )  # fmt: skip
+    assert time.monotonic() - started < 10
+
+
+def test_the_outer_cap_still_bounds_a_progressing_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(parallel, "PROGRESS_POLL_SECONDS", 0.05)
+    done = iter(range(100000))
+    children = parallel.Children()
+    with pytest.raises(subprocess.TimeoutExpired):
+        children.execute(
+            (sys.executable, "-c", "import time; time.sleep(60)"), tmp_path / "c.log", 1,
+            progress=lambda: next(done), idle=0.3,
+        )  # fmt: skip
+
+
+def test_ps_cpu_times_are_read_in_seconds() -> None:
+    assert parallel.cpu_seconds("0:15.14") == pytest.approx(15.14)
+    assert parallel.cpu_seconds("75:00.50") == pytest.approx(4500.5)
+    assert parallel.cpu_seconds("1:02:03") == 3723.0
+    assert parallel.cpu_seconds("2-01:00:00") == 2 * 86400 + 3600.0
+
+
+def test_a_busy_process_group_counts_its_cpu_minutes() -> None:
+    assert parallel.cpu_minutes(os.getpgid(0)) >= 0
+    assert parallel.cpu_minutes(2**31 - 2) == 0  # no such group

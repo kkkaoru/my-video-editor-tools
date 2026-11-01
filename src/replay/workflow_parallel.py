@@ -64,12 +64,13 @@ GPU_LIMIT = 75
 SETTLE_SECONDS = 60.0
 STOP_GRACE_SECONDS = 20.0
 STOP_POLL_SECONDS = 0.2
+PROGRESS_POLL_SECONDS = 60.0  # how often a progress-bounded command's progress is read
 MEMORY_LEVEL = ("/usr/sbin/sysctl", "-n", "kern.memorystatus_level")
 GPU_STATISTICS = ("/usr/sbin/ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator")
 GPU_UTILIZATION = re.compile(r'"Device Utilization %"=(\d+)')
 GPU = "gpu"
 
-Result = Literal["completed", "reused", "adopted", "busy"]
+Result = Literal["completed", "reused", "adopted", "busy", "skipped"]
 RunStage = Callable[[Stage, Path], Result]
 
 
@@ -125,8 +126,22 @@ class Children:
         self._groups: set[int] = set()
         self._lock = threading.Lock()
 
-    def execute(self, command: tuple[str, ...], log: Path, timeout: int) -> None:
-        """``stages.execute_command`` with the child's process group registered while it runs."""
+    def execute(
+        self,
+        command: tuple[str, ...],
+        log: Path,
+        timeout: int,
+        *,
+        progress: Callable[[], int] | None = None,
+        idle: float | None = None,
+    ) -> None:
+        """``stages.execute_command`` with the child's process group registered while it runs.
+
+        With ``progress`` and ``idle``, ``timeout`` is only the outer cap: the command times out
+        once neither ``progress()`` (finished work: output files and bytes, log bytes) nor the
+        command's process-group CPU time (whole minutes) has grown for ``idle`` seconds, so a long
+        recording's step runs as long as it keeps working.
+        """
         with log.open("xb") as stream:
             os.fchmod(stream.fileno(), 0o600)
             with subprocess.Popen(
@@ -139,7 +154,7 @@ class Children:
                 with self._lock:
                     self._groups.add(child.pid)
                 try:
-                    code = child.wait(timeout=timeout)
+                    code = _wait(child, timeout, progress, idle)
                 finally:
                     with self._lock:
                         self._groups.discard(child.pid)
@@ -160,6 +175,51 @@ class Children:
             time.sleep(STOP_POLL_SECONDS)
         for group in groups:
             _signal(group, signal.SIGKILL)
+
+
+def _wait(
+    child: "subprocess.Popen[bytes]",
+    timeout: int,
+    progress: Callable[[], int] | None,
+    idle: float | None,
+) -> int:
+    """Exit code; ``TimeoutExpired`` past the cap, or after ``idle`` seconds without progress."""
+    if progress is None or idle is None:
+        return child.wait(timeout=timeout)
+    now = time.monotonic()
+    deadline, moved, seen = now + timeout, now, (progress(), cpu_minutes(child.pid))
+    while True:
+        try:
+            return child.wait(timeout=max(0.0, min(PROGRESS_POLL_SECONDS, deadline - now)))
+        except subprocess.TimeoutExpired:
+            now = time.monotonic()
+            count = (progress(), cpu_minutes(child.pid))
+            if count != seen:
+                seen, moved = count, now
+            if now >= deadline or now - moved >= idle:
+                raise
+
+
+def cpu_minutes(group: int) -> int:
+    """Whole minutes of CPU time used by the live processes of a process group (``ps``)."""
+    listing = subprocess.run(
+        ["/bin/ps", "-A", "-o", "pgid=,time="], capture_output=True, text=True, check=False
+    ).stdout
+    seconds = 0.0
+    for row in listing.splitlines():
+        fields = row.split()
+        if len(fields) == 2 and fields[0] == str(group):
+            seconds += cpu_seconds(fields[1])
+    return int(seconds // 60)
+
+
+def cpu_seconds(text: str) -> float:
+    """``ps`` TIME: ``[[days-]hours:]minutes:seconds[.fraction]``."""
+    days, _, clock = text.rpartition("-")
+    total = 0.0
+    for part in clock.split(":"):
+        total = total * 60 + float(part)
+    return total + (int(days) * 86400 if days else 0)
 
 
 def _signal(group: int, number: signal.Signals) -> None:
