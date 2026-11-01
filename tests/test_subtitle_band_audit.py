@@ -125,7 +125,14 @@ def test_the_band_audit_hands_its_decoded_bands_on(tmp_path: Path) -> None:
         video(tmp_path), [0, 5, 10], clock=CLOCK, canvas=(320, 240), envelope=(0, 100, 320, 20),
         tile=2, work=tmp_path / "audit", recognise=recognise, decoded=decoded,
     )  # fmt: skip
-    assert [frame.shape for frame in decoded] == [(200, 320, 3)] * 3
+    # The held rows: the 200-row audit band grown by HELD_MARGIN inside the 240-row canvas.
+    assert [frame.shape for frame in decoded] == [(240, 320, 3)] * 3
+
+
+def test_the_held_band_grows_the_audit_band_inside_the_canvas() -> None:
+    assert audit.audit_band((0, 900, 1080, 100), (1080, 1920)) == (770, 360)
+    assert audit.held_band((0, 900, 1080, 100), (1080, 1920)) == (690, 520)
+    assert audit.held_band((0, 100, 320, 20), (320, 240)) == (0, 240)
 
 
 def test_a_tiled_image_over_the_capture_bound_is_read_again_untiled(tmp_path: Path) -> None:
@@ -146,6 +153,26 @@ def test_a_tiled_image_over_the_capture_bound_is_read_again_untiled(tmp_path: Pa
         (tmp_path / "audit" / "untiled" / "band-tiles.mov", 3),
     ]
     assert [d.text for d in result[10].detections] == ["x"]
+
+
+def test_the_audit_keeps_a_small_review_copy_of_its_tiles(tmp_path: Path) -> None:
+    movie = tmp_path / "band-tiles.mov"
+    bands = [np.zeros((40, 320, 3), dtype=np.uint8) for _ in range(6)]
+    audit.write_tiles(bands, 3, movie, ffmpeg="ffmpeg")
+    original = movie.stat().st_size
+    audit.compress_evidence(movie, ffmpeg="ffmpeg")
+    assert movie.stat().st_size < original
+    assert audit.movie_clock(movie, ffprobe="ffprobe") is not None
+
+
+def test_a_failed_review_encode_keeps_the_original_tiles(tmp_path: Path) -> None:
+    movie = tmp_path / "band-tiles.mov"
+    bands = [np.zeros((40, 320, 3), dtype=np.uint8) for _ in range(2)]
+    audit.write_tiles(bands, 1, movie, ffmpeg="ffmpeg")
+    original = movie.read_bytes()
+    audit.compress_evidence(movie, ffmpeg="/bin/false")
+    assert movie.read_bytes() == original
+    assert not movie.with_name("band-tiles.evidence.mov").exists()
 
 
 def test_an_untiled_image_over_the_capture_bound_still_fails(tmp_path: Path) -> None:
