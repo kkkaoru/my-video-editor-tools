@@ -93,7 +93,14 @@ def manifest(pipeline: Pipeline) -> list[Entry]:
         entries += [Entry("band-tiles", path, "cleanup", ("cleanup",)) for path in audits]
     vocals = pinned(outputs(pipeline, "separation").get("vocals"))
     if vocals is not None:
-        entries.append(Entry("vocals", vocals, "separation", ("asr", "cut-plan", "paging")))
+        consumers = ("asr", "cut-plan", "voice-repair", "paging")
+        entries.append(Entry("vocals", vocals, "separation", consumers))
+    repaired = outputs(pipeline, "voice-repair")
+    voice = pinned(repaired.get("voice"))
+    if voice is not None and (
+        repaired.get("repaired") is True or {"deesser", "restore"} & set(repaired)
+    ):
+        entries.append(Entry("repaired-voice", voice, "voice-repair", ("paging",)))
     tempo = pipeline.work / "paging-v1" / "prepared" / "tempo" / "candidate.wav"
     entries.append(Entry("tempo", tempo, "paging", ("onsets", "compose", "finish")))
     moti = pipeline.work / "caption-parts-v1" / "moti"

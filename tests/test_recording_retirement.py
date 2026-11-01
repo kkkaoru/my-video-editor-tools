@@ -224,3 +224,51 @@ def test_a_recording_without_cleanup_or_separation_receipts_lists_only_its_work_
     assert [entry.category for entry in retirement.manifest(pipeline)] == ["tempo", "moti"]
     assert retirement.cleanup_work(pipeline) is None
     assert retirement.recorded(pipeline) == []
+
+
+def test_a_repaired_voice_is_retired_and_remade_by_its_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    repaired = write(pipeline.work / "voice-repair-v1/vocals.wav", "repaired")
+    write(
+        tmp_path / "steps/voice-repair.json",
+        json.dumps({"outputs": {"voice": {"path": str(repaired), "sha256": "r"},
+                                "repaired": True}}),
+    )  # fmt: skip
+    assert [entry.category for entry in retirement.manifest(pipeline)] == [
+        "cleaned-source", "band-tiles", "vocals", "repaired-voice", "tempo", "moti",
+    ]  # fmt: skip
+    retirement.retire(pipeline, retirement.Settings())
+    assert not repaired.exists()
+    (tmp_path / "steps/paging.json").unlink()
+    assert retirement.forced_producers(pipeline, {"paging"}) == [
+        ("separation", "paging", pipeline.work / "separation-v1/pipeline/vocals.wav"),
+        ("voice-repair", "paging", repaired),
+    ]
+
+
+def test_a_pass_through_voice_repair_lists_no_second_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    vocals = pipeline.work / "separation-v1/pipeline/vocals.wav"
+    write(
+        tmp_path / "steps/voice-repair.json",
+        json.dumps({"outputs": {"voice": {"path": str(vocals), "sha256": "v"},
+                                "repaired": False}}),
+    )  # fmt: skip
+    assert "repaired-voice" not in [entry.category for entry in retirement.manifest(pipeline)]
+
+
+def test_a_deessed_voice_is_retired_with_its_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    deessed = write(pipeline.work / "voice-deesser-v1/vocals.wav", "deessed")
+    write(
+        tmp_path / "steps/voice-repair.json",
+        json.dumps({"outputs": {"voice": {"path": str(deessed), "sha256": "d"},
+                                "repaired": False, "deesser": {"path": "/r", "sha256": "r"}}}),
+    )  # fmt: skip
+    assert "repaired-voice" in [entry.category for entry in retirement.manifest(pipeline)]
