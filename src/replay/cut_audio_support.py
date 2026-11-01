@@ -1,7 +1,12 @@
 """Intersect candidate cuts with the decoded audio envelope without inventing silence.
 
-Only outer support is considered: internal gaps/overlaps retain their existing
-clock policy. Recognition is evidence against removal, never proof of silence.
+The envelope is every run of decoded audio frames: where the source's audio stream itself has a
+hole of at least ``HOLE_SECONDS`` (packets lost in a live stream; 10/27: 7.55 s at 826.37 s, no
+audio frame at all), the hole is not audio support either, so a cut across it is split around it.
+A cut that kept such a hole would join seconds of video to the few samples around it, which the
+clocked audio stages rightly refuse as an impossible rate change. Shorter gaps (10/27's 0.61 s at
+its video splice passes the rate bound) and overlaps keep their existing clock policy.
+Recognition is evidence against removal, never proof of silence.
 """
 
 import argparse
@@ -23,8 +28,9 @@ from replay.recordings import record
 from replay.stages import file_digest
 
 MAX_BYTES = 128 * 1024 * 1024
-MAX_CUTS = 3000
-MAX_LABELS = 100_000
+MAX_CUTS = 200_000  # a 24 h source with frequent pauses stays below this
+MAX_LABELS = 1_000_000  # a 24 h source with frequent pauses stays below this
+HOLE_SECONDS = Fraction(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +45,7 @@ def _protect_labels(
     removed: tuple[tuple[int, int], ...],
     labels: tuple[ClockLabel, ...],
     fps: int,
-    support: tuple[Fraction, Fraction],
+    support: tuple[tuple[Fraction, Fraction], ...],
 ) -> None:
     """Reject every label in a removed frame, except speech wholly inside decoded audio.
 
@@ -55,9 +61,23 @@ def _protect_labels(
             continue
         low, high = (Fraction(value, fps) for value in removed[index])
         point_removed = start == end and low <= start < high
-        supported = start < end and support[0] <= start and end <= support[1]
+        supported = start < end and any(low <= start and end <= high for low, high in support)
         if point_removed or (start < high and end > low and not supported):
             raise ReplayError("Audio-support trimming intersects recognized speech or a point")
+
+
+def support_spans(clock: AudioFrameClock, *, fps: int) -> tuple[tuple[Fraction, Fraction], ...]:
+    """The decoded audio's runs in source seconds, split at holes of at least ``HOLE_SECONDS``
+    (and at least one video frame)."""
+    spans: list[tuple[Fraction, Fraction]] = []
+    for pts, samples in zip(clock.pts, clock.samples, strict=True):
+        start = pts * clock.time_base
+        end = start + Fraction(samples, clock.sample_rate)
+        if spans and start - spans[-1][1] < max(HOLE_SECONDS, Fraction(1, fps)):
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+        else:
+            spans.append((start, end))
+    return tuple(spans)
 
 
 def intersect(
@@ -77,13 +97,12 @@ def intersect(
         raise ReplayError("Invalid integral video frame rate")
     if not 1 <= len(cuts) <= MAX_CUTS or len(labels) > MAX_LABELS:
         raise ReplayError("Audio-support intersection exceeds its input budget")
-    audio = (
-        clock.pts[0] * clock.time_base,
-        clock.pts[-1] * clock.time_base + Fraction(clock.samples[-1], clock.sample_rate),
-    )
-    first, end = ceil(audio[0] * fps), floor(audio[1] * fps)
-    if first >= end:
+    audio = support_spans(clock, fps=fps)
+    frames = [(ceil(low * fps), floor(high * fps)) for low, high in audio]
+    frames = [(low, high) for low, high in frames if low < high]
+    if not frames:
         raise ReplayError("No complete video frame lies inside decoded audio support")
+    first, end = frames[0][0], frames[-1][1]
     result: list[CutSpan] = []
     removed: list[tuple[int, int]] = []
     source_end = old_offset = new_offset = 0
@@ -96,16 +115,19 @@ def intersect(
             raise ReplayError("Expected ordered disjoint cuts with contiguous output offsets")
         source_end = cut.source_end_frame
         old_offset += cut.duration_frames
-        low, high = max(first, cut.source_start_frame), min(end, cut.source_end_frame)
-        if low >= high:
-            removed.append((cut.source_start_frame, cut.source_end_frame))
-            continue
-        if cut.source_start_frame < low:
-            removed.append((cut.source_start_frame, low))
-        if high < cut.source_end_frame:
-            removed.append((high, cut.source_end_frame))
-        result.append(CutSpan(low, high, new_offset))
-        new_offset += high - low
+        position = cut.source_start_frame
+        for support_low, support_high in frames:
+            low = max(support_low, cut.source_start_frame)
+            high = min(support_high, cut.source_end_frame)
+            if low >= high:
+                continue
+            if position < low:
+                removed.append((position, low))
+            result.append(CutSpan(low, high, new_offset))
+            new_offset += high - low
+            position = high
+        if position < cut.source_end_frame:
+            removed.append((position, cut.source_end_frame))
     _protect_labels(tuple(removed), labels, fps, audio)
     if not result:
         raise ReplayError("Audio-support intersection removes every retained cut")

@@ -265,3 +265,21 @@ def test_speech_inside_decoded_audio_may_start_in_the_trimmed_partial_frame() ->
     assert result.cuts == (CutSpan(28, 272, 0),)
     with pytest.raises(ReplayError, match="recognized"):
         intersect((CutSpan(0, 300, 0),), (ClockLabel("点", 0.931, 0.931, "b"),), clock, fps=30)
+
+
+def test_a_hole_in_the_audio_stream_splits_the_cut_across_it() -> None:
+    # Audio 0-0.8 s, then nothing until 2.5 s (lost packets), then 2.5-4 s; a short 0.5 s gap
+    # at 3 s stays inside the cut as before.
+    clock = AudioFrameClock(
+        (0, 6400, 20000, 28000), (6400, 1600, 4000, 4000), 8000, Fraction(1, 8000)
+    )
+    result = intersect((CutSpan(0, 40, 0),), (), clock, fps=10)
+    assert result.cuts == (CutSpan(0, 10, 0), CutSpan(25, 40, 10))
+    assert result.removed == ((10, 25),)
+    assert (result.first_frame, result.end_frame) == (0, 40)
+
+
+def test_speech_inside_an_audio_hole_is_refused() -> None:
+    clock = AudioFrameClock((0, 20000), (8000, 8000), 8000, Fraction(1, 8000))
+    with pytest.raises(ReplayError, match="intersects recognized speech"):
+        intersect((CutSpan(0, 40, 0),), (ClockLabel("声", 1.5, 1.7, "raw:1"),), clock, fps=10)
