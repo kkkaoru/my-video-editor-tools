@@ -108,3 +108,7 @@ dist/
 # Exact synthetic fixture hashes are enforced by scripts/check-public.sh.
 !/native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/black.mp4
 !/native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/quadrants-30.mp4
+
+# Local agent tooling state, not project source.
+/.serena/
+/skills-lock.json
