@@ -17,6 +17,7 @@ from replay.edit_completion import (
     main,
     native_media_path,
     supersede_incomplete,
+    supersede_replaced,
 )
 from replay.jobs import register_completed
 
@@ -554,6 +555,33 @@ def test_supersede_records_incomplete_delivery_and_allows_new_revision(tmp_path:
     assert is_superseded(root, delivery) is False
     with pytest.raises(ReplayError, match="already has a dated delivery"):
         require_new_delivery(root)
+
+
+def test_a_new_publication_supersedes_the_older_revisions_it_replaces(tmp_path: Path) -> None:
+    root = recording(tmp_path)
+    older = root / f"revisions/a/delivery/{STEM}-review.mp4"
+    newer = root / f"revisions/b/delivery/{STEM}-review.mp4"
+    other = root / f"revisions/c/delivery/{STEM}-other.mp4"
+    for path, body in ((older, b"a"), (newer, b"b"), (other, b"c")):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(body)
+    assert supersede_replaced(root, newer) == [older]
+    digest = hashlib.sha256(b"a").hexdigest()
+    entry = json.loads((root / f"evidence/superseded/{digest[:16]}.json").read_text())
+    assert entry == {
+        "delivery": f"revisions/a/delivery/{STEM}-review.mp4",
+        "sha256": digest,
+        "size": 1,
+        "replacedBy": f"revisions/b/delivery/{STEM}-review.mp4",
+        "status": "superseded-replaced-by-newer-publication",
+    }
+    assert older.read_bytes() == b"a"
+    assert is_superseded(root, newer) is False
+    assert supersede_replaced(root, newer) == []
+    assert supersede_replaced(root, older) == [newer]  # published again: the older one is current
+    assert is_superseded(root, older) is False
+    assert is_superseded(root, newer) is True
+    assert (root / f"evidence/reinstated/{digest[:16]}.json").is_file()
 
 
 def test_supersede_uses_the_gate_assessments_without_assessing_again(

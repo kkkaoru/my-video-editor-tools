@@ -590,6 +590,57 @@ def is_superseded(root: Path, delivery: Path) -> bool:
     return False
 
 
+def reinstate(root: Path, published: Path) -> list[Path]:
+    """Move aside the records that a newer publication replaced ``published``, when it is published
+    again (10-31: 10/28 went back to its pre-remux revision, still recorded as replaced, so the
+    gate saw every revision superseded). The records move to ``evidence/reinstated``, never
+    deleted; an incomplete-stage record stays."""
+    home, label = _record_home(root, published)
+    moved: list[Path] = []
+    for path in sorted(home.glob("*.json")) if home.is_dir() else []:
+        item = record(_read_json(path))
+        if (
+            item.get("delivery") == label
+            and item.get("status") == "superseded-replaced-by-newer-publication"
+        ):
+            target = home.parent / "reinstated" / path.name
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.replace(path, target)
+            moved.append(target)
+    return moved
+
+
+def supersede_replaced(root: Path, published: Path) -> list[Path]:
+    """Record the older dated deliveries of the recording a new publication replaces.
+
+    A forced re-render publishes a new revision under the same name beside a complete one; with
+    both current the Viewer library and the web catalog expose neither (10-29: 10/28's voice remux).
+    Nothing is deleted; the new publication still passes the completion gate on its own.
+    """
+    reinstate(root, published)
+    recorded: list[Path] = []
+    for delivery in _deliveries(root):
+        if delivery == published or delivery.name != published.name:
+            continue
+        if is_superseded(root, delivery):
+            continue
+        digest = _digest(delivery)
+        directory, label = _record_home(root, delivery)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        entry = {
+            "delivery": label,
+            "sha256": digest,
+            "size": delivery.stat().st_size,
+            "replacedBy": _record_home(root, published)[1],
+            "status": "superseded-replaced-by-newer-publication",
+        }
+        with (directory / f"{digest[:16]}.json").open("x", encoding="utf-8") as stream:
+            json.dump(entry, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+        recorded.append(delivery)
+    return recorded
+
+
 def supersede_incomplete(
     root: Path, assessed: dict[str, dict[str, str]] | None = None
 ) -> list[Path]:
