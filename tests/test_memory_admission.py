@@ -351,8 +351,27 @@ def test_measuring_records_the_peak_when_the_job_ends(tmp_path: Path) -> None:
 
 
 def test_a_measured_clips_footprint_replaces_its_placeholder(tmp_path: Path) -> None:
-    assert current(tmp_path).peaks["clips"] == 24 * GIB
+    assert current(tmp_path).peaks["clips"] == 30 * GIB
     admission.record_peak(tmp_path, "clips", 10 * GIB)
     assert current(tmp_path).peaks["clips"] == 12.5 * GIB  # lower than the placeholder
     admission.record_peak(tmp_path, "clips", 26 * GIB)
     assert current(tmp_path).peaks["clips"] == 32.5 * GIB
+
+
+def test_a_step_waits_for_free_memory_and_gives_up_after_its_wait() -> None:
+    readings = iter([(30, 1), (45, 4), (45, 1)])
+    waits: list[float] = []
+    assert (
+        admission.await_free(
+            40, measure=lambda: next(readings), sleep=waits.append, clock=lambda: 0.0
+        )
+        is None
+    )
+    assert waits == [15.0, 15.0]
+    times = iter([0.0, 2000.0])
+    assert (
+        admission.await_free(
+            40, measure=lambda: (20, 1), sleep=waits.append, clock=lambda: next(times)
+        )
+        == "only 20% of memory was free after 1800 s (needs 40%)"
+    )

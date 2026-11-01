@@ -64,10 +64,15 @@ DEFAULT_PEAKS_GIB = {
     "asr": 6.0,
     "yolo-track": 4.0,
     "onsets": 4.0,
+    "voice-repair": 4.0,  # computation only since 2026-10-29 (the 17.5 GB was MossFormer2's)
     "compose": 6.0,
-    # bun clips-mac.ts loads about 22 GB of local models (two swap thrashes on 10-24 ran it
-    # outside any reservation); a measured footprint replaces this once recorded.
-    "clips": 24.0,
+    # bun clips-mac.ts loads about 29 GB of local models (clef 18, clef-flash 6.9, Bonsai 3.4;
+    # two swap thrashes on 10-24 ran it outside any reservation); a measured footprint
+    # replaces this once recorded.
+    "clips": 30.0,
+    # yolo_learning's retraining (Ultralytics, batch 8 at 960 px on MPS): an estimate until its
+    # first run is measured.
+    "yolo-train": 10.0,
 }
 # Placeholders until measured: the measured footprint (x MARGIN) then replaces them outright.
 PLACEHOLDER_PEAKS = frozenset({"clips"})
@@ -89,6 +94,7 @@ VM_STAT = ("/usr/bin/vm_stat",)
 PAGED_IN = re.compile(r"^(?:Pageins|Swapins):\s+(\d+)\.$", re.MULTILINE)
 PAGE_SIZE = re.compile(r"page size of (\d+) bytes")
 POLL_SECONDS = 15.0
+FREE_WAIT_SECONDS = 1800.0  # a step waiting for free memory gives up after this
 SAMPLE_SECONDS = 10.0
 MAX_SETTINGS_BYTES = 4096
 SETTINGS_KEYS = frozenset({"budgetGiB", "headroomGiB", "peaksGiB", "hardCaps"})
@@ -144,6 +150,26 @@ def pressure() -> tuple[int, int]:
     if swap_in_rate() >= SWAP_IN_LIMIT:
         measured = PRESSURE_CRITICAL
     return (0 if level is None else level, measured)
+
+
+def await_free(
+    percent: int,
+    *,
+    measure: Pressure | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    wait: float = FREE_WAIT_SECONDS,
+) -> str | None:
+    """None once ``percent`` of memory is free and pressure is below critical (paging included);
+    else why not, after ``wait`` seconds."""
+    deadline = clock() + wait
+    while True:
+        level, state = (pressure if measure is None else measure)()
+        if level >= percent and state < PRESSURE_CRITICAL:
+            return None
+        if clock() >= deadline:
+            return f"only {level}% of memory was free after {wait:.0f} s (needs {percent}%)"
+        sleep(POLL_SECONDS)
 
 
 def paged_in_bytes(text: str) -> int | None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from replay import failure_notify, step_retry, volume_events
+from replay import failure_notify, memory_admission, step_retry, volume_events
 from replay.stages import StageError
 
 CONTROLLER = (
@@ -334,3 +334,99 @@ def test_a_volume_that_did_not_return_stops_the_step(
     rows = [json.loads(path.read_text("utf-8")) for path in tmp_path.glob("*.failure.json")]
     assert [row["stopReason"] for row in rows] == ["/Volumes/m.2-ssd did not return within 600 s"]
     assert len(no_failure_notices) == 1
+
+
+SELF_STOP = "stopping: only 12% of memory is free\n"
+REFUSED = "ReplayError: Only 31% of memory is free; the local models need 40%\n"
+
+
+def test_clip_models_short_of_memory_wait_then_retry_once(tmp_path: Path) -> None:
+    step = Step(tmp_path, [SELF_STOP, "ok\n"], failures=1)
+    waited: list[str] = []
+
+    def free() -> None:
+        waited.append("free")
+
+    step_retry.run_with_retry(
+        step.execute, step.run_log, logs=tmp_path, step="clips", await_memory=free
+    )
+    assert waited == ["free"]
+    assert len(step.runs) == 2
+
+
+def test_clip_models_short_of_memory_twice_need_a_person(
+    tmp_path: Path, no_failure_notices: list[tuple[object, ...]]
+) -> None:
+    step = Step(tmp_path, [REFUSED, SELF_STOP], failures=2)
+    with pytest.raises(StageError):
+        step_retry.run_with_retry(
+            step.execute, step.run_log, logs=tmp_path, step="clips", await_memory=lambda: None
+        )
+    rows = [  # named <step>-<ns>.failure.json: in attempt order
+        json.loads(path.read_text("utf-8")) for path in sorted(tmp_path.glob("*.failure.json"))
+    ]
+    assert [(row["class"], row["retried"]) for row in rows] == [("memory", True), ("memory", False)]
+    assert len(no_failure_notices) == 1
+
+
+def test_memory_that_never_frees_stops_the_clips_step(tmp_path: Path) -> None:
+    step = Step(tmp_path, [SELF_STOP], failures=1)
+    with pytest.raises(StageError):
+        step_retry.run_with_retry(
+            step.execute, step.run_log, logs=tmp_path, step="clips",
+            await_memory=lambda: "only 20% of memory was free after 1800 s (needs 40%)",
+        )  # fmt: skip
+    assert len(step.runs) == 1
+
+
+def test_the_default_wait_asks_for_the_models_free_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[int] = []
+    monkeypatch.setattr(memory_admission, "await_free", lambda percent: asked.append(percent))
+    step = Step(tmp_path, [SELF_STOP, "ok\n"], failures=1)
+    step_retry.run_with_retry(step.execute, step.run_log, logs=tmp_path, step="clips")
+    assert asked == [40]
+
+
+CLIENT_TIMEOUT = "TimeoutError: The operation timed out.\n"
+
+
+def test_an_unknown_failure_across_a_system_sleep_is_retried_once(tmp_path: Path) -> None:
+    step = Step(tmp_path, [CLIENT_TIMEOUT, "ok\n"], failures=1)
+    walls = iter([0.0, 3600.0, 3600.0])  # the first attempt's wall ran an hour ahead
+    step_retry.run_with_retry(
+        step.execute, step.run_log, logs=tmp_path, step="clips",
+        clock=lambda: 5.0, wall=lambda: next(walls),
+    )  # fmt: skip
+    rows = [json.loads(path.read_text("utf-8")) for path in tmp_path.glob("*.failure.json")]
+    assert [(row["class"], row["subclass"], row["retried"]) for row in rows] == [
+        ("sleep", "across a system sleep (3600 s)", True)
+    ]
+    assert len(step.runs) == 2
+
+
+def test_a_second_failure_across_a_sleep_needs_a_person(
+    tmp_path: Path, no_failure_notices: list[tuple[object, ...]]
+) -> None:
+    step = Step(tmp_path, [CLIENT_TIMEOUT, CLIENT_TIMEOUT], failures=2)
+    walls = iter([0.0, 600.0, 600.0, 1200.0])
+    with pytest.raises(StageError):
+        step_retry.run_with_retry(
+            step.execute, step.run_log, logs=tmp_path, step="clips",
+            clock=lambda: 5.0, wall=lambda: next(walls),
+        )  # fmt: skip
+    rows = [json.loads(path.read_text("utf-8")) for path in sorted(tmp_path.glob("*.failure.json"))]
+    assert [(row["class"], row["retried"]) for row in rows] == [("sleep", True), ("sleep", False)]
+    assert len(no_failure_notices) == 1
+
+
+def test_an_unknown_failure_without_a_sleep_is_not_retried(tmp_path: Path) -> None:
+    step = Step(tmp_path, [CLIENT_TIMEOUT], failures=1)
+    walls = iter([0.0, 30.0])
+    with pytest.raises(StageError):
+        step_retry.run_with_retry(
+            step.execute, step.run_log, logs=tmp_path, step="clips",
+            clock=lambda: 5.0, wall=lambda: next(walls),
+        )  # fmt: skip
+    assert len(step.runs) == 1

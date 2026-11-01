@@ -15,6 +15,12 @@ the failure survey (bottleneck-survey REPORT5, 153 attempts) to a class:
   during the attempt. Rerun at most once, after ``volume_events.recover`` saw the volume back
   with its UUID, restarted Compressor after a detach and re-checked the receipts written just
   before the failure.
+- ``memory``: the local clip models refused to start or stopped themselves for lack of free
+  memory (``replay.clip_models``). Rerun once, after ``memory_admission.await_free`` saw
+  ``MODEL_FREE_PERCENT`` free with pressure (paging included) below critical.
+- ``sleep``: an otherwise unknown failure of an attempt that spanned a system sleep (wall time
+  ran ``SLEEP_GAP_SECONDS`` or more ahead of monotonic time, which stops while the Mac sleeps),
+  such as a client's request timing out against a server that slept with it. Rerun once.
 - ``stale``: a preflight refusal of partial or interrupted state that ``clear_interrupted`` and
   ``clear_partial_chunks`` remove when the step starts again: rerun once at once (logged).
 - ``deterministic``: audits and gates, changed or missing inputs, stale state, bugs; never rerun.
@@ -36,7 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from replay import failure_notify, volume_events
+from replay import failure_notify, memory_admission, volume_events
 from replay.stages import StageError
 
 SIGNATURES: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
@@ -56,6 +62,9 @@ SIGNATURES: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
         ("transient", "compose media_edit call",
          r"(?s)CalledProcessError.{0,400}media_edit|media_edit.{0,400}CalledProcessError"),
         ("transient", "MPS out of memory", r"MPS backend out of memory"),
+        ("memory", "local models short of free memory",
+         r"stopping: only [0-9]+% of memory is free"
+         r"|Only [0-9]+% of memory is free; the local models need"),
         ("volume", "device I/O error",
          r"\[Errno (?:5|6|19)\]|Input/output error|Device not configured"
          r"|Operation not supported by device"),
@@ -79,6 +88,9 @@ BACKOFF_SECONDS = (30.0, 60.0, 120.0)
 MAX_RETRIES = 3
 WINDOW_SECONDS = 3600.0
 RECEIPTS = ("chunk-receipt.json", "state/*.json")
+# Wall minus monotonic time over one attempt: clock adjustments stay well below this.
+SLEEP_GAP_SECONDS = 60.0
+MODEL_FREE_PERCENT = 40  # replay.clip_models refuses to start below this
 
 Execute = Callable[[Path], None]
 Recover = Callable[..., str | None]
@@ -144,11 +156,13 @@ def run_with_retry(
     progress: Callable[[], int] = lambda: 0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], float] = time.time,
     recording: str = "",
     notice: Callable[..., None] | None = None,
     volumes: Callable[[], volume_events.Snapshot] = dict,
     recover: Recover = volume_events.recover,
     receipt_roots: tuple[Path, ...] = (),
+    await_memory: Callable[[], str | None] | None = None,
 ) -> None:
     """Run the step; rerun a transient failure under backoff, intensity and progress limits.
 
@@ -157,10 +171,11 @@ def run_with_retry(
     """
     retries: list[float] = []
     previous_progress: int | None = None
-    cleared = recovered = False
+    cleared = recovered = waited = rested = False
     while True:
         before, started, mounted = log_sizes(logs), progress(), volumes()
         attempt = run_log()
+        wall_start, clock_start = wall(), clock()
         try:
             execute(attempt)
         except StageError:
@@ -169,6 +184,9 @@ def run_with_retry(
                 mounted, volumes()
             ):
                 failure = Failure("volume", "volume detached during the step", failure.cause)
+            asleep = (wall() - wall_start) - (clock() - clock_start)
+            if failure.cls == "unknown" and asleep >= SLEEP_GAP_SECONDS:
+                failure = Failure("sleep", f"across a system sleep ({asleep:.0f} s)", failure.cause)
             made = progress() - started
             recent = [moment for moment in retries if clock() - moment < WINDOW_SECONDS]
             reason = (
@@ -176,6 +194,8 @@ def run_with_retry(
                 if failure.cls == "transient"
                 or (failure.cls == "stale" and not cleared)
                 or (failure.cls == "volume" and not recovered)
+                or (failure.cls == "memory" and not waited)
+                or (failure.cls == "sleep" and not rested)
                 else f"{failure.cls} failures are not retried"
             )
             transient = failure.cls == "transient"
@@ -183,6 +203,13 @@ def run_with_retry(
                 reason = f"{MAX_RETRIES} retries within {WINDOW_SECONDS:.0f} s"
             if reason is None and transient and previous_progress is not None and made <= 0:
                 reason = "the previous attempt made no progress"
+            if reason is None and failure.cls == "memory":
+                waited = True  # one retry: models short of memory again need a person
+                reason = (
+                    memory_admission.await_free(MODEL_FREE_PERCENT)
+                    if await_memory is None
+                    else await_memory()
+                )
             if reason is None and failure.cls == "volume":
                 recovered = True  # one retry: a second detach needs a person
                 reason = recover(mounted, receipt_roots, failed_at=time.time())
@@ -199,6 +226,13 @@ def run_with_retry(
                 raise
             if failure.cls == "volume":
                 print(f"{step}: {failure.sub}; the volume is back, relaunching once", flush=True)
+                continue
+            if failure.cls == "memory":
+                print(f"{step}: {failure.sub}; memory is free again, relaunching once", flush=True)
+                continue
+            if failure.cls == "sleep":
+                rested = True  # one retry: a second failure across a sleep needs a person
+                print(f"{step}: failed {failure.sub}; relaunching once", flush=True)
                 continue
             if failure.cls == "stale":
                 cleared = True  # its next start clears the partial state; once is enough
