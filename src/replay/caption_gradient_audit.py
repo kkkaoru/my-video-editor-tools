@@ -30,7 +30,9 @@ SATURATION = 25  # max-min channel spread that separates the fill from white, gr
 LINE_GAP = 4  # rows without fill that separate two lines
 SAMPLE_STEP = 60
 MINIMUM_LINES = 3
-FULL_LINE = 0.85
+# Katakana-only lines ("ハッ", 68 px of 78-80) start below the text box top, so their upper
+# fifth sits mid-gradient (lift 9 vs 24-45 on full lines, 2026-11-01): they hold no box top.
+FULL_LINE = 0.9
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 

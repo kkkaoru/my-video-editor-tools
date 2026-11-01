@@ -111,3 +111,4 @@ def test_a_line_of_glyphs_below_the_text_top_is_not_measured() -> None:
     assert [height for height, _ in measures] == [20, 20, 10]
     assert [round(lift, 1) for lift in full_lines(measures)] == [51.4, 51.4]
     assert full_lines([]) == []
+    assert full_lines([(80, 30.0), (68, 9.1), (76, 25.0)]) == [30.0, 25.0]
