@@ -16,6 +16,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 import cv2
@@ -60,11 +61,16 @@ class Recording:
     face_methods: tuple[str, ...] = FACE_METHODS
 
 
-def trusted_faces(responses: Sequence[Path], methods: Sequence[str]) -> dict[int, PixelBox]:
+def trusted_faces(
+    responses: Sequence[Path], methods: Sequence[str], rate: Fraction | None = None
+) -> dict[int, PixelBox]:
     """Frame number to trusted Vision face box, keeping only the named Vision methods.
 
     Detection boxes are direct observations; tracking boxes are propagated between detections
     and can drift (inflated boxes on some avatars), so an evaluation set may keep detections only.
+    With ``rate`` a frame's number comes from its presentation time, so windows may be sparse
+    (single moments far into a recording); without it, the windows are taken as contiguous from
+    frame 0.
     """
     result: dict[int, PixelBox] = {}
     base = 0
@@ -75,9 +81,18 @@ def trusted_faces(responses: Sequence[Path], methods: Sequence[str]) -> dict[int
         for index, frame in enumerate(frames):
             box = face_box(frame) if record(frame).get("method") in methods else None
             if box is not None:
-                result[base + index] = box
+                result[_number(frame, base + index, rate)] = box
         base += len(frames)
     return result
+
+
+def _number(frame: object, fallback: int, rate: Fraction | None) -> int:
+    """The frame number at ``rate`` from the frame's presentation time (``fallback`` without)."""
+    data = record(frame)
+    value, scale = data.get("presentationValue"), data.get("presentationTimescale")
+    if rate is None or type(value) is not int or type(scale) is not int or scale <= 0:
+        return fallback
+    return round(value * rate / scale)
 
 
 def caption_pixels(image: Image) -> tuple[NDArray[np.bool_], NDArray[np.bool_]]:
@@ -287,7 +302,7 @@ def build_recording(
 ) -> dict[str, object]:
     """Decode one recording once and write its labelled frames."""
     width, height, rate = probe_video(recording.source, ffprobe)
-    faces = trusted_faces(recording.face_responses, recording.face_methods)
+    faces = trusted_faces(recording.face_responses, recording.face_methods, rate)
     if not faces:
         raise ReplayError("A recording has no trusted face box")
     frames = video_frames(

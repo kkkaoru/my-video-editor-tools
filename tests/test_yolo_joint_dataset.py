@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 
 import cv2
@@ -145,6 +146,21 @@ def test_detection_only_faces_drop_tracked_frames(tmp_path: Path) -> None:
     assert joint.trusted_faces([path, path], ["detection"]) == {
         0: PixelBox(10.0, 20.0, 30.0, 40.0),
         2: PixelBox(10.0, 20.0, 30.0, 40.0),
+    }
+
+
+def test_sparse_windows_number_their_frames_by_presentation_time(tmp_path: Path) -> None:
+    region = {"x": 10, "y": 20, "width": 30, "height": 40}
+    frames = [
+        {"method": "detection", "presentationValue": 9000, "presentationTimescale": 90000,
+         "faces": [{"region": region, "confidence": 0.5}]},
+        {"method": "detection", "faces": [{"region": region, "confidence": 0.5}]},
+    ]  # fmt: skip
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(frames), encoding="utf-8")
+    assert joint.trusted_faces([path], ["detection"], Fraction(30)) == {
+        3: PixelBox(10.0, 20.0, 30.0, 40.0),
+        1: PixelBox(10.0, 20.0, 30.0, 40.0),
     }
 
 

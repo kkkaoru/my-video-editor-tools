@@ -98,6 +98,9 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=100)
     parser.add_argument("--no-val", action="store_true")
     parser.add_argument(
+        "--freeze", type=int, default=0, help="layers kept frozen (an incremental head update)"
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="continue the interrupted run PROJECT/NAME from its last.pt (same settings)",
@@ -111,6 +114,8 @@ def train_arguments(args: argparse.Namespace) -> dict[str, object]:
         raise ReplayError("Invalid epochs or image size")
     if not 0 < args.fraction <= 1 or args.patience < 1 or args.batch < 1 or args.workers < 0:
         raise ReplayError("Invalid fraction, patience, batch or workers")
+    if args.freeze < 0:
+        raise ReplayError("Invalid number of frozen layers")
     # Absolute paths: Ultralytics joins a relative project onto its own runs directory.
     return {
         "data": str(args.data.resolve()), "epochs": args.epochs, "imgsz": args.imgsz,
@@ -122,6 +127,7 @@ def train_arguments(args: argparse.Namespace) -> dict[str, object]:
         "project": str(args.project.resolve()), "name": args.name, "exist_ok": False,
         "pretrained": True,
         "plots": False, "amp": False, "verbose": True,
+        **({"freeze": args.freeze} if args.freeze else {}),
     }  # fmt: skip
 
 

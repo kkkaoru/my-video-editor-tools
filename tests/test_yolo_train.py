@@ -158,6 +158,13 @@ def test_invalid_speed_options_are_refused(extra: tuple[str, ...]) -> None:
         train.train_arguments(arguments(*extra))
 
 
+def test_freezing_layers_is_passed_only_when_asked() -> None:
+    assert "freeze" not in train.train_arguments(arguments())
+    assert train.train_arguments(arguments("--freeze", "10"))["freeze"] == 10
+    with pytest.raises(ReplayError, match="frozen layers"):
+        train.train_arguments(arguments("--freeze", "-1"))
+
+
 def test_main_refuses_unsafe_epochs_after_the_other_checks(tmp_path: Path) -> None:
     weights = tmp_path / "w.pt"
     weights.write_bytes(b"weights")
