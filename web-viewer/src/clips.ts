@@ -24,7 +24,10 @@
 import { z } from "zod";
 import { LANGUAGE, LEVELS as LEVEL_TEXTS, prompt } from "./prompts.ts";
 
-export type ClipKind = "short" | "long";
+/** The four lengths a clip may total (the user's bands, version 10). */
+export type ClipKind = "5-10" | "15-30" | "35-60" | "90-120";
+/** Kinds of records made before version 10 (10-30 s and 30-90 s), still read and shown. */
+export type StoredKind = ClipKind | "short" | "long";
 export type Pattern = "climax-first" | "hook-to-climax";
 /** Where a record is computed: on the Mac by default, on Cloudflare only for a user's reload. */
 export type Place = "mac" | "cloudflare";
@@ -126,13 +129,25 @@ export interface Bucket {
   delete(key: string): Promise<unknown>;
 }
 export interface ClipEnv {
-  AI: Ai;
   MEDIA: Bucket;
-  CLIPS_QUEUE: { send(body: unknown): Promise<unknown> };
 }
 export interface ClipRequest {
   videoId: string;
   force: boolean;
+}
+/** Candidates left after each stage of one generation (gated: at the gate's least; shipped: after
+ * the per-kind limits and overlaps; titled: with a title, new or kept). */
+interface Funnel {
+  regions: number;
+  stories: number;
+  slate: number;
+  screened: number;
+  gated: number;
+  /** The best gate chances, highest first. */
+  best: number[];
+  shipped: number;
+  titled: number;
+  clips: number;
 }
 export interface Generation {
   ai: Ai;
@@ -146,6 +161,12 @@ export interface LookupRequest {
   videoId: string;
   key: string | null;
   now: Date;
+}
+interface PeakAsk {
+  score: readonly number[];
+  apart: number;
+  count: number;
+  seeds: readonly number[];
 }
 interface Question {
   id: string;
@@ -206,6 +227,50 @@ interface Usage {
   calls: number;
   tokens: number;
 }
+interface Fit {
+  bias: number;
+  weights: Record<string, number>;
+}
+/** What the gate and the search depend on per place. */
+interface PlaceRules {
+  /** Candidates the gate reads. */
+  slate: number;
+  /** Whether a region below EARLY_HOOK at its climax is left unasked. */
+  early: boolean;
+  /**
+   * Shifts tried on clef's boundary and topic answers: each makes its own block, so a threshold a
+   * slightly different clef crosses still yields the stories it would have.
+   */
+  shifts: number[];
+  /** Transcript density's share, beside loudness, in where regions are looked for. */
+  density: number;
+  /** Regions looked at: the strongest bins of that mix. */
+  peaks: number;
+  /** The judge's chance of calling a clip good at which it ships. */
+  least: number;
+  /** Also ships a broadcast's `top` best candidates at `least` or above, if any (its own scale). */
+  relative: { top: number; least: number } | null;
+  /** Below this screen chance clef does not read the candidate. */
+  floor: number;
+  /** The second reading of each candidate the gate combines with clef's rubric answers, if any. */
+  second: { both: Fit; reader: Reader } | null;
+  clefOnly: Fit;
+  /** The screen: clef-flash's rubric answers, with the second reading when there is one. */
+  screen: Fit;
+  screenReader: Reader | null;
+}
+/** clairic's reading on Cloudflare: its means per axis and its chance that no utterance lands. */
+interface ClairicReader {
+  kind: "clairic";
+  weights: Record<string, number>;
+  punchlineNull: number;
+}
+/** Laya's answers to the same rubric as clef (on the Mac, in clairic's place). */
+interface LayaReader {
+  kind: "laya";
+  weights: Record<string, number>;
+}
+export type Reader = ClairicReader | LayaReader;
 
 // The decision models of the three stages, each with the `model` field its requests carry. All are
 // clef: on the validation videos clef-omni for the reads (1.5 good clips per video), clef-omni for
@@ -224,25 +289,31 @@ const SCREEN_NAME: string = "clef-flash";
 const STEADY: Set<string> = new Set(["@cf/cloudflare/clef"]);
 export const SUMMARY_MODEL: string = "@cf/zai-org/glm-5.3-flash";
 export const CLAIRIC_MODEL: string = "@cf/cloudflare/clairic";
+/** clairic's stand-in on the Mac: Laya (multilingual, MLX) asked clef's rubric. */
+export const LAYA_MODEL: string = "aac6fef/laya-multilingual-mlx";
 /**
  * The models a Mac record names: the 4-bit MLX quant of clef answers every clef stage and
- * Ternary-Bonsai-2-9B writes titles and summaries, both served on 127.0.0.1 under the ids the
- * stages ask for. The Mac reads no clairic (a Cloudflare model), so it screens nothing out.
+ * LFM3-1.7B writes titles and summaries, both served on 127.0.0.1 under the ids the stages ask
+ * for, so no Cloudflare model runs (the user's choice).
  */
 export const MAC_MODELS: { score: string; summary: string } = {
   score: "mlx-community/clef-OptiQ-4bit",
-  summary: "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit",
+  summary: "LiquidAI/LFM3-1.7B-MLX-8bit",
 };
 /**
- * Bump when the algorithm or prompts change; records recompute on the next upload or reload. Still 9:
- * the early exit, the screen and the reused answers left the clips of 16 videos (and 2 run live)
- * exactly as version 9 made them, so its records stay valid.
+ * Bump when the algorithm or prompts change; records recompute on the next upload or reload.
+ * 10: the four bands 5-10, 15-30, 35-60 and 90-120 s (the user's) replace 10-30 and 30-90 s.
  */
-export const ALGORITHM: number = 9;
-export const BANDS: Record<ClipKind, readonly [number, number]> = {
+export const ALGORITHM: number = 10;
+export const BANDS: Record<StoredKind, readonly [number, number]> = {
+  "5-10": [5, 10],
+  "15-30": [15, 30],
+  "35-60": [35, 60],
+  "90-120": [90, 120],
   short: [10, 30],
   long: [30, 90],
 };
+const KINDS: ClipKind[] = ["5-10", "15-30", "35-60", "90-120"];
 export const MOVIE_KEY: RegExp = /^[0-9a-f]{32}$/;
 const UNIT_MAX: number = 10;
 /** A unit this long is cut at the next clean sentence start. */
@@ -251,6 +322,7 @@ const UNIT_TARGET: number = 5;
 const UNIT_PAUSE: number = 3;
 /** A longer silence always changes the topic. */
 const PAUSE_BREAK: number = 12;
+/** Loudness's own peaks, always looked at; the mix of loudness and density adds the rest. */
 const PEAKS: number = 18;
 /** Peaks at least this many seconds apart, so their stories differ. */
 const PEAK_GAP: number = 90;
@@ -289,8 +361,6 @@ const CLIP_QUESTIONS: number = 4;
 const STRAY: number = 0.5;
 /** Rounds of repair after the first reading of the assembled clips. */
 const REPAIRS: number = 2;
-const SHORT_CLIPS: number = 6;
-const LONG_CLIPS: number = 4;
 const INTEREST_WEIGHT: number = 0.7;
 const WEIGHTS: Record<
   "hook" | "quality" | "climax" | "coherence" | "standalone" | "ending",
@@ -303,19 +373,19 @@ const WEIGHTS: Record<
   standalone: 0.1,
   ending: 0.1,
 };
-const LIMITS: Record<ClipKind, number> = { short: SHORT_CLIPS, long: LONG_CLIPS };
+/** Clips per band and video at most. */
+const LIMITS: Record<ClipKind, number> = { "5-10": 4, "15-30": 6, "35-60": 4, "90-120": 2 };
 const KEY_SAMPLE_BYTES: number = 1 << 20;
 const KEY_HEX: number = 32;
 const MERGE_GAP: number = 1.5;
 /** Within this many seconds a range edge and an utterance boundary are the same moment. */
 const EDGE_SLACK: number = 0.05;
 const PENDING_SECONDS: number = 600;
-const RATE_LIMITED: string = "3021";
-const RATE_RETRIES: number = 4;
-const RATE_WAIT_MS: number = 20_000;
 const EDITOR_TOKENS: number = 12_000;
 /** Editor requests per video before a reply outside the form fails the video. */
 const EDITOR_ATTEMPTS: number = 3;
+/** Gate chances the funnel log line lists. */
+const FUNNEL_BEST: number = 3;
 /** The best candidates clef reads with the judge's rubric. */
 const SLATE: number = 16;
 /**
@@ -392,12 +462,106 @@ const GOOD_WEIGHTS: Record<string, number> = {
   endsMid: -1.4432,
   stray: -0.2197,
 };
+// The Mac's local clef answers a little apart from Cloudflare's, so its gate is the same fit made
+// on its own answers to the 191 judged clips (LOVO AUC 0.756 with clairic, 0.719 alone). The
+// user lowered its floor to 0.65 (with clairic 51 clips 78% good, clef alone 47 clips 74%), and its
+// calls cost nothing, so it asks every region and reads twice the candidates.
+export const PLACES: Record<Place, PlaceRules> = {
+  cloudflare: {
+    slate: SLATE,
+    early: true,
+    shifts: [0],
+    density: 0,
+    peaks: 18,
+    least: GOOD_LEAST,
+    relative: null,
+    floor: CHEAP_FLOOR,
+    second: {
+      both: { bias: BOTH_BIAS, weights: BOTH_WEIGHTS },
+      reader: { kind: "clairic", weights: CLAIRIC_WEIGHTS, punchlineNull: PUNCHLINE_NULL_WEIGHT },
+    },
+    clefOnly: { bias: GOOD_BIAS, weights: GOOD_WEIGHTS },
+    screen: { bias: CHEAP_BIAS, weights: CHEAP_WEIGHTS },
+    screenReader: {
+      kind: "clairic",
+      weights: CHEAP_CLAIRIC_WEIGHTS,
+      punchlineNull: CHEAP_PUNCHLINE_NULL_WEIGHT,
+    },
+  },
+  mac: {
+    slate: 3 * SLATE,
+    early: false,
+    // The 4-bit clef lands a boundary or topic answer on the other side of 0.5 often enough to lose
+    // whole stories (validation video 1: v9's clip at 2649 s); these bring them back as drafts.
+    shifts: [0, -0.15, -0.075, 0.075, 0.15],
+    // Regions are looked for where loudness and transcript density are high together (the user's
+    // 10-28 choice: neither alone). Loudness alone ranks the judged clips below chance (AUC 0.446).
+    // Picked alone, the mix's peaks move regions off known good clips (at 18 it covers 95 of 109
+    // judged good, loudness 104), so loudness's 18 stay and the mix adds 12 where talk is dense,
+    // with a slate half again as long for the gate to read their candidates.
+    density: 0.5,
+    peaks: 30,
+    // No second reading (the user's 10-28 redesign drops Laya, which added nothing): clef alone,
+    // fit on its answers to the 191 judged clips, ranks them at LOVO AUC 0.719. Precision holds at
+    // 0.74-0.81 from 0.65 to 0.8, so the middle of that plateau ships the most good clips: 0.675 keeps
+    // 44 at 75% (33 good), where 0.75 kept 26 at 77% (20 good). Adding Laya, clef-flash or LFM3's
+    // rubric or entertainment questions lowered the AUC (Laya alone 0.495, LFM3 questions <= 0.60).
+    least: 0.675,
+    // The gate's scale shifts by broadcast: at 0.675 alone 13 of the 30 judged videos ship nothing
+    // (10-30: 10/24 none, 10/28 and a YouTube replay one each). A broadcast's best two at 0.55 or above
+    // also ship: on the 191 judged clips 52 kept at 79% (41 good) over 20 videos, against 44 at 77%
+    // (34 good) over 17. In-sample (the gate was fit on those clips), so the absolute precision is
+    // optimistic; the comparison between the rules is what chose it (edits/work/finisher-20261027/
+    // gate-analysis).
+    relative: { top: 2, least: 0.55 },
+    // At 0.25 the clef-flash screen (AUC 0.653) leaves 91% for clef and loses no shipped clip.
+    floor: 0.25,
+    second: null,
+    clefOnly: {
+      bias: -3.3042,
+      weights: {
+        topic: 0.3721,
+        standalone: 0.1347,
+        hook: 0.1529,
+        ending: 0.8793,
+        flow: 0.4847,
+        good: 0.6623,
+        premise: -0.0735,
+        startsMid: 0.0239,
+        endsMid: -1.5276,
+        stray: 0.041,
+      },
+    },
+    screen: {
+      bias: -1.3897,
+      weights: {
+        topic: 0.0058,
+        standalone: 0.1877,
+        hook: 0.4169,
+        ending: 0.8162,
+        flow: 0.0041,
+        good: 1.9156,
+        premise: 0.8031,
+        startsMid: 0.2662,
+        endsMid: -1.6828,
+        stray: -0.1779,
+      },
+    },
+    screenReader: null,
+  },
+};
 const LEVELS: string[] = LEVEL_TEXTS.interest[LANGUAGE];
 const HOOK_LEVELS: string[] = LEVEL_TEXTS.hook[LANGUAGE];
 /** Region question kinds answered as score levels; the rest are noul. */
 const VIDEO_ID: RegExp = /^[A-Za-z0-9._-]+$/;
 const DATA_KEY: RegExp = /^data\/([A-Za-z0-9._-]+)\.json$/;
 const JSON_PUT: unknown = { httpMetadata: { contentType: "application/json" } };
+/**
+ * Writes of one stored JSON: R2 now and then fails a put with a transient internal error (10001)
+ * that its documentation says to retry (10-29: 10/26's record answered 500 for one).
+ */
+const R2_PUT_ATTEMPTS: number = 3;
+const R2_RETRY_MS: number = 200;
 const STORY: Record<Pattern, string> = {
   "climax-first": prompt("editor.story.climax-first"),
   "hook-to-climax": prompt("editor.story.hook-to-climax"),
@@ -511,6 +675,12 @@ export const videoDataSchema = z.object({
     .optional(),
 });
 const rangeSchema = z.object({ start: z.number(), end: z.number() });
+/**
+ * The stored record's shape, which the Worker reports on every clips GET: bump it with any change to
+ * clipRecordSchema so a Mac ahead of the deployed Worker stops before computing. 2: the four bands
+ * (1, implied when a Worker reports none: short and long only).
+ */
+export const RECORD_SCHEMA: number = 2;
 export const clipRecordSchema = z.object({
   version: z.number(),
   videoId: z.string(),
@@ -523,7 +693,7 @@ export const clipRecordSchema = z.object({
   clips: z.array(
     z.object({
       id: z.string(),
-      kind: z.enum(["short", "long"]),
+      kind: z.enum(["5-10", "15-30", "35-60", "90-120", "short", "long"]),
       pattern: z.enum(["climax-first", "hook-to-climax"]).optional(),
       duration: z.number(),
       score: z.number(),
@@ -591,6 +761,7 @@ const clock = (seconds: number): string =>
   `${Math.floor(seconds / 3600)}:${pad(Math.floor((seconds % 3600) / 60))}:${pad(Math.floor(seconds % 60))}`;
 const byStart = (a: Range, b: Range): number => a.start - b.start;
 const byScore = (a: Draft, b: Draft): number => b.score - a.score;
+const descending = (a: number, b: number): number => b - a;
 const earliest = (d: Draft): number => Math.min(...d.ranges.map((r) => r.start));
 const byEarliest = (a: Draft, b: Draft): number => earliest(a) - earliest(b);
 const byCuriosity = (a: Scored, b: Scored): number => b.question + b.hook - (a.question + a.hook);
@@ -650,18 +821,20 @@ export function utterances(cues: readonly Cue[]): Said[] {
 }
 
 export function bandOf(duration: number): ClipKind | null {
-  if (duration >= BANDS.short[0] && duration <= BANDS.short[1]) return "short";
-  return duration > BANDS.long[0] && duration <= BANDS.long[1] ? "long" : null;
+  return KINDS.find((k) => duration >= BANDS[k][0] && duration <= BANDS[k][1]) ?? null;
 }
 
-/** The strongest bins, at least `apart` bins from each other. */
-export function peaksOf(score: readonly number[], apart: number): number[] {
+/** `seeds`, then the strongest other bins up to `count`, all at least `apart` bins from each other. */
+export function peaksOf({ score, apart, count, seeds }: PeakAsk): number[] {
   const order = [...score.entries()].sort(([a, x], [b, y]) => y - x || a - b);
-  return order.reduce<number[]>((chosen, [bin, value]) => {
-    const far = chosen.every((other) => Math.abs(other - bin) >= apart);
-    if (chosen.length < PEAKS && far && value > 0) chosen.push(bin);
-    return chosen;
-  }, []);
+  return order.reduce<number[]>(
+    (chosen, [bin, value]) => {
+      const far = chosen.every((other) => Math.abs(other - bin) >= apart);
+      if (chosen.length < count && far && value > 0) chosen.push(bin);
+      return chosen;
+    },
+    [...seeds],
+  );
 }
 
 function steps(said: readonly Said[]): Step[] {
@@ -739,8 +912,42 @@ function climaxOf(units: readonly Unit[], bin: Range): number {
   );
 }
 
+/**
+ * Each bin's transcript characters per second, summed with the bins beside it so one long
+ * utterance does not make a peak alone.
+ */
+export function densityOf(said: readonly Said[], width: number, bins: number): number[] {
+  const own = said.reduce(
+    (chars, u) => {
+      const bin = Math.min(bins - 1, Math.floor(u.start / width));
+      chars[bin] = (chars[bin] ?? 0) + u.text.replace(/\n/g, "").length / width;
+      return chars;
+    },
+    Array.from({ length: bins }, () => 0),
+  );
+  return own.map((c, bin) => (own[bin - 1] ?? 0) + c + (own[bin + 1] ?? 0));
+}
+
+/**
+ * Where to look for clips: loudness and transcript density, each over its stream's maximum, mixed
+ * with `share` the share of density (0 keeps loudness's own peaks).
+ */
+export function selectorOf(
+  score: readonly number[],
+  density: readonly number[],
+  share: number,
+): number[] {
+  const loudest = Math.max(0, ...score);
+  const densest = Math.max(0, ...density);
+  return score.map(
+    (s, bin) =>
+      (1 - share) * (loudest > 0 ? s / loudest : 0) +
+      share * (densest > 0 ? (density[bin] ?? 0) / densest : 0),
+  );
+}
+
 /** Every peak's surroundings, cut into units, with the possible topic changes around it. */
-export function regionsOf(data: VideoData): Region[] {
+export function regionsOf(data: VideoData, rules: Pick<PlaceRules, "density" | "peaks">): Region[] {
   const excitement = data.excitement;
   if (!excitement) return [];
   const score = excitement.combined?.score ?? excitement.speech.score;
@@ -748,7 +955,10 @@ export function regionsOf(data: VideoData): Region[] {
   const level = (range: Range): number =>
     Math.max(0, ...score.slice(Math.floor(range.start / width), Math.floor(range.end / width) + 1));
   const said = utterances(data.cues);
-  return peaksOf(score, Math.ceil(PEAK_GAP / width)).flatMap((peak) => {
+  const apart = Math.ceil(PEAK_GAP / width);
+  const loudest = peaksOf({ score, apart, count: PEAKS, seeds: [] });
+  const selector = selectorOf(score, densityOf(said, width, score.length), rules.density);
+  return peaksOf({ score: selector, apart, count: rules.peaks, seeds: loudest }).flatMap((peak) => {
     const bin = { start: peak * width, end: (peak + 1) * width };
     const local = said.filter(
       (u) => u.start >= bin.start - REGION_BEFORE && u.end <= bin.end + REGION_AFTER,
@@ -1046,7 +1256,8 @@ export function draftOf(pattern: Pattern, parts: readonly Scored[]): Draft[] {
 function shaped(pattern: Pattern, parts: readonly Scored[], ranges: Range[]): Draft[] {
   const duration = round(length(ranges));
   const kind = bandOf(duration);
-  return kind && parts.length > 1
+  // A 5-10 s clip may be the climax alone; longer ones tell a story of two or more units.
+  return kind && (parts.length > 1 || kind === "5-10")
     ? [
         {
           kind,
@@ -1167,12 +1378,12 @@ function hookToClimax(block: Block, cap: number): Draft[] {
   return [...stories.slice(0, 1), ...inside];
 }
 
-/** Both stories of a topic block, each as a short and a long cut where they fit. */
+/** Both stories of a topic block, each cut to every band's length where it fits. */
 export function storiesOf(block: Block): Draft[] {
-  const all = [BANDS.short[1], BANDS.long[1]].flatMap((cap) => [
-    ...climaxFirst(block, cap),
-    ...hookToClimax(block, cap),
-  ]);
+  // Longest band first, so a story that fits several keeps its fullest cut first.
+  const all = KINDS.map((k) => BANDS[k][1])
+    .reverse()
+    .flatMap((cap) => [...climaxFirst(block, cap), ...hookToClimax(block, cap)]);
   return [...new Map(all.map((d) => [JSON.stringify(d.ranges), d])).values()];
 }
 
@@ -1317,9 +1528,13 @@ function untailed(
  * The clips per band the judge most likely calls good, each at GOOD_LEAST or above. Clips of one
  * video never share a moment.
  */
-export function pick(drafts: readonly Draft[], good: (draft: Draft) => number): Draft[] {
+export function pick(
+  drafts: readonly Draft[],
+  good: (draft: Draft) => number,
+  least: number,
+): Draft[] {
   return drafts
-    .filter((d) => good(d) >= GOOD_LEAST)
+    .filter((d) => good(d) >= least)
     .sort((a, b) => good(b) - good(a))
     .reduce<Draft[]>((kept, d) => {
       const room = kept.filter((k) => k.kind === d.kind).length < LIMITS[d.kind];
@@ -1330,15 +1545,19 @@ export function pick(drafts: readonly Draft[], good: (draft: Draft) => number): 
 }
 
 /** The candidates worth the rubric reading: measured coherence, a closing sentence, best first. */
-export function slateOf(drafts: readonly Draft[]): Draft[] {
+export function slateOf(drafts: readonly Draft[], size: number): Draft[] {
   return drafts
     .filter((d) => d.coherence >= CANDIDATE && d.closes)
     .sort(byScore)
-    .slice(0, SLATE);
+    .slice(0, size);
 }
 
 /** A decision model's reading of one candidate as played, with the judge's rubric. */
-export function rubricRequest(clip: Draft, said: readonly Said[], model: string): unknown {
+export function rubricRequest(
+  clip: Pick<Draft, "pattern" | "ranges">,
+  said: readonly Said[],
+  model: string,
+): unknown {
   return {
     model,
     state: {
@@ -1355,7 +1574,10 @@ export function rubricRequest(clip: Draft, said: readonly Said[], model: string)
 }
 
 /** clairic's reading of one candidate as played: one line per utterance, marked with its range. */
-export function clairicRequest(clip: Draft, said: readonly Said[]): unknown {
+export function clairicRequest(
+  clip: Pick<Draft, "pattern" | "ranges">,
+  said: readonly Said[],
+): unknown {
   const story = CLAIRIC_STORY[clip.pattern];
   return {
     model: "clairic",
@@ -1403,29 +1625,63 @@ const clairicLogit = (
  * The judge's chance of calling the clip good, from clef's rubric answers and clairic's reading.
  * Without a usable clairic reading (a preview model) it falls back to the clef-only fit.
  */
-export function goodOf(response: unknown, clairic?: unknown): number {
-  const answers = answersOf([response]);
-  const read = clairicSchema.safeParse(clairic);
-  if (!read.success && clairic != null)
-    console.warn(`clairic reply outside the form, using the clef-only fit: ${read.error.message}`);
-  const logit = read.success
-    ? weighed(answers, BOTH_WEIGHTS, BOTH_BIAS) +
-      clairicLogit(read.data.answers, CLAIRIC_WEIGHTS, PUNCHLINE_NULL_WEIGHT)
-    : weighed(answers, GOOD_WEIGHTS, GOOD_BIAS);
+/** The second reading's share of a logit, or null when the reply is not in its form. */
+function readerLogit(reading: unknown, reader: Reader): number | null {
+  if (reader.kind === "laya") {
+    return clefSchema.safeParse(reading).success
+      ? weighed(answersOf([reading]), reader.weights, 0)
+      : null;
+  }
+  const read = clairicSchema.safeParse(reading);
+  return read.success
+    ? clairicLogit(read.data.answers, reader.weights, reader.punchlineNull)
+    : null;
+}
+
+/**
+ * A logistic model's logit over clef's rubric answers and a second reading (clairic or Laya), or
+ * null without a usable second reading.
+ */
+export function readingLogit(
+  response: unknown,
+  reading: unknown,
+  fit: { bias: number; clef: Record<string, number>; reader: Reader },
+): number | null {
+  const second = readerLogit(reading, fit.reader);
+  return second === null ? null : weighed(answersOf([response]), fit.clef, fit.bias) + second;
+}
+
+/** The judge's chance of calling the clip good, from clef's rubric answers and the second reading. */
+export function goodOf(response: unknown, reading: unknown, place: Place): number {
+  const rules = PLACES[place];
+  const second = rules.second;
+  const both = second
+    ? readingLogit(response, reading, {
+        ...second.both,
+        clef: second.both.weights,
+        reader: second.reader,
+      })
+    : null;
+  if (both === null && second && reading != null)
+    console.warn(`${second.reader.kind} reply outside the form, using the clef-only fit`);
+  const logit = both ?? weighed(answersOf([response]), rules.clefOnly.weights, rules.clefOnly.bias);
   return round(1 / (1 + Math.exp(-logit)));
 }
 
 /**
- * The screen's chance the judge calls the clip good, from clef-flash's rubric answers and clairic's
- * reading; without a usable clairic reading it screens nothing out, so clef reads the candidate.
+ * The screen's chance the judge calls the clip good, from clef-flash's rubric answers and the second
+ * reading; without a usable second reading it screens nothing out, so clef reads the candidate.
  */
-export function cheapOf(response: unknown, clairic: unknown): number {
-  const read = clairicSchema.safeParse(clairic);
-  const logit = read.success
-    ? weighed(answersOf([response]), CHEAP_WEIGHTS, CHEAP_BIAS) +
-      clairicLogit(read.data.answers, CHEAP_CLAIRIC_WEIGHTS, CHEAP_PUNCHLINE_NULL_WEIGHT)
-    : Number.POSITIVE_INFINITY;
-  return round(1 / (1 + Math.exp(-logit)));
+export function cheapOf(response: unknown, reading: unknown, place: Place): number {
+  const rules = PLACES[place];
+  const logit = rules.screenReader
+    ? readingLogit(response, reading, {
+        ...rules.screen,
+        clef: rules.screen.weights,
+        reader: rules.screenReader,
+      })
+    : weighed(answersOf([response]), rules.screen.weights, rules.screen.bias);
+  return round(1 / (1 + Math.exp(-(logit ?? Number.POSITIVE_INFINITY))));
 }
 
 /**
@@ -1506,7 +1762,7 @@ export const inputHash = (data: VideoData, place: Place): Promise<string> =>
         algorithm: ALGORITHM,
         models:
           place === "mac"
-            ? [MAC_MODELS.score, MAC_MODELS.summary]
+            ? [MAC_MODELS.score, MAC_MODELS.summary, PLACES.mac]
             : [...new Set([REGION_MODEL, READ_MODEL, GATE_MODEL]), SUMMARY_MODEL, CLAIRIC_MODEL],
         cues: data.cues.map((c) => [
           c.start,
@@ -1532,13 +1788,37 @@ async function inTurn(ai: Ai, model: string, inputs: readonly unknown[]): Promis
 }
 
 /** Each region's topic block, reading the regions one after another. */
-export async function blocksOf(ai: Ai, regions: readonly Region[]): Promise<Block[]> {
+export async function blocksOf(
+  ai: Ai,
+  regions: readonly Region[],
+  rules: Pick<PlaceRules, "early" | "shifts">,
+): Promise<Block[]> {
   return regions.reduce<Promise<Block[]>>(async (done, region) => {
     const list = await done;
-    const answers = await regionAnswers(ai, region);
-    const block = answers && blockOf(region, answers);
-    return block ? [...list, block] : list;
+    const answers = await regionAnswers(ai, region, rules.early);
+    const blocks = answers
+      ? rules.shifts.flatMap((shift) => [
+          blockOf(
+            region,
+            answers.map((a) => shifted(a, shift)),
+          ),
+        ])
+      : [];
+    return [...list, ...blocks.flatMap((b) => (b ? [b] : []))];
   }, Promise.resolve([]));
+}
+
+/** A region reply with its boundary and topic chances moved by `shift`, kept within 0 to 1. */
+function shifted(response: unknown, shift: number): unknown {
+  const parsed = clefSchema.safeParse(response);
+  if (shift === 0 || !parsed.success) return response;
+  const moved = Object.entries(parsed.data.answers).map(([id, a]) => [
+    id,
+    "noul" in a && (id.startsWith("boundary.") || id.startsWith("topic."))
+      ? { ...a, noul: Math.min(1, Math.max(0, a.noul + shift)) }
+      : a,
+  ]);
+  return { answers: Object.fromEntries(moved) };
 }
 
 /**
@@ -1546,7 +1826,7 @@ export async function blocksOf(ai: Ai, regions: readonly Region[]): Promise<Bloc
  * requests never sent, when no opening there reaches EARLY_HOOK. The requests themselves do not
  * change, and clef answers a request the same whenever it is sent.
  */
-async function regionAnswers(ai: Ai, region: Region): Promise<unknown[] | null> {
+async function regionAnswers(ai: Ai, region: Region, early: boolean): Promise<unknown[] | null> {
   const requests = clefRequests(region);
   const at = Math.max(
     0,
@@ -1556,7 +1836,7 @@ async function regionAnswers(ai: Ai, region: Region): Promise<unknown[] | null> 
   const hooks = Object.entries(answersOf([first])).flatMap(([id, a]) =>
     id.startsWith("hook.") && "score" in a ? [a.score] : [],
   );
-  return Math.max(0, ...hooks) < EARLY_HOOK
+  return early && Math.max(0, ...hooks) < EARLY_HOOK
     ? null
     : [
         first,
@@ -1602,6 +1882,13 @@ export async function coherent(
  * Builds the record: the slate is read with the rubric, and only the clips that ship and are not
  * already titled in `previous` (same story and ranges) go to the editor, in one request.
  */
+/** Whether a candidate with gate chance `chance` ships, given the broadcast's chances best first. */
+export function passing(chance: number, ranked: readonly number[], rules: PlaceRules): boolean {
+  const relative = rules.relative;
+  if (chance >= rules.least) return true;
+  return relative !== null && chance >= relative.least && ranked.indexOf(chance) < relative.top;
+}
+
 export async function generate({
   ai: given,
   place,
@@ -1613,28 +1900,40 @@ export async function generate({
   const meter = metered(given);
   const ai = remembered(meter);
   const said = utterances(data.cues);
-  const blocks = await blocksOf(ai, regionsOf(data));
-  const slate = slateOf(await coherent(ai, blocks.flatMap(storiesOf), said));
-  // Without clairic the screen keeps every candidate, so the Mac asks neither model.
-  const readings = place === "mac" ? slate.map(() => null) : await clairicReadings(ai, slate, said);
-  const quick =
-    place === "mac"
-      ? slate.map(() => null)
-      : await inTurn(
-          ai,
-          SCREEN_MODEL,
-          slate.map((d) => rubricRequest(d, said, SCREEN_NAME)),
-        );
+  const rules = PLACES[place];
+  const clock = stageClock();
+  const regions = regionsOf(data, rules);
+  const blocks = await blocksOf(ai, regions, rules);
+  clock.lap("regions");
+  const all = blocks.flatMap(storiesOf);
+  // Shifted blocks repeat most stories; Cloudflare keeps v9's list as it is (records stay v9's).
+  const stories =
+    rules.shifts.length > 1
+      ? [...new Map(all.map((d) => [JSON.stringify([d.pattern, d.ranges]), d])).values()]
+      : all;
+  const slate = slateOf(await coherent(ai, stories, said), rules.slate);
+  clock.lap("reads");
+  // Cloudflare reads each candidate with clairic too; the Mac's gate is clef's alone.
+  const readings = rules.second ? await clairicReadings(ai, slate, said) : slate.map(() => null);
+  const quick = await inTurn(
+    ai,
+    SCREEN_MODEL,
+    slate.map((d) => rubricRequest(d, said, SCREEN_NAME)),
+  );
+  clock.lap("screen");
   const kept = slate.flatMap((d, i) =>
-    cheapOf(quick[i], readings[i]) >= CHEAP_FLOOR ? [{ d, reading: readings[i] }] : [],
+    cheapOf(quick[i], readings[i], place) >= rules.floor ? [{ d, reading: readings[i] }] : [],
   );
   const goods = await inTurn(
     ai,
     GATE_MODEL,
     kept.map(({ d }) => rubricRequest(d, said, GATE_NAME)),
   );
-  const chance = new Map(kept.map(({ d, reading }, i) => [d, goodOf(goods[i], reading)]));
-  const shipped = pick(slate, (d) => chance.get(d) ?? 0);
+  clock.lap("gate");
+  const chance = new Map(kept.map(({ d, reading }, i) => [d, goodOf(goods[i], reading, place)]));
+  const ranked = [...chance.values()].sort(descending);
+  const passes = new Set([...chance].flatMap(([d, c]) => (passing(c, ranked, rules) ? [d] : [])));
+  const shipped = pick(slate, (d) => (passes.has(d) ? (chance.get(d) ?? 0) : -1), 0);
   const known = new Map(
     (previous?.clips ?? []).map((c) => [JSON.stringify([c.pattern, c.ranges]), c]),
   );
@@ -1644,6 +1943,12 @@ export async function generate({
   const titled = new Map(
     fresh.flatMap((d, i) => [edits.get(i)].flatMap((e) => (e ? [[d, e]] : []))),
   );
+  clock.lap("editor");
+  if (titled.size < fresh.length) {
+    console.warn(
+      `clip editor titled ${titled.size} of ${fresh.length} clips; the rest are dropped`,
+    );
+  }
   const drafts = shipped.filter(
     (d) => titled.has(d) || known.has(JSON.stringify([d.pattern, d.ranges])),
   );
@@ -1660,8 +1965,22 @@ export async function generate({
       summary: summary?.summary ?? "",
     };
   });
-  // One line per video in the Worker's logs: what the record cost, measured from every response.
-  console.log(JSON.stringify({ clipsUsage: data.id, models: meter.usage }));
+  // One line per video: what the record cost, measured from every response, and how many candidates
+  // each stage left, so a low count is explained by the log alone.
+  const funnel: Funnel = {
+    regions: regions.length,
+    stories: stories.length,
+    slate: slate.length,
+    screened: kept.length,
+    gated: passes.size,
+    best: ranked.slice(0, FUNNEL_BEST),
+    shipped: shipped.length,
+    titled: titled.size + (shipped.length - fresh.length),
+    clips: clips.length,
+  };
+  console.log(
+    JSON.stringify({ clipsUsage: data.id, models: meter.usage, funnel, seconds: clock.seconds }),
+  );
   return {
     version: ALGORITHM,
     videoId: data.id,
@@ -1703,7 +2022,15 @@ async function edited(
   left: number,
 ): Promise<Map<number, Summary>> {
   try {
-    return editsOf(await ai.run(SUMMARY_MODEL, editorRequest(slate, said, left)), slate.length);
+    const edits = editsOf(
+      await ai.run(SUMMARY_MODEL, editorRequest(slate, said, left)),
+      slate.length,
+    );
+    // A reply titling only some clips dropped the rest silently (suspected in 10/28 shipping 1); ask again
+    // and keep every title either reply gave.
+    if (edits.size === slate.length || left <= 1) return edits;
+    const more = await edited(ai, slate, said, left - 1).catch(() => new Map<number, Summary>());
+    return new Map<number, Summary>([...more, ...edits]);
   } catch (error) {
     if (left <= 1) throw error;
     return edited(ai, slate, said, left - 1);
@@ -1728,6 +2055,20 @@ export function remembered(ai: Ai): Ai {
   };
 }
 
+/** Wall seconds of each stage of one generation, for the log line (where a run's time goes). */
+function stageClock(): { lap(stage: string): void; seconds: Record<string, number> } {
+  const seconds: Record<string, number> = {};
+  let last = Date.now();
+  return {
+    seconds,
+    lap: (stage) => {
+      const now = Date.now();
+      seconds[stage] = Math.round((now - last) / 100) / 10;
+      last = now;
+    },
+  };
+}
+
 /** Counts every call per model and the input tokens its response reports. */
 export function metered(ai: Ai): Ai & { usage: Record<string, Usage> } {
   const usage: Record<string, Usage> = {};
@@ -1745,22 +2086,6 @@ export function metered(ai: Ai): Ai & { usage: Record<string, Usage> } {
     },
   };
 }
-
-/** Retries a Workers AI call that hit the per-minute rate limit (error 3021). */
-export function patient(ai: Ai, wait: (ms: number) => Promise<unknown>): Ai {
-  const attempt = async (model: string, input: unknown, left: number): Promise<unknown> => {
-    try {
-      return await ai.run(model, input);
-    } catch (error) {
-      if (left === 0 || !String(error).includes(RATE_LIMITED)) throw error;
-      await wait(RATE_WAIT_MS);
-      return attempt(model, input, left - 1);
-    }
-  };
-  return { run: (model, input) => attempt(model, input, RATE_RETRIES) };
-}
-
-const sleep = (ms: number): Promise<unknown> => new Promise((done) => setTimeout(done, ms));
 
 /** The content key of an R2 movie without downloading it: two 1 MiB range reads. */
 export async function movieKey(bucket: Bucket, key: string): Promise<string | null> {
@@ -1785,8 +2110,24 @@ async function readJson(bucket: Bucket, key: string): Promise<unknown> {
   return object ? object.json() : null;
 }
 
-const putJson = (bucket: Bucket, key: string, value: unknown): Promise<unknown> =>
-  bucket.put(key, JSON.stringify(value), JSON_PUT);
+async function putJson(bucket: Bucket, key: string, value: unknown): Promise<unknown> {
+  return putAttempt(bucket, key, JSON.stringify(value), R2_PUT_ATTEMPTS);
+}
+
+async function putAttempt(
+  bucket: Bucket,
+  key: string,
+  body: string,
+  left: number,
+): Promise<unknown> {
+  try {
+    return await bucket.put(key, body, JSON_PUT);
+  } catch (error) {
+    if (left <= 1) throw error;
+    await new Promise((done) => setTimeout(done, R2_RETRY_MS));
+    return putAttempt(bucket, key, body, left - 1);
+  }
+}
 
 async function readRecord(bucket: Bucket, movie: string): Promise<ClipRecord | null> {
   const parsed = clipRecordSchema.safeParse(await readJson(bucket, recordKey(movie)));
@@ -1805,35 +2146,21 @@ async function movieOf(bucket: Bucket, videoId: string): Promise<string | null> 
 }
 
 /**
- * Queue step for one video. Cloudflare AI runs only for a forced request (a user's reload); an R2
- * upload event or any other unforced message only points the video at its movie key, since the Mac
- * computes clips by default and stores them with `store`.
+ * Queue step for one video (an R2 upload event): it only points the video at its movie key. The
+ * Worker runs no model; the Mac computes clips and stores them with `store`.
  */
-export async function refresh(env: ClipEnv, request: ClipRequest, now: Date): Promise<Outcome> {
+export async function refresh(env: ClipEnv, request: ClipRequest): Promise<Outcome> {
   const raw = VIDEO_ID.test(request.videoId)
     ? await readJson(env.MEDIA, `data/${request.videoId}.json`)
     : null;
   if (!raw) return "no-data";
-  const data = videoDataSchema.parse(raw);
+  videoDataSchema.parse(raw);
   const movie = await movieOf(env.MEDIA, request.videoId);
   const key = movie ? await movieKey(env.MEDIA, movie) : null;
   if (!key) return "no-movie";
-  const record = request.force
-    ? await generate({
-        ai: patient(env.AI, sleep),
-        place: "cloudflare",
-        data,
-        movieKey: key,
-        previous: await readRecord(env.MEDIA, key),
-        now,
-      })
-    : null;
-  await Promise.all([
-    record ? putJson(env.MEDIA, recordKey(key), record) : null,
-    putJson(env.MEDIA, pointerKey(request.videoId), { movieKey: key }),
-  ]);
+  await putJson(env.MEDIA, pointerKey(request.videoId), { movieKey: key });
   await env.MEDIA.delete(pendingKey(request.videoId));
-  return record ? "written" : "skipped";
+  return "skipped";
 }
 
 /**
@@ -1855,6 +2182,15 @@ export async function store(env: ClipEnv, videoId: string, body: unknown): Promi
   return "written";
 }
 
+/** Why a record uploaded for a video is refused, or null when it is valid. */
+export function recordIssue(videoId: string, body: unknown): string | null {
+  const parsed = clipRecordSchema.safeParse(body);
+  if (!parsed.success) return z.prettifyError(parsed.error);
+  return parsed.data.videoId === videoId
+    ? null
+    : `videoId ${parsed.data.videoId} is not ${videoId}`;
+}
+
 /** A queue message: our own request, or an R2 event for an uploaded data/<id>.json. */
 export function requestOf(body: unknown): ClipRequest | null {
   const own = ownRequestSchema.safeParse(body);
@@ -1862,20 +2198,6 @@ export function requestOf(body: unknown): ClipRequest | null {
   const event = eventSchema.safeParse(body);
   const id = event.success ? event.data.object.key.match(DATA_KEY)?.[1] : undefined;
   return id ? { videoId: id, force: false } : null;
-}
-
-/** Queues a computation unless an equal or stronger one was queued in the last PENDING_SECONDS. */
-export async function enqueue(env: ClipEnv, request: ClipRequest, now: Date): Promise<void> {
-  if (!VIDEO_ID.test(request.videoId)) return;
-  const at = Math.floor(now.getTime() / 1000);
-  const pending = pendingSchema.safeParse(await readJson(env.MEDIA, pendingKey(request.videoId)));
-  const queued =
-    pending.success &&
-    at - pending.data.at < PENDING_SECONDS &&
-    (pending.data.force || !request.force);
-  if (queued) return;
-  await putJson(env.MEDIA, pendingKey(request.videoId), { at, force: request.force });
-  await env.CLIPS_QUEUE.send(request);
 }
 
 /**
@@ -1898,6 +2220,9 @@ export async function lookup(env: ClipEnv, request: LookupRequest): Promise<Look
   const record = movie ? await readRecord(env.MEDIA, movie) : null;
   if (record) return { status: "ready", record };
   if (pending) return { status: "pending", force: false };
-  // The viewer's movie is not the one published: computing again would not produce its key.
-  return pointer.success && key !== null ? { status: "mismatch" } : { status: "missing" };
+  // The viewer's movie is not the one published: computing again would not produce its key. The
+  // published movie itself whose clips the Mac has not made yet is missing, not a mismatch.
+  return pointer.success && key !== null && key !== pointer.data.movieKey
+    ? { status: "mismatch" }
+    : { status: "missing" };
 }

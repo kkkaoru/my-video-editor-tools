@@ -8,7 +8,7 @@
 // after a Cloudflare Turnstile check (no Turnstile keys configured: shares stay closed).
 // Until X_CLIENT_ID is configured, HTTP Basic (BASIC_USER / BASIC_PASS) stays
 // as the only gate so a half-configured deploy never opens the site.
-import { enqueue, lookup, MOVIE_KEY, refresh, requestOf, store } from "./clips.ts";
+import { lookup, MOVIE_KEY, RECORD_SCHEMA, recordIssue, refresh, requestOf, store } from "./clips.ts";
 
 const SESSION_COOKIE = "tv_session";
 const OAUTH_COOKIE = "tv_oauth";
@@ -35,7 +35,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/s/")) return shareRoute(request, url, env);
     // The Mac has no X login: it reads, reloads and stores clips with the CLIPS_API_TOKEN bearer.
-    if (CLIPS_PATH.test(url.pathname) && (await clipsBearer(request, env))) return clipsRoute(request, url, env, { admin: true, bearer: true });
+    if (CLIPS_PATH.test(url.pathname) && (await clipsBearer(request, env))) return clipsRoute(request, url, env, { bearer: true });
     if (url.pathname === CHANNELS_PATH && (await clipsBearer(request, env))) return channelsRoute(request, env, true);
     if (url.pathname === "/robots.txt") {
       return new Response("User-agent: *\nDisallow: /\n", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -53,7 +53,7 @@ export default {
         return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/me") return json({ username: session.u, admin: isAdmin(session.u, env) });
-      if (CLIPS_PATH.test(url.pathname)) return clipsRoute(request, url, env, { admin: isAdmin(session.u, env), bearer: false });
+      if (CLIPS_PATH.test(url.pathname)) return clipsRoute(request, url, env, { bearer: false });
       if (url.pathname === "/admin" || url.pathname.startsWith("/api/admin/")) {
         if (!isAdmin(session.u, env)) return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
         if (url.pathname === "/admin") return adminPage();
@@ -81,7 +81,7 @@ export default {
       return r2Json(request, env, "catalog.json");
     }
     if (url.pathname === CHANNELS_PATH) return channelsRoute(request, env, false);
-    if (CLIPS_PATH.test(url.pathname)) return clipsRoute(request, url, env, { admin: true, bearer: false });
+    if (CLIPS_PATH.test(url.pathname)) return clipsRoute(request, url, env, { bearer: false });
     const dataMatch = url.pathname.match(/^\/api\/videos\/([A-Za-z0-9._-]+)\.json$/);
     if (dataMatch) {
       return r2Json(request, env, `data/${dataMatch[1]}.json`);
@@ -97,12 +97,12 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  // R2 event notifications for data/<id>.json (pointer updates only) and users' reloads: one video per message.
+  // R2 event notifications for data/<id>.json: pointer updates only, one video per message.
   async queue(batch, env) {
     for (const message of batch.messages) {
       const request = requestOf(message.body);
       try {
-        if (request) console.log(JSON.stringify({ clips: request.videoId, outcome: await refresh(env, request, new Date()) }));
+        if (request) console.log(JSON.stringify({ clips: request.videoId, outcome: await refresh(env, request) }));
         message.ack();
       } catch (error) {
         console.error(JSON.stringify({ clips: request?.videoId, error: String(error) }));
@@ -202,29 +202,27 @@ async function channelsRoute(request, env, write) {
   return channelsResponse(record);
 }
 
-// GET returns the stored clips. The Mac computes them and stores them with the bearer (PUT); Cloudflare
-// AI runs only when a user asks for it with POST …/reload (admins, the bearer, or Basic mode).
-async function clipsRoute(request, url, env, { admin, bearer }) {
+// GET returns the stored clips. The Mac computes them and stores them with the bearer (PUT); the
+// Worker runs no model, so POST …/reload answers 410.
+async function clipsRoute(request, url, env, { bearer }) {
   const [, videoId, kind] = url.pathname.match(CLIPS_PATH);
   if (kind === ".json" && request.method === "PUT" && bearer) {
     const body = await request.json().catch(() => null);
     const outcome = await store(env, videoId, body);
-    return json({ outcome }, outcome === "written" ? 200 : outcome === "invalid" ? 400 : 404);
+    if (outcome === "invalid") return json({ outcome, error: recordIssue(videoId, body), schema: RECORD_SCHEMA }, 400);
+    return json({ outcome }, outcome === "written" ? 200 : 404);
   }
   const expected = kind === "/reload" ? "POST" : "GET";
   if (request.method !== expected) return new Response("Method not allowed", { status: 405 });
-  if (kind === "/reload") {
-    if (!admin) return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
-    // Cookie sessions only from this site's own pages, like the admin API.
-    if (!bearer && request.headers.get("Origin") !== url.origin) return new Response("Bad request", { status: 400 });
-    await enqueue(env, { videoId, force: true }, new Date());
-    return json({ status: "pending", force: true });
-  }
+  // Clips are computed on the Mac only (the Worker runs no model): a reload is asked there.
+  if (kind === "/reload") return json({ error: "clips are recomputed on the Mac (bun run clips:mac -- --force <id>)" }, 410);
   const key = url.searchParams.get("key");
   if (key !== null && !MOVIE_KEY.test(key)) return json({ error: "invalid key" }, 400);
   const found = await lookup(env, { videoId, key, now: new Date() });
-  if (found.status !== "missing" || (await env.MEDIA.head(`data/${videoId}.json`))) return json(found);
-  return json(found, 404);
+  // The record shape this Worker accepts, so the Mac stops before computing one it would refuse.
+  const answer = { ...found, schema: RECORD_SCHEMA };
+  if (found.status !== "missing" || (await env.MEDIA.head(`data/${videoId}.json`))) return json(answer);
+  return json(answer, 404);
 }
 
 function redirect(location) {

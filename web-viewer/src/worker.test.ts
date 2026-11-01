@@ -471,7 +471,7 @@ it("never queues clips that are missing and reads them once stored", async () =>
   const second = await (await get()).json();
   const unknown = await shareCall(env, "/api/clips/v9.json", { headers: { Cookie: cookie } });
   expect([first, sent, second.status, unknown.status]).toStrictEqual([
-    { status: "missing" },
+    { status: "missing", schema: 2 },
     [],
     "ready",
     404,
@@ -486,10 +486,13 @@ it("stores a record from the bearer under the published movie's key", async () =
   const bearer = { Authorization: `Bearer ${CLIPS_TOKEN}` };
   const stored = await put({ ...CLIP_RECORD, movieKey: "local" }, bearer);
   const invalid = await put({ videoId: "v1" }, bearer);
+  const other = await put({ ...CLIP_RECORD, videoId: "v2" }, bearer);
   const cookieUser = await put(CLIP_RECORD, { Cookie: cookie, Origin: "https://example.test" });
   expect([
     await stored.json(),
     invalid.status,
+    (await invalid.json()).error.split("\n")[0],
+    await other.json(),
     cookieUser.status,
     JSON.parse(String(env.MEDIA.store.get("clips/2e8e504c5e6b886af70f8c03cbfc31ac.json"))).movieKey,
     env.MEDIA.store.get("clips/videos/v1.json"),
@@ -497,6 +500,8 @@ it("stores a record from the bearer under the published movie's key", async () =
   ]).toStrictEqual([
     { outcome: "written" },
     400,
+    "✖ Invalid input: expected number, received undefined",
+    { outcome: "invalid", error: "videoId v2 is not v1", schema: 2 },
     405,
     "2e8e504c5e6b886af70f8c03cbfc31ac",
     '{"movieKey":"2e8e504c5e6b886af70f8c03cbfc31ac"}',
@@ -504,23 +509,21 @@ it("stores a record from the bearer under the published movie's key", async () =
   ]);
 });
 
-it("reloads clips only for same-origin admins or the bearer token", async () => {
+it("answers every reload with 410 since the Mac recomputes clips, queueing nothing", async () => {
   const { env, sent } = clipEnvironment();
   const reload = (headers: Record<string, string>) =>
     shareCall(env, "/api/clips/v1/reload", { method: "POST", headers });
-  const crossSite = await reload({ Cookie: cookie });
   const admin = await reload({ Cookie: cookie, Origin: "https://example.test" });
   const bearer = await reload({ Authorization: `Bearer ${CLIPS_TOKEN}` });
   const wrongBearer = await reload({ Authorization: "Bearer wrong" });
   const get = await shareCall(env, "/api/clips/v1/reload", { headers: { Cookie: cookie } });
-  expect([
-    crossSite.status,
-    admin.status,
-    bearer.status,
-    wrongBearer.status,
-    get.status,
-    sent,
-  ]).toStrictEqual([400, 200, 200, 401, 405, [{ videoId: "v1", force: true }]]);
+  expect([admin.status, bearer.status, wrongBearer.status, get.status, sent]).toStrictEqual([
+    410,
+    410,
+    401,
+    405,
+    [],
+  ]);
 });
 
 it("lets the bearer read clips with its own movie key", async () => {

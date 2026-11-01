@@ -11,15 +11,13 @@ export default defineConfig({
     domains: process.env.VIEWER_DOMAIN ? process.env.VIEWER_DOMAIN.split(",") : [],
     observability: { enabled: true },
     assets: { runWorkerFirst: true },
-    // Clip generation: R2 event notifications for data/*.json and the viewers' requests arrive
-    // here one at a time, so a video is never computed twice in parallel.
+    // R2 event notifications for data/*.json keep each video's movie-key pointer current. The Worker
+    // has no AI binding: clips are computed on the Mac.
     triggers: [triggers.queue({ name: CLIPS_QUEUE, maxBatchSize: 1, maxConcurrency: 1, maxRetries: 5, retryDelay: 120 })],
     env: {
       ASSETS: bindings.assets(),
       ALLOW_KV: bindings.kv(),
       MEDIA: bindings.r2({ name: "transcript-viewer-media" }),
-      AI: bindings.ai(),
-      CLIPS_QUEUE: bindings.queue({ name: CLIPS_QUEUE }),
     },
   },
 });

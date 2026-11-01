@@ -100,15 +100,23 @@ it("finds clips outside the bands, without a story and touching another clip", (
     ),
   ).toStrictEqual([
     { clip: "c2", rule: "band", detail: "4 s" },
+    { clip: "c3", rule: "band", detail: "40 s" },
     { clip: "c3", rule: "pattern", detail: "no story pattern" },
     { clip: "c1", rule: "overlap", detail: "c1 0:12-0:14 touches c2 0:14-0:18" },
   ]);
 });
 
-it("accepts a 30-90 s clip and a 10-30 s clip that never meet", () => {
+it("checks each clip against its own band, the new ones and the earlier 10-30 and 30-90 s", () => {
   expect(
-    invariants(record([clip("c1", [{ start: 0, end: 10 }]), clip("c2", [{ start: 30, end: 75 }])])),
-  ).toStrictEqual([]);
+    invariants(
+      record([
+        { ...clip("c1", [{ start: 0, end: 10 }]), kind: "5-10" },
+        { ...clip("c2", [{ start: 30, end: 75 }]), kind: "long" },
+        { ...clip("c3", [{ start: 100, end: 145 }]), kind: "35-60" },
+        { ...clip("c4", [{ start: 200, end: 330 }]), kind: "90-120" },
+      ]),
+    ),
+  ).toStrictEqual([{ clip: "c4", rule: "band", detail: "130 s" }]);
 });
 
 it("starts cleanly on an opening utterance, after a pause, or with nothing to hear", () => {

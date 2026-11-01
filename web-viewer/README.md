@@ -110,21 +110,26 @@ KV（`ALLOW_KV`、キー `youtube-channels`、cacheTtl 30秒）→ R2（正本�
 
 ## 切り抜き
 
-動画ごとに、盛り上がりと文字起こしから切り抜き候補を作り、R2に保存します。**既定ではMacで作り**
-（`bun run clips:mac`、下記）、Cloudflare上のAI（Workers AI）は**ユーザーが再計算を指示したときだけ**動きます。
+動画ごとに、盛り上がりと文字起こしから切り抜き候補を**Macで作り**（`bun run clips:mac`、下記）、R2に保存します。
+CloudflareのAIモデルは **clairic だけ** を使い、clef・タイトル（GLMの代わり）・評価の採点（DeepSeekの代わり）は
+Macにダウンロードしたモデルで動かします。WorkerにはAIの接続設定がありません。
 
 - Macでの作成（既定）: `bun run clips:mac -- <videoId|data.json>...` が `web-viewer/data/<id>.json` から
   同じ `generate()` を `place: "mac"` で動かし、Bearerの `PUT /api/clips/<id>.json` で保存します。
   clefの段は `mlx-community/clef-OptiQ-4bit`、タイトル・要約はGLMの代わりに `Ternary-Bonsai-2-9B` が、
   `python -m replay.clip_models`（127.0.0.1:8791、`uv run --isolated --locked --extra clips` で共有の
-  `.venv` を変えずに起動、終わったら停止）で答えます。clairicはCloudflareのモデルなのでMacでは読まず、
-  出荷判定前のふるい（clef-flash）も行いません（clairicが無いとふるいは何も落とさないため）。clefだけの
-  回帰で出荷を決めます。記録が無い動画と、データが変わった動画だけを作ります（MacとCloudflareのどちらで
+  `.venv` を変えずに起動、終わったら停止）で答えます。Cloudflareのモデルは一切呼びません。clairicの代わりに
+  Laya（`aac6fef/laya-multilingual-mlx`）が同じ採点の問いに答えます（出荷の基準は0.75）。clefは同じ区間の問い合わせで
+  共通する文字起こし部分のGPU上の途中経過を使い回し（答えは同一）、判定部分の重い前処理もMetal上で行います。
+  出荷判定の前のふるいはMacの `clef-flash-OptiQ-4bit` とclairicで行い、手元の答えで作り直した重みで
+  出荷を決めます（基準0.65）。記録が無い動画と、データが変わった動画だけを作ります（MacとCloudflareのどちらで
   作った記録でも、同じデータからなら作り直しません）。Workerは保存時にmovieKeyを公開中の動画から求め直します。
   録画パイプラインの `clips` 工程はこれを1台で1本ずつ（`clips-mac.lock`）実行し、空きメモリが40%未満なら
-  モデルサーバーは起動を拒みます（2モデルで約22GB）。
+  モデルサーバーは起動を拒み、動作中に15%を下回ると止まります（3モデルで約29GB）。Macは呼び出しが無料なので
+  区間の早期打ち切りをせず、区間の切れ目・話題の答えを0・±0.075・±0.15ずらした5通りから候補を作り、32本まで読みます。
 
-- 長さは合計 **10〜30秒（短尺）か30〜90秒（長尺）** のどちらか。1つの切り抜きは同じ配信の**複数の範囲**を
+- 長さは合計 **5〜10秒・15〜30秒・35〜60秒・90〜120秒** のどれか（アルゴリズム版10。1動画あたり最大4・6・4・2本。
+  5〜10秒は山場の単位だけでもよい。版9以前の記録の10〜30秒「短尺」・30〜90秒「長尺」もそのまま表示する）。1つの切り抜きは同じ配信の**複数の範囲**を
   含められ、再生すると範囲を順に続けて再生します（Web版・Mac版とも）。秒数と各範囲の時刻を表示します。
 - 構成は次の2つのどちらか。どちらも**最初の3秒が強い引き**であることを必須とし、最初の範囲は候補の中で
   最も引きの強い発話から始めます。
@@ -195,8 +200,8 @@ KV（`ALLOW_KV`、キー `youtube-channels`、cacheTtl 30秒）→ R2（正本�
 - Cloudflareでは自動実行しない: R2の `data/*.json` の保存通知はキュー `transcript-viewer-clips` に入りますが、
   Workerの `queue()` は動画からmovieKeyへの対応を更新するだけで、AIを呼びません。未計算の動画を開いても
   キューに入れず `missing` を返します。
-- 再計算（ユーザーの指示、Cloudflare AIを使う唯一の経路）: Web版の動画ページの「切り抜きを再計算」
-  （管理者のみ）、Mac版の同名ボタン、または `POST /api/clips/<id>/reload`。計算中は画面が15秒ごとに確認します。
+- 再計算: Mac版の「切り抜きを再計算」（`bun run clips:mac -- --force <id>` を実行、1時間ほど）か、
+  そのコマンドを直接実行します。`POST /api/clips/<id>/reload` は410を返します（Workerはモデルを動かしません）。
 - API: `GET /api/clips/<id>.json[?key=<movieKey>]` → `ready`（record付き）/`pending`/`missing`/`mismatch`
   （渡したmovieKeyが公開中の動画と違う）。ログイン済みセッションのほか、`secrets.json` の
   `CLIPS_API_TOKEN` をBearerで送るとこのAPIだけ使えます（Mac版用）。共有リンクでは読み取りのみ。

@@ -16,13 +16,14 @@ import {
   clairicRequest,
   clefRequests,
   climaxSpan,
+  clipRecordSchema,
   closed,
   cohesion,
   type Draft,
+  densityOf,
   draftOf,
   editorRequest,
   editsOf,
-  enqueue,
   generate,
   goodOf,
   inputHash,
@@ -32,10 +33,12 @@ import {
   metered,
   movieKey,
   openings,
-  patient,
+  PLACES,
+  passing,
   peaksOf,
   pick,
   type Range,
+  RECORD_SCHEMA,
   rangesOf,
   refresh,
   regionsOf,
@@ -44,6 +47,7 @@ import {
   resolved,
   rubricRequest,
   type Scored,
+  selectorOf,
   slateOf,
   store,
   storiesOf,
@@ -202,7 +206,7 @@ const scoredUnit = (start: number, end: number, topic: number): Scored => ({
 });
 
 const draft = (
-  kind: "short" | "long",
+  kind: "15-30" | "35-60",
   score: number,
   ranges: Range[],
   coherence: number,
@@ -221,7 +225,7 @@ const draft = (
 });
 
 const block = (): Block => {
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   const result = region ? blockOf(region, [ANSWERS]) : null;
   if (!result) throw new Error("no block");
   return result;
@@ -241,14 +245,79 @@ it("merges cumulative captions into one utterance with the last cue's nouns", ()
   ]);
 });
 
-it("puts every clip length into one of the two bands", () => {
-  expect([bandOf(9.9), bandOf(10), bandOf(30), bandOf(30.5), bandOf(90), bandOf(91)]).toStrictEqual(
-    [null, "short", "short", "long", "long", null],
-  );
+it("puts every clip length into one of the four bands, or none between them", () => {
+  expect([
+    bandOf(4.9),
+    bandOf(5),
+    bandOf(10),
+    bandOf(12),
+    bandOf(15),
+    bandOf(30),
+    bandOf(33),
+    bandOf(35),
+    bandOf(60),
+    bandOf(75),
+    bandOf(90),
+    bandOf(120),
+    bandOf(121),
+  ]).toStrictEqual([
+    null,
+    "5-10",
+    "5-10",
+    null,
+    "15-30",
+    "15-30",
+    null,
+    "35-60",
+    "35-60",
+    null,
+    "90-120",
+    "90-120",
+    null,
+  ]);
 });
 
-it("takes the strongest bins at least the given distance apart", () => {
-  expect(peaksOf([0.9, 0.8, 0, 0, 0, 0.7, 0], 3)).toStrictEqual([0, 5]);
+it("takes the seeds, then the strongest bins at least the given distance apart", () => {
+  expect([
+    peaksOf({ score: [0.9, 0.8, 0, 0, 0, 0.7, 0], apart: 3, count: 18, seeds: [] }),
+    peaksOf({ score: [0.9, 0.8, 0, 0, 0, 0.7, 0], apart: 3, count: 1, seeds: [] }),
+    peaksOf({ score: [0.9, 0.8, 0, 0, 0, 0.7, 0], apart: 3, count: 18, seeds: [2] }),
+  ]).toStrictEqual([[0, 5], [0], [2, 5]]);
+});
+
+it("counts transcript characters per second in each bin with the bins beside it", () => {
+  expect(
+    densityOf(utterances(DATA.cues), 10, 12).map((d) => Math.round(d * 10) / 10),
+  ).toStrictEqual([0, 0, 0, 0, 0, 1, 3.4, 4.4, 4.5, 2.1, 1.1, 0]);
+});
+
+it("mixes loudness and density, each over its maximum, by the density's share", () => {
+  expect([
+    selectorOf([0, 0.5, 1], [2, 0, 1], 0.5),
+    selectorOf([0, 0.5, 1], [2, 0, 1], 0),
+    selectorOf([0, 0], [0, 0], 0.5),
+  ]).toStrictEqual([
+    [0.5, 0.25, 0.75],
+    [0, 0.5, 1],
+    [0, 0],
+  ]);
+});
+
+it("keeps loudness's peaks and adds the mix's where the talk is dense", () => {
+  // Loud only at 190 s, where nobody speaks; the talk is at 60-104 s.
+  const loudAway = {
+    ...DATA,
+    excitement: {
+      binSeconds: 10,
+      speech: { score: [...Array.from({ length: 19 }, () => 0), 0.9] },
+      combined: null,
+    },
+  };
+  expect([
+    regionsOf(DATA, { density: 1, peaks: 18 }).map((r) => r.peak),
+    regionsOf(loudAway, { density: 0, peaks: 1 }).map((r) => r.peak),
+    regionsOf(loudAway, { density: 0.5, peaks: 2 }).map((r) => r.peak),
+  ]).toStrictEqual([[10], [], [8]]);
 });
 
 it("cuts units at pauses, at 10 s and at a clean start after 5 s", () => {
@@ -289,7 +358,7 @@ it("proposes the least cohesive clean starts outside the climax, 8 s apart", () 
 });
 
 it("cuts each peak's surroundings into units and finds the climax in the peak bin", () => {
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   expect([
     region?.peak,
     region?.bin,
@@ -316,7 +385,10 @@ it("has no regions without excitement or without speech in the peak bin", () => 
     ...DATA,
     excitement: { binSeconds: 10, speech: { score: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9] } },
   };
-  expect([regionsOf({ id: "x", cues: DATA.cues }), regionsOf(silent)]).toStrictEqual([[], []]);
+  expect([
+    regionsOf({ id: "x", cues: DATA.cues }, { density: 0, peaks: 18 }),
+    regionsOf(silent, { density: 0, peaks: 18 }),
+  ]).toStrictEqual([[], []]);
 });
 
 it("prefers the combined score when comments exist", () => {
@@ -328,7 +400,9 @@ it("prefers the combined score when comments exist", () => {
       combined: { score: [0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0, 0, 0] },
     },
   };
-  expect(regionsOf(data).map((r) => [r.peak, r.climax])).toStrictEqual([[8, 2]]);
+  expect(regionsOf(data, { density: 0, peaks: 18 }).map((r) => [r.peak, r.climax])).toStrictEqual([
+    [8, 2],
+  ]);
 });
 
 it("offers the first clean starts as openings with what their first 3 s say", () => {
@@ -353,7 +427,7 @@ it("offers the first clean starts as openings with what their first 3 s say", ()
 });
 
 it("asks about topic changes, then every unit, in requests of at most 64", () => {
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   const many = region
     ? clefRequests({ ...region, boundaries: Array.from({ length: 50 }, (_, j) => j) })
     : [];
@@ -399,7 +473,7 @@ it("asks about topic changes, then every unit, in requests of at most 64", () =>
 });
 
 it("asks each region question spelling out its kind, the climax quoted", () => {
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   const request = region ? clefRequests(region)[0] : null;
   expect([
     Object(request).questions["topic.0"],
@@ -447,7 +521,7 @@ it("keeps the climax's topic block and scores its units, nouns lifting the topic
 });
 
 it("treats a long pause as a topic change and has no block for a missing climax", () => {
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   const paused = region
     ? blockOf(
         {
@@ -472,7 +546,7 @@ it("merges the climax with the on-topic units around it that stay as exciting", 
       combined: null,
     },
   };
-  const region = regionsOf(data)[0];
+  const region = regionsOf(data, { density: 0, peaks: 18 })[0];
   const result = region ? blockOf(region, [ANSWERS]) : null;
   expect([
     result?.span.map((u) => u.start),
@@ -537,7 +611,7 @@ it("tells the block as climax-first and hook-to-climax where each fits a band", 
   ).toStrictEqual([
     [
       "climax-first",
-      "short",
+      "15-30",
       30,
       0.542,
       [
@@ -545,26 +619,27 @@ it("tells the block as climax-first and hook-to-climax where each fits a band", 
         { start: 72, end: 94 },
       ],
     ],
-    ["hook-to-climax", "long", 32, 0.542, [{ start: 72, end: 104 }]],
+    // The climax span alone fits 5-10 s; the 32 s hook-to-climax cut falls between bands.
+    ["hook-to-climax", "5-10", 8, 0.581, [{ start: 96, end: 104 }]],
   ]);
 });
 
 it("tells a climax span that opens on a hook as a story of its own", () => {
   const span = [
     { ...scoredUnit(0, 6, 1), hook: 0.9 },
-    { ...scoredUnit(6, 14, 1), hook: 0 },
+    { ...scoredUnit(6, 20, 1), hook: 0 },
   ];
-  const climax = { ...scoredUnit(0, 14, 1), hook: 0.9 };
+  const climax = { ...scoredUnit(0, 20, 1), hook: 0.9 };
   expect(
     storiesOf({ peak: 0, units: [climax], climax, span }).map((d) => [d.pattern, d.ranges]),
-  ).toStrictEqual([["hook-to-climax", [{ start: 0, end: 14 }]]]);
+  ).toStrictEqual([["hook-to-climax", [{ start: 0, end: 20 }]]]);
 });
 
 it("keeps no clip whose climax and openers do not hook", () => {
   const weak = {
     answers: { ...ANSWERS.answers, "hook.1.0": { score: 1 }, "hook.4.0": { score: 1 } },
   };
-  const region = regionsOf(DATA)[0];
+  const region = regionsOf(DATA, { density: 0, peaks: 18 })[0];
   const result = region ? blockOf(region, [weak]) : null;
   expect(result ? storiesOf(result) : null).toStrictEqual([]);
 });
@@ -647,7 +722,7 @@ it("asks clef about each assembled clip alone, in time order, and about each utt
 
 it("asks about at most 60 utterances so a request keeps 64 questions", () => {
   const cues = Array.from({ length: 70 }, (_, i) => cue(i, i + 0.5, `発話${i}`));
-  const long: Draft = draft("long", 1, [{ start: 0, end: 70 }], 0);
+  const long: Draft = draft("35-60", 1, [{ start: 0, end: 70 }], 0);
   expect(Object.keys(Object(judgeRequests([long], utterances(cues))[0]).questions).length).toBe(64);
 });
 
@@ -673,13 +748,13 @@ it("scores each clip with its coherence, standalone reading, ending and strays",
     ).map((d) => [d.coherence, d.standalone, d.ending, d.strays, d.score]),
   ).toStrictEqual([
     [0.8, 0.8, 0.6, [{ start: 84, end: 86 }], 0.842],
-    [0, 0, 0, [], 0.542],
+    [0, 0, 0, [], 0.581],
   ]);
 });
 
 it("drops the earliest lead-up of climax-first and the least on-topic middle otherwise", () => {
   const climaxFirst = draftOf("climax-first", [
-    scoredUnit(40, 52, 1),
+    scoredUnit(40, 60, 1),
     scoredUnit(20, 30, 0.6),
     scoredUnit(30, 40, 0.9),
   ])[0];
@@ -687,7 +762,7 @@ it("drops the earliest lead-up of climax-first and the least on-topic middle oth
     scoredUnit(0, 10, 0.8),
     scoredUnit(10, 20, 0.5),
     scoredUnit(20, 30, 0.9),
-    scoredUnit(30, 42, 1),
+    scoredUnit(30, 45, 1),
   ])[0];
   const short = draftOf("hook-to-climax", [scoredUnit(0, 10, 1), scoredUnit(10, 20, 1)])[0];
   expect([
@@ -697,14 +772,14 @@ it("drops the earliest lead-up of climax-first and the least on-topic middle oth
   ]).toStrictEqual([
     [
       [
-        { start: 40, end: 52 },
+        { start: 40, end: 60 },
         { start: 30, end: 40 },
       ],
     ],
     [
       [
         { start: 0, end: 10 },
-        { start: 20, end: 42 },
+        { start: 20, end: 45 },
       ],
     ],
     [],
@@ -729,7 +804,7 @@ it("repairs a clip by dropping the unit its strays fill and the strays at its ra
     unitOf([spoken(0, 4, true), spoken(5, 9, true)]),
     unitOf([spoken(10, 14, true), spoken(15, 19, true)]),
     unitOf([spoken(20, 24, true), spoken(25, 29, true), spoken(29.5, 30, true)]),
-    unitOf([spoken(30.5, 36, true), spoken(37, 42, true)]),
+    unitOf([spoken(30.5, 36, true), spoken(37, 48, true)]),
   ])[0];
   const strays = [
     { start: 10, end: 14 },
@@ -740,10 +815,10 @@ it("repairs a clip by dropping the unit its strays fill and the strays at its ra
     story ? adjusted({ ...story, strays }).map((d) => [d.kind, d.ranges]) : null,
   ).toStrictEqual([
     [
-      "long",
+      "35-60",
       [
         { start: 0, end: 9 },
-        { start: 20, end: 42 },
+        { start: 20, end: 48 },
       ],
     ],
   ]);
@@ -799,7 +874,7 @@ const SENTENCES = [
 it("moves range edges onto sentence boundaries while the band and the gaps hold", () => {
   const story: Draft = {
     ...draft(
-      "short",
+      "15-30",
       1,
       [
         { start: 10, end: 14 },
@@ -817,7 +892,7 @@ it("moves range edges onto sentence boundaries while the band and the gaps hold"
       { start: 30, end: 44 },
     ],
   });
-  expect(closed({ ...story, kind: "long" }, SENTENCES)).toStrictEqual({ ...story, kind: "long" });
+  expect(closed({ ...story, kind: "35-60" }, SENTENCES)).toStrictEqual({ ...story, kind: "35-60" });
 });
 
 it("lets an overlapping caption that runs past a range end play to its end", () => {
@@ -828,7 +903,7 @@ it("lets an overlapping caption that runs past a range end play to its end", () 
     spoken(40, 44, true),
   ];
   const story = draft(
-    "short",
+    "15-30",
     1,
     [
       { start: 0, end: 6 },
@@ -841,7 +916,7 @@ it("lets an overlapping caption that runs past a range end play to its end", () 
     { start: 40, end: 44 },
   ]);
   const long = draft(
-    "short",
+    "15-30",
     1,
     [
       { start: 0, end: 12 },
@@ -857,7 +932,7 @@ it("lets an overlapping caption that runs past a range end play to its end", () 
 
 it("keeps edges that would run into the clip's other range or past a pause", () => {
   const touching = draft(
-    "short",
+    "15-30",
     1,
     [
       { start: 10, end: 14 },
@@ -870,7 +945,7 @@ it("keeps edges that would run into the clip's other range or past a pause", () 
     { start: 14.5, end: 18 },
   ]);
   const paused = draft(
-    "short",
+    "15-30",
     1,
     [
       { start: 0, end: 4 },
@@ -896,14 +971,10 @@ it("spends no reading on a stray inside a unit, which only a jump cut could remo
     previous: null,
     now: new Date(0),
   });
+  // The 8 s climax alone now ranks above the 30 s cut it shares the climax with.
   expect([record.clips.map((c) => c.ranges), ai.calls.length]).toStrictEqual([
-    [
-      [
-        { start: 96, end: 104 },
-        { start: 72, end: 94 },
-      ],
-    ],
-    9,
+    [[{ start: 96, end: 104 }]],
+    10,
   ]);
 });
 
@@ -913,11 +984,12 @@ const sure = (): number => 0.9;
 it("ships only clips the judge likely calls good, most likely first", () => {
   const picked = pick(
     [
-      draft("short", 0.9, [{ start: 0, end: 20 }], 0.9),
-      draft("short", 0.8, [{ start: 10, end: 30 }], 0.9),
-      draft("short", 0.7, [{ start: 50, end: 70 }], 0.9),
+      draft("15-30", 0.9, [{ start: 0, end: 20 }], 0.9),
+      draft("15-30", 0.8, [{ start: 10, end: 30 }], 0.9),
+      draft("15-30", 0.7, [{ start: 50, end: 70 }], 0.9),
     ],
     (d) => (d.score === 0.9 ? 0.75 : d.score === 0.8 ? 0.8 : 0.69),
+    0.7,
   );
   expect(picked.map((d) => d.ranges[0])).toStrictEqual([{ start: 10, end: 30 }]);
 });
@@ -925,18 +997,20 @@ it("ships only clips the judge likely calls good, most likely first", () => {
 it("keeps the best clips per band, never two sharing a moment", () => {
   const picked = pick(
     [
-      draft("short", 0.9, [{ start: 0, end: 20 }], 0.9),
-      draft("short", 0.8, [{ start: 20, end: 40 }], 0.9),
-      draft("long", 0.6, [{ start: 41, end: 80 }], 0.9),
-      draft("short", 0.5, [{ start: 10, end: 15 }], 0.9),
+      draft("15-30", 0.9, [{ start: 0, end: 20 }], 0.9),
+      draft("15-30", 0.8, [{ start: 20, end: 40 }], 0.9),
+      draft("35-60", 0.6, [{ start: 41, end: 80 }], 0.9),
+      draft("15-30", 0.5, [{ start: 10, end: 15 }], 0.9),
     ],
     sure,
+    0.7,
   );
   const many = pick(
     Array.from({ length: 8 }, (_, i) =>
-      draft("short", 1, [{ start: i * 100, end: i * 100 + 20 }], 1),
+      draft("15-30", 1, [{ start: i * 100, end: i * 100 + 20 }], 1),
     ),
     sure,
+    0.7,
   );
   expect([picked.map((d) => d.ranges[0]), many.length]).toStrictEqual([
     [
@@ -948,13 +1022,16 @@ it("keeps the best clips per band, never two sharing a moment", () => {
 });
 
 it("reads the sixteen best coherent, closing candidates of a video with the rubric", () => {
-  const slate = slateOf([
-    { ...draft("short", 2, [{ start: 0, end: 20 }], 0.9), closes: false },
-    draft("short", 3, [{ start: 0, end: 20 }], 0.19),
-    ...Array.from({ length: 18 }, (_, i) =>
-      draft("short", 1 - i / 100, [{ start: i * 100, end: i * 100 + 20 }], 0.9),
-    ),
-  ]);
+  const slate = slateOf(
+    [
+      { ...draft("15-30", 2, [{ start: 0, end: 20 }], 0.9), closes: false },
+      draft("15-30", 3, [{ start: 0, end: 20 }], 0.19),
+      ...Array.from({ length: 18 }, (_, i) =>
+        draft("15-30", 1 - i / 100, [{ start: i * 100, end: i * 100 + 20 }], 0.9),
+      ),
+    ],
+    16,
+  );
   expect([slate.length, slate[0]?.score, slate.at(-1)?.score]).toStrictEqual([16, 1, 0.85]);
 });
 
@@ -963,7 +1040,7 @@ it("asks the editor about every candidate in one request, each as played under i
     [
       {
         ...draft(
-          "short",
+          "15-30",
           1,
           [
             { start: 96, end: 104 },
@@ -974,7 +1051,7 @@ it("asks the editor about every candidate in one request, each as played under i
         pattern: "climax-first",
         duration: 30,
       },
-      draft("short", 1, [{ start: 60, end: 70 }], 1),
+      draft("15-30", 1, [{ start: 60, end: 70 }], 1),
     ],
     utterances(DATA.cues),
     2,
@@ -1006,7 +1083,7 @@ it("reads the editor's titles, leaving out malformed and unknown entries", () =>
 
 it("asks clairic the same rubric as one line per utterance under the clip's story", () => {
   const request = clairicRequest(
-    { ...draft("short", 1, [{ start: 96, end: 104 }], 1), pattern: "hook-to-climax" },
+    { ...draft("15-30", 1, [{ start: 96, end: 104 }], 1), pattern: "hook-to-climax" },
     utterances(DATA.cues),
   );
   expect([
@@ -1024,15 +1101,17 @@ it("asks clairic the same rubric as one line per utterance under the clip's stor
   ]);
 });
 
-it("adds clairic's reading to clef's, and keeps clef's chance without a usable one", () => {
+it("adds clairic's reading to clef's on Cloudflare, keeps clef's chance without a usable one, and reads clef alone on the Mac", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   expect([
-    goodOf(ANSWERS),
-    goodOf(ANSWERS, clairicReading(4, 0.01)),
-    goodOf(ANSWERS, clairicReading(1.5, 0.08)),
-    goodOf(ANSWERS, { answers: {} }),
-    goodOf(ANSWERS, null),
-  ]).toStrictEqual([0.845, 0.943, 0.02, 0.845, 0.845]);
+    goodOf(ANSWERS, null, "cloudflare"),
+    goodOf(ANSWERS, clairicReading(4, 0.01), "cloudflare"),
+    goodOf(ANSWERS, clairicReading(1.5, 0.08), "cloudflare"),
+    goodOf(ANSWERS, { answers: {} }, "cloudflare"),
+    goodOf(ANSWERS, null, "mac"),
+    goodOf(ANSWERS, clairicReading(4, 0.01), "mac"),
+    goodOf(ANSWERS, ANSWERS, "mac"),
+  ]).toStrictEqual([0.845, 0.943, 0.02, 0.845, 0.684, 0.684, 0.684]);
   expect(warn.mock.calls.map((c) => String(c[0]).slice(0, 55))).toStrictEqual([
     "clairic reply outside the form, using the clef-only fit",
   ]);
@@ -1041,16 +1120,16 @@ it("adds clairic's reading to clef's, and keeps clef's chance without a usable o
 
 it("asks clef the judge's rubric about a clip as played and turns the answers into a chance", () => {
   const request = rubricRequest(
-    { ...draft("short", 1, [{ start: 96, end: 104 }], 1), pattern: "climax-first" },
+    { ...draft("15-30", 1, [{ start: 96, end: 104 }], 1), pattern: "climax-first" },
     utterances(DATA.cues),
     "clef",
   );
   expect([
     Object(request).state.utterances,
     Object.keys(Object(request).questions),
-    goodOf(ANSWERS),
-    goodOf({ answers: { ...ANSWERS.answers, good: { noul: 0.1 } } }),
-    goodOf({ answers: {} }),
+    goodOf(ANSWERS, null, "cloudflare"),
+    goodOf({ answers: { ...ANSWERS.answers, good: { noul: 0.1 } } }, null, "cloudflare"),
+    goodOf({ answers: {} }, null, "cloudflare"),
   ]).toStrictEqual([
     [{ range: 1, text: "爆発した！ケーキ爆発！" }],
     [
@@ -1112,19 +1191,16 @@ it("titles new clips in one editor call and keeps unchanged titles without one",
     [
       {
         id: "c1",
-        kind: "short",
-        pattern: "climax-first",
-        duration: 30,
-        score: 0.842,
-        ranges: [
-          { start: 96, end: 104 },
-          { start: 72, end: 94 },
-        ],
+        kind: "5-10",
+        pattern: "hook-to-climax",
+        duration: 8,
+        score: 0.881,
+        ranges: [{ start: 96, end: 104 }],
         title: "題",
         summary: "要約",
       },
     ],
-    17,
+    19,
     first.clips,
   ]);
   // clairic is down in fakeAi, and each of the 2 + 2 slate readings says so.
@@ -1166,14 +1242,9 @@ it("ships what the rubric passes whatever the old readings, and drops a cut endi
     unsure.calls.length,
     dropped.clips.map((c) => [c.pattern, c.ranges]),
   ]).toStrictEqual([
-    [
-      [
-        { start: 96, end: 104 },
-        { start: 72, end: 94 },
-      ],
-    ],
-    9,
-    [["hook-to-climax", [{ start: 72, end: 104 }]]],
+    [[{ start: 96, end: 104 }]],
+    10,
+    [["hook-to-climax", [{ start: 96, end: 104 }]]],
   ]);
 });
 
@@ -1215,10 +1286,56 @@ it("asks the editor again after a reply outside the form, and fails the video af
     .catch(() => "failed");
   expect([record.clips.length, once.calls.length, failed, always.calls.length]).toStrictEqual([
     1,
-    10,
-    "failed",
     11,
+    "failed",
+    12,
   ]);
+});
+
+it("asks the editor again when it titles only some clips, and warns about any still untitled", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const untitled = (empty: number): Ai & { calls: string[]; answers: unknown } => {
+    const ai = fakeAi(ANSWERS);
+    const left = { empty };
+    return {
+      calls: ai.calls,
+      answers: ai.answers,
+      run: async (model, input) => {
+        if (model !== "@cf/zai-org/glm-5.3-flash" || left.empty === 0) return ai.run(model, input);
+        left.empty -= 1;
+        ai.calls.push(model);
+        return { choices: [{ message: { content: '{"clips":[]}' } }] };
+      },
+    };
+  };
+  const now = new Date("2026-10-21T00:00:00Z");
+  const once = untitled(1);
+  const titled = await generate({
+    place: "cloudflare",
+    ai: once,
+    data: DATA,
+    movieKey: "k",
+    previous: null,
+    now,
+  });
+  const always = untitled(3);
+  const dropped = await generate({
+    place: "cloudflare",
+    ai: always,
+    data: DATA,
+    movieKey: "k",
+    previous: null,
+    now,
+  });
+  const warnings = warn.mock.calls.map((call) => String(call[0]));
+  warn.mockRestore();
+  expect([
+    titled.clips.map((c) => c.title),
+    once.calls.length,
+    dropped.clips.length,
+    always.calls.length,
+    warnings.filter((w) => w.startsWith("clip editor")),
+  ]).toStrictEqual([["題"], 11, 0, 12, ["clip editor titled 0 of 1 clips; the rest are dropped"]]);
 });
 
 it("ships nothing and calls no editor when the rubric doubts every clip", async () => {
@@ -1249,9 +1366,9 @@ it("reads an incoherent clip again without its weakest unit", async () => {
     previous: null,
     now: new Date(0),
   });
-  // One region request, then both stories read as built and after two repairs; one repair
-  // rebuilds a draft already read, so clef is not asked it again.
-  expect([record.clips, ai.calls.length]).toStrictEqual([[], 6]);
+  // One region request, then both stories read as built and the 30 s cut after its repairs; the
+  // 8 s climax alone has no weaker unit to drop, and a repeated draft is not read again.
+  expect([record.clips, ai.calls.length]).toStrictEqual([[], 4]);
 });
 
 it("generates nothing and calls no model without candidates", async () => {
@@ -1296,50 +1413,29 @@ it("computes the same movie key as replay.excitement.movie_key", async () => {
 });
 
 function clipEnv(entries: Record<string, string | Uint8Array>) {
-  const sent: unknown[] = [];
-  const env: ClipEnv & { MEDIA: FakeBucket } = {
-    AI: fakeAi(ANSWERS),
-    MEDIA: bucket(entries),
-    CLIPS_QUEUE: { send: async (body) => sent.push(body) },
-  };
-  return { env, sent };
+  const env: ClipEnv & { MEDIA: FakeBucket } = { MEDIA: bucket(entries) };
+  return { env };
 }
 
 const ABC_KEY = "2e8e504c5e6b886af70f8c03cbfc31ac";
 
-it("runs Cloudflare AI only for a forced refresh and keeps a pointer to the movie key", async () => {
+it("only points a video at its movie key, computing nothing, whatever the message asks", async () => {
   const { env } = clipEnv({
     "data/v1.json": JSON.stringify(DATA),
     "media/v1.mp4": "abc",
     "clips/pending/v1.json": "{}",
   });
-  const calls: string[] = [];
-  const ai = env.AI;
-  env.AI = {
-    run: async (model, input) => {
-      calls.push(model);
-      return ai.run(model, input);
-    },
-  };
-  const now = new Date(0);
-  const unforced = await refresh(env, { videoId: "v1", force: false }, now);
-  const unforcedCalls = calls.length;
-  const forced = await refresh(env, { videoId: "v1", force: true }, now);
   expect([
-    unforced,
-    unforcedCalls,
-    forced,
-    calls.length > 0,
+    await refresh(env, { videoId: "v1", force: false }),
+    await refresh(env, { videoId: "v1", force: true }),
     env.MEDIA.objects.get("clips/videos/v1.json"),
     env.MEDIA.objects.has(`clips/${ABC_KEY}.json`),
     env.MEDIA.objects.has("clips/pending/v1.json"),
   ]).toStrictEqual([
     "skipped",
-    0,
-    "written",
-    true,
+    "skipped",
     '{"movieKey":"2e8e504c5e6b886af70f8c03cbfc31ac"}',
-    true,
+    false,
     false,
   ]);
 });
@@ -1350,8 +1446,10 @@ it("uses the original movie of a video that is not edited yet", async () => {
     "catalog.json": JSON.stringify({ videos: [{ id: "v1", original: { movie: "raw.mp4" } }] }),
     "media-original/raw.mp4": "abc",
   });
-  await refresh(env, { videoId: "v1", force: true }, new Date(0));
-  expect(env.MEDIA.objects.has(`clips/${ABC_KEY}.json`)).toBe(true);
+  await refresh(env, { videoId: "v1", force: false });
+  expect(env.MEDIA.objects.get("clips/videos/v1.json")).toBe(
+    '{"movieKey":"2e8e504c5e6b886af70f8c03cbfc31ac"}',
+  );
 });
 
 it("stores a Mac record under the derived movie key and refuses others", async () => {
@@ -1389,12 +1487,41 @@ it("stores a Mac record under the derived movie key and refuses others", async (
   ]);
 });
 
+it("writes a record again after a transient R2 failure and gives up after three", async () => {
+  const record: ClipRecord = {
+    version: 10,
+    videoId: "v1",
+    movieKey: "local",
+    inputHash: "h",
+    models: { score: "s", summary: "m" },
+    createdAt: "t",
+    clips: [],
+  };
+  const { env } = clipEnv({ "data/v1.json": JSON.stringify(DATA), "media/v1.mp4": "abc" });
+  const put = env.MEDIA.put.bind(env.MEDIA);
+  const failures = { left: 1 };
+  env.MEDIA.put = async (key: string, value: string, options: unknown) => {
+    if (failures.left > 0) {
+      failures.left -= 1;
+      throw new Error("put: We encountered an internal error. Please try again. (10001)");
+    }
+    return put(key, value, options);
+  };
+  const written = await store(env, "v1", record);
+  failures.left = 6;
+  const lost = await store(env, "v1", record).catch((error: unknown) => String(error));
+  expect([written, lost]).toStrictEqual([
+    "written",
+    "Error: put: We encountered an internal error. Please try again. (10001)",
+  ]);
+});
+
 it("skips videos without data or movie", async () => {
   const { env } = clipEnv({ "data/v1.json": JSON.stringify(DATA), "catalog.json": "{}" });
   expect([
-    await refresh(env, { videoId: "../x", force: false }, new Date(0)),
-    await refresh(env, { videoId: "v2", force: false }, new Date(0)),
-    await refresh(env, { videoId: "v1", force: false }, new Date(0)),
+    await refresh(env, { videoId: "../x", force: false }),
+    await refresh(env, { videoId: "v2", force: false }),
+    await refresh(env, { videoId: "v1", force: false }),
   ]).toStrictEqual(["no-data", "no-data", "no-movie"]);
 });
 
@@ -1414,21 +1541,6 @@ it("reads own requests and R2 upload events from the queue", () => {
   ]);
 });
 
-it("queues once per ten minutes unless a reload asks for more", async () => {
-  const { env, sent } = clipEnv({});
-  await enqueue(env, { videoId: "v1", force: false }, new Date(0));
-  await enqueue(env, { videoId: "v1", force: false }, new Date(60_000));
-  await enqueue(env, { videoId: "v1", force: true }, new Date(60_000));
-  await enqueue(env, { videoId: "v1", force: true }, new Date(120_000));
-  await enqueue(env, { videoId: "v1", force: false }, new Date(700_000));
-  await enqueue(env, { videoId: "../x", force: false }, new Date(0));
-  expect(sent).toStrictEqual([
-    { videoId: "v1", force: false },
-    { videoId: "v1", force: true },
-    { videoId: "v1", force: false },
-  ]);
-});
-
 const RECORD: ClipRecord = {
   version: 1,
   videoId: "v1",
@@ -1439,7 +1551,7 @@ const RECORD: ClipRecord = {
   clips: [
     {
       id: "c1",
-      kind: "short",
+      kind: "15-30",
       duration: 12,
       score: 1,
       ranges: [{ start: 0, end: 12 }],
@@ -1455,6 +1567,7 @@ it("looks clips up by the video's pointer or a viewer's own key", async () => {
     [`clips/${ABC_KEY}.json`]: JSON.stringify(RECORD),
     "clips/pending/v2.json": JSON.stringify({ at: 0, force: false }),
     "clips/pending/v3.json": JSON.stringify({ at: 0, force: true }),
+    "clips/videos/v5.json": JSON.stringify({ movieKey: "e".repeat(32) }),
   });
   const now = new Date(60_000);
   expect([
@@ -1466,6 +1579,8 @@ it("looks clips up by the video's pointer or a viewer's own key", async () => {
     await lookup(env, { videoId: "v3", key: null, now: new Date(700_000) }),
     await lookup(env, { videoId: "v4", key: null, now }),
     await lookup(env, { videoId: "../x", key: null, now }),
+    // The published movie whose clips are not made yet: missing, not another movie's.
+    await lookup(env, { videoId: "v5", key: "e".repeat(32), now }),
   ]).toStrictEqual([
     { status: "ready", record: RECORD },
     { status: "ready", record: RECORD },
@@ -1475,34 +1590,8 @@ it("looks clips up by the video's pointer or a viewer's own key", async () => {
     { status: "missing" },
     { status: "missing" },
     { status: "missing" },
+    { status: "missing" },
   ]);
-});
-
-it("waits and retries only rate-limited model calls", async () => {
-  const waits: number[] = [];
-  const replies = [new Error("AiError: 3021: rate limiting"), "ok"];
-  const flaky: Ai = {
-    run: async () => {
-      const next = replies.shift();
-      if (next instanceof Error) throw next;
-      return next;
-    },
-  };
-  const broken: Ai = {
-    run: async () => {
-      throw new Error("AiError: 5000: bad input");
-    },
-  };
-  const limited: Ai = {
-    run: async () => {
-      throw new Error("AiError: 3021: rate limiting");
-    },
-  };
-  const wait = async (ms: number) => waits.push(ms);
-  const result = await patient(flaky, wait).run("m", {});
-  await expect(patient(broken, wait).run("m", {})).rejects.toThrow("5000");
-  await expect(patient(limited, wait).run("m", {})).rejects.toThrow("3021");
-  expect([result, waits]).toStrictEqual(["ok", [20000, 20000, 20000, 20000, 20000]]);
 });
 
 it("matches the Python key of a 1.5 MiB pattern through node's hash too", () => {
@@ -1532,7 +1621,7 @@ it("counts each model's calls and the input tokens its replies report", async ()
   });
 });
 
-it("asks clef each region whole, reads the two stories once as they play alike, screens and gates both", async () => {
+it("asks clef each region whole, reads each story, screens and gates both", async () => {
   const fake = fakeAi(ANSWERS);
   const sent: unknown[] = [];
   const ai = {
@@ -1555,6 +1644,7 @@ it("asks clef each region whole, reads the two stories once as they play alike, 
     [
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
+      "@cf/cloudflare/clef",
       "@cf/cloudflare/clairic",
       "@cf/cloudflare/clairic",
       "@cf/cloudflare/clef-flash",
@@ -1565,6 +1655,7 @@ it("asks clef each region whole, reads the two stories once as they play alike, 
     ],
     [
       ["boundary", "clip", "question", "ends", "topic", "hook"],
+      ["coherent", "unmixed", "standalone", "ending", "stray"],
       ["coherent", "unmixed", "standalone", "ending", "stray"],
       [],
       [],
@@ -1658,7 +1749,7 @@ it("asks no more of a region whose climax request holds no strong opening", asyn
   expect([record.clips, ai.calls]).toStrictEqual([[], ["@cf/cloudflare/clef"]]);
 });
 
-it("asks no clairic and no screen on the Mac and names the local models", async () => {
+it("asks only the local clef and clef-flash screen on the Mac, no Cloudflare model, and names the local models", async () => {
   const ai = fakeAi(ANSWERS);
   const record = await generate({
     place: "mac",
@@ -1678,10 +1769,14 @@ it("asks no clairic and no screen on the Mac and names the local models", async 
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
+      "@cf/cloudflare/clef-flash",
+      "@cf/cloudflare/clef-flash",
       "@cf/cloudflare/clef",
+      "@cf/cloudflare/clef",
+      // The shipped clip's title, which the Mac's model server routes to LFM3.
       "@cf/zai-org/glm-5.3-flash",
     ],
-    { score: "mlx-community/clef-OptiQ-4bit", summary: "prism-ml/Ternary-Bonsai-2-9B-mlx-2bit" },
+    { score: "mlx-community/clef-OptiQ-4bit", summary: "LiquidAI/LFM3-1.7B-MLX-8bit" },
     true,
     false,
   ]);
@@ -1698,17 +1793,23 @@ it("screens a doubtful clip with clef-flash and clairic so clef never reads it",
     now: new Date(0),
   });
   expect([
-    cheapOf(ANSWERS, clairicReading(4, 0.01)),
-    cheapOf(ANSWERS, clairicReading(1.5, 0.08)),
-    cheapOf(ANSWERS, null),
+    cheapOf(ANSWERS, clairicReading(4, 0.01), "cloudflare"),
+    cheapOf(ANSWERS, clairicReading(1.5, 0.08), "cloudflare"),
+    cheapOf(ANSWERS, null, "cloudflare"),
+    cheapOf(ANSWERS, clairicReading(4, 0.01), "mac"),
+    cheapOf(ANSWERS, ANSWERS, "mac"),
     record.clips,
     ai.calls,
   ]).toStrictEqual([
     0.979,
     0.042,
     1,
+    // The Mac screens with clef-flash alone, whatever the second reading.
+    0.924,
+    0.924,
     [],
     [
+      "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clairic",
@@ -1717,4 +1818,51 @@ it("screens a doubtful clip with clef-flash and clairic so clef never reads it",
       "@cf/cloudflare/clef-flash",
     ],
   ]);
+});
+
+it("ships a broadcast's best two at the relative floor on the Mac, and only the gate's least on Cloudflare", () => {
+  const ranked = [0.62, 0.58, 0.56, 0.5];
+  expect([
+    passing(0.7, ranked, PLACES.mac),
+    passing(0.62, ranked, PLACES.mac),
+    passing(0.58, ranked, PLACES.mac),
+    passing(0.56, ranked, PLACES.mac),
+    passing(0.5, [0.5], PLACES.mac),
+    passing(0.62, ranked, PLACES.cloudflare),
+    passing(0.7, ranked, PLACES.cloudflare),
+  ]).toStrictEqual([true, true, true, false, false, false, true]);
+});
+
+// The record the Mac stores, shared with the Python clips step's test (tests/test_recording_viewer_steps.py):
+// a change to either side's record or to RECORD_SCHEMA without the other fails one of the suites.
+it("makes the contract record the Worker's schema accepts", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const record = await generate({
+    place: "mac",
+    ai: fakeAi(ANSWERS),
+    data: DATA,
+    movieKey: "mac",
+    previous: null,
+    now: new Date("2026-10-29T00:00:00Z"),
+  });
+  warn.mockRestore();
+  const logged = JSON.parse(String(log.mock.calls[0]?.[0]));
+  log.mockRestore();
+  expect(logged.funnel).toStrictEqual({
+    regions: 1,
+    stories: 2,
+    slate: 2,
+    screened: 2,
+    gated: 2,
+    best: [0.684, 0.684],
+    shipped: 1,
+    titled: 1,
+    clips: 1,
+  });
+  const contract = { schema: RECORD_SCHEMA, record };
+  expect(clipRecordSchema.safeParse(record).success).toBe(true);
+  await expect(`${JSON.stringify(contract, null, 1)}\n`).toMatchFileSnapshot(
+    "./fixtures/clip-record-contract.json",
+  );
 });

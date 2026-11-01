@@ -176,9 +176,8 @@ export function invariants(record: ClipRecord): Problem[] {
   );
   const shaped = record.clips.flatMap((c) => {
     const total = c.ranges.reduce((t, r) => t + r.end - r.start, 0);
-    const fits =
-      (total >= BANDS.short[0] && total <= BANDS.short[1]) ||
-      (total > BANDS.long[0] && total <= BANDS.long[1]);
+    const [least, most] = BANDS[c.kind];
+    const fits = total >= least && total <= most;
     return [
       ...(fits ? [] : [problem(c.id, "band", `${round(total)} s`)]),
       ...(c.pattern ? [] : [problem(c.id, "pattern", "no story pattern")]),

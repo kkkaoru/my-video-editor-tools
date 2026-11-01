@@ -197,7 +197,7 @@ window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cach
       </div>
       <div id="clips" hidden>
         <h3 id="clipsHeading">切り抜き</h3>
-        <div class="seg"><span class="note" id="clipNote" role="status"></span><button id="clipReload" hidden>切り抜きを再計算</button></div>
+        <div class="seg"><span class="note" id="clipNote" role="status"></span></div>
         <ol id="clipList" aria-labelledby="clipsHeading"></ol>
       </div>
       <div id="nearby" aria-label="付近の発話"></div>
@@ -511,9 +511,9 @@ function showExInfo(ev) {
   $("#exInfo").textContent = parts.join(" / ");
 }
 // Clips (切り抜き): computed on the Mac by default (local clef and Bonsai) and stored per movie
-// content; Cloudflare recomputes only on an admin's reload. A clip may join several ranges; playing it runs them in order.
+// content (the Worker runs no model). A clip may join several ranges; playing it runs them in order.
 const secs = d => `${(Math.round(d * 10) / 10).toFixed(1)}秒`;
-const KIND = { short: "短尺 10〜30秒", long: "長尺 30〜90秒" };
+const KIND = { "5-10": "5〜10秒", "15-30": "15〜30秒", "35-60": "35〜60秒", "90-120": "90〜120秒", short: "短尺 10〜30秒", long: "長尺 30〜90秒" };
 const PATTERN = { "climax-first": "山場→経緯", "hook-to-climax": "引き→山場" };
 async function loadClips(v) {
   clearTimeout(state.clipTimer);
@@ -530,8 +530,6 @@ function renderClips(status = state.clipStatus) {
   const notes = { noExcitement: "盛り上がりデータがまだないため作成できません（盛り上がりを計算して同期した後、Macで作成されます）。", pending: "切り抜きを計算中です（数分かかります）…", missing: "この動画の切り抜きはまだありません（Macで作成されると表示されます）。", error: "切り抜きを読み込めませんでした。" };
   $("#clips").hidden = false;
   $("#clipNote").textContent = status === "ready" ? (state.clips.length ? `${state.clips.length}件` : "切り抜きに向く区間が見つかりませんでした。") : notes[status] ?? notes.error;
-  $("#clipReload").hidden = SHARE || !state.admin;
-  $("#clipReload").disabled = status === "pending";
   $("#clipList").replaceChildren(...state.clips.map(clip => {
     const li = document.createElement("li"), head = document.createElement("div"), play = document.createElement("button");
     const title = document.createElement("span"), len = document.createElement("span"), summary = document.createElement("p"), ranges = document.createElement("div");
@@ -578,13 +576,6 @@ function followClip() {
   }
   state.clipFrame = requestAnimationFrame(followClip);
 }
-$("#clipReload").onclick = async () => {
-  const v = state.current; if (!v) return;
-  $("#clipReload").disabled = true;
-  const r = await fetch(`/api/clips/${v.id}/reload`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-  if (r?.ok) { state.clips = []; renderClips("pending"); state.clipTimer = setTimeout(() => loadClips(v), 15000); }
-  else { $("#clipNote").textContent = "再計算を開始できませんでした。"; $("#clipReload").disabled = false; }
-};
 const setExMode = mode => { try { localStorage.setItem("exciteMode", mode); } catch {} renderExcite(); };
 $("#exCombined").onclick = () => setExMode("combined");
 $("#exSplit").onclick = () => setExMode("split");
@@ -859,7 +850,7 @@ async function runSearch() {
   hits.replaceChildren(frag);
   $("#searchStatus").textContent = count > HIT_LIMIT ? `${count}件（先頭${HIT_LIMIT}件を表示）` : `${count}件`;
 }
-if (!SHARE) fetch("/api/me").then(r => r.json()).then(m => { state.admin = m.admin; $("#adminLink").hidden = !m.admin; $("#shareBtn").hidden = !m.admin; $("#clipReload").hidden = !m.admin; }).catch(() => {});
+if (!SHARE) fetch("/api/me").then(r => r.json()).then(m => { state.admin = m.admin; $("#adminLink").hidden = !m.admin; $("#shareBtn").hidden = !m.admin; }).catch(() => {});
 // Downloads are two files on purpose: a multi-GB movie streams straight from R2 (resumable
 // via Range), while the transcript and summary are a small text built here from the data.
 function syncDownload() {

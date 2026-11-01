@@ -1,14 +1,17 @@
-// Runs with bun. Entry point: `bun run clips:mac -- <videoId|data.json>...` computes clip points on
+// Runs with bun. Entry point: `bun run clips:mac -- [--force] <videoId|data.json>...` computes clip points on
 // the Mac (the default) for web-viewer/data/<id>.json (or a copy of it) and stores them through the
 // viewer's bearer PUT.
 // It reuses a model server already on PORT or starts `python -m replay.clip_models` in an isolated
-// uv environment (the shared .venv is left alone) and stops it afterwards. No Cloudflare AI runs.
+// uv environment (the shared .venv is left alone) and stops it afterwards. No Cloudflare model runs.
 import { type ChildProcess, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { videoDataSchema } from "../clips.ts";
-import { localAi, runMac, viewerOf } from "../clips-mac.ts";
+import { type AnswerStore, localAi, persisted, runMac, viewerOf } from "../clips-mac.ts";
 import { parseEnvFile } from "../sync/envFile.ts";
 
 const PORT: number = 8791;
@@ -29,7 +32,39 @@ const SERVER: string[] = [
 ];
 const projectDirectory = resolve(import.meta.dirname, "..", "..");
 const checkout = resolve(projectDirectory, "..");
+/** The deciders' answers of earlier runs (a few kB each, about 1 MB per broadcast). */
+const ANSWERS: string = resolve(checkout, "edits/work/clips-answers");
+/** What the deciders' answers depend on: the server's code and the model folders' files. */
+const IDENTITY_FILES: string[] = [resolve(checkout, "src/replay/clip_models.py")];
+const MODEL_FOLDERS: string[] = ["clef-OptiQ-4bit", "clef-flash-OptiQ-4bit"].map((name) =>
+  resolve(checkout, "edits/models", name),
+);
 const secretsSchema = z.object({ CLIPS_API_TOKEN: z.string().min(1) });
+
+/** The code and every model file (name, size, change time) the answers come from. */
+function identity(): string {
+  const hash = createHash("sha256");
+  for (const file of IDENTITY_FILES) hash.update(readFileSync(file));
+  for (const folder of MODEL_FOLDERS) {
+    for (const name of readdirSync(folder).sort()) {
+      const stat = statSync(resolve(folder, name));
+      hash.update(`${folder}/${name} ${stat.size} ${stat.mtimeMs}\n`);
+    }
+  }
+  return hash.digest("hex");
+}
+
+/** One file per answer under ANSWERS, written whole (renamed into place) or not at all. */
+const answerStore: AnswerStore = {
+  read: (key) =>
+    readFile(resolve(ANSWERS, key.slice(0, 2), `${key}.json`), "utf8").catch(() => null),
+  write: async (key, value) => {
+    const path = resolve(ANSWERS, key.slice(0, 2), `${key}.json`);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(`${path}.${process.pid}.partial`, value, { mode: 0o600 });
+    await rename(`${path}.${process.pid}.partial`, path);
+  },
+};
 
 /** Our server answers a body it cannot read with 400; nothing listening throws. */
 async function serving(): Promise<boolean> {
@@ -56,9 +91,10 @@ function started(): Promise<ChildProcess> {
   });
 }
 
-const ids = process.argv.slice(2);
+const force = process.argv.includes("--force");
+const ids = process.argv.slice(2).filter((a) => a !== "--force");
 if (ids.length === 0) {
-  console.error("usage: bun run clips:mac -- <videoId|data.json>...");
+  console.error("usage: bun run clips:mac -- [--force] <videoId|data.json>...");
   process.exit(2);
 }
 const host = parseEnvFile(readFileSync(`${projectDirectory}/deploy.env`, "utf8"))
@@ -76,14 +112,21 @@ const videos = ids.map((id) =>
   ),
 );
 const server = (await serving()) ? null : await started();
+// Its death mid-run shows only as ECONNRESET in the client; record how it ended (10-29: 10/29).
+server?.on("exit", (code, signal) =>
+  console.error(`local model server exited (${code}, ${signal})`),
+);
+const ai = persisted(localAi(fetch, BASE), answerStore, identity());
 try {
   const results = await runMac({
     videos,
-    ai: localAi(fetch, BASE),
-    viewer: viewerOf(fetch, `https://${host}`, CLIPS_API_TOKEN),
+    force,
+    ai,
+    viewer: viewerOf(fetch, `https://${host}`, CLIPS_API_TOKEN, (ms) => sleep(ms)),
     now: new Date(),
   });
   console.log(results.map((r) => JSON.stringify(r)).join("\n"));
+  console.log(JSON.stringify({ answersReused: ai.hits() }));
 } finally {
   server?.kill("SIGTERM");
 }
