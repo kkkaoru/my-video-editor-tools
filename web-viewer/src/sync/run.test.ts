@@ -412,7 +412,7 @@ it("publishes an offloaded video's new data without sending its movie again", as
   expect(state.data).toStrictEqual({ "data/a-review.json": "d1" });
 });
 
-it("uploads only the named video's movie with --only and defers the catalog", async () => {
+it("publishes the catalog without the videos whose movie is absent with --only", async () => {
   const handle = createFakeFs({
     "/p/sync.config.json": { text: CONFIG },
     "/lib/a-review.mp4": { size: 100, mtimeNs: 5n },
@@ -433,23 +433,75 @@ it("uploads only the named video's movie with --only and defers the catalog", as
     "changed: 4",
     "uploading media/a-review.mp4 (100 B)",
     "uploaded media/a-review.mp4 in 1 part(s)",
-    "catalog deferred: 1 movie(s) not uploaded yet",
+    "catalog keeps the published entry of 1 video(s) not in the bucket yet",
     "uploaded data/a-review.json",
     "uploaded data/b-review.json",
+    "uploaded catalog.json",
     "SYNC DONE",
   ]);
+  const published = JSON.parse(first.fsHandle.files.get("/p/data/catalog.scoped.json")?.text ?? "");
+  expect(published.videos.map((video: { id: string }) => video.id)).toStrictEqual(["a-review"]);
+  expect(first.fsHandle.files.get("/p/catalog.published.json")?.text).toBe(
+    first.fsHandle.files.get("/p/data/catalog.scoped.json")?.text,
+  );
 
   const full = scenario({ ...base, existing: first.fsHandle, second: true });
   await runSync({ options: { dryRun: true, dataOnly: false }, services: full.services });
-  // B's movie is still pending; data is recorded as published only with the catalog, as for
-  // --data-only, so the small data files are sent again with it.
+  // B's movie is still pending: the full catalog naming it follows once it is sent.
   expect(full.logs).toStrictEqual([
     "changed [media] media/b-review.mp4 - not in the bucket",
-    "changed [data] data/a-review.json - not uploaded yet",
-    "changed [data] data/b-review.json - not uploaded yet",
     "changed [catalog] catalog.json - videos changed",
-    "changed: 4",
+    "changed: 2",
   ]);
+});
+
+it("keeps the published entry of a video whose movie is not in the bucket with --only", async () => {
+  const handle = createFakeFs({
+    "/p/sync.config.json": { text: CONFIG },
+    "/p/catalog.published.json": {
+      text: JSON.stringify({ videos: [{ id: "b-review", movie: "media/b-old.mp4" }] }),
+    },
+    "/lib/a-review.mp4": { size: 100, mtimeNs: 5n },
+    "/lib/a-review.srt": { size: 1, mtimeNs: 2n, sha: "t" },
+    "/lib/b-review.mp4": { size: 200, mtimeNs: 7n },
+    "/lib/b-review.srt": { size: 1, mtimeNs: 8n, sha: "u" },
+  });
+  const run = scenario({ ...base, existing: handle, second: true });
+  await runSync({
+    options: { dryRun: false, dataOnly: false, only: "a-review" },
+    services: run.services,
+  });
+  const published = JSON.parse(run.fsHandle.files.get("/p/data/catalog.scoped.json")?.text ?? "");
+  expect(published.videos[1]).toStrictEqual({ id: "b-review", movie: "media/b-old.mp4" });
+  expect(published.videos.map((video: { id: string }) => video.id)).toStrictEqual([
+    "a-review",
+    "b-review",
+  ]);
+});
+
+it("publishes the whole catalog with --only when every other movie is in the bucket", async () => {
+  const handle = createFakeFs({
+    "/p/sync.config.json": { text: CONFIG },
+    "/lib/a-review.mp4": { size: 100, mtimeNs: 5n },
+    "/lib/a-review.srt": { size: 1, mtimeNs: 2n, sha: "t" },
+    "/lib/b-review.mp4": { size: 200, mtimeNs: 7n },
+    "/lib/b-review.srt": { size: 1, mtimeNs: 8n, sha: "u" },
+  });
+  // A's movie differs from the bucket's copy: it stays listed, served by that copy for now.
+  const run = scenario({ ...base, existing: handle, second: true, remoteMediaSize: 99 });
+  await runSync({
+    options: { dryRun: false, dataOnly: false, only: "b-review" },
+    services: run.services,
+  });
+  expect(
+    run.logs.filter((line) => line.startsWith("uploaded") || line.startsWith("catalog")),
+  ).toStrictEqual([
+    "uploaded media/b-review.mp4 in 1 part(s)",
+    "uploaded data/a-review.json",
+    "uploaded data/b-review.json",
+    "uploaded catalog.json",
+  ]);
+  expect(run.fsHandle.files.has("/p/data/catalog.scoped.json")).toBe(false);
 });
 
 it("refuses --only for a video the catalog does not list", async () => {

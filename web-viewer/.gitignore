@@ -10,6 +10,7 @@ data/
 data.next/
 proxies/
 sync-state.json
+catalog.published.json
 sync.lock
 clips-mac.lock
 upload-state.json

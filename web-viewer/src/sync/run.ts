@@ -2,6 +2,7 @@
 // fingerprints every source file (movie, original, transcript, summary and neighbours), plans
 // the changed objects and uploads media first, then data JSON, then the catalog.
 import { basename, join, resolve } from "node:path";
+import { z } from "zod";
 import { listRemoteSizes, putJson } from "./cf.ts";
 import { collectSources, fingerprintPath } from "./fingerprint.ts";
 import type { SyncOptions } from "./options.ts";
@@ -86,6 +87,8 @@ async function timed<T>(
 }
 
 const STATE_FILE = "sync-state.json";
+// A copy of the catalog.json last put to the bucket (scopedCatalog keeps entries from it).
+const PUBLISHED_CATALOG = "catalog.published.json";
 
 async function build(services: SyncServices): Promise<Built> {
   const { fs, runner, projectDirectory } = services;
@@ -245,6 +248,45 @@ function requireListed(catalog: Catalog, only: string | undefined): void {
   }
 }
 
+const catalogFileSchema = z
+  .object({ videos: z.array(z.object({ id: z.string() }).passthrough()) })
+  .passthrough();
+
+// The built catalog in which each video whose movie is absent from the bucket keeps the entry the
+// last published catalog had for it (or none); the built one itself when none is absent.
+async function scopedCatalog(args: {
+  services: SyncServices;
+  directory: string;
+  absent: MediaChange[];
+}): Promise<{ path: string; sha: string }> {
+  const { fs, logger, projectDirectory } = args.services;
+  const full = join(args.directory, "catalog.json");
+  const omitted = new Set(args.absent.map((change) => change.videoId));
+  if (omitted.size === 0) {
+    return { path: full, sha: await fs.sha256(full) };
+  }
+  const raw = catalogFileSchema.parse(JSON.parse(await fs.readText(full)));
+  const publishedPath = join(projectDirectory, PUBLISHED_CATALOG);
+  const published =
+    (await fs.stat(publishedPath)) === null
+      ? []
+      : catalogFileSchema.parse(JSON.parse(await fs.readText(publishedPath))).videos;
+  const previous = new Map(published.map((video) => [video.id, video]));
+  const videos = raw.videos.flatMap((video) => {
+    if (!omitted.has(video.id)) {
+      return [video];
+    }
+    const kept = previous.get(video.id);
+    return kept === undefined ? [] : [kept];
+  });
+  const path = join(args.directory, "catalog.scoped.json");
+  await fs.writeText({ path, text: `${JSON.stringify({ ...raw, videos })}\n`, mode: 0o600 });
+  logger.info(
+    `catalog keeps the published entry of ${omitted.size} video(s) not in the bucket yet`,
+  );
+  return { path, sha: await fs.sha256(path) };
+}
+
 export async function runSync({ options, services }: SyncRequest): Promise<void> {
   const { fs, runner, logger, projectDirectory } = services;
   const built = await timed(services, "build", () => build(services));
@@ -280,12 +322,12 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
   }
   const settled = new Set(plan.settledMedia);
   const uploads = { ...state.uploads };
-  const stateAfter = (published: boolean) => ({
+  const stateAfter = (published: boolean, catalogSha = measured.catalogSha) => ({
     ...nextState({
       previous: state,
       current: measured.current,
       dataSha: measured.dataSha,
-      catalogSha: measured.catalogSha,
+      catalogSha,
       settledMedia: settled,
       dataPublished: published,
       catalogPublished: published,
@@ -310,13 +352,28 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
     logger.info("SYNC DONE");
     return;
   }
-  const mediaPending = sent.length < media.length;
+  const pending = sent.length < media.length;
+  // A recording-scoped sync (--only) still publishes the catalog, without only the videos whose
+  // movie is neither sent now nor in the bucket, so its own recording is listed at once.
+  const scoped = pending && options.only !== undefined;
+  const mediaPending = pending && !scoped;
   if (mediaPending && plan.changes.some((change) => change.kind === "catalog")) {
     logger.info(`catalog deferred: ${media.length - sent.length} movie(s) not uploaded yet`);
   }
-  const small = plan.changes.filter(
-    (change) => change.kind === "data" || (change.kind === "catalog" && !mediaPending),
-  );
+  const catalog = scoped
+    ? await scopedCatalog({
+        services,
+        directory: built.nextDirectory,
+        absent: media.filter(
+          (change) =>
+            !settled.has(settledKey(change.videoId, change.label)) &&
+            remoteSizes[change.key] === undefined,
+        ),
+      })
+    : { path: join(built.nextDirectory, "catalog.json"), sha: measured.catalogSha };
+  const small = plan.changes
+    .filter((change) => change.kind === "data" || (change.kind === "catalog" && !mediaPending))
+    .map((change) => (change.kind === "catalog" ? { ...change, path: catalog.path } : change));
   await timed(
     services,
     "put",
@@ -334,7 +391,11 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
       }, Promise.resolve()),
     () => `${small.length} object(s)`,
   );
-  await saveState({ fs, path: statePath, state: stateAfter(!mediaPending) });
+  if (small.some((change) => change.kind === "catalog")) {
+    const text = await fs.readText(catalog.path);
+    await fs.writeText({ path: join(projectDirectory, PUBLISHED_CATALOG), text, mode: 0o600 });
+  }
+  await saveState({ fs, path: statePath, state: stateAfter(!mediaPending, catalog.sha) });
   await fs.removeTree(join(projectDirectory, "data"));
   await fs.rename({ from: built.nextDirectory, to: join(projectDirectory, "data") });
   logger.info("SYNC DONE");
