@@ -190,6 +190,23 @@ async function postJson(args: {
   return response.body;
 }
 
+// /create and /complete ride out the same outage as a part: right after /ready, other edge
+// locations can still answer a generic 404 until the new Worker reaches them (10-26, 40 GB upload).
+async function postJsonRetrying(
+  args: Parameters<typeof postJson>[0] & { sleep: (milliseconds: number) => Promise<void> },
+  remaining = PART_ATTEMPTS,
+): Promise<unknown> {
+  try {
+    return await postJson(args);
+  } catch (error) {
+    if (remaining <= 1) {
+      throw error;
+    }
+    await args.sleep(READY_DELAY_MS * 2 ** (PART_ATTEMPTS - remaining));
+    return postJsonRetrying(args, remaining - 1);
+  }
+}
+
 async function sendPart(
   request: PartRequest,
   remaining: number,
@@ -241,7 +258,12 @@ export async function uploadFile(request: UploadRequest): Promise<Uploaded> {
   const { http } = request.services;
   const base = { http, token: request.token };
   const created = uploadIdSchema.parse(
-    await postJson({ ...base, url: `${request.url}/create`, body: { key: request.key } }),
+    await postJsonRetrying({
+      ...base,
+      sleep: request.sleep,
+      url: `${request.url}/create`,
+      body: { key: request.key },
+    }),
   );
   const count = Math.max(1, Math.ceil(request.size / CHUNK_BYTES));
   const numbers = Array.from({ length: count }, (_, index) => index + 1);
@@ -268,8 +290,9 @@ export async function uploadFile(request: UploadRequest): Promise<Uploaded> {
         PART_ATTEMPTS,
       ),
     );
-    await postJson({
+    await postJsonRetrying({
       ...base,
+      sleep: request.sleep,
       url: `${request.url}/complete`,
       body: { key: request.key, uploadId: created.uploadId, parts },
     });

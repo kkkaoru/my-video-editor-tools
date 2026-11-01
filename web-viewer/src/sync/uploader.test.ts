@@ -230,6 +230,62 @@ it("aborts without a hash when a part cannot be read", async () => {
   expect(calls.map((call) => call.url)).toStrictEqual(["https://u/create", "https://u/abort"]);
 });
 
+it("retries /create and /complete through an edge 404 right after /ready", async () => {
+  const { fs } = createFakeFs({});
+  const creates = [
+    { status: 404, body: null },
+    { status: 404, body: null },
+  ];
+  const completes = [{ status: 503, body: null }];
+  const { http, calls } = createFakeHttp((call) =>
+    call.url.endsWith("/create")
+      ? (creates.shift() ?? { status: 200, body: { uploadId: "u" } })
+      : call.url.includes("/part")
+        ? { status: 200, body: { partNumber: 1, etag: ZEROS_MD5 } }
+        : call.url.endsWith("/complete")
+          ? (completes.shift() ?? { status: 200, body: { ok: true } })
+          : { status: 200, body: {} },
+  );
+  const { sleep, slept } = sleeper();
+  const sent = await uploadFile({
+    services: { fs, http },
+    sleep,
+    url: "https://u",
+    token: "t",
+    key: "k",
+    path: "/f",
+    size: 4,
+  });
+  expect(sent.parts).toBe(1);
+  expect(slept).toStrictEqual([3000, 6000, 3000]);
+  expect(calls.map((call) => call.url.replace(/\?.*/, ""))).toStrictEqual([
+    "https://u/create",
+    "https://u/create",
+    "https://u/create",
+    "https://u/part",
+    "https://u/complete",
+    "https://u/complete",
+  ]);
+});
+
+it("gives up on /create after the part attempts", async () => {
+  const { fs } = createFakeFs({});
+  const { http, calls } = createFakeHttp(() => ({ status: 404, body: null }));
+  const { sleep } = sleeper();
+  await expect(
+    uploadFile({
+      services: { fs, http },
+      sleep,
+      url: "https://u",
+      token: "t",
+      key: "k",
+      path: "/f",
+      size: 4,
+    }),
+  ).rejects.toThrow("Uploader request failed with HTTP 404");
+  expect(calls.length).toBe(7);
+});
+
 it("doubles the delay between attempts of a part", async () => {
   const { fs } = createFakeFs({});
   const { http } = createFakeHttp((call) =>
