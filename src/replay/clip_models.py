@@ -1,19 +1,28 @@
 """The Mac's local models for the web viewer's clip points (切り抜き), served on 127.0.0.1.
 
 The web viewer computes clip points on the Mac by default (``bun run clips:mac``); Cloudflare AI
-runs only when a user asks for a reload. Two models stand in for the Cloudflare ones:
+runs only when a user asks for a reload. These local models stand in for the Cloudflare ones:
 
 - ``POST /clef`` answers a SystemOne decision request (``state`` plus typed ``questions``) with
   ``mlx-community/clef-OptiQ-4bit``, the 4-bit MLX quant of Cloudflare's clef: the backbone runs
   on MLX and the release's joint schema head (``joint_schema_model.py`` of Cloudflare/clef) is
   ported here to numpy. On 191 judged clips its rubric answers matched Cloudflare clef's token
   counts exactly (r 0.989) and ranked the clips as well (AUC 0.756 with clairic against 0.762);
-- ``POST /bonsai`` answers an OpenAI-style chat body with ``Ternary-Bonsai-2-9B`` through
-  mlx-vlm (thinking off, greedy), the stand-in for GLM's titles and summaries.
+- ``POST /clef-flash`` answers the same requests with ``mlx-community/clef-flash-OptiQ-4bit`` (the
+  same head over a 9B backbone) for the gate's screen;
+- ``POST /laya`` answers a rubric request with Laya (``aac6fef/laya-multilingual-mlx`` through
+  laya-mlx) for the surrogate judge (``bun run clips:judge``); the gate no longer asks it;
+- ``POST /lfm3`` answers an OpenAI-style chat body with ``LiquidAI/LFM3-1.7B`` (8-bit MLX) through
+  mlx-vlm (thinking off, greedy), the stand-in for GLM's titles and summaries: about 3-9 s an ask
+  against Ternary-Bonsai-2-9B's 58 s;
+- ``POST /bonsai`` answers the same chat body with ``Ternary-Bonsai-2-9B`` for the strict local
+  judge of ``bun run clips:eval``.
 
-Both models load once from ``edits/models/`` and are never downloaded here; the server refuses
-to start while less than ``--min-free`` percent of memory is free, since the two models take
-about 22 GB beside the recording pipelines, and stops itself while serving once less than 15% is.
+Bonsai and Laya load only with ``--judges``: making clips needs neither, and they would add about
+4 GB beside the recording pipelines. The models load once from ``edits/models/`` and are never
+downloaded here; the server refuses
+to start while less than ``--min-free`` percent of memory is free, since the models take
+about 30 GB beside the recording pipelines, and stops itself while serving once less than 15% is.
 """
 
 import argparse
@@ -582,8 +591,26 @@ def load_decider(model_dir: Path) -> Decider:
     return Decider(MlxBackbone(model_dir), weights, head_config)
 
 
+class MlxLaya:
+    """Laya (multilingual, MLX) in clairic's place: the same SystemOne rubric request as clef."""
+
+    def __init__(self, model_dir: Path):
+        self.agent = import_module("laya_mlx").load(str(model_dir))
+
+    def respond(self, body: Json) -> Json:
+        if "state" not in body:
+            raise ReplayError("A decision request needs a state and at least one question")
+        questions = _mapping(body.get("questions"), "questions")
+        result = _mapping(self.agent.predict(body["state"], questions), "Laya's reply")
+        return {
+            "model": body.get("model"),
+            "answers": result.get("answers"),
+            "usage": result.get("usage"),
+        }
+
+
 class MlxChat:
-    """Ternary-Bonsai-2-9B on mlx-vlm, text only, thinking off and greedy, so equal asks agree."""
+    """A chat model on mlx-vlm, text only, thinking off and greedy, so equal asks agree."""
 
     def __init__(self, model_dir: Path):
         vlm = import_module("mlx_vlm")
@@ -671,6 +698,7 @@ def main(
     run: Callable[[list[str]], str] = _run,
     decider: Callable[[Path], Answerer] = load_decider,
     writer: Callable[[Path], Answerer] = MlxChat,
+    reader: Callable[[Path], Answerer] = MlxLaya,
     server: Callable[[tuple[str, int], type[BaseHTTPRequestHandler]], Serving] = HTTPServer,
     guard: Callable[[Callable[[list[str]], str]], None] = lambda run: threading.Thread(
         target=watch, args=(run, os._exit), daemon=True
@@ -679,16 +707,29 @@ def main(
     parser = argparse.ArgumentParser(prog="python -m replay.clip_models", description=__doc__)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--clef", type=Path, default=CLEF_DIR)
+    parser.add_argument("--lfm3", type=Path, default=WRITER_DIR)
     parser.add_argument("--bonsai", type=Path, default=BONSAI_DIR)
+    parser.add_argument("--flash", type=Path, default=FLASH_DIR)
+    parser.add_argument("--laya", type=Path, default=LAYA_DIR)
     parser.add_argument("--min-free", type=int, default=MIN_FREE_PERCENT)
+    parser.add_argument("--judges", action="store_true", help="also serve /bonsai and /laya")
     args = parser.parse_args(argv)
-    for folder in (args.clef, args.bonsai):
-        if not (folder / "config.json").is_file():
+    needed = [(args.clef, "config.json"), (args.flash, "config.json"), (args.lfm3, "config.json")]
+    if args.judges:
+        needed += [(args.bonsai, "config.json"), (args.laya, "mlx_config.json")]
+    for folder, marker in needed:
+        if not (folder / marker).is_file():
             raise ReplayError(f"Model not found (it is never downloaded here): {folder}")
     free = free_percent(run)
     if free < args.min_free:
         raise ReplayError(f"Only {free}% of memory is free; the local models need {args.min_free}%")
-    routes: dict[str, Answerer] = {"clef": decider(args.clef), "bonsai": writer(args.bonsai)}
+    routes: dict[str, Answerer] = {
+        "clef": decider(args.clef),
+        "clef-flash": decider(args.flash),
+        "lfm3": writer(args.lfm3),
+    }
+    if args.judges:
+        routes |= {"bonsai": writer(args.bonsai), "laya": reader(args.laya)}
     http = server(("127.0.0.1", args.port), handler(routes))
     guard(run)
     print(f"ready {args.port}", flush=True)

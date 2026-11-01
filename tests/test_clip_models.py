@@ -554,14 +554,24 @@ class FakeServer:
 def test_main_checks_models_and_memory_before_serving(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    clef, bonsai = tmp_path / "clef", tmp_path / "bonsai"
-    arguments = ["--port", "8791", "--clef", str(clef), "--bonsai", str(bonsai)]
+    clef, flash, lfm3 = tmp_path / "clef", tmp_path / "flash", tmp_path / "lfm3"
+    bonsai, laya = tmp_path / "bonsai", tmp_path / "laya"
+    arguments = ["--port", "8791", "--clef", str(clef), "--flash", str(flash)]
+    arguments += ["--lfm3", str(lfm3), "--bonsai", str(bonsai), "--laya", str(laya)]
     with pytest.raises(ReplayError, match="never downloaded here"):
         clip_models.main(arguments, run=lambda c: "", server=FakeServer)
     clef.mkdir()
-    bonsai.mkdir()
+    flash.mkdir()
+    lfm3.mkdir()
     (clef / "config.json").write_text("{}", encoding="utf-8")
+    (flash / "config.json").write_text("{}", encoding="utf-8")
+    (lfm3 / "config.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ReplayError, match="bonsai"):
+        clip_models.main([*arguments, "--judges"], run=lambda c: "", server=FakeServer)
+    bonsai.mkdir()
     (bonsai / "config.json").write_text("{}", encoding="utf-8")
+    laya.mkdir()
+    (laya / "mlx_config.json").write_text("{}", encoding="utf-8")
     low = "System-wide memory free percentage: 12%"
     with pytest.raises(ReplayError, match="Only 12% of memory is free"):
         clip_models.main(arguments, run=lambda c: low, server=FakeServer)
@@ -576,14 +586,21 @@ def test_main_checks_models_and_memory_before_serving(
         loaded.append(path.name)
         return Echo()
 
-    assert (
-        clip_models.main(
-            arguments, run=lambda c: high, decider=decider, writer=writer, server=FakeServer
+    for extra in ([], ["--judges"]):
+        assert (
+            clip_models.main(
+                arguments + extra,
+                run=lambda c: high,
+                decider=decider,
+                writer=writer,
+                reader=writer,
+                server=FakeServer,
+                guard=lambda run: None,
+            )
+            == 0
         )
-        == 0
-    )
-    assert loaded == ["clef", "bonsai"]
-    assert capsys.readouterr().out == "ready 8791\n"
+    assert loaded == ["clef", "flash", "lfm3", "clef", "flash", "lfm3", "bonsai", "laya"]
+    assert capsys.readouterr().out == "ready 8791\nready 8791\n"
 
 
 def test_the_watch_stops_the_server_when_memory_runs_low() -> None:
@@ -603,3 +620,40 @@ def test_the_watch_stops_the_server_when_memory_runs_low() -> None:
         rounds=2,
     )
     assert calm == []
+
+
+def test_laya_answers_the_rubric_request_and_refuses_one_without_a_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    asked: list[object] = []
+
+    class Agent:
+        def predict(self, state: object, questions: object) -> dict[str, object]:
+            asked.append((state, questions))
+            return {
+                "answers": {"good": {"type": "noul", "noul": 0.5}},
+                "usage": {"input_tokens": 9},
+            }
+
+    loaded: list[str] = []
+
+    def load(path: str) -> Agent:
+        loaded.append(path)
+        return Agent()
+
+    monkeypatch.setattr(
+        clip_models, "import_module", {"laya_mlx": SimpleNamespace(load=load)}.__getitem__
+    )
+    laya = clip_models.MlxLaya(tmp_path)
+    reply = laya.respond(
+        {"model": "laya", "state": {"u": 1}, "questions": {"good": {"type": "noul"}}}
+    )
+    assert reply == {
+        "model": "laya",
+        "answers": {"good": {"type": "noul", "noul": 0.5}},
+        "usage": {"input_tokens": 9},
+    }
+    assert asked == [({"u": 1}, {"good": {"type": "noul"}})]
+    assert loaded == [str(tmp_path)]
+    with pytest.raises(ReplayError, match="needs a state"):
+        laya.respond({"questions": {}})
