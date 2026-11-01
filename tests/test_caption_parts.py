@@ -300,3 +300,48 @@ def test_a_finished_part_drops_its_staged_file_and_a_resumed_one_is_untouched(
     assert again.modules == []
     assert (final.read_bytes(), final.stat().st_mtime_ns) == before
     assert sorted(path.name for path in moti.iterdir()) == ["w000-part-0000.moti"]
+
+
+def test_a_layout_builds_left_aligned_parts_on_its_own_frame(tmp_path: Path) -> None:
+    commands: list[Sequence[str]] = []
+    run = Producers()
+
+    def recorded(command: Sequence[str]) -> None:
+        commands.append(command)
+        run(command)
+
+    template = tmp_path / "t.moti"
+    template.write_text(f"<a {parts.CENTRED} /><b {parts.CENTRED} />", encoding="utf-8")
+    parts.prepare(
+        candidate(tmp_path), tmp_path / "out", tmp_path / "render", template=template,
+        finish=[], preset=Path("/p"), run=recorded, size=(1920, 1080), align="left",
+    )  # fmt: skip
+    left = tmp_path / "out" / "template-left.moti"
+    assert left.read_text(encoding="utf-8") == f"<a {parts.LEFT} /><b {parts.LEFT} />"
+    assert list(commands[0][8:12]) == ["--width", "1920", "--height", "1080"]
+    assert commands[1][4] == str(left)
+
+
+def test_only_the_centred_template_is_left_aligned(tmp_path: Path) -> None:
+    template = tmp_path / "t.moti"
+    template.write_text(f"<a {parts.LEFT} />", encoding="utf-8")
+    with pytest.raises(ReplayError, match="is not the centred caption template"):
+        parts.left_template(template, tmp_path)
+
+
+def test_the_cli_passes_the_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(*arguments: object, **options: object) -> Path:
+        seen.update(options)
+        return tmp_path / "parts.json"
+
+    monkeypatch.setattr(parts, "prepare", fake)
+    parts.main(
+        ["c.json", "out", "render", "--template", "t.moti", "--preset", "p", "--width", "1920",
+         "--height", "1080", "--align", "left", "--"]
+    )  # fmt: skip
+    assert (seen["size"], seen["align"]) == ((1920, 1080), "left")
+    assert capsys.readouterr().out.strip() == str(tmp_path / "parts.json")

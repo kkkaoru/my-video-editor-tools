@@ -517,3 +517,39 @@ def test_person_top_samples_out_of_time_order_are_refused() -> None:
         job.person_top_from(
             list(reversed(observed())), job.cut_map(CUTS), rate=30, maximum_drift=100.0
         )
+
+
+def test_a_left_aligned_envelope_starts_at_the_origin() -> None:
+    sizes = {"あ": (100.0, 120.0), "いい": (300.0, 110.0)}
+    envelope = job.top_envelope(sizes, padding=24.0, ascent=96.0, line_advance=121.0, align="left")
+    assert envelope("あ\nいい") == Box(0.0, -120.0, 300.0, 121.0)
+    with pytest.raises(ReplayError, match="Unknown caption alignment: right"):
+        job.top_envelope(sizes, padding=24.0, ascent=96.0, line_advance=121.0, align="right")
+
+
+def test_a_layout_plans_left_aligned_runs_at_the_bottom_without_a_person(tmp_path: Path) -> None:
+    arguments = build_inputs(tmp_path)
+    arguments[1] = "-"
+    layout = [
+        "--canvas", "1920", "1080", "--align", "left", "--origin-x", "780",
+        "--region-right", "1880", "--ignore-person", "--yolo-track", str(tmp_path / "none.json"),
+    ]  # fmt: skip
+    region = arguments.index("--region-bottom")
+    arguments[region + 1] = "1050"
+    assert job.main([*arguments, *layout]) == 0
+    document = json.loads((tmp_path / "out.json").read_text())
+    assert document["canvas"] == [1920, 1080]
+    assert [(c["x"], c["y"]) for c in document["candidates"]] == [
+        (780.0, 1120.0), (780.0, 1120.0), (780.0, 1120.0)
+    ]  # fmt: skip
+    assert set(document["inputs"]) == {
+        str(tmp_path / "cal.json"),
+        str(tmp_path / "paging" / "reflow.json"),
+        str(tmp_path / "cuts.json"),
+    }
+
+
+def test_a_left_origin_needs_left_alignment(tmp_path: Path) -> None:
+    arguments = build_inputs(tmp_path)
+    with pytest.raises(ReplayError, match="--origin-x goes with --align left"):
+        job.run_plan(job.parse([*arguments, "--origin-x", "10"]), [])

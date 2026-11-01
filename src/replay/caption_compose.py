@@ -14,11 +14,18 @@ and ``verify_join2.py`` scripts:
   reserved at the front instead of ``+faststart``'s second pass over the file. A finished join
   is reused.
 
+A recording's caption layout may give another frame (``plan --canvas``) and a nameplate movie
+(``plan --badge``, ``replay.caption_layout``) laid over every group from its start, which then
+holds one alpha part less. A delivery of the original mix levels it by its voice
+(``--loudness-reference``, the tempo voice): the gain toward the target is measured on the voice
+and applied to the mix, whose peaks the limiter holds at the ceiling.
+
 Every request and output stays under the pipeline's directories; inputs are only read.
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -58,6 +65,9 @@ PROBE_TIMEOUT = 120
 REQUEST_TIMEOUT = 7200
 # Ticks of the native 1/60000 s timescale a retry ends each clip early by (far below a frame).
 TRIM_TICKS = 2
+NATIVE_TICKS = 60000
+# How far, in native ticks, the last clip may move to end on the reader's range (2000 = 1 frame).
+ALIGN_TICKS = 8
 AUDIO_RATE = 44100
 AUDIO_ARGUMENTS = ("-c:a", "aac", "-b:a", "256k", "-ar", str(AUDIO_RATE), "-ac", "2")
 # One EBU R128 pass over the tempo voice (integrated loudness, true peak) sets one static gain.
@@ -204,16 +214,16 @@ def overlapping(parts: Sequence[Part], low: int, high: int) -> int:
     return sum(1 for part in parts if part.offset < high and part.end > low)
 
 
-def split_cut(cut: Cut, parts: Sequence[Part]) -> list[Cut]:
-    """The cut in pieces of at most ``MAX_GROUP_SECONDS`` and ``MAX_LAYERS`` overlapping parts."""
+def split_cut(cut: Cut, parts: Sequence[Part], layers: int = MAX_LAYERS) -> list[Cut]:
+    """The cut in pieces of at most ``MAX_GROUP_SECONDS`` and ``layers`` overlapping parts."""
     pieces: list[Cut] = []
     position = 0
     while position < cut.length:
         low = cut.output + position
         high = min(cut.output + cut.length, low + MAX_GROUP_SECONDS * RATE)
-        while overlapping(parts, low, high) > MAX_LAYERS:
+        while overlapping(parts, low, high) > layers:
             edges = sorted({x for part in parts for x in (part.offset, part.end) if low < x < high})
-            fitting = [x for x in edges if overlapping(parts, low, x) <= MAX_LAYERS]
+            fitting = [x for x in edges if overlapping(parts, low, x) <= layers]
             if not fitting:
                 raise ReplayError("More alpha parts overlap one frame than a request allows")
             high = max(fitting)
@@ -236,14 +246,16 @@ def phased(cuts: Sequence[Cut], frame_clock: Path, source: Path, packets: Packet
     ]
 
 
-def group_bounds(cuts: Sequence[Cut], parts: Sequence[Part]) -> list[tuple[int, int]]:
+def group_bounds(
+    cuts: Sequence[Cut], parts: Sequence[Part], layers: int = MAX_LAYERS
+) -> list[tuple[int, int]]:
     """Consecutive cut ranges that each fit one request."""
 
     def fits(first: int, last: int) -> bool:
         base = cuts[first].output
         end = cuts[last - 1].output + cuts[last - 1].length
         within = (end - base) <= MAX_GROUP_SECONDS * RATE
-        return last - first <= MAX_CLIPS and overlapping(parts, base, end) <= MAX_LAYERS and within
+        return last - first <= MAX_CLIPS and overlapping(parts, base, end) <= layers and within
 
     bounds: list[tuple[int, int]] = []
     first = 0
@@ -309,8 +321,11 @@ def request(
     name: str,
     *,
     rate: int = MAX_BIT_RATE,
+    canvas: tuple[int, int] = (WIDTH, HEIGHT),
+    badge: Path | None = None,
 ) -> tuple[dict[str, object], int]:
-    """A media_edit request for consecutive cuts and the frames it renders."""
+    """A media_edit request for consecutive cuts and the frames it renders; a ``badge`` movie
+    (at least a group long) is the bottom layer from the group's start to its end."""
     base, end = cuts[0].output, cuts[-1].output + cuts[-1].length
     clips = [
         {
@@ -325,7 +340,17 @@ def request(
         }
         for cut in cuts
     ]
-    layers = []
+    layers: list[dict[str, object]] = []
+    if badge is not None:
+        layers.append(
+            {
+                "sourcePath": str(badge),
+                "selection": {"startSeconds": 0.0, "durationSeconds": seconds(end - base),
+                              "rate": 1},
+                "offsetSeconds": 0.0,
+                "opacity": 1,
+            }
+        )  # fmt: skip
     for part in parts:
         low, high = max(part.offset, base), min(part.end, end)
         if low < high:
@@ -343,8 +368,8 @@ def request(
                 }
             )
     video = {
-        "width": WIDTH,
-        "height": HEIGHT,
+        "width": canvas[0],
+        "height": canvas[1],
         "frameRate": RATE,
         "resizeMode": "fit",
         "encoding": {"codec": "hevc", "averageBitRate": rate, "allowFrameReordering": False},
@@ -380,6 +405,8 @@ def plan(
     states: Path | None = None,
     rate_source: Path | None = None,
     frame_clock: Path | None = None,
+    canvas: tuple[int, int] = (WIDTH, HEIGHT),
+    badge: Path | None = None,
 ) -> Path:
     """Write one request per group and ``groups.json``; return ``groups.json``.
 
@@ -389,16 +416,18 @@ def plan(
     millisecond-quantized timestamps neither drop nor repeat frames.
     """
     parts = load_parts(parts_path, packets or packet_count, states)
-    cuts = [piece for cut in load_cuts(cuts_path) for piece in split_cut(cut, parts)]
+    layers = MAX_LAYERS if badge is None else MAX_LAYERS - 1
+    cuts = [piece for cut in load_cuts(cuts_path) for piece in split_cut(cut, parts, layers)]
     if frame_clock is not None:
         cuts = phased(cuts, frame_clock, source, packets or packet_count)
     requests.mkdir(mode=0o700, parents=True, exist_ok=True)
     rate = bit_rate(rate_source or source)
     rows = []
-    for index, (first, last) in enumerate(group_bounds(cuts, parts)):
+    for index, (first, last) in enumerate(group_bounds(cuts, parts, layers)):
         name = f"g{index:03d}"
         directory = output_root / name
-        body, frames = request(cuts[first:last], parts, source, directory, name, rate=rate)
+        body, frames = request(cuts[first:last], parts, source, directory, name, rate=rate,
+                               canvas=canvas, badge=badge)  # fmt: skip
         write_json(requests / f"{name}.json", body)
         rows.append({"group": index, "name": name, "frames": frames, "directory": str(directory)})
     groups = requests / "groups.json"
@@ -423,7 +452,7 @@ def render_group(row: dict[str, object], requests: Path, call: Call, packets: Pa
     response = requests / f"{name}.response.json"
     response.unlink(missing_ok=True)
     try:
-        call(requests / f"{name}.json", response)
+        call(aligned(requests, name), response)
     except (subprocess.CalledProcessError, ReplayError):
         # AVFoundation can refuse to read a composition whose clip ends on certain exact
         # boundaries ("Cannot start reading the composed video"; youtube-Eg9 g013 at 3520.05 s);
@@ -447,23 +476,97 @@ def trimmed(requests: Path, name: str) -> Path:
     """
     body = record(json.loads((requests / f"{name}.json").read_text(encoding="utf-8")))
     recipe = record(body["recipe"])
-    clips, layers = recipe["clips"], recipe.get("additionalVideo", [])
-    if not isinstance(clips, list) or not isinstance(layers, list):
-        raise ReplayError(f"{name} has no clip list")
-    total = 0.0
-    for clip in clips:
-        selection = record(record(clip)["selection"])
+    for clip in recipe_items(recipe, "clips"):
+        selection = record(clip["selection"])
         selection["durationSeconds"] = float(str(selection["durationSeconds"])) - TRIM_TICKS / 60000
-        total += float(str(selection["durationSeconds"]))
-    for layer in layers:
-        selection = record(record(layer)["selection"])
-        end = float(str(record(layer)["offsetSeconds"])) + float(str(selection["durationSeconds"]))
-        if end > total:
-            selection["durationSeconds"] = float(str(selection["durationSeconds"])) - (end - total)
+    cut_layers(recipe)
+    align_end(recipe)
     path = requests / f"{name}.retry.json"
     path.unlink(missing_ok=True)
     write_json(path, body)
     return path
+
+
+def aligned(requests: Path, name: str) -> Path:
+    """The group's request, or an ``.aligned.json`` copy whose last clip ends where media_edit
+    reads the whole composition."""
+    original = requests / f"{name}.json"
+    body = record(json.loads(original.read_text(encoding="utf-8")))
+    if reads_to_its_end(record(body["recipe"])):
+        return original
+    align_end(record(body["recipe"]))
+    path = requests / f"{name}.aligned.json"
+    path.unlink(missing_ok=True)
+    write_json(path, body)
+    return path
+
+
+def recipe_items(recipe: dict[str, object], key: str) -> list[dict[str, object]]:
+    items = recipe.get(key, [])
+    if not isinstance(items, list):
+        raise ReplayError(f"The recipe's {key} is not a list")
+    return [record(item) for item in items]
+
+
+def seconds_of(item: dict[str, object], key: str) -> float:
+    return float(str(record(item["selection"])[key]))
+
+
+def clips_seconds(recipe: dict[str, object]) -> float:
+    return sum(seconds_of(clip, "durationSeconds") for clip in recipe_items(recipe, "clips"))
+
+
+def cut_layers(recipe: dict[str, object]) -> None:
+    """Shorten caption layers that end past the clips' timeline to end on it."""
+    total = clips_seconds(recipe)
+    for layer in recipe_items(recipe, "additionalVideo"):
+        selection = record(layer["selection"])
+        end = float(str(layer["offsetSeconds"])) + float(str(selection["durationSeconds"]))
+        if end > total:
+            selection["durationSeconds"] = float(str(selection["durationSeconds"])) - (end - total)
+
+
+def native_ticks(seconds: float) -> int:
+    """media_edit's ``CMTime(seconds:)``: truncated, so 4.3666… s is 261999 ticks."""
+    return math.floor(seconds * NATIVE_TICKS)
+
+
+def planned_seconds(seconds: float) -> float:
+    """media_edit's planned clip duration: rounded to whole ticks."""
+    return math.floor(seconds * NATIVE_TICKS + 0.5) / NATIVE_TICKS
+
+
+def reads_to_its_end(recipe: dict[str, object]) -> bool:
+    """Whether media_edit's video composition and its tracks reach the timeline it reads.
+
+    Truncated clip and layer ends can sum one tick short of the truncated timeline; the reader
+    then refuses the composition (AVFoundation -11841, "Cannot start reading the composed
+    video"; 10/28 g048).
+    """
+    cursor, spans = 0.0, []
+    for clip in recipe_items(recipe, "clips"):
+        spans.append((cursor, seconds_of(clip, "durationSeconds")))
+        cursor += planned_seconds(seconds_of(clip, "durationSeconds"))
+    for layer in recipe_items(recipe, "additionalVideo"):
+        spans.append((float(str(layer["offsetSeconds"])), seconds_of(layer, "durationSeconds")))
+    instructions = max(native_ticks(at) + native_ticks(planned_seconds(raw)) for at, raw in spans)
+    tracks = max(native_ticks(at) + native_ticks(raw) for at, raw in spans)
+    return min(instructions, tracks) >= native_ticks(cursor)
+
+
+def align_end(recipe: dict[str, object]) -> None:
+    """Move the last clip's end by the fewest ticks (well under a frame) for which media_edit
+    reads its composition to the end; caption layers past a shorter timeline are cut there."""
+    if reads_to_its_end(recipe):
+        return
+    selection = record(recipe_items(recipe, "clips")[-1]["selection"])
+    ticks = round(float(str(selection["durationSeconds"])) * NATIVE_TICKS)
+    for moved in (ticks + sign * step for step in range(1, ALIGN_TICKS + 1) for sign in (1, -1)):
+        selection["durationSeconds"] = moved / NATIVE_TICKS
+        cut_layers(recipe)
+        if reads_to_its_end(recipe):
+            return
+    raise ReplayError("No clip end within the alignment bound reads the whole composition")
 
 
 def media_edit_call(server: Path, server_sha256: str) -> Call:
@@ -526,7 +629,12 @@ def level_chain(gain: float, loudness: Loudness) -> str:
 
 
 def encode_audio(
-    tempo: Path, audio: Path, *, ffmpeg: str, loudness: Loudness | None = None
+    tempo: Path,
+    audio: Path,
+    *,
+    ffmpeg: str,
+    loudness: Loudness | None = None,
+    reference: Path | None = None,
 ) -> Path:
     """Encode the tempo audio once; an existing encode is reused.
 
@@ -534,13 +642,27 @@ def encode_audio(
     target, then limited at the ceiling (``level_chain``). Limiting lowers the integrated level
     of a voice with loud bursts, so the gain is corrected once by the shortfall measured through
     the chain. Both measurements and the gains are written beside the encode
-    (``<audio>.loudness.json``).
+    (``<audio>.loudness.json``). With a ``reference`` (the voice of a mix that keeps its music)
+    the gain is measured on the reference alone and applied to ``tempo`` without the correction;
+    the mix's own levels before and through the chain are recorded beside it.
     """
     if audio.exists():
         return audio
     audio.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     level: list[str] = []
-    if loudness is not None:
+    if loudness is not None and reference is not None:
+        integrated, peak = measured(reference, ffmpeg=ffmpeg)
+        gain = round(loudness.target - integrated, 2)
+        level = ["-af", level_chain(gain, loudness)]
+        mix, mix_peak = measured(tempo, ffmpeg=ffmpeg)
+        limited, limited_peak = measured(tempo, ffmpeg=ffmpeg, chain=level[1])
+        write_json(audio.with_name(f"{audio.name}.loudness.json"), {
+            "reference": str(reference), "integratedLufs": integrated, "truePeakDbtp": peak,
+            "gainDb": gain, "mixLufs": mix, "mixTruePeakDbtp": mix_peak,
+            "limitedLufs": limited, "limitedTruePeakDbtp": limited_peak,
+            "targetLufs": loudness.target, "ceilingDbtp": loudness.ceiling, "limiter": level[1],
+        })  # fmt: skip
+    elif loudness is not None:
         integrated, peak = measured(tempo, ffmpeg=ffmpeg)
         first = round(loudness.target - integrated, 2)
         limited, _ = measured(tempo, ffmpeg=ffmpeg, chain=level_chain(first, loudness))
@@ -589,7 +711,7 @@ def join(parts: Sequence[PartFile], *, output: Path, audio: Path, ffmpeg: str) -
 
 def finish(
     requests: Path, tempo: Path, output: Path, *, ffmpeg: str, packets: Packets | None = None,
-    loudness: Loudness | None = None,
+    loudness: Loudness | None = None, reference: Path | None = None,
 ) -> int:  # fmt: skip
     """Encode the tempo audio once and join every group with it; reuse a finished join."""
     rows = sorted(groups_of(requests), key=lambda row: int(str(row["group"])))
@@ -598,7 +720,8 @@ def finish(
     if output.exists() and count(output) == expected:
         return expected
     output.unlink(missing_ok=True)
-    audio = encode_audio(tempo, voice(output), ffmpeg=ffmpeg, loudness=loudness)
+    audio = encode_audio(tempo, voice(output), ffmpeg=ffmpeg, loudness=loudness,
+                         reference=reference)  # fmt: skip
     files = []
     for row in rows:
         name = str(row["name"])
@@ -612,6 +735,9 @@ def finish(
 def level_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--loudness-target", type=float, help="voice target, integrated LUFS")
     command.add_argument("--true-peak-ceiling", type=float, help="voice true-peak ceiling, dBTP")
+    command.add_argument(
+        "--loudness-reference", type=Path, help="the voice setting the gain of a kept-music mix"
+    )
 
 
 def level_policy(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Loudness | None:
@@ -632,6 +758,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     planned.add_argument("--states", type=Path, help="Compressor job states of the parts")
     planned.add_argument("--rate-source", type=Path, help="the original the encode rate follows")
     planned.add_argument("--frame-clock", type=Path, help="the source's decoded video clock")
+    planned.add_argument(
+        "--canvas", type=int, nargs=2, default=(WIDTH, HEIGHT), metavar=("WIDTH", "HEIGHT")
+    )
+    planned.add_argument("--badge", type=Path, help="a nameplate movie over every group")
     rendered = commands.add_parser("render")
     rendered.add_argument("requests", type=Path)
     rendered.add_argument("--server", type=Path, required=True)
@@ -656,6 +786,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 states=args.states,
                 rate_source=args.rate_source,
                 frame_clock=args.frame_clock,
+                canvas=(args.canvas[0], args.canvas[1]),
+                badge=args.badge,
             )
         )
     elif args.command == "render":
@@ -668,13 +800,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoded = None
             if args.tempo is not None:
                 encoded = pool.submit(encode_audio, args.tempo, args.audio, ffmpeg=args.ffmpeg,
-                                      loudness=level_policy(parser, args))  # fmt: skip
+                                      loudness=level_policy(parser, args),
+                                      reference=args.loudness_reference)  # fmt: skip
             print(json.dumps(render(args.requests, call, workers=args.workers)))
             if encoded is not None:
                 encoded.result()
     else:
         print(finish(args.requests, args.tempo, args.output, ffmpeg=args.ffmpeg,
-                     loudness=level_policy(parser, args)))  # fmt: skip
+                     loudness=level_policy(parser, args),
+                     reference=args.loudness_reference))  # fmt: skip
     return 0
 
 

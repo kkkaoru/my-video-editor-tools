@@ -406,19 +406,25 @@ def test_the_cli_plans_renders_and_finishes(
     monkeypatch.setattr(compose, "render", lambda *_a, **_k: {"g000": "reused"})
     rendered = ["render", str(tmp_path / "req"), "--server", "/s", "--server-sha256", "a"]
     assert compose.main(rendered) == 0
-    encoded: list[tuple[Path, Path, str, compose.Loudness | None]] = []
+    encoded: list[tuple[Path, Path, str, compose.Loudness | None, Path | None]] = []
     monkeypatch.setattr(
         compose, "encode_audio",
-        lambda t, a, *, ffmpeg, loudness: encoded.append((t, a, ffmpeg, loudness)),
+        lambda t, a, *, ffmpeg, loudness, reference: encoded.append(
+            (t, a, ffmpeg, loudness, reference)
+        ),
     )  # fmt: skip
     voiced = [*rendered, "--tempo", "/t.wav", "--audio", "/a.m4a", "--ffmpeg", "ff"]
     assert compose.main(voiced) == 0
     levelled = ["--loudness-target", "-18", "--true-peak-ceiling", "-1"]
     assert compose.main([*voiced, *levelled]) == 0
+    assert compose.main([*voiced, *levelled, "--loudness-reference", "/v.wav"]) == 0
     assert encoded == [
-        (Path("/t.wav"), Path("/a.m4a"), "ff", None),
-        (Path("/t.wav"), Path("/a.m4a"), "ff", compose.Loudness(target=-18.0, ceiling=-1.0)),
-    ]
+        (Path("/t.wav"), Path("/a.m4a"), "ff", None, None),
+        (Path("/t.wav"), Path("/a.m4a"), "ff", compose.Loudness(target=-18.0, ceiling=-1.0),
+         None),
+        (Path("/t.wav"), Path("/a.m4a"), "ff", compose.Loudness(target=-18.0, ceiling=-1.0),
+         Path("/v.wav")),
+    ]  # fmt: skip
     with pytest.raises(SystemExit):
         compose.main([*rendered, "--tempo", "/t.wav"])
     with pytest.raises(SystemExit):
@@ -426,15 +432,16 @@ def test_the_cli_plans_renders_and_finishes(
     finished: list[object] = []
 
     def finish(*_a: object, **keywords: object) -> int:
-        finished.append(keywords["loudness"])
+        finished.append((keywords["loudness"], keywords["reference"]))
         return 60
 
     monkeypatch.setattr(compose, "finish", finish)
     assert compose.main(["finish", str(tmp_path / "req"), "/t.wav", "/o.mp4"]) == 0
     assert compose.main(["finish", str(tmp_path / "req"), "/t.wav", "/o.mp4", *levelled]) == 0
-    assert finished == [None, compose.Loudness(target=-18.0, ceiling=-1.0)]
-    assert capsys.readouterr().out.split("\n")[1:5] == [
-        '{"g000": "reused"}', '{"g000": "reused"}', '{"g000": "reused"}', "60"
+    assert finished == [(None, None), (compose.Loudness(target=-18.0, ceiling=-1.0), None)]
+    assert capsys.readouterr().out.split("\n")[1:6] == [
+        '{"g000": "reused"}', '{"g000": "reused"}', '{"g000": "reused"}', '{"g000": "reused"}',
+        "60",
     ]  # fmt: skip
 
 
@@ -512,6 +519,51 @@ def test_a_retry_cuts_caption_layers_at_the_shorter_timeline(tmp_path: Path) -> 
     assert durations == [2.0, pytest.approx(4.0 - 4 / 60000)]
 
 
+def test_a_composition_ending_one_tick_short_moves_its_last_clip_end(tmp_path: Path) -> None:
+    requests = tmp_path / "requests"
+    requests.mkdir()
+    first = {"sourcePath": "/s.mov", "selection": {"startSeconds": 0.0, "durationSeconds": 10.7}}
+    last = {"sourcePath": "/s.mov",
+            "selection": {"startSeconds": 20.0, "durationSeconds": 4.366666666666666}}  # fmt: skip
+    recipe: dict[str, object] = {"clips": [first, last]}
+    (requests / "g048.json").write_text(json.dumps({"recipe": recipe}), encoding="utf-8")
+    assert compose.reads_to_its_end(recipe) is False
+    path = compose.aligned(requests, "g048")
+    assert path == requests / "g048.aligned.json"
+    written = json.loads(path.read_text(encoding="utf-8"))["recipe"]
+    assert written["clips"][1]["selection"]["durationSeconds"] == 262001 / 60000
+    assert compose.reads_to_its_end(written) is True
+
+
+def test_a_composition_that_reads_to_its_end_is_sent_unchanged(tmp_path: Path) -> None:
+    requests = tmp_path / "requests"
+    requests.mkdir()
+    clip = {"sourcePath": "/s.mov", "selection": {"startSeconds": 0.0, "durationSeconds": 4.0}}
+    (requests / "g001.json").write_text(json.dumps({"recipe": {"clips": [clip]}}), "utf-8")
+    assert compose.aligned(requests, "g001") == requests / "g001.json"
+    assert not (requests / "g001.aligned.json").exists()
+
+
+def test_a_caption_layer_reaching_the_end_keeps_the_composition_readable() -> None:
+    clip = {"sourcePath": "/s.mov",
+            "selection": {"startSeconds": 0.0, "durationSeconds": 4.366666666666666}}  # fmt: skip
+    layer = {"sourcePath": "/a.mov", "offsetSeconds": 0.0,
+             "selection": {"startSeconds": 0.0, "durationSeconds": 4.366666666666667}}  # fmt: skip
+    assert compose.reads_to_its_end({"clips": [clip], "additionalVideo": [layer]}) is True
+
+
+def test_no_end_within_the_bound_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(compose, "reads_to_its_end", lambda _recipe: False)
+    clip = {"sourcePath": "/s.mov", "selection": {"startSeconds": 0.0, "durationSeconds": 4.0}}
+    with pytest.raises(ReplayError, match="alignment bound"):
+        compose.align_end({"clips": [clip]})
+
+
+def test_a_recipe_list_that_is_not_a_list_is_refused() -> None:
+    with pytest.raises(ReplayError, match="clips is not a list"):
+        compose.recipe_items({"clips": {}}, "clips")
+
+
 POLICY = compose.Loudness(target=-18.0, ceiling=-1.0)
 
 
@@ -580,3 +632,51 @@ def test_silence_has_no_measurable_loudness(tmp_path: Path) -> None:
     )  # fmt: skip
     with pytest.raises(ReplayError, match="No measurable voice loudness"):
         compose.encode_audio(silent, tmp_path / "a.m4a", ffmpeg="ffmpeg", loudness=POLICY)
+
+
+def test_a_layout_plans_its_canvas_and_a_nameplate_under_every_group(tmp_path: Path) -> None:
+    parts = part_files(tmp_path, [("p0", 0, 60), ("p1", 90, 30)])
+    cuts = cut_file(tmp_path, [(0, 60, 0), (100, 160, 60)])
+    compose.plan(
+        cuts, parts, Path("/src.mov"), tmp_path / "out", tmp_path / "req", packets=size,
+        canvas=(1920, 1080), badge=Path("/badge.mov"),
+    )  # fmt: skip
+    body = json.loads((tmp_path / "req/g000.json").read_text(encoding="utf-8"))
+    assert (body["recipe"]["video"]["width"], body["recipe"]["video"]["height"]) == (1920, 1080)
+    assert body["recipe"]["additionalVideo"][0] == {
+        "sourcePath": "/badge.mov",
+        "selection": {"startSeconds": 0.0, "durationSeconds": 4.0, "rate": 1},
+        "offsetSeconds": 0.0,
+        "opacity": 1,
+    }
+    assert len(body["recipe"]["additionalVideo"]) == 3
+
+
+def test_a_nameplate_takes_one_layer_from_the_parts() -> None:
+    parts = [compose.Part(f"p{n}", 0, 30, Path(f"/p{n}")) for n in range(compose.MAX_LAYERS)]
+    cut = compose.Cut(0, 30, 0, Fraction(0))
+    assert len(compose.group_bounds([cut], parts)) == 1
+    with pytest.raises(ReplayError, match="More alpha parts overlap"):
+        compose.split_cut(cut, parts, compose.MAX_LAYERS - 1)
+
+
+def test_a_mix_that_keeps_its_music_is_levelled_by_its_voice(tmp_path: Path) -> None:
+    speech = voice(tmp_path / "voice.wav", volume_db=-10.0)
+    mix = tmp_path / "mix.wav"
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(speech), "-f", "lavfi", "-i",
+         "sine=frequency=880:sample_rate=44100:duration=12", "-filter_complex",
+         "[1]volume=-6dB,aformat=channel_layouts=stereo[m];[0][m]amix=inputs=2:normalize=0",
+         "-c:a", "pcm_f32le", str(mix)],
+        check=True,
+    )  # fmt: skip
+    integrated, _ = compose.measured(speech, ffmpeg="ffmpeg")
+    audio = compose.encode_audio(mix, tmp_path / "tempo.m4a", ffmpeg="ffmpeg", loudness=POLICY,
+                                 reference=speech)  # fmt: skip
+    _, delivered_peak = compose.measured(audio, ffmpeg="ffmpeg")
+    assert delivered_peak <= -1.0
+    record = json.loads((tmp_path / "tempo.m4a.loudness.json").read_text("utf-8"))
+    assert record["reference"] == str(speech)
+    assert record["gainDb"] == round(-18.0 - integrated, 2)
+    assert record["mixLufs"] > integrated
+    assert record["limitedTruePeakDbtp"] <= -1.0

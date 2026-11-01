@@ -12,6 +12,10 @@ The generic form of the per-recording ``prepare_parts.py``:
 
 Windows, plans and finished parts that already exist are reused, so an interrupted run
 continues; a window whose plan export was cut short is exported again.
+
+A recording's caption layout may give another frame (``--width``/``--height``) and left-aligned
+lines (``--align left``): the parts are then built from a copy of the template whose paragraphs
+are left-aligned (Motion places a left-aligned title's position at the start of every line).
 """
 
 import argparse
@@ -38,6 +42,10 @@ MAX_SECONDS = 110
 MIN_GAP = Fraction(1, 15)
 WIDTH, HEIGHT = 1080, 1920
 EXPECTED_TEXT = "Title"
+# Motion's paragraph alignment control: 0 left, 1 centred (the template's).
+CENTRED = 'name="Alignment" id="401" flags="8606777360" default="0" value="1"'
+LEFT = 'name="Alignment" id="401" flags="8606777360" default="0" value="0"'
+LEFT_TEMPLATE = "template-left.moti"
 RENDER_NAME = "compressor-batch-v1/motion-alpha.mov"
 
 Run = Callable[[Sequence[str]], None]
@@ -139,7 +147,23 @@ def run_checked(command: Sequence[str]) -> None:
     subprocess.run(list(command), check=True)
 
 
-def export_plans(window: Window, path: Path, plans: Path, run: Run) -> list[dict[str, object]]:
+def left_template(template: Path, output: Path) -> Path:
+    """A copy of ``template`` with every paragraph left-aligned (written once)."""
+    text = template.read_text(encoding="utf-8")
+    if CENTRED not in text or LEFT in text:
+        raise ReplayError(f"{template} is not the centred caption template")
+    path = output / LEFT_TEMPLATE
+    write_once(path, text.replace(CENTRED, LEFT))
+    return path
+
+
+def export_plans(
+    window: Window,
+    path: Path,
+    plans: Path,
+    run: Run,
+    size: tuple[int, int] = (WIDTH, HEIGHT),
+) -> list[dict[str, object]]:
     """The window's part plans, exporting them unless a complete export exists."""
     manifest = plans / "manifest.json"
     if not manifest.exists():
@@ -147,7 +171,7 @@ def export_plans(window: Window, path: Path, plans: Path, run: Run) -> list[dict
             shutil.rmtree(plans)  # an export cut short
         run(
             module("motion_measured", str(path), str(plans), "--sha256", sha256(path),
-                   "--width", str(WIDTH), "--height", str(HEIGHT), "--rate", str(RATE),
+                   "--width", str(size[0]), "--height", str(size[1]), "--rate", str(RATE),
                    "--frames", str(window.end - window.start), "--expected-text", EXPECTED_TEXT,
                    "--max-stages", str(MAX_PART_SENTENCES))
         )  # fmt: skip
@@ -208,6 +232,8 @@ def prepare(
     run: Run = run_checked,
     palette: Palette | None = None,
     tokens: Path | None = None,
+    size: tuple[int, int] = (WIDTH, HEIGHT),
+    align: str = "centre",
 ) -> Path:
     """Write every window, plan, finished part, ``parts.json`` and ``jobs.json``."""
     document = record(json.loads(candidate.read_text(encoding="utf-8")))
@@ -217,13 +243,15 @@ def prepare(
     cues = [record(cue) for cue in listed]
     for directory in (output / "windows", output / "moti", render_root):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if align == "left":
+        template = left_template(template, output)
 
     def window_parts(window: Window) -> list[dict[str, object]]:
         path = output / "windows" / f"candidate-w{window.index:03d}.json"
         write_once(path, json.dumps(shifted(document, window), ensure_ascii=False))
         plans = output / f"plans-w{window.index:03d}"
         found: list[dict[str, object]] = []
-        for index, item in enumerate(export_plans(window, path, plans, run)):
+        for index, item in enumerate(export_plans(window, path, plans, run, size)):
             name = f"w{window.index:03d}-part-{index:04d}"
             final = output / "moti" / f"{name}.moti"
             offset = window.start + int(str(item["offsetFrame"]))
@@ -272,6 +300,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--preset", type=Path, required=True)
     parser.add_argument("--palette", nargs=2, metavar=("TOP", "BOTTOM"))
     parser.add_argument("--tokens", type=Path, help="speech tokens timing the caption reveal")
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--align", choices=("centre", "left"), default="centre")
     arguments = list(sys.argv[1:] if argv is None else argv)
     split = arguments.index("--") if "--" in arguments else len(arguments)
     args = parser.parse_args(arguments[:split])
@@ -280,6 +311,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prepare(
             args.candidate, args.output, args.render_root,
             template=args.template, finish=finish, preset=args.preset, tokens=args.tokens,
+            size=(args.width, args.height), align=args.align,
             palette=None if args.palette is None else validated(
                 {"gradientTop": args.palette[0], "gradientBottom": args.palette[1]}
             ),

@@ -5,7 +5,9 @@ The recording pipeline runs every stage as a step with a receipt (``recording_st
 from those receipts and a few fast technical checks of the published movie, in minutes:
 
 - ``bgm_removal``: the separation step pinned its plan and voice; the movie has one audio stream
-  as long as its video;
+  as long as its video. A recording whose editing intent keeps its music (``deliveryAudio``,
+  ``replay.caption_layout``) passes only when compose and finish both recorded delivering that
+  original mix with the intent's reason; the index names the exemption (``declaredIntents``);
 - ``silence_cut``: the cut-plan step passed and the movie holds exactly the planned frames;
 - ``source_caption_mask``: the cleanup step passed, every chunk of the cleanup has an accepted
   receipt, and the composition used the cleaned source; or the source's 240-frame profile survey
@@ -135,6 +137,9 @@ def publish(
         "steps": {name: pin(steps / f"{name}.json") for name in STEP_NAMES},
         "qualityApproved": False,
     }
+    music = declared_music({name: read(steps / f"{name}.json") for name in ("compose", "finish")})
+    if music is not None:
+        value["declaredIntents"] = {"bgm_removal": music}
     index.write_text(json.dumps(value, indent=1) + "\n", encoding="utf-8")
     return delivery, index
 
@@ -166,6 +171,26 @@ def mask_failure(cleanup: dict[str, object]) -> str | None:
     return None
 
 
+def declared_music(steps: dict[str, dict[str, object]]) -> dict[str, object] | None:
+    """The recorded intent to deliver the original mix (music kept), or None for the voice.
+
+    Raises unless compose and finish agree on it and it records why the music is kept.
+    """
+    finished, composed = outputs(steps["finish"]), outputs(steps["compose"])
+    if "deliveryAudio" not in finished and "deliveryAudio" not in composed:
+        return None
+    declared = record(finished.get("deliveryAudio"))
+    reason = declared.get("intent")
+    if (
+        declared != composed.get("deliveryAudio")
+        or declared.get("source") != "original-mix"
+        or not isinstance(reason, str)
+        or not reason.strip()
+    ):
+        raise ReplayError("compose and finish disagree on the declared delivered audio")
+    return {"source": declared["source"], "intent": reason}
+
+
 def stage_failures(index: dict[str, object], *, ffmpeg: str, ffprobe: str) -> dict[str, str]:
     """The failed stages with their reason; an empty mapping means all five passed."""
     steps = {name: read(Path(str(record(pinned)["path"])))
@@ -181,6 +206,12 @@ def stage_failures(index: dict[str, object], *, ffmpeg: str, ffprobe: str) -> di
         int(str(record(row)["source_end_frame"])) - int(str(record(row)["source_start_frame"]))
         for row in (cut_rows if isinstance(cut_rows, list) else [])
     )
+    try:
+        music = declared_music(steps)
+    except ReplayError as error:
+        music, failures["bgm_removal"] = None, str(error)
+    if music != record(index.get("declaredIntents", {})).get("bgm_removal"):
+        failures["bgm_removal"] = "the index does not name the declared music intent"
     if not record(outputs(steps["separation"])).get("vocals") or len(audio) != 1 or len(video) != 1:
         failures["bgm_removal"] = "no pinned separated voice or not exactly one audio stream"
     elif abs(float(str(audio[0]["duration"])) - float(str(video[0]["duration"]))) > 1 / RATE:

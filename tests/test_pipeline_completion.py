@@ -255,3 +255,55 @@ def test_a_caption_free_source_passes_only_its_verified_survey(
     cleanup: dict[str, object] = {"captionFree": {"path": "/s.json", "sha256": "a"}}
     assert completion.mask_failure(cleanup) is None
     assert completion.mask_failure(cleanup) == "the caption absence summary is missing or changed"
+
+
+def keep_music(steps: Path, *, finish_intent: str = "kept by request") -> None:
+    """Compose and finish receipts that record delivering the original mix."""
+    declared = {"source": "original-mix", "intent": "kept by request", "tempo": {"path": "/m"}}
+    (steps / "compose.json").write_text(
+        json.dumps({"step": "compose", "outputs": {"deliveryAudio": declared}}), "utf-8"
+    )
+    finished = {**declared, "intent": finish_intent}
+    (steps / "finish.json").write_text(
+        json.dumps({"step": "finish", "outputs": {"deliveryAudio": finished}}), "utf-8"
+    )
+
+
+def test_kept_music_passes_only_with_its_declared_intent_named_in_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = recording(tmp_path, monkeypatch)
+    keep_music(paths["steps"])
+    _, index = completion.publish(
+        paths["root"], movie=paths["movie"], steps=paths["steps"],
+        candidate=paths["candidate"], revision="pipeline-abc",
+    )  # fmt: skip
+    good_movie(monkeypatch)
+    data = json.loads(index.read_text(encoding="utf-8"))
+    assert data["declaredIntents"] == {
+        "bgm_removal": {"source": "original-mix", "intent": "kept by request"}
+    }
+    assert completion.stage_failures(data, ffmpeg="f", ffprobe="p") == {}
+    del data["declaredIntents"]
+    assert completion.stage_failures(data, ffmpeg="f", ffprobe="p") == {
+        "bgm_removal": "the index does not name the declared music intent"
+    }
+
+
+def test_kept_music_whose_receipts_disagree_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, index = published(tmp_path, monkeypatch)
+    keep_music(paths["steps"], finish_intent=" ")
+    good_movie(monkeypatch)
+    failures = completion.stage_failures(
+        json.loads(index.read_text(encoding="utf-8")), ffmpeg="f", ffprobe="p"
+    )
+    assert failures == {
+        "bgm_removal": "compose and finish disagree on the declared delivered audio"
+    }
+    with pytest.raises(ReplayError, match="disagree on the declared delivered audio"):
+        completion.publish(
+            paths["root"], movie=paths["movie"], steps=paths["steps"],
+            candidate=paths["candidate"], revision="pipeline-def",
+        )  # fmt: skip

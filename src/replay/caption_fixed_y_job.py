@@ -6,6 +6,10 @@ the source clock, and the person's top edge over source time. Each run (see ``ca
 gets one top origin that keeps its tallest page above the person; a run that cannot is recorded as
 a failure rather than moved, shrunk or guessed. The result is a candidate-only measured-caption
 document bound to the calibration and to every input it used.
+
+A recording's caption layout (``replay.caption_layout``) may instead give its own ``--canvas``,
+``--align left`` with ``--origin-x`` (every line starts at that x) and ``--region-right``, and
+``--ignore-person``: each run is then anchored as low as its tallest page fits in the region.
 """
 
 import argparse
@@ -30,6 +34,7 @@ from replay.vertical_captions import Box
 COORDINATE_SYSTEM = "top-left canvas; calibrated text origin"
 MAX_LINES_TOP_READER = 2
 UNKNOWN_PERSON_RULES = ("fail", "region-top")
+ALIGNMENTS = ("centre", "left")
 ABOVE_PERSON = "cannot fit above foreground support"  # foreground_geometry's refusal
 NO_INDEX = Path("-")
 
@@ -65,9 +70,17 @@ def cut_map(cuts: Sequence[dict[str, int]]) -> CutMap:
 
 
 def top_envelope(
-    sizes: dict[str, tuple[float, float]], *, padding: float, ascent: float, line_advance: float
+    sizes: dict[str, tuple[float, float]],
+    *,
+    padding: float,
+    ascent: float,
+    line_advance: float,
+    align: str = "centre",
 ) -> fixed.Envelope:
-    """The top-origin glyph envelope of a page, from cached per-line sizes and the calibration."""
+    """The top-origin glyph envelope of a page, from cached per-line sizes and the calibration;
+    centred on the origin, or starting at it for left-aligned lines."""
+    if align not in ALIGNMENTS:
+        raise ReplayError(f"Unknown caption alignment: {align}")
 
     def envelope(text: str) -> Box:
         lines = text.split("\n")
@@ -75,7 +88,8 @@ def top_envelope(
         width = max(size[0] for size in measured)
         height = max(size[1] for size in measured) + (len(lines) - 1) * line_advance
         top = -padding - ascent
-        return Box(-width / 2, top, width / 2, top + height)
+        left = 0.0 if align == "left" else -width / 2
+        return Box(left, top, left + width, top + height)
 
     return envelope
 
@@ -349,6 +363,21 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--unknown-person", choices=UNKNOWN_PERSON_RULES, default="fail")
     parser.add_argument("--yolo-track", type=Path, help="yolo_track evidence for unobserved frames")
     parser.add_argument("--yolo-minimum-confidence", type=float, default=0.5)
+    parser.add_argument(
+        "--canvas",
+        type=int,
+        nargs=2,
+        metavar=("WIDTH", "HEIGHT"),
+        help="the delivery frame, when it is not the calibration's",
+    )
+    parser.add_argument("--align", choices=ALIGNMENTS, default="centre")
+    parser.add_argument("--origin-x", type=float, help="the left-aligned lines' start")
+    parser.add_argument("--region-right", type=float, help="no line may cross this x")
+    parser.add_argument(
+        "--ignore-person",
+        action="store_true",
+        help="anchor each run at the region bottom; no person track is read",
+    )
     parser.add_argument("--yolo-gap-seconds", type=Fraction, default=Fraction(1, 2))
     return parser.parse_args(argv)
 
@@ -358,7 +387,11 @@ def run_plan(args: argparse.Namespace, observed: Sequence[TrackingPosition]) -> 
     if args.output.exists() or args.output.is_symlink():
         raise ReplayError("Refusing to overwrite the output")
     calibration = json.loads(args.calibration.read_text(encoding="utf-8"))
-    width, height = calibration["canvas"]
+    width, height = args.canvas or calibration["canvas"]
+    if (args.align == "left") != (args.origin_x is not None):
+        raise ReplayError("--origin-x goes with --align left")
+    center_x = width / 2 if args.origin_x is None else args.origin_x
+    right = float(width) if args.region_right is None else args.region_right
     reflow = args.paging / "reflow.json"
     cues = select_cues(
         json.loads(reflow.read_text(encoding="utf-8"))["captions"],
@@ -370,17 +403,22 @@ def run_plan(args: argparse.Namespace, observed: Sequence[TrackingPosition]) -> 
     placed, failures, topped = plan_runs(
         cues,
         rate=args.rate,
-        region=Box(0.0, args.region_top, float(width), args.region_bottom),
-        center_x=width / 2,
+        region=Box(0.0, args.region_top, right, args.region_bottom),
+        center_x=center_x,
         clearance=args.clearance,
         envelope=top_envelope(
             line_sizes(args.paging),
             padding=float(calibration["padding"]),
             ascent=float(calibration["nativeFont"]["renderedAscent"]),
             line_advance=float(calibration["style"]["motion_line_advance"]),
+            align=args.align,
         ),
-        person_top=person_top_from(
-            observed, mapping, rate=args.rate, maximum_drift=args.maximum_drift
+        person_top=(
+            (lambda _start, _end: float(height))
+            if args.ignore_person
+            else person_top_from(
+                observed, mapping, rate=args.rate, maximum_drift=args.maximum_drift
+            )
         ),
         unknown_person=args.unknown_person,
     )
@@ -394,7 +432,7 @@ def run_plan(args: argparse.Namespace, observed: Sequence[TrackingPosition]) -> 
             reflow,
             *([args.window_index] if args.window_index != NO_INDEX else []),
             args.cuts,
-            *([args.yolo_track] if args.yolo_track is not None else []),
+            *([args.yolo_track] if args.yolo_track is not None and not args.ignore_person else []),
         ],
     )
     document["plannedRuns"] = {
@@ -411,7 +449,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.output.exists() or args.output.is_symlink():
         raise ReplayError("Refusing to overwrite the output")
     vision = [] if args.window_index == NO_INDEX else load_observed(args.window_index)
-    if args.yolo_track is None:
+    if args.ignore_person:
+        observed = []
+    elif args.yolo_track is None:
         observed = vision
     else:
         canvas = json.loads(args.calibration.read_text(encoding="utf-8"))["canvas"]
