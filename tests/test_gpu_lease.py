@@ -249,3 +249,19 @@ def test_a_manual_flag_is_accepted_and_must_be_a_boolean(tmp_path: Path) -> None
     (tmp_path / "settings.json").write_text('{"manual": "yes"}', "utf-8")
     with pytest.raises(ValueError, match="manual must be true or false"):
         gpu_lease.settings(tmp_path)
+
+
+def test_a_registered_urgent_waiter_holds_back_other_grants_before_it_tries(
+    tmp_path: Path,
+) -> None:
+    leases = tmp_path / "gpu-leases"
+    (tmp_path / "lease-urgent.json").write_text(json.dumps({"urgent": ["2"]}), encoding="utf-8")
+    urgent = gpu_lease.Waiter(leases, "2", step="cleanup chunk-00000")
+    other = gpu_lease.Waiter(leases, "1", step="cleanup chunk-00000")
+    urgent.register()  # waiting on memory admission, not yet trying the lease
+    urgent.register()  # idempotent
+    assert other.try_acquire() is None
+    urgent.close()
+    held = other.try_acquire()
+    assert held is not None
+    other.close()

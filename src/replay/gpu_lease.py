@@ -108,6 +108,12 @@ def _rank(replay_id: str, start: int, priority: tuple[str, ...]) -> tuple[int, i
     return (priority.index(replay_id) if replay_id in priority else len(priority), start)
 
 
+def waiting(directory: Path, queue: str = "waiting") -> int:
+    """How many live waiters hold a marker in ``directory/queue``."""
+    folder = directory / queue
+    return sum(_held(marker) for marker in folder.iterdir()) if folder.is_dir() else 0
+
+
 def _held(path: Path) -> bool:
     """True while another process holds the waiter marker; a stale marker is removed."""
     try:
@@ -129,16 +135,21 @@ def marker_held(path: Path) -> bool:
     return _held(path)
 
 
-def urgent_waiting(work: Path, replay_id: str) -> bool:
-    """True while an urgent recording other than ``replay_id`` waits for any lease."""
+def urgent_ids(work: Path) -> set[str]:
+    """The recordings ``lease-urgent.json`` names (none without a valid file)."""
     path = work / URGENT
     if not path.is_file() or path.stat().st_size > MAX_URGENT_BYTES:
-        return False
+        return set()
     raw: object = json.loads(path.read_text(encoding="utf-8"))
     urgent = raw.get("urgent") if isinstance(raw, dict) else None
-    if not isinstance(urgent, list) or replay_id in urgent:
+    return {str(item) for item in urgent} if isinstance(urgent, list) else set()
+
+
+def urgent_waiting(work: Path, replay_id: str) -> bool:
+    """True while an urgent recording other than ``replay_id`` waits for any lease."""
+    names = urgent_ids(work)
+    if replay_id in names:
         return False
-    names = {str(item) for item in urgent}
     for folder in work.glob("*-leases/waiting"):
         for marker in folder.iterdir():
             if marker.name.partition(".")[0] in names and _held(marker):
@@ -184,31 +195,34 @@ class Waiter:
         step: str = "",
         job: str = "",
         units: float | None = None,
+        queue: str = "waiting",
     ) -> None:
         if not replay_id or "." in replay_id or "/" in replay_id:
             raise ValueError("A replay ID must be a non-empty name without dots or slashes")
         self.directory, self.replay_id, self.step = directory, replay_id, step
         self.start = started() if start is None else start
-        self.path = directory / "waiting" / f"{replay_id}.{self.start}.{os.getpid()}.{id(self)}"
+        # ``queue`` is the marker folder: "waiting" for leases; another one ranks another resource
+        # (source_clean_run's memory queue) by this directory's priority.
+        self.path = directory / queue / f"{replay_id}.{self.start}.{os.getpid()}.{id(self)}"
         self.descriptor: int | None = None
         self.created = time.monotonic()
         self.job, self.units = job, units
         self.ticket: gpu_orchestra.Ticket | None = None
 
-    def try_acquire(self) -> int | None:
-        """A held lease's descriptor, or None while every free one is owed to waiters ahead."""
-        capacity, priority = settings(self.directory)
+    def register(self) -> None:
+        """Hold the waiting marker (also before the lease is tried, e.g. while memory admission
+        still waits), so an urgent recording's job counts as waiting from its first wait on."""
         if self.descriptor is None:
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(self.descriptor, fcntl.LOCK_EX)
+
+    def waiting_ahead(self) -> int:
+        """Held waiting markers of other recordings ranked ahead of this one."""
+        _, priority = settings(self.directory)
         mine = _rank(self.replay_id, self.start, priority)
-        if urgent_waiting(self.directory.parent, self.replay_id):
-            return None  # an urgent recording waits: no new grant to anyone else
-        if self.job and gpu_orchestra.enabled():
-            return self._orchestrated(capacity, mine)
         ahead = 0
-        for marker in self.path.parent.iterdir():
+        for marker in self.path.parent.iterdir() if self.path.parent.is_dir() else ():
             replay, _, rest = marker.name.partition(".")
             start = rest.partition(".")[0]
             if (
@@ -218,6 +232,23 @@ class Waiter:
                 and _held(marker)
             ):
                 ahead += 1
+        return ahead
+
+    def yields(self) -> bool:
+        """True while an urgent recording or a recording ranked ahead waits: the caller then
+        takes no shared resource (memory) that it would hold while they wait."""
+        return urgent_waiting(self.directory.parent, self.replay_id) or self.waiting_ahead() > 0
+
+    def try_acquire(self) -> int | None:
+        """A held lease's descriptor, or None while every free one is owed to waiters ahead."""
+        capacity, priority = settings(self.directory)
+        self.register()
+        mine = _rank(self.replay_id, self.start, priority)
+        if urgent_waiting(self.directory.parent, self.replay_id):
+            return None  # an urgent recording waits: no new grant to anyone else
+        if self.job and gpu_orchestra.enabled():
+            return self._orchestrated(capacity, mine)
+        ahead = self.waiting_ahead()
         # Work-conserving: a lease is taken only while one stays free for every waiter ahead.
         free = _free_slots(self.directory, capacity, ahead + 1)
         if len(free) <= ahead:
