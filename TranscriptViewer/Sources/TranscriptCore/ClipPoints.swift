@@ -13,7 +13,8 @@ public struct ClipRange: Codable, Equatable, Sendable {
 }
 
 /// A clip point computed by the web viewer's Worker: one or more ranges of the stream that
-/// play in order, 10-30 s ("short") or 30-90 s ("long") in total, with a generated title and
+/// play in order, 5-10, 15-30, 35-60 or 90-120 s in total (records before version 10: 10-30 s
+/// "short" or 30-90 s "long"), with a generated title and
 /// summary.
 public struct ClipPoint: Codable, Equatable, Sendable, Identifiable {
     public let id: String
@@ -38,8 +39,13 @@ public struct ClipPoint: Codable, Equatable, Sendable, Identifiable {
         self.summary = summary
     }
 
+    static let kindLabels: [String: String] = [
+        "5-10": "5〜10秒", "15-30": "15〜30秒", "35-60": "35〜60秒", "90-120": "90〜120秒",
+        "short": "短尺 10〜30秒", "long": "長尺 30〜90秒",
+    ]
+
     public var kindLabel: String {
-        kind == "long" ? "長尺 30〜90秒" : "短尺 10〜30秒"
+        Self.kindLabels[kind] ?? kind
     }
 
     public var patternLabel: String? {

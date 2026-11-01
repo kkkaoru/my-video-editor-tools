@@ -39,6 +39,12 @@ struct ClipPointsTests {
         #expect(
             ClipPoint(id: "s", kind: "short", duration: 1, ranges: [], title: "", summary: "")
                 .kindLabel == "短尺 10〜30秒")
+        #expect(
+            ClipPoint(id: "n", kind: "90-120", duration: 1, ranges: [], title: "", summary: "")
+                .kindLabel == "90〜120秒")
+        #expect(
+            ClipPoint(id: "u", kind: "odd", duration: 1, ranges: [], title: "", summary: "")
+                .kindLabel == "odd")
         #expect(ClipPoint.seconds(27.64) == "27.6秒")
         #expect(twoRangeClip.elapsed(range: 1, at: 305) == 25)
         #expect(twoRangeClip.elapsed(range: 0, at: 90) == 0)
