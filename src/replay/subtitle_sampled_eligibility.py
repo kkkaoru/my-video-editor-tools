@@ -22,6 +22,7 @@ POLICIES = frozenset(
         "sampled-ocr-plus-detector-regions-v3",
         "sampled-ocr-plus-detector-regions-v4",
         "sampled-ocr-plus-detector-regions-v5",
+        "sampled-ocr-plus-detector-regions-v6",
     }
 )
 YOLO_POLICY = "yolo-caption-boxes-v1"

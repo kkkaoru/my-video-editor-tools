@@ -87,6 +87,55 @@ def test_admission_unites_detector_regions_into_unsampled_frames() -> None:
     assert masks[0]["region"] == {"x": 100, "y": 1300, "width": 800, "height": 150}
 
 
+def test_admission_closes_an_ocr_gap_within_the_radius_on_both_sides() -> None:
+    sampled = {i: _frame(i, () if i in (4, 5) else (LINE,)) for i in range(10)}
+    result = admission.admission(
+        sampled=sampled,
+        clock=CLOCK,
+        profile=PROFILE,
+        policy=POLICY,
+        stride=1,
+        triggers=(),
+        detected=[None] * 10,
+        radius=2,
+    )
+    frames = result["frames"]
+    assert isinstance(frames, list)
+    assert frames[4]["classification"] == "overlay-subtitle"
+    assert frames[5]["lineBoxes"] == [[200, 1330, 800, 1378]]
+    assert result["unknownSourcePTS"] == []
+
+
+def test_admission_keeps_an_ocr_gap_wider_than_the_radius_unknown() -> None:
+    sampled = {i: _frame(i, () if i in (4, 5) else (LINE,)) for i in range(10)}
+    result = admission.admission(
+        sampled=sampled,
+        clock=CLOCK,
+        profile=PROFILE,
+        policy=POLICY,
+        stride=1,
+        triggers=(),
+        detected=[None] * 10,
+        radius=1,
+    )
+    assert result["unknownSourcePTS"] == [12000, 15000]
+
+
+def test_admission_keeps_frames_after_the_last_caption_unknown() -> None:
+    sampled = {i: _frame(i, (LINE,) if i < 5 else ()) for i in range(10)}
+    result = admission.admission(
+        sampled=sampled,
+        clock=CLOCK,
+        profile=PROFILE,
+        policy=POLICY,
+        stride=1,
+        triggers=(),
+        detected=[None] * 10,
+        radius=9,
+    )
+    assert result["unknownSourcePTS"] == [15000, 18000, 21000, 24000, 27000]
+
+
 def test_admission_rejects_a_sampled_frame_with_a_wrong_clock() -> None:
     wrong = FrameObservation(1.0, 1.0, WIDTH, HEIGHT, (LINE,))
     with pytest.raises(ValueError, match="clock differs"):
@@ -205,7 +254,7 @@ def test_region_also_covers_recognised_lines_that_the_selection_ignored() -> Non
     assert isinstance(frames, list)
     assert frames[4]["region"] == {"x": 94, "y": 1380, "width": 406, "height": 60}
     assert frames[9]["region"] == {"x": 400, "y": 1390, "width": 100, "height": 20}
-    assert result["policy"] == "sampled-ocr-plus-detector-regions-v5"
+    assert result["policy"] == "sampled-ocr-plus-detector-regions-v6"
 
 
 def test_line_reach_grows_the_lines_box_by_the_median_line_height_each_way() -> None:

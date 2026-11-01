@@ -4,6 +4,7 @@ from fractions import Fraction
 
 import pytest
 
+from replay import subtitle_sampled_admission as sampled
 from replay import subtitle_yolo_admission as admission
 from replay.subtitle_cleanup_plan import CaptionSearchProfile
 from replay.subtitle_clock import VideoFrameClock
@@ -76,3 +77,27 @@ def test_boxes_must_cover_the_chunk_and_the_radius_must_not_be_negative() -> Non
         admission.admission(boxes=[[LINE]], clock=CLOCK, profile=PROFILE, radius=1)
     with pytest.raises(ValueError, match="do not cover"):
         admission.admission(boxes=[[]] * 6, clock=CLOCK, profile=PROFILE, radius=-1)
+
+
+def test_a_tall_caption_zone_grows_only_as_far_as_the_detector_budget() -> None:
+    # Captions measured at several heights: half the zone's height each way would exceed the
+    # 2,000,000-pixel budget, so the zone grows 427 rows instead of 501 and stays whole.
+    tall = CaptionSearchProfile(PROFILE.bands, (0, 355, 1077, 1003))
+    boxes = [[], [], [], [], [], [(200.4, 900.2, 799.6, 950.9)]]
+    result = admission.admission(boxes=boxes, clock=CLOCK, profile=tall, radius=0)
+    frames = result["frames"]
+    assert isinstance(frames, list)
+    assert frames[0]["region"] == {"x": 0, "y": 0, "width": 1077, "height": 1785}
+    assert frames[5]["region"] == {"x": 194, "y": 849, "width": 612, "height": 153}
+
+
+def test_zone_growth_is_half_the_zone_until_the_budget_binds() -> None:
+    assert sampled.zone_growth((0, 1283, 1077, 1450)) == 83
+    assert sampled.zone_growth((0, 355, 1077, 1358)) == 427
+    assert sampled.zone_growth((0, 0, 1080, 1920)) == 0
+
+
+def test_a_zone_beyond_the_budget_by_itself_is_still_refused() -> None:
+    whole = CaptionSearchProfile(PROFILE.bands, (0, 0, 1080, 1920))
+    with pytest.raises(ValueError, match="detector budget"):
+        admission.admission(boxes=[[]] * 6, clock=CLOCK, profile=whole, radius=0)

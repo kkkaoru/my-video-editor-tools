@@ -8,7 +8,8 @@ rules, so the renderer, the OCR audit and the colour-residual gate run unchanged
 - a frame's line boxes are the horizontal caption boxes touching the measured caption zone in
   the frame and its ``radius`` neighbours (captions fade, neighbours keep faint lines keyed);
 - the search region is the union of the padded lines and their one-line reach, clipped to the
-  zone grown by half its height, and checked against the detector budget;
+  zone grown by half its height (less for a zone so tall that it would exceed the detector
+  budget), and checked against the detector budget;
 - frames without any caption box stay unknown and are left unmodified, but they keep the caption
   zone as their audit region and colour-gate box, so a line the detector missed is still judged.
 
@@ -22,7 +23,13 @@ from replay.subtitle_cleanup_plan import CaptionSearchProfile
 from replay.subtitle_clock import VideoFrameClock
 from replay.subtitle_plan import repair_spans
 from replay.subtitle_region_fill import Region, union
-from replay.subtitle_sampled_admission import LINE_PAD, _checked, _line_reach, _within_zone
+from replay.subtitle_sampled_admission import (
+    LINE_PAD,
+    _checked,
+    _line_reach,
+    _within_zone,
+    zone_growth,
+)
 
 POLICY = "yolo-caption-boxes-v1"
 KIND = "yolo-caption-boxes"
@@ -66,7 +73,7 @@ def admission(
     envelope = profile.measured_envelope
     zone: Region = (envelope[0], envelope[1], envelope[0] + envelope[2], envelope[1] + envelope[3])
     per_frame = [frame_lines(frame, zone) for frame in boxes]
-    grow = (zone[3] - zone[1]) // 2
+    grow = zone_growth(zone)
     audit = _checked((zone[0], zone[1] - grow, zone[2], zone[3] + grow), width, height)
     audit_box = {
         "x": audit[0],

@@ -1,8 +1,8 @@
 """Admission of repair search regions from sampled OCR plus detector regions.
 
 Only the sampled frames carry OCR. Their per-frame regions come from the existing
-``frame_region`` rule, are bracketed over unsampled frames, and are united with the
-temporally widened detector regions. Frames without any region stay unknown and
+``frame_region`` rule, are bracketed over unsampled frames, closed over short OCR gaps and
+united with the temporally widened detector regions. Frames without any region stay unknown and
 unmodified. The result lists the sampled frames and the fill rule; it is a candidate
 search region, never a raw OCR reading, quality approval or text-absence proof.
 """
@@ -18,7 +18,7 @@ from replay.subtitle_plan import repair_spans
 from replay.subtitle_region_fill import Region, bracket, combine, union, widen
 from replay.subtitle_sampled_observations import receipt
 
-POLICY = "sampled-ocr-plus-detector-regions-v5"  # v5: regions stay within the caption zone
+POLICY = "sampled-ocr-plus-detector-regions-v6"  # v6: OCR gaps within the radius are closed
 LINE_PAD = 6  # recognised boxes are tight; glyph top/bottom rows can lie a few pixels outside
 MAX_REGION_PIXELS = 2_000_000
 MIN_REGION_SIDE = 8
@@ -93,15 +93,46 @@ def _line_reach(lines: Sequence[Sequence[int]]) -> list[Region]:
     return [(left, top - line_height, right, bottom + line_height)]
 
 
+def _closed(regions: Sequence[Region | None], radius: int) -> tuple[Region | None, ...]:
+    """A frame without a region between region frames at most ``radius`` frames away on both
+    sides takes the union of those nearest two.
+
+    OCR misses a caption for a frame or two (a fade, a busy background, a line read without the
+    line that anchors it to the band) while the caption stays on screen. Left unknown, that frame
+    keeps the caption, and the refill of its masked neighbours copies it back from there.
+    """
+    closed = list(regions)
+    for frame, region in enumerate(regions):
+        if region is not None:
+            continue
+        before = [r for r in regions[max(0, frame - radius) : frame] if r is not None]
+        after = [r for r in regions[frame + 1 : frame + radius + 1] if r is not None]
+        if before and after:
+            closed[frame] = union([before[-1], after[0]])
+    return tuple(closed)
+
+
+def zone_growth(zone: Region) -> int:
+    """Rows the caption zone grows by each way: half its height, within the detector budget.
+
+    A tall measured zone (captions placed at several heights) grown by half would exceed
+    ``MAX_REGION_PIXELS``; the growth then shrinks so the grown zone still fits, never below
+    zero, so the zone itself always stays inside the region the detector checks.
+    """
+    width, height = zone[2] - zone[0], zone[3] - zone[1]
+    room = MAX_REGION_PIXELS // max(1, width) - height
+    return max(0, min(height // 2, room // 2))
+
+
 def _within_zone(region: Region, zone: Region) -> Region:
-    """Clip a region vertically to the measured caption zone grown by half its height each way.
+    """Clip a region vertically to the measured caption zone grown by ``zone_growth`` each way.
 
     The detector's polygons can include interface text behind the caption and stretch a region
     over hundreds of rows. The zone is the measured extent of the caption, so rows farther than
     half of it away (about one line) from it are not caption rows; a residual there would be
     found by the post-repair audit instead of being repaired blindly.
     """
-    grow = (zone[3] - zone[1]) // 2
+    grow = zone_growth(zone)
     return (region[0], max(region[1], zone[1] - grow), region[2], min(region[3], zone[3] + grow))
 
 
@@ -129,7 +160,7 @@ def admission(
     if len(detected) != count:
         raise ValueError("Detector regions do not cover the requested source chunk")
     regions = _sample_regions(sampled, clock, profile, policy)
-    filled = combine(bracket(count, regions), widen(detected, radius))
+    filled = combine(_closed(bracket(count, regions), radius), widen(detected, radius))
     width, height = profile.bands.width, profile.bands.height
     terminal = clock.pts[-1] + clock.last_duration
     envelope = profile.measured_envelope
