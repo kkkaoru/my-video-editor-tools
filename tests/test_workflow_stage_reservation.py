@@ -514,6 +514,34 @@ def test_domain_completion_and_output_hash_are_required(
         reservation._completed(lease_request, time.monotonic() + 3)
 
 
+def test_timed_out_observation_try_is_repeated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    timeouts: list[object] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs["timeout"])
+        if len(timeouts) == 1:
+            raise subprocess.TimeoutExpired(command, 8.0)
+        return subprocess.CompletedProcess(command, 0, "p111\nlW\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert reservation._lsof(tmp_path / "lock", deadline=time.monotonic() + 30) == "p111\nlW\n"
+    assert timeouts == [8.0, 8.0]
+
+
+def test_observation_timing_out_until_the_deadline_is_a_replay_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        time.sleep(float(str(kwargs["timeout"])))
+        raise subprocess.TimeoutExpired(command, 0.05)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(ReplayError, match="Reservation deadline reached"):
+        reservation._lsof(tmp_path / "lock", deadline=time.monotonic() + 0.05)
+
+
 def test_real_lease_owner_observation(tmp_path: Path) -> None:
     with stages.execution_lock(tmp_path, "observed") as acquired:
         assert acquired is True
@@ -873,7 +901,8 @@ def test_real_subprocess_finishes_domain_then_stops_at_reserved_boundary(
         ) as child,
         ThreadPoolExecutor(max_workers=1) as reaper,
     ):
-        terminal = reaper.submit(child.wait, 5)
+        # Reaped within the reservation budget: an unreaped zombie stays an owned process.
+        terminal = reaper.submit(child.wait, 30)
         _wait_ready(ready)
         actual = processes(tmp_path, deadline=time.monotonic() + 3, pid=child.pid)[0]
         raw["job"].update(
@@ -886,6 +915,8 @@ def test_real_subprocess_finishes_domain_then_stops_at_reserved_boundary(
             }
         )
         raw["workflow"]["sha256"] = stages.file_digest(plan)
+        # Real lsof/ps observations: several of them under 2 pipelines' load exceed 3 s in total.
+        raw["timeoutSeconds"] = 30
         raw["current"]["fingerprint"] = json.loads(
             (tmp_path / "state/current.json").read_text(encoding="utf-8")
         )["fingerprint"]
@@ -917,7 +948,7 @@ def test_real_subprocess_finishes_domain_then_stops_at_reserved_boundary(
         finally:
             if not release.exists():
                 release.write_bytes(b"continue")
-        assert terminal.result(timeout=5) == 1
+        assert terminal.result(timeout=30) == 1
     assert (tmp_path / "current.txt").read_bytes() == b"verified fixture"
     assert not (tmp_path / "future.txt").exists()
     assert not (tmp_path / "state/future.json").exists()

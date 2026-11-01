@@ -41,7 +41,11 @@ MAX_PROCESS_BYTES = 1_048_576
 MAX_PROCESS_ROWS = 8192
 MAX_WAIT_SECONDS = 3600
 POLL_SECONDS = 0.2
-OBSERVATION_SECONDS = 2.0
+# One lsof/ps observation try. A machine-wide lsof on a held lock (edits/work/pipeline-speed-
+# 20261024/lsof/measure.py, 20 samples per run) took median 0.11-0.19 s and p99 0.20-1.57 s over
+# 60 samples with 2 recording pipelines running (load 8-195, 490-640 processes, 10-24); a make
+# check on top pushed it past the former 2 s. 8 s is five times the worst p99.
+OBSERVATION_SECONDS = 8.0
 BLOCK_BYTES = 1_048_576
 SHA256 = re.compile(r"[a-f0-9]{64}")
 JOB_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -310,16 +314,36 @@ def load_request(path: Path) -> Request:
     )
 
 
+def _observe(
+    command: list[str],
+    *,
+    deadline: float,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Run a read-only observation, each try bounded by ``OBSERVATION_SECONDS``; a try that times
+    out is repeated while the caller's deadline lasts (observing changes nothing)."""
+    while True:
+        _deadline(deadline)
+        try:
+            return subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=min(OBSERVATION_SECONDS, deadline - time.monotonic()),
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _lsof(path: Path, *, deadline: float, pid: int | None = None) -> str:
     _deadline(deadline)
     selector = [] if pid is None else ["-a", "-p", str(pid)]
-    result = subprocess.run(
+    result = _observe(
         ["/usr/sbin/lsof", "-n", "-P", *selector, "-Fpln", "--", str(path)],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=min(OBSERVATION_SECONDS, deadline - time.monotonic()),
+        deadline=deadline,
         env={**os.environ, "LC_ALL": "C"},
     )
     if result.returncode != 0 or result.stderr.strip() or len(result.stdout) > MAX_LSOF_BYTES:
@@ -354,13 +378,9 @@ def _parse_processes(body: str) -> list[ProcessIdentity]:
 def _snapshot(directory: Path, *, deadline: float) -> list[ProcessIdentity]:
     _namespace(directory)
     _deadline(deadline)
-    result = subprocess.run(
+    result = _observe(
         ["/bin/ps", "-ww", "-ax", "-o", "pid=,ppid=,uid=,lstart=,comm="],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=min(OBSERVATION_SECONDS, deadline - time.monotonic()),
+        deadline=deadline,
         env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
     )
     if (
@@ -412,13 +432,9 @@ def _same_process(actual: ProcessIdentity, expected: ProcessIdentity) -> bool:
 
 def _ended_or_zombie(pid: int, deadline: float) -> bool:
     _deadline(deadline)
-    result = subprocess.run(
+    result = _observe(
         ["/bin/ps", "-p", str(pid), "-o", "state="],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=min(OBSERVATION_SECONDS, deadline - time.monotonic()),
+        deadline=deadline,
         env={**os.environ, "LC_ALL": "C"},
     )
     if result.stderr.strip() or len(result.stdout) > 32:
