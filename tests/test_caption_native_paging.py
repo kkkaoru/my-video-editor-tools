@@ -8,11 +8,11 @@ import pytest
 from test_caption_native_layout import layout as layout
 from test_caption_native_reflow import exact as exact
 
-from replay import caption_joint_fit
+from replay import caption_joint_fit, caption_native_layout
 from replay import caption_native_paging as paging
 from replay import reflow_producer_evidence as producer
 from replay.caption_measure_cache import CachedCaptionLayout, CaptionMeasurer
-from replay.caption_native_layout import NativeCaptionLayout
+from replay.caption_native_layout import NativeCaptionLayout, NativeCaptionStyle
 from replay.caption_timing import CaptionCue, SpokenToken
 from replay.core import ReplayError
 from replay.recordings import record
@@ -394,7 +394,9 @@ def test_collect_planning_failures_preserves_success_and_rejects_unrelated_error
         rate: int,
         duration: Fraction,
         split_wide: bool,
+        prefetch: NativeCaptionStyle | None,
     ) -> tuple[tuple[CaptionCue, ...], int, int]:
+        assert prefetch is not None
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -702,3 +704,46 @@ def test_prefill_skips_existing_work_and_clears_what_a_failed_shard_left(
     paging.prefill_parallel(tmp_path, output, page=partial(failing), workers=4, selected=())
     assert sorted(path.name for path in output.iterdir()) == ["part-0000.json"]
     assert capsys.readouterr().out.count("PREFILL_SHARD_FAILED exit 1") == 2
+
+
+def test_prefetch_pages_identically_with_fewer_native_calls(
+    exact: NativeCaptionLayout, tmp_path: Path
+) -> None:
+    tokens = tuple(
+        SpokenToken(text, i * 0.2, (i + 1) * 0.2, "u")
+        for i, text in enumerate("abcdefghijklmnopqrstuvwxyzabcdefghij")
+    )
+    alone = paging.paged_cues(tokens, layout=exact, rate=30, duration=Fraction(8))
+    calls_alone = len(tuple(exact.directory.glob("*.response.json")))
+    batched = NativeCaptionLayout(
+        executable=exact.executable,
+        directory=tmp_path / "batched",
+        evidence=(tmp_path / "calibration.json",),
+        style=exact.style,
+        width=exact.width,
+        height=exact.height,
+        expected_point_size=10,
+        execute=exact._execute,
+    )
+    prefetched = paging.paged_cues(
+        tokens, layout=batched, rate=30, duration=Fraction(8), prefetch=exact.style
+    )
+    assert prefetched == alone
+    assert len(tuple(batched.directory.glob("*.response.json"))) < calls_alone
+
+
+def test_prefetch_ignores_the_estimate_failing(exact: NativeCaptionLayout) -> None:
+    tokens = (SpokenToken("ab", 0.0, 0.2, "u"),)
+    probe = caption_native_layout.SpeculativeLayout(
+        width=exact.width, expected_point_size=10, style=exact.style
+    )
+    probe.prepare_lines(("x" * 121, "y\nz", "ok"))
+    assert probe.measurable() == ("ok",)
+    assert paging.paged_cues(
+        tokens, layout=exact, rate=30, duration=Fraction(1), prefetch=exact.style
+    ) == paging.paged_cues(tokens, layout=exact, rate=30, duration=Fraction(1))
+    with pytest.raises(ReplayError, match="exceeds"):
+        paging.paged_cues(
+            (SpokenToken("ab", 0.0, 2.0, "u"),),
+            layout=exact, rate=30, duration=Fraction(1), prefetch=exact.style,
+        )  # fmt: skip

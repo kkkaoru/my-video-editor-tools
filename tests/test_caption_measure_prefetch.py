@@ -185,13 +185,15 @@ def test_request_count_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         prefetch.evaluate_saved(tmp_path, segment=0, requests=tmp_path, output=tmp_path / "o")
 
 
-def test_batch_forecast_limits_and_repeated_requests() -> None:
+def test_batch_forecast_limits_and_repeated_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     plan = prefetch.PrefetchPlan(tuple(str(index) for index in range(17)), 17, 24, False)
     assert prefetch.forecast_batches(
         plan, (("0",), ("missing",), ("missing",))
-    ) == prefetch.BatchForecast(3, 2, 1, 3)
+    ) == prefetch.BatchForecast(3, 1, 1, 2)
     large = prefetch.PrefetchPlan(("x" * 120, "y" * 120), 2, 240, False)
-    assert prefetch.forecast_batches(large, ()) == prefetch.BatchForecast(0, 2, 0, 2)
+    assert prefetch.forecast_batches(large, ()) == prefetch.BatchForecast(0, 1, 0, 1)
     assert prefetch.forecast_batches(
         prefetch.PrefetchPlan((), 0, 0, False), ()
     ) == prefetch.BatchForecast(0, 0, 0, 0)
+    monkeypatch.setattr(prefetch, "MAX_BATCH_TEXTS", 16)
+    assert prefetch.forecast_batches(plan, ()) == prefetch.BatchForecast(0, 2, 0, 2)

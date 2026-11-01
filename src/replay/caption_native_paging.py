@@ -6,6 +6,7 @@ fine-ASR words may carry explicit measured uniform-scale evidence.
 """
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -35,7 +36,11 @@ from replay.caption_measure_cache import CaptionMeasurer
 from replay.caption_measured_job import _token
 from replay.caption_measured_plan import PositionedCue
 from replay.caption_native_inputs import recognition_pins, segment_binding
-from replay.caption_native_layout import NativeCaptionLayout, NativeCaptionStyle
+from replay.caption_native_layout import (
+    NativeCaptionLayout,
+    NativeCaptionStyle,
+    SpeculativeLayout,
+)
 from replay.caption_paging_cache import reuse_measurements
 from replay.caption_scale import read_scale, scale_fields
 from replay.caption_timing import (
@@ -125,6 +130,7 @@ def paged_cues(
     duration: Fraction,
     maximum_height: float | None = None,
     split_wide: bool = False,
+    prefetch: NativeCaptionStyle | None = None,
 ) -> tuple[tuple[CaptionCue, ...], int, int]:
     """Use the same recognized onsets and phrase-aware reset/hold/frame policy.
 
@@ -145,6 +151,18 @@ def paged_cues(
     # The shared planner removes nonlexical recognizer loops before measuring.
     # Raw-token prefetch would incorrectly measure discarded recognition noise.
 
+    if prefetch is not None:
+        # A pass on estimated bounds lists the lines this one will measure; they go to the
+        # native tool in full batches first. Its own failures are the estimate's, not ours.
+        probe = SpeculativeLayout(
+            width=layout.width, expected_point_size=layout.expected_point_size, style=prefetch
+        )
+        with contextlib.suppress(ValueError, ReplayError):
+            paged_cues(
+                tokens, layout=probe, rate=rate, duration=duration,
+                maximum_height=maximum_height, split_wide=split_wide,
+            )  # fmt: skip
+        layout.prepare_lines(probe.measurable())
     fit = IndivisibleFit(tokens, layout=layout, maximum_height=maximum_height)
 
     policy = CaptionPolicy(
@@ -450,8 +468,9 @@ def run(
             limited, clipped = limit_durations(tokens)
             try:
                 cues, hidden, widened = paged_cues(
-                    limited, layout=layout, rate=rate, duration=duration, split_wide=split_wide
-                )
+                    limited, layout=layout, rate=rate, duration=duration,
+                    split_wide=split_wide, prefetch=style,
+                )  # fmt: skip
             except ValueError as error:
                 if prefill:
                     continue

@@ -143,7 +143,16 @@ def test_batch_resource_bound_and_cache_limit(
     layout: NativeCaptionLayout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout.prepare_lines(("a" * 100, "b" * 100))
-    assert len(tuple(layout.directory.glob("*.response.json"))) == 2
+    assert len(tuple(layout.directory.glob("*.response.json"))) == 1
+    monkeypatch.setattr(caption_native_layout, "MAX_BATCH_UNITS", 150)
+    layout.prepare_lines(("c" * 100, "d" * 100))
+    assert len(tuple(layout.directory.glob("*.response.json"))) == 3
+    monkeypatch.setattr(caption_native_layout, "MAX_BATCH_TEXTS", 2)
+    layout.prepare_lines(("e", "f", "g"))
+    assert len(tuple(layout.directory.glob("*.response.json"))) == 5
+    monkeypatch.setattr(caption_native_layout, "MAX_BATCH_PIXELS", layout._pixel_bound(1) * 1.5)
+    layout.prepare_lines(("h", "i"))
+    assert len(tuple(layout.directory.glob("*.response.json"))) == 7
     monkeypatch.setattr(caption_native_layout, "MAX_CACHE", 2)
     with pytest.raises(ReplayError, match="cache budget"):
         layout.measure("new")

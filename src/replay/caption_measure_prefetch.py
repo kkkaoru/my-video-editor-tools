@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from replay.caption_native_layout import MAX_BATCH_UNITS
+from replay.caption_native_layout import MAX_BATCH_TEXTS, MAX_BATCH_UNITS
 from replay.caption_native_paging import read_tokens
 from replay.caption_timing import CaptionPolicy, SpokenToken, _attached_tails, _lexical_tokens
 from replay.recordings import record
@@ -168,7 +168,7 @@ def forecast_batches(plan: PrefetchPlan, requests: tuple[tuple[str, ...], ...]) 
     units = 0
     for text in plan.texts:
         size = len(text.encode("utf-16-le")) // 2
-        if count and (count == 16 or units + size > MAX_BATCH_UNITS):
+        if count and (count == MAX_BATCH_TEXTS or units + size > MAX_BATCH_UNITS):
             warm += 1
             count = 0
             units = 0

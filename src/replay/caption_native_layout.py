@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import os
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,7 +21,14 @@ from replay.recordings import record
 from replay.stages import StageError, execute_command, file_digest
 
 MAX_CACHE = 65_536
-MAX_BATCH_UNITS = 128
+# The native tool's per-call limits (MeasurementService caption_text_measure): 256 texts,
+# 4096 UTF-16 units and 16 megapixels of measured bounds. Every call costs ~0.16 s of process
+# start-up against ~3 ms per text (10-24 paging measurements), so batches fill these limits.
+MAX_BATCH_TEXTS = 256
+MAX_BATCH_UNITS = 4096
+# Pixels are estimated above the real bounds (a full-size em per unit, 1.5 line heights), so a
+# batch stays under the native 16-megapixel budget with margin.
+MAX_BATCH_PIXELS = 12_000_000
 MAX_RESPONSE_BYTES = 1_048_576
 
 
@@ -59,8 +67,8 @@ def _positive(value: object) -> float:
 class NativeCaptionLayout:
     """One private, non-overwriting measurement run; unchanged text is cached.
 
-    Native batch limits stay unchanged. Small request batches reduce process
-    overhead; character counts only bound request resources, never text fit.
+    Batches fill the native per-call limits (each call starts a process); character and
+    pixel counts only bound request resources, never text fit.
     Failed/partial artifacts remain. Create a fresh directory for a new run.
     Call verify_inputs before publishing its plan. No app UI or fallback renderer.
     """
@@ -189,18 +197,29 @@ class NativeCaptionLayout:
         if len(self._cache) + len(pending) > MAX_CACHE:
             raise ReplayError("Native caption measurement cache budget exceeded")
         batch: list[str] = []
-        units = 0
+        units, pixels = 0, 0.0
         for text in pending:
             count = len(text.encode("utf-16-le")) // 2
             if not 1 <= count <= 120 or any(c in text for c in "\r\n\0"):
                 raise ReplayError("Native caption measurement requires bounded single-line text")
-            if batch and (units + count > MAX_BATCH_UNITS or len(batch) == 16):
+            area = self._pixel_bound(count)
+            if batch and (
+                units + count > MAX_BATCH_UNITS
+                or pixels + area > MAX_BATCH_PIXELS
+                or len(batch) == MAX_BATCH_TEXTS
+            ):
                 self._request(tuple(batch))
-                batch, units = [], 0
+                batch, units, pixels = [], 0, 0.0
             batch.append(text)
             units += count
+            pixels += area
         if batch:
             self._request(tuple(batch))
+
+    def _pixel_bound(self, units: int) -> float:
+        """An upper estimate of one text's measured width x height in native pixels."""
+        size, padding = self.style.ass_font_size, 2 * (self.style.border + self.style.rim)
+        return (units * size + 2 * padding + size) * 1.5 * size
 
     def measure(self, text: str) -> tuple[float, float]:
         lines = text.split("\n")
@@ -220,6 +239,47 @@ class NativeCaptionLayout:
             height=self.height,
             prepare_lines=self.prepare_lines,
             maximum_lines=3,
+        )
+
+
+class SpeculativeLayout:
+    """Estimated bounds that record every line a layout pass asks for; nothing is native.
+
+    A first pass with it lists the lines the real pass will most likely measure, so they can
+    go to the native tool in a few full batches. Its numbers only pick which lines to prefetch:
+    the real pass decides on measured bounds alone, and a line the estimate missed is
+    measured then. The widths are a fit to the native bounds of Noto Sans JP captions (10-24:
+    a full-width character ~1 point, a half-width one ~0.54 point, plus outline padding).
+    """
+
+    def __init__(self, *, width: float, expected_point_size: float, style: NativeCaptionStyle):
+        self.width, self.style = width, style
+        self.expected_point_size: float | None = expected_point_size
+        self._point = expected_point_size
+        self.lines: dict[str, None] = {}
+
+    def _line(self, text: str) -> tuple[float, float]:
+        self.lines[text] = None
+        full = sum(1 for c in text if unicodedata.east_asian_width(c) in "WF")
+        points = self._point * (full + 0.54 * (len(text) - full) + 0.08)
+        return points + 2 * (self.style.border + self.style.rim), 1.25 * self.style.ass_font_size
+
+    def prepare_lines(self, texts: Iterable[str]) -> None:
+        self.lines.update(dict.fromkeys(texts))
+
+    def measure(self, text: str) -> tuple[float, float]:
+        sizes = [self._line(line) for line in text.split("\n")]
+        return max(size[0] for size in sizes), max(size[1] for size in sizes) + (
+            len(sizes) - 1
+        ) * self.style.motion_line_advance
+
+    def measurable(self) -> tuple[str, ...]:
+        """Recorded lines the ordinary native request accepts."""
+        return tuple(
+            text
+            for text in self.lines
+            if 1 <= len(text.encode("utf-16-le")) // 2 <= 120
+            and not any(c in text for c in "\r\n\0")
         )
 
 
