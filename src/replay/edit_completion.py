@@ -787,7 +787,10 @@ def offloaded_rows(root: Path) -> list[dict[str, object]]:
         path = Path(entry.local_path)
         if entry.role != "delivery" or os.path.lexists(path):
             continue
-        fetch = f"python -m replay.r2_fetch {root.name.removeprefix('replay-')} --role delivery"
+        fetch = (
+            f"python -m replay.r2_fetch {root.name.removeprefix('replay-')} --role delivery"
+            f" --edit-root {root}"
+        )
         rows.append(
             {
                 "delivery": delivery_label(root, path),

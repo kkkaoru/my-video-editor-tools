@@ -1076,6 +1076,7 @@ def test_offloaded_delivery_is_a_distinct_state_not_a_pass(tmp_path: Path) -> No
                 "offload": {"key": "media/m.mp4", "bytes": 5, "sha256": "a" * 64},
                 "missingStages": {
                     "local-bytes": "fetch required: python -m replay.r2_fetch 7 --role delivery"
+                    f" --edit-root {root}"
                 },
             }
         ],
