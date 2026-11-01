@@ -229,6 +229,10 @@ struct TranscriptRootView: View {
                     ScrollView {
                         timeline
                     }
+                    // The clips list takes the room the timeline does not need (10-30).
+                    .frame(
+                        minHeight: Chrome.timelineHeights(clipsOpen: session.detailTab == .clips).min,
+                        maxHeight: Chrome.timelineHeights(clipsOpen: session.detailTab == .clips).max)
                     // Outside the scroll area, so the BGM stays visible however short it gets.
                     VideoBGMControls(model: session.videoBGM)
                     Picker("表示内容", selection: $session.detailTab) {
@@ -248,10 +252,18 @@ struct TranscriptRootView: View {
                         .id(video.id)
                     case .clips:
                         ScrollView {
-                            ClipsPanel(model: session.clips) { clip, index, loop in
-                                session.play(clip, range: index, loop: loop)
-                            }
+                            ClipsPanel(
+                                model: session.clips,
+                                play: { clip, index, loop in
+                                    session.play(clip, range: index, loop: loop)
+                                },
+                                seek: { seconds in
+                                    session.resumeTimelineFollow()
+                                    session.seek(to: seconds)
+                                })
                         }
+                        .frame(minHeight: Chrome.clipsMinHeight, maxHeight: .infinity)
+                        .layoutPriority(1)
                     case .utterances:
                         HStack(spacing: 8) {
                             Text("認識結果")

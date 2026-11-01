@@ -7,9 +7,12 @@ struct ClipsPanel: View {
     let model: ClipsModel
     /// Clip, first range, loop.
     let play: (ClipPoint, Int, Bool) -> Void
+    /// Seeks the player without playing a clip (a click on a row).
+    var seek: (Double) -> Void = { _ in }
+    @State private var selectedID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Text("切り抜き").font(.headline).accessibilityAddTraits(.isHeader)
                 Text(note).foregroundStyle(.secondary)
@@ -17,12 +20,21 @@ struct ClipsPanel: View {
                 Button("切り抜きを再計算", action: model.reload)
                     .disabled(!model.canReload)
                     .frame(minHeight: Chrome.hit)
-                    .help("Cloudflareで切り抜き箇所と要約を計算し直します（数分かかります。通常の作成はMacで行います）")
+                    .help("このMacの切り抜きモデルで切り抜き箇所と要約を計算し直します（1時間ほどかかります）")
             }
-            ForEach(model.clips) { clip in
-                ClipRow(clip: clip, cursor: model.cursor, play: play)
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(model.clips) { clip in
+                    ClipRow(
+                        clip: clip, cursor: model.cursor, play: play,
+                        selected: selectedID == clip.id
+                    ) {
+                        selectedID = clip.id
+                        if let first = clip.ranges.first { seek(first.start) }
+                    }
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     var note: String {
@@ -41,7 +53,7 @@ struct ClipsPanel: View {
         case .idle: ""
         case .loading: "読み込み中…"
         case .ready(let clips): clips.isEmpty ? "切り抜きに向く区間が見つかりませんでした" : "\(clips.count)件"
-        case .pending: "計算中です（数分かかります）…"
+        case .pending: "計算中です（Macで1時間ほどかかります）…"
         case .mismatch: "Web版の動画と内容が異なるため表示できません"
         case .missing: "この動画の切り抜きはまだありません（Macで作成されると表示されます）"
         case .noExcitement: "盛り上がりデータがまだないため作成できません（計算して同期した後、Macで作成されます）"
@@ -51,15 +63,28 @@ struct ClipsPanel: View {
     }
 }
 
+/// One clip: its title, a second line with where it plays, how long and its band, its summary,
+/// then the play buttons and its ranges. A click on the row selects it and seeks to its start.
 struct ClipRow: View {
     let clip: ClipPoint
     let cursor: ClipCursor?
     let play: (ClipPoint, Int, Bool) -> Void
+    var selected = false
+    var select: () -> Void = {}
+    @State private var hovering = false
 
     var playing: Bool { cursor?.clip.id == clip.id }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(clip.title)
+                .font(.title3.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(detailLabel)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(clip.summary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 Button {
                     play(clip, 0, true)
@@ -78,26 +103,41 @@ struct ClipRow: View {
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("\(clip.title)を1回だけ再生")
-                Text(clip.title).font(.headline)
-                Spacer(minLength: 0)
-                Text(lengthLabel).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-            }
-            Text(clip.summary).fixedSize(horizontal: false, vertical: true)
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    ForEach(Array(clip.ranges.enumerated()), id: \.offset) { index, range in
-                        Button(rangeLabel(index, range)) { play(clip, index, true) }
-                            .frame(minHeight: Chrome.hit)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(clip.ranges.enumerated()), id: \.offset) { index, range in
+                            Button(rangeLabel(index, range)) { play(clip, index, true) }
+                                .frame(minHeight: Chrome.hit)
+                        }
                     }
                 }
+                .accessibilityLabel("\(clip.title)の区間")
             }
-            .accessibilityLabel("\(clip.title)の区間")
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(playing ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(fill))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: select)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    var fill: Color {
+        if playing { return Color.accentColor.opacity(0.18) }
+        return Color.secondary.opacity(hovering || selected ? 0.16 : 0.08)
+    }
+
+    /// Where in the video the clip lies (its earliest start to its latest end: a climax-first clip
+    /// plays its later range first), then its length.
+    var detailLabel: String {
+        guard let start = clip.ranges.map(\.start).min(), let end = clip.ranges.map(\.end).max()
+        else { return lengthLabel }
+        return "\(ExcitementTimeline.clock(start))–\(ExcitementTimeline.clock(end))・\(lengthLabel)"
     }
 
     var lengthLabel: String {

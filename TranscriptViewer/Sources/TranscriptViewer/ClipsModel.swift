@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import TranscriptCore
 
-/// The selected video's clip points, read from the web viewer's Worker (where they are computed
-/// and stored per movie content), and the clip being played range by range.
+/// The selected video's clip points, read from the web viewer's Worker (where the Mac stores them
+/// per movie content), and the clip being played range by range.
 @MainActor @Observable
 final class ClipsModel {
     enum State: Equatable {
@@ -21,15 +21,24 @@ final class ClipsModel {
 
     typealias Fetch = @Sendable (URLRequest) async throws -> (Data, Int)
     typealias MovieKey = @Sendable (URL) throws -> String
+    typealias Recompute = @Sendable (String) async -> (status: Int32, output: String)
 
     static let pollInterval: Duration = .seconds(15)
+    /// How often a video without clips for its movie asks again: the Mac makes a published
+    /// video's clips after the upload (an hour or so), and a republished movie replaces the
+    /// record, so a video opened before then showed none until it was selected again (10-30).
+    static let settledInterval: Duration = .seconds(60)
 
     private(set) var state = State.idle
     private(set) var cursor: ClipCursor?
     let api: ClipsAPI?
     @ObservationIgnored var fetch: Fetch = ClipsModel.download
     @ObservationIgnored var movieKey: MovieKey = BGMLevel.movieKey
+    @ObservationIgnored var recompute: Recompute = {
+        await ClipsModel.recomputeOnMac($0, checkout: BGMLibraryModel.checkout)
+    }
     @ObservationIgnored var pollInterval = ClipsModel.pollInterval
+    @ObservationIgnored var settledInterval = ClipsModel.settledInterval
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var movie: URL?
     @ObservationIgnored private var key: String?
@@ -55,7 +64,8 @@ final class ClipsModel {
 
     var canReload: Bool { api != nil && movie != nil && state != .pending && state != .loading }
 
-    /// Loads the clips of `movie`, polling while they are being computed.
+    /// Loads the clips of `movie`, polling while they are being computed, and less often while
+    /// the Worker has none for it yet (missing, another movie's or no excitement yet).
     func open(_ movie: URL?) {
         task?.cancel()
         cursor = nil
@@ -73,27 +83,37 @@ final class ClipsModel {
         task = Task { [weak self] in await self?.poll(movie) }
     }
 
-    /// Asks the Worker to compute the clips again, then polls for the new ones.
+    /// Computes the clips again on the Mac (the Worker runs no model), then reads the new ones.
     func reload() {
-        guard let api, let movie else { return }
+        guard api != nil, let movie else { return }
         task?.cancel()
         cursor = nil
         state = .pending
         task = Task { [weak self] in
             guard let self else { return }
-            do {
-                let (_, status) = try await fetch(api.reload(videoID: ClipsAPI.videoID(movie)))
-                guard status == 200 else {
-                    state = .failed("再計算を開始できませんでした（HTTP \(status)）")
-                    return
-                }
-                try await Task.sleep(for: pollInterval)
-                await poll(movie)
-            } catch is CancellationError {
-            } catch {
-                state = .failed(error.localizedDescription)
+            let result = await recompute(ClipsAPI.videoID(movie))
+            guard result.status == 0 else {
+                state = .failed("Macでの再計算に失敗しました（終了コード \(result.status)）")
+                return
             }
+            await poll(movie)
         }
+    }
+
+    /// `bun run clips:mac -- --force <id>` in the checkout's web viewer: the local models, about
+    /// an hour per video. No shell; PATH reaches bun and uv.
+    nonisolated static func recomputeOnMac(_ videoID: String, checkout: URL?) async
+        -> (status: Int32, output: String)
+    {
+        guard let checkout else { return (-1, "checkout not found") }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return await BGMLibraryModel.run(
+            URL(fileURLWithPath: "/usr/bin/env"),
+            ["bun", "run", "clips:mac", "--", "--force", videoID],
+            in: checkout.appending(path: "web-viewer", directoryHint: .isDirectory),
+            environment: [
+                "HOME": home, "PATH": "\(home)/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            ])
     }
 
     private func poll(_ movie: URL) async {
@@ -111,18 +131,12 @@ final class ClipsModel {
                 case .ready(let clips):
                     state = .ready(clips)
                     return
-                case .mismatch:
-                    state = .mismatch
-                    return
-                case .missing:
-                    state = .missing
-                    return
-                case .noExcitement:
-                    state = .noExcitement
-                    return
+                case .mismatch: state = .mismatch
+                case .missing: state = .missing
+                case .noExcitement: state = .noExcitement
                 case .pending: state = .pending
                 }
-                try await Task.sleep(for: pollInterval)
+                try await Task.sleep(for: state == .pending ? pollInterval : settledInterval)
             }
         } catch is CancellationError {
         } catch {

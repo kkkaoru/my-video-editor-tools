@@ -151,11 +151,6 @@ public struct ClipsAPI: Equatable, Sendable {
         return authorized(URLRequest(url: url), method: "GET")
     }
 
-    public func reload(videoID: String) -> URLRequest {
-        authorized(
-            URLRequest(url: base.appending(path: "api/clips/\(videoID)/reload")), method: "POST")
-    }
-
     /// The YouTube channel labels shared with the web viewer.
     public func channels() -> URLRequest {
         authorized(URLRequest(url: base.appending(path: "api/channels.json")), method: "GET")

@@ -106,9 +106,6 @@ struct ClipPointsTests {
         let lookup = api.lookup(videoID: "v 1", movieKey: "abc")
         #expect(lookup.url?.absoluteString == "https://v.example.test/api/clips/v%201.json?key=abc")
         #expect(lookup.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
-        let reload = api.reload(videoID: "v1")
-        #expect(reload.httpMethod == "POST")
-        #expect(reload.url?.path() == "/api/clips/v1/reload")
         #expect(ClipsAPI.domain(in: "VIEWER_DOMAIN=") == nil)
         #expect(ClipsAPI.videoID(URL(fileURLWithPath: "/m/2026_a-review.mp4")) == "2026_a-review")
     }
@@ -165,6 +162,20 @@ struct ClipsModelTests {
         #expect(model.canReload)
     }
 
+    @Test func aVideoWithoutClipsShowsThemOnceTheMacMadeThem() async throws {
+        // Opened before the Mac made its clips (missing), then for a republished movie
+        // (mismatch): the open video keeps asking and shows every clip when they exist.
+        let replies = Replies([
+            (#"{"status":"missing"}"#, 404), (#"{"status":"mismatch"}"#, 200), (Self.readyBody, 200),
+        ])
+        let model = Self.model(replies)
+        model.settledInterval = .milliseconds(1)
+        model.open(URL(fileURLWithPath: "/m/v1.mp4"))
+        try await Self.waitUntil { model.clips.count == 1 }
+        #expect(model.clips == [twoRangeClip])
+        #expect(replies.requests.count == 3)
+    }
+
     @Test func reportsMissingMismatchAndFailures() async throws {
         let model = Self.model(Replies([(#"{"status":"missing"}"#, 404)]))
         model.open(URL(fileURLWithPath: "/m/a.mp4"))
@@ -217,33 +228,39 @@ struct ClipsModelTests {
         #expect(status == 0)
     }
 
-    @Test func reloadAsksTheWorkerThenPollsForTheNewClips() async throws {
-        let replies = Replies([
-            (Self.readyBody, 200), (#"{"status":"pending","force":true}"#, 200),
-            (Self.readyBody, 200),
-        ])
+    @Test func reloadRecomputesOnTheMacThenReadsTheNewClips() async throws {
+        let replies = Replies([(Self.readyBody, 200), (Self.readyBody, 200)])
         let model = Self.model(replies)
+        let asked = Asked()
+        model.recompute = { await asked.add($0) }
         model.open(URL(fileURLWithPath: "/m/v1.mp4"))
         try await Self.waitUntil { model.clips.count == 1 }
         model.reload()
         #expect(model.state == .pending)
         try await Self.waitUntil { model.clips.count == 1 }
-        #expect(replies.requests[1] == "POST /api/clips/v1/reload?")
-        #expect(replies.requests.count == 3)
+        #expect(await asked.ids == ["v1"])
+        #expect(replies.requests.count == 2)
 
-        let refused = Self.model(Replies([(Self.readyBody, 200), ("", 403)]))
-        refused.open(URL(fileURLWithPath: "/m/v1.mp4"))
-        try await Self.waitUntil { refused.clips.count == 1 }
-        refused.reload()
-        try await Self.waitUntil { refused.state != .pending }
-        #expect(refused.state == .failed("再計算を開始できませんでした（HTTP 403）"))
+        let failed = Self.model(Replies([(Self.readyBody, 200)]))
+        failed.recompute = { _ in (2, "boom") }
+        failed.open(URL(fileURLWithPath: "/m/v1.mp4"))
+        try await Self.waitUntil { failed.clips.count == 1 }
+        failed.reload()
+        try await Self.waitUntil { failed.state != .pending }
+        #expect(failed.state == .failed("Macでの再計算に失敗しました（終了コード 2）"))
+    }
 
-        let offline = Self.model(Replies([(Self.readyBody, 200)]))
-        offline.open(URL(fileURLWithPath: "/m/v1.mp4"))
-        try await Self.waitUntil { offline.clips.count == 1 }
-        offline.reload()
-        try await Self.waitUntil { offline.state != .pending }
-        #expect(offline.clips.isEmpty)
+    @Test func recomputingOnTheMacRunsTheCheckoutsClipsCommand() async throws {
+        #expect(await ClipsModel.recomputeOnMac("v1", checkout: nil).output == "checkout not found")
+        let root = try transcriptTestWorkRoot().appending(
+            path: "clips-mac-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { #expect(throws: Never.self) { try FileManager.default.removeItem(at: root) } }
+        let missing = await ClipsModel.recomputeOnMac("v1", checkout: root)
+        #expect(missing.status == -1)
+        try FileManager.default.createDirectory(
+            at: root.appending(path: "web-viewer"), withIntermediateDirectories: true)
+        // No package.json there, so bun refuses the script instead of computing anything.
+        #expect(await ClipsModel.recomputeOnMac("v1", checkout: root).status != 0)
     }
 
     @Test func theSessionPlaysEveryRangeOfAClipInOrder() throws {
@@ -284,19 +301,44 @@ struct ClipsModelTests {
         try panel.inspect().find(viewWithAccessibilityLabel: "山場を1回だけ再生").button().tap()
         try panel.inspect().find(button: "2. 0:05:00〜（20.0秒）").tap()
         #expect(played == ["0 true", "0 false", "1 true"])
+        // The second line: where the clip plays, its length, band and ranges.
         #expect(
-            try panel.inspect().find(text: "40.0秒・長尺 30〜90秒・2区間").string() == "40.0秒・長尺 30〜90秒・2区間")
+            try panel.inspect().find(text: "0:01:40–0:05:20・40.0秒・長尺 30〜90秒・2区間").string()
+                == "0:01:40–0:05:20・40.0秒・長尺 30〜90秒・2区間")
         _ = model.start(twoRangeClip, range: 1, loop: false)
         #expect(panel.note == "再生中: 山場（40.0秒・区間2/2、20.0秒の区間）")
         _ = model.start(twoRangeClip, range: 0, loop: true)
         #expect(panel.note == "ループ再生中: 山場（40.0秒・区間1/2、20.0秒の区間）")
         model.stop()
+        var sought: [Double] = []
+        var selected = 0
+        let row = ClipRow(clip: twoRangeClip, cursor: nil, play: { _, _, _ in }, selected: true) {
+            selected += 1
+        }
+        try row.inspect().vStack().callOnTapGesture()
+        #expect(selected == 1)
+        #expect(row.fill == Color.secondary.opacity(0.16))
+        let seeking = ClipsPanel(model: model, play: { _, _, _ in }, seek: { sought.append($0) })
+        try seeking.inspect().find(ClipRow.self).vStack().callOnTapGesture()
+        #expect(sought == [100])
         let story = ClipPoint(
             id: "s", kind: "short", pattern: "climax-first", duration: 12,
             ranges: [ClipRange(start: 0, end: 12)], title: "t", summary: "s")
         #expect(
             ClipRow(clip: story, cursor: nil) { _, _, _ in }.lengthLabel
                 == "12.0秒・短尺 10〜30秒・山場→経緯")
+        // A climax-first clip plays its later range first; the span covers both.
+        let climax = ClipPoint(
+            id: "c", kind: "15-30", pattern: "climax-first", duration: 20,
+            ranges: [ClipRange(start: 791, end: 801), ClipRange(start: 776, end: 786)], title: "t",
+            summary: "s")
+        #expect(
+            ClipRow(clip: climax, cursor: nil) { _, _, _ in }.detailLabel
+                == "0:12:56–0:13:21・20.0秒・15〜30秒・山場→経緯・2区間")
+        #expect(
+            ClipRow(clip: ClipPoint(
+                id: "e", kind: "short", duration: 0, ranges: [], title: "t", summary: "s"),
+                cursor: nil) { _, _, _ in }.detailLabel == "0.0秒・短尺 10〜30秒")
         let notes = [
             ClipsModel.State.idle, .loading, .ready([]), .pending, .mismatch, .missing,
             .noExcitement, .unavailable,
@@ -306,10 +348,28 @@ struct ClipsModelTests {
         }
         #expect(
             notes == [
-                "", "読み込み中…", "切り抜きに向く区間が見つかりませんでした", "計算中です（数分かかります）…",
+                "", "読み込み中…", "切り抜きに向く区間が見つかりませんでした", "計算中です（Macで1時間ほどかかります）…",
                 "Web版の動画と内容が異なるため表示できません", "この動画の切り抜きはまだありません（Macで作成されると表示されます）",
                 "盛り上がりデータがまだないため作成できません（計算して同期した後、Macで作成されます）", "Web版の接続設定がありません",
                 "読み込めませんでした: x",
             ])
+    }
+}
+
+@Test func theClipsTabKeepsTheTimelineBetweenItsBounds() {
+    // 10-30: the clips list squeezed the timeline to nothing; it keeps its heading and line.
+    let open = Chrome.timelineHeights(clipsOpen: true)
+    #expect(open.min == 110)
+    #expect(open.max == 150)
+    let closed = Chrome.timelineHeights(clipsOpen: false)
+    #expect(closed.min == nil)
+    #expect(closed.max == nil)
+}
+
+actor Asked {
+    private(set) var ids: [String] = []
+    func add(_ id: String) -> (status: Int32, output: String) {
+        ids.append(id)
+        return (0, "")
     }
 }

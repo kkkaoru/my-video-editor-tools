@@ -166,11 +166,21 @@ final class BGMLibraryModel {
         async -> (status: Int32, output: String)
     {
         guard let checkout else { return (-1, "checkout not found") }
+        return await run(
+            checkout.appending(path: ".venv/bin/python"),
+            ["-B", "-m", "replay.bgm_library", "add", url, "--root", root.path],
+            in: checkout, environment: ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"])
+    }
+
+    /// One checkout command without a shell; its output and errors come back together.
+    nonisolated static func run(
+        _ executable: URL, _ arguments: [String], in directory: URL, environment: [String: String]
+    ) async -> (status: Int32, output: String) {
         let process = Process()
-        process.executableURL = checkout.appending(path: ".venv/bin/python")
-        process.arguments = ["-B", "-m", "replay.bgm_library", "add", url, "--root", root.path]
-        process.currentDirectoryURL = checkout
-        process.environment = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"]
+        process.executableURL = executable
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
