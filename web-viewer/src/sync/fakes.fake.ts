@@ -58,6 +58,14 @@ export function createFakeFs(initial: Record<string, Partial<FakeFile>>): FakeFs
       calls.push(`write ${path} ${mode.toString(8)}`);
       files.set(path, fakeFile({ text, size: text.length }));
     },
+    createExclusive: async ({ path, text, mode }) => {
+      calls.push(`create ${path} ${mode.toString(8)}`);
+      if (files.has(path)) {
+        return false;
+      }
+      files.set(path, fakeFile({ text, size: text.length }));
+      return true;
+    },
     copy: async ({ from, to }) => {
       calls.push(`copy ${from} ${to}`);
       files.set(to, fakeFile({}));

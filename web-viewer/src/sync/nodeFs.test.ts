@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   copyFile: vi.fn(),
+  link: vi.fn(),
   mkdir: vi.fn(),
   open: vi.fn(),
   readdir: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("node:fs/promises", () => ({
   copyFile: mocks.copyFile,
+  link: mocks.link,
   mkdir: mocks.mkdir,
   open: mocks.open,
   readdir: mocks.readdir,
@@ -121,4 +123,25 @@ it("closes the handle when a read fails", async () => {
     "read failed",
   );
   expect(handle.close).toHaveBeenCalledTimes(1);
+});
+
+it("creates a file whole and only when it does not exist yet", async () => {
+  const exists = Object.assign(new Error("exists"), { code: "EEXIST" });
+  const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+  mocks.link
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(exists)
+    .mockRejectedValueOnce(denied);
+  const fs = createNodeFs();
+  const args = { path: "/p/.sync.lock", text: "{}", mode: 0o600 };
+  expect(await fs.createExclusive(args)).toBe(true);
+  expect(await fs.createExclusive(args)).toBe(false);
+  await expect(fs.createExclusive(args)).rejects.toThrow("denied");
+  const partial = mocks.writeFile.mock.calls[0]?.[0];
+  expect([
+    String(partial).startsWith("/p/.sync.lock."),
+    mocks.writeFile.mock.calls[0]?.slice(1),
+    mocks.link.mock.calls[0],
+    mocks.rm.mock.calls.length,
+  ]).toStrictEqual([true, ["{}", { mode: 0o600, flag: "wx" }], [partial, "/p/.sync.lock"], 3]);
 });

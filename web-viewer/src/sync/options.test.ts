@@ -25,3 +25,32 @@ it("reads the video ID of --only", () => {
 it("rejects unknown flags", () => {
   expect(() => parseOptions(["--nope"])).toThrow();
 });
+
+it("reads the volume wait in minutes", () => {
+  expect(parseOptions(["--volume-wait-minutes", "15"])).toStrictEqual({
+    dryRun: false,
+    dataOnly: false,
+    originalsOnly: false,
+    volumeWaitMinutes: 15,
+  });
+});
+
+it("rejects a volume wait that is not a number", () => {
+  expect(() => parseOptions(["--volume-wait-minutes", "soon"])).toThrow(
+    "--volume-wait-minutes must be a non-negative number, got soon",
+  );
+});
+
+it("rejects a negative volume wait", () => {
+  expect(() => parseOptions(["--volume-wait-minutes=-1"])).toThrow(
+    "--volume-wait-minutes must be a non-negative number, got -1",
+  );
+});
+
+it("reads how long to wait for another sync's lock", () => {
+  expect(parseOptions(["--lock-wait-minutes", "5"]).lockWaitMinutes).toBe(5);
+  expect(parseOptions([]).lockWaitMinutes).toBeUndefined();
+  expect(() => parseOptions(["--lock-wait-minutes=-1"])).toThrow(
+    "--lock-wait-minutes must be a non-negative number, got -1",
+  );
+});

@@ -13,6 +13,8 @@ export interface FileSystem {
   readText(path: string): Promise<string>;
   mkdir(path: string): Promise<void>;
   writeText(args: { path: string; text: string; mode: number }): Promise<void>;
+  // Creates `path` with `text` complete in one step; false (nothing written) when it exists.
+  createExclusive(args: { path: string; text: string; mode: number }): Promise<boolean>;
   copy(args: { from: string; to: string }): Promise<void>;
   link(args: { target: string; path: string }): Promise<void>;
   removeTree(path: string): Promise<void>;

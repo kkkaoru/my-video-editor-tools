@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
   copyFile,
+  link,
   mkdir,
   open,
   readdir,
@@ -17,9 +18,34 @@ import { dirname } from "node:path";
 import type { FileStat, FileSystem } from "./ports.ts";
 
 const NOT_FOUND = "ENOENT";
+const EXISTS = "EEXIST";
 
-function isNotFound(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === NOT_FOUND;
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+const isNotFound = (error: unknown): boolean => hasCode(error, NOT_FOUND);
+
+// Written beside the target, then hard-linked into place: link() fails when the target exists,
+// so the file appears atomically and always whole (a reader never sees it half written).
+async function createExclusive(args: {
+  path: string;
+  text: string;
+  mode: number;
+}): Promise<boolean> {
+  const partial = `${args.path}.${process.pid}.${Date.now()}.partial`;
+  await writeFile(partial, args.text, { mode: args.mode, flag: "wx" });
+  try {
+    await link(partial, args.path);
+    return true;
+  } catch (error) {
+    if (hasCode(error, EXISTS)) {
+      return false;
+    }
+    throw error;
+  } finally {
+    await rm(partial, { force: true });
+  }
 }
 
 async function statOrNull(path: string): Promise<FileStat | null> {
@@ -57,6 +83,7 @@ export function createNodeFs(): FileSystem {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
       await writeFile(path, text, { mode });
     },
+    createExclusive,
     copy: ({ from, to }) => copyFile(from, to),
     link: async ({ target, path }) => {
       await rm(path, { recursive: true, force: true });
