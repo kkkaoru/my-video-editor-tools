@@ -1,12 +1,13 @@
-"""Timed, final ASR tokens; no character-proportional timing or stale carry-over."""
+"""Timed, final ASR tokens; no character-proportional timing; a carry-over shows only once."""
 
 import re
 from bisect import bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from math import ceil, isfinite
 
+from replay import caption_display_hold
 from replay.caption_scale import FOCUSED_TIMING_SECONDS, CaptionScale
 
 PUNCTUATION = frozenset("、。！？!?.,;:…「」『』（）()\"' ")
@@ -30,6 +31,9 @@ SENTENCE_ENDS = ("。", "！", "？", "!", "?")
 TRAILING_PARTICLE_MAXIMUM = 2
 # The same bounded rational clock used by native FCP/Motion display events.
 DISPLAY_TIMESCALE = 60_000
+# A readable page replaced in continuous speech starts with the replaced page's last words, at
+# most this many non-space characters: the median caption line length measured on 11/2.
+CARRY_CHARACTERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +57,8 @@ class CaptionCue:
     text: str
     start: float
     end: float
+    # The leading text carried over from the replaced page (token texts, no line breaks).
+    carried: str = field(default="", kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +85,9 @@ class CaptionPolicy:
     # Smooth renderers can anticipate a reset at the second visible frame too.
     reset_lookahead_frames: int = 1
     linguistic_boundaries: bool = False
+    # A soft boundary (a phrase break, a short pause) starts a new page only once the page has
+    # been on screen for its reading time; until then the next words grow it (see _reset_context).
+    readable_pages: bool = False
     complete_phrases: bool = False
     measured_layout: Callable[[str], str] | None = None
     indivisible_text: Callable[[str], bool] | None = None
@@ -475,6 +484,8 @@ def _make_captions(
     cues: list[CaptionCue] = []
     cue_contexts: dict[float, tuple[SpokenToken, ...]] = {}
     context: list[SpokenToken] = []
+    # The leading context tokens carried from the replaced page; never carried again.
+    lead = 0
     for index, token in enumerate(words):
         if (
             len(token.text) > selected.maximum_characters
@@ -493,8 +504,9 @@ def _make_captions(
             and token.end - token.start > selected.maximum_context_seconds
         ):
             raise ValueError("Native token timing is too coarse for focused captions")
-        if context and not attached[index] and _reset_context(context, token, selected):
-            context = []
+        if context and not attached[index] and _reset_context(context[lead:], token, selected):
+            context = _carry(context[lead:], token, selected)
+            lead = len(context)
         context.append(token)
         following_text = (
             words[index + 1].text + _fitting_tail(words, attached, index + 1, selected)
@@ -502,21 +514,29 @@ def _make_captions(
             else ""
         )
         if index + 1 < len(words) and _preempt_frame_reset(
-            context, following=words[index + 1], following_text=following_text, policy=selected
+            context,
+            following=words[index + 1],
+            following_text=following_text,
+            policy=selected,
+            lead=lead,
         ):
-            context = _rewind_frame_reset(
+            context, lead = _rewind_frame_reset(
                 context,
                 cues,
                 following=words[index + 1],
                 following_text=following_text,
                 policy=selected,
                 cue_contexts=cue_contexts,
+                lead=lead,
             )
         # Switch before a word whose particle tail would not fit, so the tail is
         # never left alone. The tail is only used for the decision, never shown early.
         tail = _fitting_tail(words, attached, index, selected)
         overrun = (token.text if attached[index] else "") + tail
         allowance = len(overrun) if selected.tail_overrun else 0
+        # A full page replaced in continuous speech also carries its last words (11/2: 812 of
+        # the 963 titles still replaced within 0.3 s were full two-line pages); once only.
+        overflow = _carry(context[lead:-1], token, selected)
         while len(context) > 1 and (
             _over_budget(
                 punctuation_lines("".join(item.text for item in context) + tail),
@@ -529,7 +549,10 @@ def _make_captions(
                 and token.start - context[0].start >= selected.maximum_context_seconds
             )
         ):
-            context = context[1:] if selected.retain_recent_words else [token]
+            if selected.retain_recent_words:
+                context, lead = context[1:], max(lead - 1, 0)
+            else:
+                context, lead, overflow = [*overflow, token], len(overflow), []
         text = punctuation_lines("".join(item.text for item in context))
         if selected.measured_layout is None and len(text.splitlines()) > selected.maximum_lines:
             raise ValueError("Native token exceeds punctuation line budget")
@@ -539,7 +562,7 @@ def _make_captions(
             following = words[index + 1].start
             end = following if attached[index + 1] else min(end, following)
         if text and end > token.start:
-            cues.append(CaptionCue(text, token.start, end))
+            cues.append(CaptionCue(text, token.start, end, carried=_shown(context[:lead], text)))
             cue_contexts[token.start] = tuple(context)
     if selected.measured_layout is not None:
         return tuple(
@@ -555,14 +578,16 @@ def _preempt_frame_reset(
     following: SpokenToken,
     following_text: str,
     policy: CaptionPolicy,
+    lead: int = 0,
 ) -> bool:
     """Start a new prefix early, without revealing future words or retiming speech.
 
     Only anticipate width/lifetime resets within the requested output-frame horizon.
     Semantic boundaries and unsupported two-token budgets
-    are not bridged; callers still audit frame visibility after assembly.
+    are not bridged; callers still audit frame visibility after assembly. The ``lead``
+    carried tokens count for the width, not as the page's own words.
     """
-    if policy.frame_rate is None or policy.retain_recent_words or len(context) < 2:
+    if policy.frame_rate is None or policy.retain_recent_words or len(context) - lead < 2:
         return False
     token = context[-1]
     last_frame = Fraction(
@@ -576,7 +601,7 @@ def _preempt_frame_reset(
         pair, policy, context=(token, following)
     ):
         return False
-    return _reset_context(context, following, policy) or _over_budget(
+    return _reset_context(context[lead:], following, policy) or _over_budget(
         punctuation_lines("".join(item.text for item in context) + following_text),
         policy,
         context=(*context, following),
@@ -591,50 +616,132 @@ def _rewind_frame_reset(
     following_text: str,
     policy: CaptionPolicy,
     cue_contexts: dict[float, tuple[SpokenToken, ...]],
-) -> list[SpokenToken]:
-    """Move a budget boundary earlier if its preceding prefix would lose support."""
+    lead: int = 0,
+) -> tuple[list[SpokenToken], int]:
+    """Move a budget boundary earlier if its preceding prefix would lose support.
+
+    The ``lead`` carried tokens' cues belong to the replaced page, so the boundary never moves
+    into them; a moved reset (not a budget overflow) carries like any reset (``_carry``), or
+    drops the carry when it does not fit. Returns the new context and its carried count.
+    """
     fps = policy.frame_rate
     assert fps is not None
     split = len(context) - 1
-    while split:
+    while split > lead:
         previous = cues[-(len(context) - split)]
         frames = ceil(display_time(previous.end) * fps) - ceil(display_time(previous.start) * fps)
         if frames >= policy.reset_lookahead_frames:
             break
         split -= 1
-    candidate = context[split:]
-    if _reset_context(candidate, following, policy) or _over_budget(
-        punctuation_lines("".join(item.text for item in candidate) + following_text),
-        policy,
-        context=(*candidate, following),
-    ):
-        return context
+    # Only a reset carries; a page that overflows its budget drops to its own words.
+    resets = split > lead and _reset_context(context[lead:], following, policy)
+    carry = _carry(context[lead:split], context[split], policy) if resets else []
+    for kept in (carry, []):
+        candidate = kept + context[split:]
+        if not (
+            _reset_context(context[split:], following, policy)
+            or _over_budget(
+                punctuation_lines("".join(item.text for item in candidate) + following_text),
+                policy,
+                context=(*candidate, following),
+            )
+        ):
+            break
+    else:
+        return context, lead
     for index in range(split, len(context) - 1):
         position = len(cues) - (len(context) - 1 - index)
-        cues[position] = replace(
-            cues[position],
-            text=punctuation_lines("".join(item.text for item in context[split : index + 1])),
-        )
-        cue_contexts[cues[position].start] = tuple(context[split : index + 1])
-    return candidate
+        page = kept + context[split : index + 1]
+        text = punctuation_lines("".join(item.text for item in page))
+        cues[position] = replace(cues[position], text=text, carried=_shown(kept, text))
+        cue_contexts[cues[position].start] = tuple(page)
+    return candidate, len(kept)
+
+
+def _carry(
+    context: list[SpokenToken], token: SpokenToken, policy: CaptionPolicy
+) -> list[SpokenToken]:
+    """The last words of a readable page replaced in continuous speech, to lead the next page.
+
+    ``context`` holds only the replaced page's own (not carried) tokens. The words are whole
+    tokens, at most ``CARRY_CHARACTERS``; an utterance change or a real pause carries nothing,
+    and neither do trailing words already shown whole for their reading time (``_read_by``).
+    """
+    if (
+        not policy.readable_pages
+        or not context
+        or token.utterance != context[-1].utterance
+        or token.start - context[-1].end >= caption_display_hold.LINGER
+    ):
+        return []
+    count, start = 0, len(context)
+    while start and not _read_by(context[start - 1], token):
+        count += caption_display_hold.characters(context[start - 1].text)
+        if count > CARRY_CHARACTERS:
+            break
+        start -= 1
+    return context[start:]
+
+
+def _shown(carry: list[SpokenToken], text: str) -> str:
+    """The carried words as ``text`` shows them, or none when it does not lead with them.
+
+    ``punctuation_lines`` drops a word-initial space, the space after a mark and leading marks,
+    so 11/1's joined "え? 色々" led the page "え?色々多分" only once laid out alike (2026-11-03).
+    """
+    carried = punctuation_lines("".join(item.text for item in carry)).replace("\n", "")
+    flat = text.replace("\n", "")
+    return carried if flat.startswith(carried) and len(carried) < len(flat) else ""
+
+
+def _read_by(word: SpokenToken, token: SpokenToken) -> bool:
+    """Whether ``word`` was on screen whole for its reading time before ``token`` replaced it.
+
+    Words are revealed with their speech, so a word shows whole only from its end; timing from
+    its onset left 497 of eWgX9jkjNpA's titles flashing uncarried (2026-11-03).
+    """
+    spoken = Fraction(max(word.end, word.start + 0.001))
+    needed = caption_display_hold.required(word.text, Fraction(word.start), spoken)
+    return Fraction(token.start) - spoken >= needed
 
 
 def _reset_context(context: list[SpokenToken], token: SpokenToken, policy: CaptionPolicy) -> bool:
     previous = context[-1]
-    if policy.linguistic_boundaries:
-        from replay.caption_linguistics import semantic_break
-
-        if semantic_break(previous.text, token.text):
-            return True
-    return (
+    if (
         token.utterance != previous.utterance
-        or token.start - previous.end > min(policy.maximum_gap, policy.hold_seconds)
         or (
             not policy.retain_recent_words
             and token.start - context[0].start >= policy.maximum_context_seconds
         )
         or previous.text.rstrip().endswith(SENTENCE_ENDS)
-    )
+    ):
+        return True
+    gap = token.start - previous.end
+    soft = gap > min(policy.maximum_gap, policy.hold_seconds)
+    if not soft and policy.linguistic_boundaries:
+        from replay.caption_linguistics import semantic_break
+
+        soft = semantic_break(previous.text, token.text)
+    return soft and not (policy.readable_pages and _unread(context, token, gap))
+
+
+def _unread(context: list[SpokenToken], token: SpokenToken, gap: float) -> bool:
+    """Whether the page would be replaced in continuous speech before it could be read.
+
+    In continuous speech (11/2: 1,539 of the 1,800 pages replaced within 0.3 s had no 20 ms of
+    silence before the next word) a page reset at every phrase break showed its full text for a
+    median 0.07 s, and no hold can lengthen it without delaying the next caption. Growing the
+    page instead keeps its text on screen while the next words appear beside it, never later than
+    spoken; the line budget and the page lifetime still reset it. A real pause (at least
+    ``LINGER``) still ends the page, since the display hold then keeps it readable over the pause.
+    """
+    if gap >= caption_display_hold.LINGER:
+        return False
+    start, spoken = Fraction(context[0].start), Fraction(context[-1].end)
+    if spoken <= start:
+        return True
+    text = "".join(item.text for item in context)
+    return token.start - context[0].start < caption_display_hold.required(text, start, spoken)
 
 
 def _indivisible(text: str, policy: CaptionPolicy, context: tuple[SpokenToken, ...]) -> bool:

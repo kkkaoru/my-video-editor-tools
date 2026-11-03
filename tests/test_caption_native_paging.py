@@ -747,3 +747,44 @@ def test_prefetch_ignores_the_estimate_failing(exact: NativeCaptionLayout) -> No
             (SpokenToken("ab", 0.0, 2.0, "u"),),
             layout=exact, rate=30, duration=Fraction(1), prefetch=exact.style,
         )  # fmt: skip
+
+
+def test_paged_continuous_speech_carries_the_replaced_pages_last_words(
+    exact: NativeCaptionLayout,
+) -> None:
+    tokens = (
+        SpokenToken("あいう", 0.0, 0.3, "u"),
+        SpokenToken("え", 0.35, 0.5, "u"),
+        SpokenToken("おか", 0.9, 1.1, "u"),
+    )
+    cues, _, _ = paging.paged_cues(tokens, layout=exact, rate=30, duration=Fraction(3))
+    assert [(cue.text, cue.carried) for cue in cues] == [
+        ("あい\nうえ", ""), ("あい\nうえ\nおか", "あいうえ"),
+    ]  # fmt: skip
+
+
+def test_assembly_keeps_carried_words_only_where_a_page_carries_them() -> None:
+    parts: tuple[dict[str, object], ...] = (
+        {"captions": [
+            {"text": "あい", "start": 0, "end": 1},
+            {"text": "い\nうえ", "start": 1, "end": 2, "carried": "い"},
+        ]},
+    )  # fmt: skip
+    assert paging.assemble(parts, rate=30) == [
+        {"start": 0, "end": 1, "text": "あい"},
+        {"start": 1, "end": 2, "text": "い\nうえ", "carried": "い"},
+    ]
+
+
+@pytest.mark.parametrize("carried", ["", "う", "いうえ", 1])
+def test_carried_words_must_lead_and_not_fill_their_page(carried: object) -> None:
+    rows = [{"text": "い\nうえ", "start": 0, "end": 1, "carried": carried}]
+    with pytest.raises(ReplayError, match="carried"):
+        paging.assemble(({"captions": rows},), rate=30)
+
+
+def test_split_pages_carry_the_words_on_their_first_page_only() -> None:
+    cue = CaptionCue("x", 1.0, 2.0, carried="ああ")
+    pages = paging.split_pages(cue, ("ああい", "あああ"), rate=30)
+    assert [(p.text, p.carried) for p in pages] == [("ああい", "ああ"), ("あああ", "")]
+    assert paging.split_pages(cue, ("ああ", "い"), rate=30)[0].carried == ""

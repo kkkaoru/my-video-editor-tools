@@ -168,6 +168,7 @@ def paged_cues(
     policy = CaptionPolicy(
         frame_rate=rate,
         linguistic_boundaries=True,
+        readable_pages=True,
         complete_phrases=True,
         measured_layout=fit.wrap,
         indivisible_text=fit.eligible,
@@ -178,7 +179,13 @@ def paged_cues(
     )
     raw = make_captions(tokens, policy=policy)
     raw = tuple(
-        ScaledCaptionCue(cue.text, cue.start, cue.end, fit.scoped_evidence[cue.text, cue.start])
+        ScaledCaptionCue(
+            cue.text,
+            cue.start,
+            cue.end,
+            fit.scoped_evidence[cue.text, cue.start],
+            carried=cue.carried,
+        )
         if (cue.text, cue.start) in fit.scoped_evidence
         else cue
         for cue in raw
@@ -225,10 +232,33 @@ def split_pages(cue: CaptionCue, pages: tuple[str, ...], *, rate: int) -> tuple[
         edges.append(min(max(edge, edges[-1] + 1), first + frames - (len(sizes) - 1 - index)))
     last = end if natural >= len(pages) else Fraction(first + frames, rate)
     times = [start, *(Fraction(edge, rate) for edge in edges[1:]), last]
-    return tuple(
-        CaptionCue(page, float(a), float(b))
-        for page, a, b in zip(pages, times[:-1], times[1:], strict=True)
+    # The carried words lead the first page only, when it shows more than them.
+    first_page = pages[0].replace("\n", "")
+    carried = (
+        cue.carried
+        if first_page.startswith(cue.carried) and len(first_page) > len(cue.carried)
+        else ""
     )
+    return tuple(
+        CaptionCue(page, float(a), float(b), carried="" if index else carried)
+        for index, (page, a, b) in enumerate(zip(pages, times[:-1], times[1:], strict=True))
+    )
+
+
+def carried_fields(cue: CaptionCue) -> dict[str, object]:
+    """The ``carried`` field of a caption row, only when the cue carries words."""
+    return {"carried": cue.carried} if cue.carried else {}
+
+
+def read_carried(row: dict[str, object], text: str) -> str:
+    """A row's carried words: a proper prefix of its text without line breaks, or empty."""
+    carried = row.get("carried", "")
+    flat = text.replace("\n", "")
+    if not isinstance(carried, str) or (
+        "carried" in row and not (carried and len(carried) < len(flat) and flat.startswith(carried))
+    ):
+        raise ReplayError("Invalid carried caption words")
+    return carried
 
 
 def assemble(parts: tuple[dict[str, object], ...], *, rate: int) -> list[dict[str, object]]:
@@ -271,10 +301,11 @@ def assemble(parts: tuple[dict[str, object], ...], *, rate: int) -> list[dict[st
             if members and members[-1].cue.end > start:
                 raise ReplayError("Paged captions overlap inside a segment")
             scale = read_scale(row)
+            carried = read_carried(row, text)
             cue = (
-                CaptionCue(text, start, end)
+                CaptionCue(text, start, end, carried=carried)
                 if scale is None
-                else ScaledCaptionCue(text, start, end, scale)
+                else ScaledCaptionCue(text, start, end, scale, carried=carried)
             )
             members.append(PositionedCue(cue, 540, 0))
         if result:
@@ -288,6 +319,7 @@ def assemble(parts: tuple[dict[str, object], ...], *, rate: int) -> list[dict[st
             "end": item.cue.end,
             "text": item.cue.text,
             **scale_fields(item.cue.scale if isinstance(item.cue, ScaledCaptionCue) else None),
+            **carried_fields(item.cue),
         }
         for item in result
     ]
@@ -524,6 +556,7 @@ def run(
                         "end": float(display_time(cue.end) + offset),
                         "text": cue.text,
                         **scale_fields(cue.scale if isinstance(cue, ScaledCaptionCue) else None),
+                        **carried_fields(cue),
                     }
                     for cue in cues
                 ],

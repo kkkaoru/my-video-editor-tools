@@ -31,11 +31,15 @@ class UnknownPerson(ReplayError):
 
 @dataclass(frozen=True, slots=True)
 class RunCue:
-    """A page of text and its half-open display interval in seconds."""
+    """A page of text and its half-open display interval in seconds.
+
+    ``carried`` is its leading text carried over from the replaced page (paging's ``carried``).
+    """
 
     text: str
     start: Fraction
     end: Fraction
+    carried: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +220,7 @@ def candidate_document(
                     "text": item.cue.text,
                     "start": float(item.cue.start),
                     "end": float(item.cue.end),
+                    **({"carried": item.cue.carried} if item.cue.carried else {}),
                 },
                 "x": item.x,
                 "y": item.y,

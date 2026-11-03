@@ -10,7 +10,7 @@ from time import monotonic
 
 from replay import tracking_observations as storage
 from replay.caption_io import _array, _fields, _number, _string
-from replay.caption_measured_plan import MAX_TOKENS, measured_plan
+from replay.caption_measured_plan import MAX_TOKENS, measured_plan, positioned_fields
 from replay.caption_native_layout import NativeCaptionLayout
 from replay.caption_source_support import (
     MAX_CUTS,
@@ -320,7 +320,7 @@ def plan(manifest: Path, directory: Path, *, manifest_sha256: str) -> Path:
             "canvas": canvas,
             "policy": asdict(policy),
             "coordinateSystem": "top-left canvas; calibrated text origin",
-            "candidates": [asdict(candidate) for candidate in candidates],
+            "candidates": [positioned_fields(candidate) for candidate in candidates],
             "editorCorrespondenceVerified": False,
             "completeMotionSupportVerified": False,
             "motionRenderVerified": False,

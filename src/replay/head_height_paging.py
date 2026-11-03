@@ -16,7 +16,7 @@ from replay.caption_native_layout import (
     NativeCaptionStyle,
     _positive,
 )
-from replay.caption_native_paging import paged_cues, read_tokens
+from replay.caption_native_paging import carried_fields, paged_cues, read_tokens
 from replay.caption_scale import read_scale, scale_fields
 from replay.caption_style_defaults import HEAD_CAPTION_GAP_PX
 from replay.caption_timing import ScaledCaptionCue
@@ -163,6 +163,7 @@ def repage_segment(
                 "end": cue.end + float(offset),
                 "text": cue.text,
                 **scale_fields(cue.scale if isinstance(cue, ScaledCaptionCue) else None),
+                **carried_fields(cue),
             }
             for cue in cues
         ],

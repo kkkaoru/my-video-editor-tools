@@ -1629,6 +1629,24 @@ def test_a_token_anchor_defaults_to_its_start() -> None:
     )
 
 
+def test_carried_words_show_from_the_titles_first_frame() -> None:
+    # The page carries "そう", spoken before it; its own "うん" starts like the carry ends.
+    chain = [reveal_stage("そう\nうん", 0, 6), reveal_stage("そう\nうんだね", 6, 30)]
+    tokens = (
+        motion_reveal_stages.Token("そう", 0.6, 0.9, 0.6),
+        motion_reveal_stages.Token("うん", 1.05, 1.2, 1.0),
+        motion_reveal_stages.Token("だね", 1.2, 1.4, 1.2),
+    )
+    assert motion_reveal_stages.onset_frames(chain, 30, tokens, 30) == [0, 0, 0, 2, 4, 6, 9]
+    assert motion_reveal_stages.reveal(chain, 30, tokens, 30)[0] == (Fraction(0), Fraction(5, 14))
+    plain = [reveal_stage("今日\n天気", 0, 30)]
+    carried = (
+        motion_reveal_stages.Token("今日", 0.5, 0.8, 0.5),
+        motion_reveal_stages.Token("天気", 1.1, 1.3, 1.0),
+    )
+    assert motion_reveal_stages.onset_frames(plain, 30, carried, 30) == [0, 0, 0, 3, 6]
+
+
 def test_unspoken_graphemes_follow_and_disagreeing_text_spreads_over_its_speech() -> None:
     punctuated = [reveal_stage("あい!", 0, 30)]
     tokens = spoken(("あい", 0.0, 0.4))

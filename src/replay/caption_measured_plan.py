@@ -1,7 +1,7 @@
 """Measured output-clock caption candidates with explicit source-support mapping."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 
 from replay.caption_display import unretained_frame_prefixes
@@ -26,6 +26,15 @@ class PositionedCue:
     cue: CaptionCue
     x: float
     y: float
+
+
+def positioned_fields(item: PositionedCue) -> dict[str, object]:
+    """The cue as JSON fields; an empty ``carried`` is left out so uncarried documents keep
+    their exact fields."""
+    fields = asdict(item)
+    if not item.cue.carried:
+        del fields["cue"]["carried"]
+    return fields
 
 
 def measured_plan(

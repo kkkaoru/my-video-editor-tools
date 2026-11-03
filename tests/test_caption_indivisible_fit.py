@@ -158,16 +158,17 @@ def test_cross_window_particle_has_real_phrase_frames_before_a_greeting() -> Non
     layout = Measurements()
     layout.width = 240
     cues, hidden, widened = paged_cues(tokens, layout=layout, rate=30, duration=Fraction(1))
+    # Continuous speech: the greeting grows the page, which was not on screen long enough to read.
     assert cues == (
         CaptionCue("飲みましたか", 0, 0.332),
-        CaptionCue("ありがとう", 0.332, 0.6799999999999999),
+        CaptionCue("飲みましたかありがとう", 0.332, 0.6799999999999999),
     )
     assert hidden == 0
     assert widened == 0
     assert tokens[-2] == SpokenToken("か", 0.312, 0.332, "000000480000:1:cut-7")
 
 
-def test_a_subframe_particle_at_a_true_cut_delays_the_next_caption_one_frame() -> None:
+def test_a_subframe_particle_at_a_true_cut_leads_the_next_caption() -> None:
     tokens = (
         SpokenToken("飲み", 0, 0.12, "000000000000:10:cut-7"),
         SpokenToken("まし", 0.12, 0.2, "000000000000:11:cut-7"),
@@ -178,11 +179,12 @@ def test_a_subframe_particle_at_a_true_cut_delays_the_next_caption_one_frame() -
     layout = Measurements()
     layout.width = 240
     cues, hidden, widened = paged_cues(tokens, layout=layout, rate=30, duration=Fraction(1))
-    assert (hidden, widened) == (0, 1)
-    assert [(cue.text, cue.start, cue.end) for cue in cues] == [
+    # The subframe particle now leads the greeting's page (its own subframe prefix is dropped),
+    # so the greeting is no longer delayed a frame to show it alone.
+    assert (hidden, widened) == (1, 0)
+    assert [(cue.text, cue.start, round(cue.end, 3)) for cue in cues] == [
         ("飲みました", 0, 0.312),
-        ("か", 0.312, 11 / 30),
-        ("ありがとう", 11 / 30, 0.68),
+        ("かありがとう", 0.332, 0.68),
     ]
 
 

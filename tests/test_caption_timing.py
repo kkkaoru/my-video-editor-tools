@@ -6,6 +6,7 @@ from replay.caption_timing import (
     CaptionCue,
     CaptionPolicy,
     SpokenToken,
+    _shown,
     make_captions,
     owned_tokens,
     punctuation_lines,
@@ -712,3 +713,185 @@ def test_an_elongation_run_is_cut_after_two_caption_lines_but_a_short_one_stays(
     )
     assert [word.text for word in lexical_token_sources(dense)[0]] == ["ふぉ", "ぉ" * 6]
     assert len(lexical_token_sources(held)[0]) == 3
+
+
+def test_continuous_speech_grows_the_page_until_it_can_be_read() -> None:
+    words = (
+        SpokenToken("今日", 0.0, 0.3, "u"),
+        SpokenToken("天気", 0.42, 0.6, "u"),
+        SpokenToken("配信", 0.72, 1.0, "u"),
+        SpokenToken("開始", 1.12, 1.4, "u"),
+    )
+    assert [cue.text for cue in make_captions(words, policy=CaptionPolicy())] == [
+        "今日", "天気", "配信", "開始",
+    ]  # fmt: skip
+    # The six characters are read in 1.0 s (6 cps over 1.0 s of speech): the page then resets,
+    # carrying its last words (here all six, within CARRY_CHARACTERS) in continuous speech.
+    assert [
+        (cue.text, cue.start, cue.carried)
+        for cue in make_captions(words, policy=CaptionPolicy(readable_pages=True))
+    ] == [
+        ("今日", 0.0, ""), ("今日天気", 0.42, ""), ("今日天気配信", 0.72, ""),
+        ("今日天気配信開始", 1.12, "今日天気配信"),
+    ]  # fmt: skip
+
+
+def test_a_read_page_or_a_real_pause_still_starts_a_new_page() -> None:
+    read = (
+        SpokenToken("今日", 0.0, 0.3, "u"),
+        SpokenToken("天気", 1.0, 1.2, "u"),
+        SpokenToken("配信", 1.3, 1.5, "u"),
+        SpokenToken("開始", 2.4, 2.6, "u"),
+    )
+    assert [cue.text for cue in make_captions(read, policy=CaptionPolicy(readable_pages=True))] == [
+        "今日", "天気", "天気配信", "開始",
+    ]  # fmt: skip
+
+
+def test_a_page_replaced_in_continuous_speech_carries_its_last_words_once() -> None:
+    words = (
+        SpokenToken("今日はとても", 0.0, 0.6, "u"),
+        SpokenToken("いい天気", 0.7, 1.1, "u"),
+        SpokenToken("ですね", 1.2, 1.5, "u"),
+        SpokenToken("それでは", 1.6, 2.0, "u"),
+        SpokenToken("配信を", 2.1, 2.4, "u"),
+    )
+    # The carried "いい天気" is not carried again: the next page leads with "ですねそれでは".
+    assert [
+        (cue.text, cue.start, cue.carried)
+        for cue in make_captions(words, policy=CaptionPolicy(readable_pages=True))
+    ] == [
+        ("今日はとても", 0.0, ""),
+        ("今日はとてもいい天気", 0.7, ""),
+        ("いい天気ですね", 1.2, "いい天気"),
+        ("いい天気ですねそれでは", 1.6, "いい天気"),
+        ("ですねそれでは配信を", 2.1, "ですねそれでは"),
+    ]
+    assert [(cue.text, cue.carried) for cue in make_captions(words, policy=CaptionPolicy())] == [
+        ("今日はとても", ""), ("いい天気", ""), ("ですね", ""), ("それでは", ""), ("配信を", ""),
+    ]  # fmt: skip
+
+
+def test_another_utterance_a_real_pause_or_an_overflowing_carry_carries_nothing() -> None:
+    page = (SpokenToken("今日はとても", 0.0, 0.6, "u"), SpokenToken("いい天気", 0.7, 1.1, "u"))
+    other = (*page, SpokenToken("ですね", 1.2, 1.5, "v"))
+    paused = (*page, SpokenToken("ですね", 1.6, 1.9, "u"))
+    long = (*page, SpokenToken("ほんとうですね", 1.2, 1.6, "u"))
+    readable = CaptionPolicy(readable_pages=True)
+    assert [(cue.text, cue.carried) for cue in make_captions(other, policy=readable)][-1] == (
+        "ですね", ""
+    )  # fmt: skip
+    assert [(cue.text, cue.carried) for cue in make_captions(paused, policy=readable)][-1] == (
+        "ですね", ""
+    )  # fmt: skip
+    # "いい天気ほんとうですね" exceeds ten characters: the page drops the carry.
+    narrow = CaptionPolicy(readable_pages=True, maximum_characters=10)
+    assert [(cue.text, cue.carried) for cue in make_captions(long, policy=narrow)][-1] == (
+        "ほんとうですね", ""
+    )  # fmt: skip
+
+
+def test_a_frame_anticipated_reset_carries_but_an_anticipated_overflow_does_not() -> None:
+    words = (
+        SpokenToken("あいうえおかき", 0.0, 0.3, "u"),
+        SpokenToken("くけこ", 0.32, 0.58, "u"),
+        SpokenToken("さし", 0.59, 0.595, "u"),
+        SpokenToken("すせ", 0.6, 0.7, "u"),
+    )
+    # "すせ" ends the page's 0.6 s lifetime in the frame "さし" starts: the page restarts at
+    # "さし", carrying "くけこ".
+    lifetime = CaptionPolicy(readable_pages=True, frame_rate=30, maximum_context_seconds=0.6)
+    assert [
+        (cue.text, cue.start, cue.carried) for cue in make_captions(words, policy=lifetime)
+    ] == [
+        ("あいうえおかき", 0.0, ""),
+        ("あいうえおかきくけこ", 0.32, ""),
+        ("くけこさし", 0.59, "くけこ"),
+        ("くけこさしすせ", 0.6, "くけこ"),
+    ]
+    # A carry the restarted page cannot fit within nine characters is dropped.
+    short = (
+        SpokenToken("あいうえお", 0.0, 0.3, "u"),
+        SpokenToken("かきく", 0.32, 0.58, "u"),
+        SpokenToken("さし", 0.59, 0.595, "u"),
+        SpokenToken("すせ", 0.6, 0.7, "u"),
+    )
+    tight = CaptionPolicy(
+        readable_pages=True, frame_rate=30, maximum_context_seconds=0.6, maximum_characters=9
+    )
+    assert [(cue.text, cue.carried) for cue in make_captions(short, policy=tight)] == [
+        ("あいうえお", ""), ("あいうえおかきく", ""), ("さし", ""), ("さしすせ", ""),
+    ]  # fmt: skip
+    dense = (
+        SpokenToken("今日はとても", 0.0, 0.6, "u"),
+        SpokenToken("いい天気", 0.7, 1.1, "u"),
+        SpokenToken("ですね", 1.2, 1.5, "u"),
+        SpokenToken("それで", 1.55, 1.58, "u"),
+        SpokenToken("はい", 1.56, 1.7, "u"),
+    )
+    # "はい" overflows eleven characters in the frame "それで" starts: the page restarts at
+    # "それで" with its own words only, and the carrying page before it keeps its text.
+    narrow = CaptionPolicy(readable_pages=True, frame_rate=30, maximum_characters=11)
+    assert [(cue.text, cue.start, cue.carried) for cue in make_captions(dense, policy=narrow)] == [
+        ("今日はとても", 0.0, ""),
+        ("今日はとてもいい天気", 0.7, ""),
+        ("いい天気ですね", 1.2, "いい天気"),
+        ("それで", 1.55, ""),
+        ("それではい", 1.56, ""),
+    ]
+
+
+def test_a_full_page_replaced_in_continuous_speech_carries_its_last_words() -> None:
+    words = (
+        SpokenToken("サクラ", 0.0, 0.2, "u"),
+        SpokenToken("モミジ", 0.2, 0.4, "u"),
+        SpokenToken("イチョウ", 0.4, 0.6, "u"),
+        SpokenToken("ケヤキ", 0.6, 0.8, "u"),
+    )
+    full = CaptionPolicy(maximum_characters=10, maximum_lines=1)
+    assert [(cue.text, cue.carried) for cue in make_captions(words, policy=full)][-1] == (
+        "ケヤキ", "",
+    )  # fmt: skip
+    readable = CaptionPolicy(readable_pages=True, maximum_characters=10, maximum_lines=1)
+    assert [(cue.text, cue.carried) for cue in make_captions(words, policy=readable)][-1] == (
+        "モミジイチョウケヤキ", "モミジイチョウ",
+    )  # fmt: skip
+
+
+def test_carried_words_drop_the_leading_space_their_page_text_drops() -> None:
+    # eWgX9jkjNpA (2026-11-03): whisper words lead with a space, the page text does not.
+    words = (
+        SpokenToken(" サクラ", 0.0, 0.2, "u"),
+        SpokenToken(" モミジ", 0.2, 0.4, "u"),
+        SpokenToken(" イチョウ", 0.4, 0.6, "u"),
+        SpokenToken(" ケヤキ", 0.6, 0.8, "u"),
+    )
+    readable = CaptionPolicy(readable_pages=True, maximum_characters=12, maximum_lines=1)
+    assert [(cue.text, cue.carried) for cue in make_captions(words, policy=readable)][-1] == (
+        "モミジ イチョウ ケヤキ", "モミジ イチョウ",
+    )  # fmt: skip
+
+
+def test_only_words_not_yet_shown_whole_for_their_reading_time_are_carried() -> None:
+    words = (
+        SpokenToken("今日はとても", 0.0, 0.6, "u"),
+        SpokenToken("いい天気", 0.7, 1.1, "u"),
+        SpokenToken("ですね", 1.2, 1.25, "u"),
+        SpokenToken("それでは", 1.6, 2.0, "u"),
+        SpokenToken("配信を", 2.1, 2.4, "u"),
+    )
+    # "ですね" was whole from 1.25 s, 0.85 s before "配信を": past its 5/6 s, it is not carried;
+    # "それでは" was whole only 0.1 s.
+    assert [
+        (cue.text, cue.start, cue.carried)
+        for cue in make_captions(words, policy=CaptionPolicy(readable_pages=True))
+    ][-1] == ("それでは配信を", 2.1, "それでは")
+
+
+def test_carried_words_are_laid_out_as_the_page_shows_them() -> None:
+    marked = [SpokenToken("え?", 0.0, 0.2, "u"), SpokenToken(" 色々", 0.3, 0.6, "u")]
+    shouted = [SpokenToken("!!", 0.0, 0.1, "u"), SpokenToken("いたぁぁ!!", 0.2, 0.6, "u")]
+    assert _shown(marked, "え?色々多分") == "え?色々"
+    assert _shown(shouted, "いたぁぁ!!いたぁ") == "いたぁぁ!!"
+    assert _shown(marked, "え?色々") == ""  # the page shows nothing but the carry
+    assert _shown(marked, "色々多分") == ""

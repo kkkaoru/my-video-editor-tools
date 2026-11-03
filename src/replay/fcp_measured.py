@@ -4,14 +4,14 @@ import argparse
 import json
 import math
 from collections.abc import Sequence
-from dataclasses import asdict, replace
+from dataclasses import replace
 from enum import StrEnum
 from fractions import Fraction
 from pathlib import Path
 
 from replay.caption_io import _array, _fields, _number, _string
 from replay.caption_measured_job import _merge, _pairs
-from replay.caption_measured_plan import MAX_TOKENS, PositionedCue
+from replay.caption_measured_plan import MAX_TOKENS, PositionedCue, positioned_fields
 from replay.caption_native_layout import NativeCaptionLayout
 from replay.caption_style_defaults import MAX_CAPTION_LINES
 from replay.caption_timing import CaptionCue, display_time
@@ -246,7 +246,7 @@ def combine_measured_captions(
             "renderCalibration": {"path": calibration_name, "sha256": calibration_digest},
             "policy": policy,
             "coordinateSystem": "top-left canvas; calibrated text origin",
-            "candidates": [asdict(member) for member in combined],
+            "candidates": [positioned_fields(member) for member in combined],
             "hiddenPrefixesDropped": hidden,
             "captionsWidenedToOneFrame": widened,
             "editorCorrespondenceVerified": False,

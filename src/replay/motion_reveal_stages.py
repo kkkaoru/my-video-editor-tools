@@ -7,6 +7,7 @@ strict prefix-growth chain (contiguous frames, same origin, the earlier text a s
 the later one, line breaks included) become one title animated by Type On End keys: each new
 grapheme appears on the frame its sound starts in the speech tokens (a token of several graphemes
 is spread over its own interval; shown-only graphemes such as punctuation follow the previous one;
+words a page carries from the page it replaced, spoken before it, show from its first frame;
 a stage whose text and speech disagree spreads its graphemes over its speech). A token's
 ``anchor`` (its recognizer start, ``replay.speech_onsets``) assigns it to the stage paging built
 from it; its ``start`` times it. No grapheme appears before its stage's first frame (a title shows
@@ -160,8 +161,15 @@ def spoken_frames(
     ]
     times: list[float] = []
     cursor = 0
+    # Words carried from the replaced page (paging's ``carried``) lead the text but were spoken
+    # before the stage: they are shown from its first frame, never matched to its speech.
+    flat = "".join(new).replace("\n", "")
+    lead = len(flat) - len(spoken) if heard and flat.endswith(spoken) else 0
     for grapheme in new:
-        if spoken[cursor : cursor + len(grapheme)] == grapheme:
+        if lead > 0:
+            lead -= len(grapheme.replace("\n", ""))
+            times.append(begin)
+        elif spoken[cursor : cursor + len(grapheme)] == grapheme:
             times.append(sounds[cursor])
             cursor += len(grapheme)
         else:  # shown but not heard: punctuation or a line break

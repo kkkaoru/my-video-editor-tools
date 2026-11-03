@@ -62,6 +62,14 @@ def test_cues_are_selected_by_time_range_and_line_limit() -> None:
     assert [cue.text for cue in three] == ["あ", "あい", "う\nえ\nお"]
 
 
+def test_selected_and_rebased_cues_keep_their_carried_words() -> None:
+    rows = [{"text": "い\nう", "start": 1.0, "end": 2.0, "carried": "い"}]
+    cues = job.select_cues(rows, start=Fraction(0), end=Fraction(7), max_lines=2)
+    assert cues == [fixed.RunCue("い\nう", Fraction(1), Fraction(2), "い")]
+    moved = job.rebased([fixed.FixedCue(cues[0], 0, 540.0, 930.0)], offset=Fraction(1))
+    assert moved[0].cue == fixed.RunCue("い\nう", Fraction(0), Fraction(1), "い")
+
+
 def test_a_range_without_a_matching_page_or_a_bad_limit_is_refused() -> None:
     with pytest.raises(ReplayError, match="No page matches"):
         job.select_cues(pages(), start=Fraction(20), end=Fraction(30), max_lines=2)

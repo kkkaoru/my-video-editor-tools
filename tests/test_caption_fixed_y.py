@@ -162,6 +162,23 @@ def test_candidate_document_is_candidate_only_with_all_approvals_false() -> None
     assert document["deliveryComplete"] is False
 
 
+def test_the_candidate_names_carried_words_only_on_a_page_that_carries_them() -> None:
+    cues = [cue("あい", "0", "1/3"), RunCue("い\nう", Fraction(1, 3), Fraction(2, 3), "い")]
+    result = fixed.fixed_origins(
+        cues, rate=30, region=REGION, center_x=540.0, clearance=20.0, envelope=envelope,
+        person_top=person(1000.0),
+    )  # fmt: skip
+    document = fixed.candidate_document(
+        result, canvas=(1080, 1920), rate=30, coordinate_system="top-left",
+        inputs={"/cal.json": "1" * 64}, calibration=("/cal.json", "1" * 64),
+    )  # fmt: skip
+    assert document["candidates"] == [
+        {"cue": {"text": "あい", "start": 0.0, "end": 1 / 3}, "x": 540.0, "y": 970.0},
+        {"cue": {"text": "い\nう", "start": 1 / 3, "end": 2 / 3, "carried": "い"},
+         "x": 540.0, "y": 970.0},
+    ]  # fmt: skip
+
+
 def observed() -> list[TrackingPosition]:
     return [
         TrackingPosition(Fraction(0), 540.0, 900.0),

@@ -18,7 +18,7 @@ import json
 import sys
 from bisect import bisect_right
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -107,7 +107,7 @@ def select_cues(
         first = Fraction(str(page["start"])).limit_denominator(100000)
         last = Fraction(str(page["end"])).limit_denominator(100000)
         if first >= start and last <= end and len(text.split("\n")) <= max_lines:
-            selected.append(fixed.RunCue(text, first, last))
+            selected.append(fixed.RunCue(text, first, last, str(page.get("carried", ""))))
     if not selected:
         raise ReplayError("No page matches the time range and line limit")
     return selected
@@ -237,7 +237,7 @@ def rebased(cues: Sequence[fixed.FixedCue], *, offset: Fraction) -> list[fixed.F
     """The same cues with their times moved so the range starts at zero."""
     return [
         fixed.FixedCue(
-            fixed.RunCue(item.cue.text, item.cue.start - offset, item.cue.end - offset),
+            replace(item.cue, start=item.cue.start - offset, end=item.cue.end - offset),
             item.run,
             item.x,
             item.y,
