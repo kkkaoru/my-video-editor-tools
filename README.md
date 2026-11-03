@@ -80,6 +80,8 @@ YOUTUBE_DOWNLOAD_DIR=/Volumes/your-ssd/movie/youtube bash scripts/download-youtu
 
 保存先のディスクが接続されていない場合や既存の保存先が公開権限の場合は中止します。実体は外部ディスクに置き、ローカルの `youtube-originals` はシンボリックリンクです。原本は `YYYY-MM-DD_HH-mm-ss_JST_youtube-動画ID/同名.mp4` に保存します。公開時刻は `release_timestamp`（なければ秒精度の `timestamp`）をJSTに変換し、日付だけしか得られない動画は停止します。安定IDロックと既存ディレクトリ検査で再取得を拒否します。旧IDだけの原本も自動で再取得しません。既存の動画を上書き・削除しません。映像と音声は yt-dlp の `bv*+ba/b` による最良の利用可能な形式を選び、再圧縮せずMP4に結合・再格納します。AV1/VP9映像やOpus音声も元のコーデックを保持し、H.264/AACへの自動変換はしません。MKVへの出力やフォールバックは行わず、MP4に格納できない形式ならエラーで停止します。利用者のyt-dlp設定による出力形式の上書きも無効にします。再生互換性はプレイヤーとコーデックに依存します。供給形式・取得可否はYouTube側に依存します。取得したファイルは編集前の原本であり、字幕付与・BGM除去・無音カット済みの成果物ではありません。
 
+`https://www.youtube.com/live/動画ID` も watch URL に正規化して受け付けます。`live_status` は `not_live`・`was_live`・`post_live` だけを受け付け、配信中・予約中は取得しません。取得は `replay.youtube_original` が隠しディレクトリ `.<stem>.<live_status>.partial/` に行い、取得できない断片があれば中止します（`--abort-on-unavailable-fragments`、8並列）。`was_live`/`not_live` は映像・音声それぞれの長さがメタデータの `duration`（整数秒）と1.5秒以内で一致した場合だけ日付ディレクトリへ改名します。`post_live`（配信終了直後でYouTubeがアーカイブ処理中）は末尾が欠けたり最良の音声形式の断片が401になったりするため、**仮の原本**として保存します。音声は品質順に試し、再開のたびに進む間は同じ形式で再開し、進まなくなったら次の形式に移ります。`publication.json` には `live_status`・`duration`・`provisional`・実測の `streams` 長・`audio_format` を記録します。仮の原本があるときに再実行すると、`post_live` の間は待機エラーで終了し、処理済みアーカイブになった後は完全版を検証してから同じパスへ置き換えます（仮版は置換後に削除）。失敗時は `.partial` が残り、同じ `live_status` の間は再実行で再開します。編集前の原本は web viewer の同期で「未編集・字幕なし」として元動画だけ公開され、置き換え後の同期で同じ `media-original/` キーに再アップロードされます。編集後も同じキーを再利用します。
+
 新しいYouTube編集出力は `replay.youtube_delivery.new_edit_directory` で `公開日時JST_youtube-動画ID-edit-一意ID/` を原子的に予約し、そのディレクトリ名と同じstemでMP4・ASS・SRTを保存します。既存の編集原本・検証記録を自動削除する処理ではありません。公開時刻の根拠がないと編集ディレクトリも作成しません。
 
 ### 既存の字幕データからの再生成

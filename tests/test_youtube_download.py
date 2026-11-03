@@ -65,8 +65,26 @@ def test_best_streams_go_to_external_regular_files(
     assert (script.parent.parent / "youtube-originals").resolve() == external / "youtube"
     assert (external / "youtube").stat().st_mode & 0o777 == 0o700
     assert Path(environ["TRACE"]).read_text(encoding="utf-8") == (
-        "run\n--locked\n--extra\nyoutube\npython\n-m\nreplay.youtube_delivery\n"
+        "run\n--locked\n--extra\nyoutube\npython\n-m\nreplay.youtube_original\n"
         "https://www.youtube.com/watch?v=lL4opb4iB3w\n"
+        f"{external}/youtube\n{environ['FFMPEG_HOME']}/bin\n"
+    )
+
+
+def test_live_urls_are_normalized_to_watch_urls(
+    setup: tuple[Path, Path, dict[str, str]],
+) -> None:
+    script, external, environ = setup
+    result = subprocess.run(
+        ["bash", str(script), "https://www.youtube.com/live/eWgX9jkjNpA"],
+        env=environ,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert Path(environ["TRACE"]).read_text(encoding="utf-8") == (
+        "run\n--locked\n--extra\nyoutube\npython\n-m\nreplay.youtube_original\n"
+        "https://www.youtube.com/watch?v=eWgX9jkjNpA\n"
         f"{external}/youtube\n{environ['FFMPEG_HOME']}/bin\n"
     )
 

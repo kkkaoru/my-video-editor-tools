@@ -8,10 +8,10 @@ if (( $# != 1 )); then
     exit 2
 fi
 url="$1"
-if [[ "$url" =~ ^https://(www\.)?youtube\.com/shorts/([A-Za-z0-9_-]{11})$ ]]; then
-    url="https://www.youtube.com/watch?v=${BASH_REMATCH[2]}"
+if [[ "$url" =~ ^https://(www\.)?youtube\.com/(shorts|live)/([A-Za-z0-9_-]{11})$ ]]; then
+    url="https://www.youtube.com/watch?v=${BASH_REMATCH[3]}"
 elif [[ ! "$url" =~ ^https://(www\.)?youtube\.com/watch\?v=[A-Za-z0-9_-]{11}$ ]]; then
-    printf '%s\n' 'Expected a canonical YouTube watch or Shorts URL.' >&2
+    printf '%s\n' 'Expected a canonical YouTube watch, Shorts or live URL.' >&2
     exit 2
 fi
 if ! command -v node >/dev/null 2>&1; then
@@ -39,7 +39,7 @@ output="$(cd "$output" && pwd -P)"
 repo_root="$(pwd -P)"
 case "$output" in
     "$repo_root"/edits/work/*)
-        exec uv run --locked --extra youtube python -m replay.youtube_delivery "$url" "$output" "$ffmpeg_dir"
+        exec uv run --locked --extra youtube python -m replay.youtube_original "$url" "$output" "$ffmpeg_dir"
         ;;
 esac
 if [[ "$(stat -f '%d' "$(dirname "$output")")" == "$(stat -f '%d' .)" ]]; then
@@ -58,4 +58,4 @@ else
     fi
     ln -s "$output" youtube-originals
 fi
-exec uv run --locked --extra youtube python -m replay.youtube_delivery "$url" "$output" "$ffmpeg_dir"
+exec uv run --locked --extra youtube python -m replay.youtube_original "$url" "$output" "$ffmpeg_dir"
