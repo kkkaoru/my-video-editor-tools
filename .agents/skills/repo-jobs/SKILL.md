@@ -43,6 +43,7 @@ resubmission; a new instruction is not a reason to duplicate an uncertain job.
    | Read-only workflow dependency preflight | `python -m replay.workflow PLAN.json --state STATE_DIR --check` |
    | Verified stage execution/resume | `python -m replay.workflow PLAN.json --state STATE_DIR` |
    | Detached command, log and exit status | [scripts/tmux-job.sh](../../../scripts/tmux-job.sh) `WORK_DIR NAME COMMAND [ARGS...]` |
+   | Rerun a resumable command after the SSD detached | `python -m replay.volume_resume --volume /Volumes/m.2-ssd -- COMMAND` ([operations](../../../docs/operations.md#resuming-after-the-ssd-detached)) |
    | Shared native build/test | [scripts/native-swift.sh](../../../scripts/native-swift.sh) `build\|test [SwiftPM options]` |
    | Format/lint/type/tests and packaging | [docs/development.md](../../../docs/development.md#quality-gate) and the existing Makefile targets |
 

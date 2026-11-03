@@ -534,6 +534,51 @@ setting scratch environment variables alone does not establish confinement.
 These routines do not replace source hashes, native completion, frame/audio
 verification or the final edit-completion checks.
 
+### Resuming after the SSD detached
+
+`python -m replay.volume_resume --volume /Volumes/m.2-ssd [--volume ...] [--max-wait SEC]
+[--max-restarts N] [--settle SEC] [--restart-compressor] [--no-interrupt] -- COMMAND ARGS...`
+runs a resumable
+command in its own process group and reruns it when a watched volume detached under it. While the
+command runs it checks every 10 s that each volume is still mounted (`os.path.ismount`) with the
+same `st_dev`; a missing or remounted volume interrupts the group (SIGINT, then SIGTERM and
+SIGKILL 60 s apart, so yt-dlp keeps its `.part` fragments). A failed command whose volumes vanish
+or remount within 15 s counts as detached too. It then waits (default 24 h) until the same volumes
+(same UUIDs; another disk at the path stops it) are back, restarts Compressor if asked and it is
+running (it keeps a handle to the old mount), waits 30 s and reruns, at most 5 times. Each event is
+a `VOLUME_RESUME {json}` line on stderr. A failure while the volumes stayed mounted and unchanged
+is returned as is, never retried. `--no-interrupt` never signals the running command and acts
+only once it exits. Launch new recording pipelines under it with that flag, so the pipeline's own
+recovery is not cut short:
+
+```sh
+bash scripts/tmux-job.sh edits/work/recordings/replay-<id> pipeline-vN \
+  .venv/bin/python -m replay.volume_resume --volume /Volumes/m.2-ssd --restart-compressor \
+  --no-interrupt -- \
+  .venv/bin/python -B -m replay.recording_pipeline run <id> \
+  --defaults edits/work/recording-pipeline/DEFAULTS-v1.json
+```
+
+`recording_pipeline run` reuses finished steps and its own `step_retry` already reruns one step
+once after a short detach (`volume_events`, 600 s); the supervisor covers the pipeline exiting.
+`replay.youtube_original` refuses a root under an unmounted `/Volumes/<name>`, keeps its staging
+when the volume goes away (a vanished staging never counts as a refused audio format), accepts
+its own verified staging on a rerun and finishes or rolls back a replacement cut between its two
+renames. States a rerun cannot resume stop the supervisor with a named hint and are never removed
+by it:
+
+- `Uncertain worker attempt` (an `attempt.json` without its result): read the worker log, then
+  `python -m replay.recording_queue redo QUEUE ID --from STEP`; never delete the attempt.
+- `interrupted attempt cannot resume`: redo the stage the same way.
+- `code closure` changed: restore the pinned file, or `run --force STEP`.
+- `Compressor submission input changed`: device numbers are already ignored
+  (`compressor_batch._portable`), so the file itself moved or changed; reconcile the job, then
+  redo the caption render step.
+
+Not covered: receipts written just before the detach are re-hashed only by the pipeline's own
+step retry, pipelines launched by `recording_queue` are not wrapped, and a real unplug was not
+exercised in tests (mocked mounts and processes only).
+
 ### Running independent stages in parallel lanes
 
 A workflow runs its stages one after another, so a manifest of many independent
