@@ -39,6 +39,8 @@ public actor AppleSummaryService {
         progress: @Sendable (Int, Int) async -> Void
     ) async throws -> NarrativeSummary {
         try Task.checkCancellation()
+        // An unedited original has no transcript to summarize and no place for a store or lock.
+        guard !video.isOriginalOnly else { throw SummaryStoreError.unsafePath }
         if !force, starts.isEmpty, case nil = store, let result = cached(video: video) {
             return result
         }

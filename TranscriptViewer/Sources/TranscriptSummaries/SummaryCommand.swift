@@ -225,7 +225,10 @@ public struct SummaryCommand: Sendable {
             }
             guard let library else { throw SummaryCommandError.arguments }
             let catalog = try TranscriptCatalog.scan(in: library)
-            return (videos: catalog.videos, issueCount: catalog.issues.count)
+            return (
+                videos: catalog.videos.filter { !$0.isOriginalOnly },
+                issueCount: catalog.issues.count
+            )
         }
         var videos = AppleSummaryService.newestFirst(scan.videos)
         if let transcript {

@@ -80,6 +80,11 @@ final class NarrativeSummaryModel {
         generation += 1
         self.video = video
         let current = generation
+        // An unedited original is playback-only: no model may start for it.
+        guard !video.isOriginalOnly else {
+            state = .idle
+            return
+        }
         if isBatchRunning {
             let cached = await service.cached(video: video)
             guard current == generation, !Task.isCancelled else { return }
@@ -134,7 +139,7 @@ final class NarrativeSummaryModel {
         generation += 1
         let run = batchGeneration
         batchFailures.removeAll()
-        let ordered = AppleSummaryService.newestFirst(videos)
+        let ordered = AppleSummaryService.newestFirst(videos.filter { !$0.isOriginalOnly })
         libraryProgress = LibraryProgress(total: ordered.count)
         defer {
             if run == batchGeneration {

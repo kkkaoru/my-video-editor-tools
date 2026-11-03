@@ -553,6 +553,26 @@ struct TranscriptCatalogTests {
         try FileManager.default.removeItem(at: root)
     }
 
+    @Test func anExcerptOfAReplayIsDatedByItsCanonicalMovieName() throws {
+        let root = try Self.makeRoot("lib-replay-excerpt")
+        let folder = root.appending(
+            path: "replay-123-loop-4934/delivery", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = "2026-11-02_18-30-45_JST_replay-123-loop-4934-review"
+        try Data().write(to: folder.appending(path: "\(name).mp4"))
+        try Data("1\n00:00:00,067 --> 00:00:00,500\nにゃん\n".utf8)
+            .write(to: folder.appending(path: "\(name).srt"))
+        let scan = try TranscriptCatalog.scan(in: root)
+        #expect(scan.videos.map(\.title) == ["replay-123-loop-4934"])
+        #expect(scan.videos.map(\.broadcastStartJST) == ["2026-11-02 18:30:45 JST"])
+        #expect(scan.unknownBroadcastDateLabels.isEmpty)
+        #expect(
+            TranscriptCatalog.excerptStartJST(
+                movie: URL(fileURLWithPath: "/x/2026-11-02_18-30-45_JST_replay-123-loop.mp4"),
+                title: "replay-123-loop") == nil)
+        try FileManager.default.removeItem(at: root)
+    }
+
     @Test func youtubeDateRequiresTheFolderIdentityAndACanonicalStamp() {
         let title = "youtube-abcdefghijk"
         #expect(

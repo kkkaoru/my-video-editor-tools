@@ -23,6 +23,14 @@ A store that has `evidence/` is left to its own library, so a mirror never
 re-selects an older revision. Summary stores must stay 0700; `replay.record_mirror`
 keeps the source directory modes.
 
+The YouTube originals root (for example `/Volumes/m.2-ssd/movie/youtube`) can be a
+library: each `<stamp>_JST_youtube-<id>` folder without a transcript lists its own
+top-level `.mp4`/`.mov` as `youtube-<id> [未編集・字幕なし]`, playable only. Such an
+entry is dropped as soon as any library lists a delivery of that recording, and
+original folders never report missing captions or unprocessed work. Hidden staging
+folders, locks and matroska originals are ignored. Selecting one starts no summary,
+excitement, clip lookup/recompute or BGM, and nothing is written beside the original.
+
 The default view rereads configuration and candidate selections every 30 seconds,
 on activation and with Refresh. A newly published movie appears only after the
 existing catalog's candidate, media identity, source date and SRT checks pass.

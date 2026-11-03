@@ -34,6 +34,8 @@ public struct VideoTranscript: Equatable, Sendable, Identifiable {
     public var broadcastStartJST: String?
     /// Set only after the explicit candidate selection's provenance and SRT checks pass.
     public let isUnverifiedCandidate: Bool
+    /// An unedited YouTube original without captions: playable only, never summarized or annotated.
+    public let isOriginalOnly: Bool
     public var recordingID: String? { RecordingIdentity(movie: movieURL)?.recordingID }
     public var cues: [TranscriptCue] {
         didSet { summary = TranscriptSummary(cues: cues, inputKind: summaryInputKind) }
@@ -45,13 +47,14 @@ public struct VideoTranscript: Equatable, Sendable, Identifiable {
         title: String, movieURL: URL, transcriptURL: URL, cues: [TranscriptCue],
         broadcastStartJST: String? = nil,
         summaryInputKind: TranscriptSummary.InputKind = .cumulativeCaptions,
-        isUnverifiedCandidate: Bool = false
+        isUnverifiedCandidate: Bool = false, isOriginalOnly: Bool = false
     ) {
         self.title = title
         self.movieURL = movieURL
         self.transcriptURL = transcriptURL
         self.broadcastStartJST = broadcastStartJST
         self.isUnverifiedCandidate = isUnverifiedCandidate
+        self.isOriginalOnly = isOriginalOnly
         self.cues = cues
         self.summaryInputKind = summaryInputKind
         self.summary = TranscriptSummary(cues: cues, inputKind: summaryInputKind)

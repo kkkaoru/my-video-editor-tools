@@ -73,6 +73,19 @@ public struct CatalogScan: Equatable, Sendable {
         invalidSupersededRecordLabels += other.invalidSupersededRecordLabels
         invalidCandidateSelectionLabels += other.invalidCandidateSelectionLabels
         emptyFolders += other.emptyFolders
+        // An original stays listed only until any library delivers its recording, in any order.
+        let delivered = Set(videos.filter { !$0.isOriginalOnly }.compactMap(Self.recording(of:)))
+        videos.removeAll {
+            $0.isOriginalOnly && Self.recording(of: $0).map(delivered.contains) == true
+        }
+    }
+
+    /// A canonical delivery's recording, else its `youtube-<id>`/`replay-<id>` folder label:
+    /// an `-edit-` delivery has no canonical name, and an excerpt's label is no recording ID.
+    private static func recording(of video: VideoTranscript) -> String? {
+        if let recordingID = video.recordingID { return recordingID }
+        let label = String(video.title.prefix { $0 != "/" && $0 != " " })
+        return RecordingIdentity.isRecordingID(label) ? label : nil
     }
 }
 
@@ -179,6 +192,22 @@ public enum TranscriptCatalog {
             {
                 continue
             }
+            // A YouTube original (`<stamp>_JST_youtube-<id>`) is source media, not a delivery:
+            // its one top-level movie is listed playable-only and nothing else is reported.
+            if folder != root, let recording = originalYouTubeRecording(title),
+                try transcriptURLs(in: folder, fileManager: fileManager).isEmpty
+            {
+                if let movie = originalMovie(in: folder, fileManager: fileManager) {
+                    scan.videos.append(
+                        VideoTranscript(
+                            title: "\(recording) [未編集・字幕なし]", movieURL: movie,
+                            // A device node: no summary, lock or estimate can be created beside it.
+                            transcriptURL: URL(fileURLWithPath: "/dev/null"), cues: [],
+                            broadcastStartJST: youtubeStartJST(movie: movie, title: recording),
+                            isOriginalOnly: true))
+                }
+                continue
+            }
             var broadcastStartJST: String?
             let probeURL = folder.appending(path: "evidence/source-probe.json")
             if fileManager.fileExists(atPath: probeURL.path(percentEncoded: false)) {
@@ -258,6 +287,15 @@ public enum TranscriptCatalog {
                 discoveredMovies =
                     try movieCandidates(in: folder, fileManager: fileManager)
                     + storedTranscripts.keys.sorted { $0.path < $1.path }
+            }
+            // An excerpt (`replay-<id>-<name>`, replay.highlight_clip) has no evidence of its own:
+            // its canonical movie name carries its recording's start, as a YouTube edit's does.
+            if title.hasPrefix("replay-"), broadcastStartJST == nil,
+                !RecordingIdentity.isRecordingID(title)
+            {
+                broadcastStartJST =
+                    discoveredMovies.lazy.compactMap { excerptStartJST(movie: $0, title: title) }
+                    .first
             }
             if title.hasPrefix("replay-"), broadcastStartJST == nil, !discoveredMovies.isEmpty {
                 scan.unknownBroadcastDateLabels.append(title)
@@ -448,6 +486,40 @@ public enum TranscriptCatalog {
             name[range.upperBound...].isEmpty || name[range.upperBound...].hasPrefix("-")
         else { return nil }
         return jstLabel(stamp: String(name[..<range.lowerBound]))
+    }
+
+    /// The start of an excerpt folder's canonical `<stamp>_JST_<title>-review` movie.
+    static func excerptStartJST(movie: URL, title: String) -> String? {
+        let name = movie.deletingPathExtension().lastPathComponent
+        let suffix = "_JST_\(title)-review"
+        guard name.hasSuffix(suffix) else { return nil }
+        return jstLabel(stamp: String(name.dropLast(suffix.count)))
+    }
+
+    /// `youtube-<id>` of a canonical `<stamp>_JST_youtube-<id>` original folder name.
+    static func originalYouTubeRecording(_ name: String) -> String? {
+        let stamp = String(name.prefix(19))
+        let recording = String(name.dropFirst(stamp.count + "_JST_".count))
+        guard name.dropFirst(stamp.count).hasPrefix("_JST_"), recording.hasPrefix("youtube-"),
+            RecordingIdentity.isRecordingID(recording), jstLabel(stamp: stamp) != nil
+        else { return nil }
+        return recording
+    }
+
+    /// The original's own `<folder>.mp4` or `.mov`; a matroska original is not playable here.
+    private static func originalMovie(in folder: URL, fileManager: FileManager) -> URL? {
+        let movies = ["mp4", "mov"].map {
+            folder.appending(path: "\(folder.lastPathComponent).\($0)")
+        }.filter { movie in
+            var isDirectory: ObjCBool = false
+            return fileManager.fileExists(
+                atPath: movie.path(percentEncoded: false), isDirectory: &isDirectory)
+                && !isDirectory.boolValue
+                && !movie.resolvingSymlinksInPath().pathComponents.contains(where: {
+                    ["private", "downloads"].contains($0)
+                })
+        }
+        return movies.count == 1 ? movies.first : nil
     }
 
     private static func editConfig(in folder: URL) -> EditConfig? {

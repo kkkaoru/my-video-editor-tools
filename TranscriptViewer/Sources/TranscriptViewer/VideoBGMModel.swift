@@ -81,9 +81,14 @@ final class VideoBGMModel {
     /// Shows the video's saved BGM; it starts when the video plays.
     func open(_ video: VideoTranscript?) {
         if library.tracks.isEmpty { library.reload() }
-        let key = video.map(VideoBGMSetting.key(for:))
+        // An unedited original plays without BGM, and nothing is saved for it.
+        let key = video.flatMap { $0.isOriginalOnly ? nil : VideoBGMSetting.key(for: $0) }
         self.key = nil
-        setting = key.flatMap { settings[$0] } ?? VideoBGMSetting()
+        var silent = VideoBGMSetting()
+        silent.selection = .off
+        setting =
+            video?.isOriginalOnly == true
+            ? silent : key.flatMap { settings[$0] } ?? VideoBGMSetting()
         self.key = key
         movie = video?.movieURL
         query = ""
