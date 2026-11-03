@@ -38,7 +38,7 @@ struct BGMLibraryViewTests {
         #expect(throws: Never.self) { try view.inspect().find(AudioControls.self) }
         try view.detail(track).inspect().find(button: "Reveal Finder").tap()
         #expect(revealed == track.audioURL)
-        try view.detail(track).inspect().find(button: "パスをコピー").tap()
+        try view.detail(track).inspect().find(button: "Copy Path").tap()
         #expect(copied == track.audioURL.path(percentEncoded: false))
         try view.nowPlaying(track).inspect().find(button: "一時停止").tap()
         #expect(model.playingID == nil)

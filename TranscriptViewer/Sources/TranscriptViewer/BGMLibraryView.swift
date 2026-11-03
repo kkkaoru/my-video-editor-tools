@@ -177,7 +177,9 @@ struct BGMLibraryView: View {
         Group {
             Button("Reveal Finder", systemImage: "folder") { model.revealInFinder(track) }
                 .help("音源ファイルをFinderで表示します")
-            Button("パスをコピー", systemImage: "doc.on.doc") { model.copyPath(track) }
+            // ASCII: a highlighted Japanese menu item title crashes the system Swift runtime (2026-11-03).
+            Button("Copy Path", systemImage: "doc.on.doc") { model.copyPath(track) }
+                .help("音源ファイルのパスをコピーします")
         }
     }
 
