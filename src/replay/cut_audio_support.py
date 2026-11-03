@@ -5,7 +5,9 @@ hole of at least ``HOLE_SECONDS`` (packets lost in a live stream; 10/27: 7.55 s 
 audio frame at all), the hole is not audio support either, so a cut across it is split around it.
 A cut that kept such a hole would join seconds of video to the few samples around it, which the
 clocked audio stages rightly refuse as an impossible rate change. Shorter gaps (10/27's 0.61 s at
-its video splice passes the rate bound) and overlaps keep their existing clock policy.
+its video splice passes the rate bound) and overlaps keep their existing clock policy, unless the
+cut holding them is so short that its decoded audio would still break that bound (``RATE_CHANGE``;
+eWgX9jkjNpA: a 0.998 s hole filling a 1.03 s cut): such a cut is split at every hole of a frame.
 Recognition is evidence against removal, never proof of silence.
 """
 
@@ -31,6 +33,7 @@ MAX_BYTES = 128 * 1024 * 1024
 MAX_CUTS = 200_000  # a 24 h source with frequent pauses stays below this
 MAX_LABELS = 1_000_000  # a 24 h source with frequent pauses stays below this
 HOLE_SECONDS = Fraction(1)
+RATE_CHANGE = Fraction(1, 2)  # caption_native_continuation.MAXIMUM_RATE_CHANGE (an import cycle)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,18 +69,26 @@ def _protect_labels(
             raise ReplayError("Audio-support trimming intersects recognized speech or a point")
 
 
-def support_spans(clock: AudioFrameClock, *, fps: int) -> tuple[tuple[Fraction, Fraction], ...]:
-    """The decoded audio's runs in source seconds, split at holes of at least ``HOLE_SECONDS``
+def support_spans(
+    clock: AudioFrameClock, *, fps: int, hole: Fraction = HOLE_SECONDS
+) -> tuple[tuple[Fraction, Fraction], ...]:
+    """The decoded audio's runs in source seconds, split at holes of at least ``hole``
     (and at least one video frame)."""
     spans: list[tuple[Fraction, Fraction]] = []
     for pts, samples in zip(clock.pts, clock.samples, strict=True):
         start = pts * clock.time_base
         end = start + Fraction(samples, clock.sample_rate)
-        if spans and start - spans[-1][1] < max(HOLE_SECONDS, Fraction(1, fps)):
+        if spans and start - spans[-1][1] < max(hole, Fraction(1, fps)):
             spans[-1] = (spans[-1][0], max(spans[-1][1], end))
         else:
             spans.append((start, end))
     return tuple(spans)
+
+
+def whole_frames(spans: tuple[tuple[Fraction, Fraction], ...], fps: int) -> list[tuple[int, int]]:
+    """The complete video frames inside each span."""
+    frames = [(ceil(low * fps), floor(high * fps)) for low, high in spans]
+    return [(low, high) for low, high in frames if low < high]
 
 
 def intersect(
@@ -98,8 +109,8 @@ def intersect(
     if not 1 <= len(cuts) <= MAX_CUTS or len(labels) > MAX_LABELS:
         raise ReplayError("Audio-support intersection exceeds its input budget")
     audio = support_spans(clock, fps=fps)
-    frames = [(ceil(low * fps), floor(high * fps)) for low, high in audio]
-    frames = [(low, high) for low, high in frames if low < high]
+    frames = whole_frames(audio, fps)
+    fine = whole_frames(support_spans(clock, fps=fps, hole=Fraction(0)), fps)
     if not frames:
         raise ReplayError("No complete video frame lies inside decoded audio support")
     first, end = frames[0][0], frames[-1][1]
@@ -116,7 +127,9 @@ def intersect(
         source_end = cut.source_end_frame
         old_offset += cut.duration_frames
         position = cut.source_start_frame
-        for support_low, support_high in frames:
+        decoded = sum(max(min(b, cut.source_end_frame) - max(a, position), 0) for a, b in fine)
+        within = fine if decoded < (1 - RATE_CHANGE) * cut.duration_frames else frames
+        for support_low, support_high in within:
             low = max(support_low, cut.source_start_frame)
             high = min(support_high, cut.source_end_frame)
             if low >= high:

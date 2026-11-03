@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from replay import caption_native_continuation
 from replay.audio_clock import AudioFrameClock
 from replay.caption_projection import CutSpan
 from replay.caption_repair import ClockLabel
 from replay.core import ReplayError
-from replay.cut_audio_support import _binding, _cuts, _local, intersect, main, run
+from replay.cut_audio_support import RATE_CHANGE, _binding, _cuts, _local, intersect, main, run
 from replay.stages import StageError, file_digest
 
 
@@ -283,3 +284,15 @@ def test_speech_inside_an_audio_hole_is_refused() -> None:
     clock = AudioFrameClock((0, 20000), (8000, 8000), 8000, Fraction(1, 8000))
     with pytest.raises(ReplayError, match="intersects recognized speech"):
         intersect((CutSpan(0, 40, 0),), (ClockLabel("声", 1.5, 1.7, "raw:1"),), clock, fps=10)
+
+
+def test_a_short_cut_mostly_inside_a_sub_second_hole_is_split_around_it() -> None:
+    # eWgX9jkjNpA (2026-11-03): a 0.998 s hole left 1538 samples for a 1.03 s cut.
+    clock = AudioFrameClock((0, 15000), (7000, 8000), 8000, Fraction(1, 8000))
+    result = intersect((CutSpan(5, 12, 0), CutSpan(14, 23, 7)), (), clock, fps=10)
+    assert result.cuts == (CutSpan(5, 8, 0), CutSpan(19, 23, 3))
+    assert result.removed == ((8, 12), (14, 19))
+
+
+def test_the_rate_bound_is_the_clocked_audio_stages_own() -> None:
+    assert float(RATE_CHANGE) == caption_native_continuation.MAXIMUM_RATE_CHANGE
