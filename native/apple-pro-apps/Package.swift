@@ -8,11 +8,15 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.1"),
     .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", exact: "1.1.0"),
+    .package(path: "../caption-render"),
   ],
   targets: [
     .target(
       name: "ProAppsCore",
-      dependencies: [.product(name: "WhisperKit", package: "argmax-oss-swift")]),
+      dependencies: [
+        .product(name: "WhisperKit", package: "argmax-oss-swift"),
+        .product(name: "CaptionRender", package: "caption-render"),
+      ]),
     .executableTarget(
       name: "AppleProApps",
       dependencies: ["ProAppsCore", .product(name: "MCP", package: "swift-sdk")]
@@ -30,9 +34,13 @@ let package = Package(
       name: "AudioEncodingCapabilitiesTests", dependencies: ["audio-encoding-capabilities"]),
     // Synthetic accessibility fixture used only by native UI backend tests.
     .executableTarget(name: "apple-pro-apps-ui-fixture", path: "Tests/UIFixture"),
-    .testTarget(name: "ProAppsCoreTests", dependencies: ["ProAppsCore"]),
     .testTarget(
-      name: "ProAppsNativeTests", dependencies: ["ProAppsCore"], resources: [.copy("Fixtures")]),
+      name: "ProAppsCoreTests",
+      dependencies: ["ProAppsCore", .product(name: "CaptionRender", package: "caption-render")]),
+    .testTarget(
+      name: "ProAppsNativeTests",
+      dependencies: ["ProAppsCore", .product(name: "CaptionRender", package: "caption-render")],
+      resources: [.copy("Fixtures")]),
     .testTarget(
       name: "AppleProAppsTests",
       dependencies: ["AppleProApps", "ProAppsCore", .product(name: "MCP", package: "swift-sdk")]

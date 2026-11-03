@@ -23,6 +23,7 @@ check_path() {
         native/apple-pro-apps/Package.swift|native/apple-pro-apps/Package.resolved|native/apple-pro-apps/README.md) ;;
         native/apple-pro-apps/Sources/ProAppsCore/*.swift|native/apple-pro-apps/Sources/AppleProApps/*.swift) ;;
         native/apple-pro-apps/Tests/ProAppsCoreTests/*.swift|native/apple-pro-apps/Tests/ProAppsNativeTests/*.swift|native/apple-pro-apps/Tests/AppleProAppsTests/*.swift|native/apple-pro-apps/Tests/UIFixture/main.swift) ;;
+        native/caption-render/Package.swift|native/caption-render/Sources/CaptionRender/*.swift|native/caption-render/Sources/CaptionBurn/*.swift|native/caption-render/Tests/CaptionRenderTests/*.swift) ;;
         native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/README.md|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/black.mp4|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/quadrants-30.mp4|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/motion-caption-part.moti) ;;
         web-viewer/.gitignore|web-viewer/README.md|web-viewer/biome.json|web-viewer/bun.lock|web-viewer/package.json|web-viewer/tsconfig.json|web-viewer/vitest.config.ts) ;;
         web-viewer/cloudflare.config.ts|web-viewer/wrangler.config.ts|web-viewer/sync.config.example.json|web-viewer/public/index.html) ;;

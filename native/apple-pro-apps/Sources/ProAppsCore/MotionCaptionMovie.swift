@@ -1,4 +1,5 @@
 import AVFoundation
+import CaptionRender
 import CoreVideo
 import Foundation
 
@@ -125,16 +126,19 @@ public enum MotionCaptionMovie {
     try NativeEditor.require(writer.startWriting(), "Cannot start the native encoder")
     writer.startSession(atSourceTime: .zero)
     var current: [Int: (visible: Int, bitmap: MotionCaptionBitmap)] = [:]
+    // The composited canvas of the last frame, redrawn only when a title's state changes.
+    var canvas = CaptionFrame.composite([], width: request.width, height: request.height)
     var states = 0
     var stateTime = Duration.zero
     do {
       for frame in 0..<request.frames {
         try Task.checkCancellation()
         var shown: [MotionCaptionBitmap] = []
+        var changed = frame == 0
         for (index, title) in request.titles.enumerated() {
           let visible = title.visible(at: frame)
           guard visible > 0 else {
-            current[index] = nil
+            if current.removeValue(forKey: index) != nil { changed = true }
             continue
           }
           if let state = current[index], state.visible == visible {
@@ -145,12 +149,14 @@ public enum MotionCaptionMovie {
           let bitmap = try renderers[index].bitmap(visible: visible)
           stateTime += ContinuousClock.now - before
           states += 1
+          changed = true
           current[index] = (visible, bitmap)
           shown.append(bitmap)
         }
-        let buffer = try frameBuffer(
-          adaptor, bitmaps: shown, width: request.width,
-          height: request.height)
+        if changed {
+          canvas = CaptionFrame.composite(shown, width: request.width, height: request.height)
+        }
+        let buffer = try frameBuffer(adaptor, canvas: canvas)
         while !input.isReadyForMoreMediaData {
           try await Task.sleep(for: writerPollInterval)
         }
@@ -178,62 +184,17 @@ public enum MotionCaptionMovie {
     Double(duration.components.seconds) + Double(duration.components.attoseconds) * 1e-18
   }
 
-  /// A cleared BGRA frame with the bitmaps composited over it in order (straight alpha).
-  static func frameBuffer(
-    _ adaptor: AVAssetWriterInputPixelBufferAdaptor, bitmaps: [MotionCaptionBitmap], width: Int,
-    height: Int
-  ) throws -> CVPixelBuffer {
+  /// An encoder frame holding the composited canvas (`CaptionFrame`, straight alpha).
+  static func frameBuffer(_ adaptor: AVAssetWriterInputPixelBufferAdaptor, canvas: [UInt8])
+    throws -> CVPixelBuffer
+  {
     let pool = try NativeEditor.required(
       adaptor.pixelBufferPool, "The encoder provided no pixel buffer pool")
     var allocated: CVPixelBuffer?
     let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &allocated)
     let buffer = try NativeEditor.required(
       status == kCVReturnSuccess ? allocated : nil, "Cannot allocate an encoder frame")
-    CVPixelBufferLockBaseAddress(buffer, [])
-    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
-    let base = try NativeEditor.required(
-      CVPixelBufferGetBaseAddress(buffer), "Cannot address an encoder frame")
-    memset(base, 0, rowBytes * height)
-    let pixels = base.bindMemory(to: UInt8.self, capacity: rowBytes * height)
-    for bitmap in bitmaps {
-      for row in 0..<bitmap.height {
-        let y = bitmap.originY + row
-        guard (0..<height).contains(y) else { continue }
-        for column in 0..<bitmap.width {
-          let x = bitmap.originX + column
-          let source = (row * bitmap.width + column) * 4
-          let alpha = bitmap.rgba[source + 3]
-          guard (0..<width).contains(x), alpha > 0 else { continue }
-          let target = y * rowBytes + x * 4
-          guard pixels[target + 3] == 0 else {
-            over(bitmap.rgba, at: source, into: pixels, at: target)
-            continue
-          }
-          pixels[target] = bitmap.rgba[source + 2]
-          pixels[target + 1] = bitmap.rgba[source + 1]
-          pixels[target + 2] = bitmap.rgba[source]
-          pixels[target + 3] = alpha
-        }
-      }
-    }
+    try CaptionFrame.store(canvas, into: buffer)
     return buffer
-  }
-
-  /// Straight-alpha RGBA "over" straight-alpha BGRA.
-  static func over(
-    _ rgba: [UInt8], at source: Int, into pixels: UnsafeMutablePointer<UInt8>, at target: Int
-  ) {
-    let top = Float(rgba[source + 3]) / 255
-    let under = Float(pixels[target + 3]) / 255 * (1 - top)
-    let alpha = top + under
-    for channel in 0..<3 {
-      let slot = 2 - channel
-      let value =
-        (Float(rgba[source + channel]) * top + Float(pixels[target + slot]) * under)
-        / alpha
-      pixels[target + slot] = UInt8(min(max(value, 0), 255) + 0.5)
-    }
-    pixels[target + 3] = UInt8(min(alpha, 1) * 255 + 0.5)
   }
 }

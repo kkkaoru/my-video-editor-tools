@@ -1,3 +1,4 @@
+import CaptionRender
 import Foundation
 
 /// A finished caption part as the native renderer draws it, read from its Motion document.
@@ -426,7 +427,11 @@ public enum MotionCaptionDocument {
       topLocation: try number(keyline, gradient + "/parameter[RGB1]/parameter[1]/curve"),
       bottomLocation: try number(keyline, gradient + "/parameter[RGB2]/parameter[1]/curve"),
       outputGamma: outputGamma)
-    try style.validate()
+    do {
+      try style.validate()
+    } catch CaptionRenderError.invalid(let reason) {
+      throw ProAppsError.invalid(reason)
+    }
     return style
   }
 

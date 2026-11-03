@@ -4,120 +4,6 @@ import CoreGraphics
 import CoreText
 import Foundation
 
-/// Caption style 20 as Motion renders its finished three-object titles, in output pixels.
-/// Motion grows an outline by an axis-aligned square of the outline's width, not a disc: the
-/// band is that wide beside horizontal and vertical edges and √2 times as wide across
-/// diagonal ones, convex corners stay square and holes shrink into diamonds (measured on
-/// Motion renders of 〇, 口, ◆, ＼ and ／).
-public struct MotionCaptionStyle: Codable, Equatable, Sendable {
-  public let fontName: String
-  public let fontSize: Double
-  /// Growth of the face beyond CoreText's outline.
-  public let faceGrow: Double
-  /// Black keyline, white band and outer black rim growth beyond the outline.
-  public let keyline: Double
-  public let whiteBorder: Double
-  public let rim: Double
-  /// The rim object's shadow is cast by the glyphs alone: Gaussian, then moved down.
-  public let shadowOpacity: Double
-  public let shadowOffsetY: Double
-  public let shadowSigma: Double
-  /// sRGB intent of the gradient's two colours (#RRGGBB).
-  public let gradientTop: String
-  public let gradientBottom: String
-  /// Gradient stops as fractions of each line's text box (ascent + descent), from its top.
-  public let topLocation: Double
-  public let bottomLocation: Double
-  /// Motion writes linear light with this pure power law into its BT.709-tagged output.
-  public let outputGamma: Double
-
-  public init(
-    fontName: String, fontSize: Double, faceGrow: Double, keyline: Double, whiteBorder: Double,
-    rim: Double, shadowOpacity: Double, shadowOffsetY: Double, shadowSigma: Double,
-    gradientTop: String, gradientBottom: String, topLocation: Double, bottomLocation: Double,
-    outputGamma: Double
-  ) {
-    self.fontName = fontName
-    self.fontSize = fontSize
-    self.faceGrow = faceGrow
-    self.keyline = keyline
-    self.whiteBorder = whiteBorder
-    self.rim = rim
-    self.shadowOpacity = shadowOpacity
-    self.shadowOffsetY = shadowOffsetY
-    self.shadowSigma = shadowSigma
-    self.gradientTop = gradientTop
-    self.gradientBottom = gradientBottom
-    self.topLocation = topLocation
-    self.bottomLocation = bottomLocation
-    self.outputGamma = outputGamma
-  }
-
-  func validate() throws {
-    let lengths = [
-      fontSize, faceGrow, keyline, whiteBorder, rim, shadowOffsetY, shadowSigma, outputGamma,
-    ]
-    guard lengths.allSatisfy({ $0.isFinite && $0 >= 0 }), fontSize > 0, outputGamma > 0,
-      faceGrow <= keyline, keyline <= whiteBorder, whiteBorder <= rim,
-      (0...1).contains(shadowOpacity),
-      (0...1).contains(topLocation), (topLocation...1).contains(bottomLocation),
-      EditRGB(hex: gradientTop) != nil, EditRGB(hex: gradientBottom) != nil
-    else { throw ProAppsError.invalid("Invalid Motion caption style") }
-  }
-}
-
-/// Motion's paragraph alignment of a title's lines.
-public enum MotionCaptionAlignment: String, Codable, Equatable, Sendable {
-  /// Every line starts at the title's position.
-  case left
-}
-
-/// One revealing title: its final text, frames [startFrame, endFrame) and the frame each
-/// grapheme (line breaks included) appears on, as `replay.motion_reveal_stages` records them.
-/// The position is Motion's: the first line's baseline centre (its start when left-aligned),
-/// origin at the canvas centre, y up.
-public struct MotionCaptionTitle: Codable, Equatable, Sendable {
-  public let text: String
-  public let startFrame: Int
-  public let endFrame: Int
-  public let x: Double
-  public let y: Double
-  public let graphemeFrames: [Int]
-  /// This title's own style when it differs from the part's (a title edited in Motion).
-  public let style: MotionCaptionStyle?
-  /// Left-aligned lines; nil centres each line on the position (the template's default).
-  public let alignment: MotionCaptionAlignment?
-
-  public init(
-    text: String, startFrame: Int, endFrame: Int, x: Double, y: Double, graphemeFrames: [Int],
-    style: MotionCaptionStyle? = nil, alignment: MotionCaptionAlignment? = nil
-  ) {
-    self.text = text
-    self.startFrame = startFrame
-    self.endFrame = endFrame
-    self.x = x
-    self.y = y
-    self.graphemeFrames = graphemeFrames
-    self.style = style
-    self.alignment = alignment
-  }
-
-  /// Graphemes shown on `frame`: Type On End shows each from its onset frame onward.
-  public func visible(at frame: Int) -> Int {
-    guard (startFrame..<endFrame).contains(frame) else { return 0 }
-    return graphemeFrames.count { $0 <= frame }
-  }
-
-  func validate() throws {
-    guard !text.isEmpty, startFrame >= 0, startFrame < endFrame,
-      graphemeFrames.count == text.count,
-      graphemeFrames.allSatisfy({ (startFrame..<endFrame).contains($0) }),
-      zip(graphemeFrames, graphemeFrames.dropFirst()).allSatisfy({ $0 <= $1 }),
-      x.isFinite, y.isFinite
-    else { throw ProAppsError.invalid("Invalid Motion caption title") }
-  }
-}
-
 /// A rendered caption state: straight-alpha RGBA8 placed at `origin` (top-left output pixels).
 public struct MotionCaptionBitmap: Sendable {
   public let originX: Int
@@ -125,6 +11,40 @@ public struct MotionCaptionBitmap: Sendable {
   public let width: Int
   public let height: Int
   public let rgba: [UInt8]
+
+  /// Where the bitmap lies on the canvas, in pixels with the origin at the top left.
+  public var rect: CGRect { CGRect(x: originX, y: originY, width: width, height: height) }
+
+  /// The bitmap as a straight-alpha RGBA8 image whose bytes are the burned movie's pre-Y'CbCr
+  /// code values (linear light raised to 1/`outputGamma`), tagged `videoColorSpace` so
+  /// ColorSync shows them exactly as it shows the BT.709-tagged delivery video.
+  public func image() throws -> CGImage {
+    try Self.image(rgba, width: width, height: height)
+  }
+
+  /// The colour space CoreVideo gives BT.709-tagged video (`kCGColorSpaceCoreMedia709`, the one
+  /// AVFoundation displays the delivery in): BT.709 primaries, D65 and a pure 1.961 power law,
+  /// built from public parameters (matches it within 2e-4 linear). Not
+  /// `CGColorSpace.itur_709`, which decodes with gamma 2.4 and would darken the captions.
+  public static let videoColorSpace = CGColorSpace(
+    calibratedRGBWhitePoint: [0.95047, 1, 1.08883], blackPoint: [0, 0, 0],
+    gamma: [videoGamma, videoGamma, videoGamma],
+    matrix: [
+      0.4124564, 0.2126729, 0.0193339, 0.3575761, 0.7151522, 0.1191920, 0.1804375, 0.0721750,
+      0.9503041,
+    ])
+  static let videoGamma: CGFloat = 1.961
+
+  static func image(_ rgba: [UInt8], width: Int, height: Int) throws -> CGImage {
+    guard let space = videoColorSpace, let provider = CGDataProvider(data: Data(rgba) as CFData),
+      let image = CGImage(
+        width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+        bytesPerRow: width * 4, space: space,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider,
+        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    else { throw CaptionRenderError.unavailable("Cannot make a caption image") }
+    return image
+  }
 }
 
 /// Lays a title out once with CoreText and draws any prefix of its graphemes in that fixed
@@ -155,7 +75,7 @@ public struct MotionCaptionRenderer {
     try title.validate()
     let font = CTFontCreateWithName(style.fontName as CFString, style.fontSize, nil)
     guard CTFontCopyPostScriptName(font) as String == style.fontName else {
-      throw ProAppsError.invalid("Caption font is not installed: \(style.fontName)")
+      throw CaptionRenderError.invalid("Caption font is not installed: \(style.fontName)")
     }
     let ascent = Double(CTFontGetAscent(font))
     let advance = ascent + Double(CTFontGetDescent(font))
@@ -167,23 +87,23 @@ public struct MotionCaptionRenderer {
       .enumerated()
     {
       let baseline = firstBaseline + Double(index) * advance
-      glyphs += Self.glyphs(
+      glyphs += try Self.glyphs(
         String(line), font: font, anchorX: anchorX, alignment: title.alignment,
         baseline: baseline, firstGrapheme: grapheme)
       grapheme += line.count + 1
     }
     var bounds = CGRect.null
     for glyph in glyphs { bounds = bounds.union(glyph.path.boundingBoxOfPath) }
-    guard !bounds.isNull else { throw ProAppsError.invalid("Caption title draws no glyphs") }
+    guard !bounds.isNull else { throw CaptionRenderError.invalid("Caption title draws no glyphs") }
     let spread = style.rim + 2
     let shadow = style.shadowOffsetY + 3 * style.shadowSigma + 2
     let left = (bounds.minX - max(spread, 3 * style.shadowSigma + 2)).rounded(.down)
     let right = (bounds.maxX + max(spread, 3 * style.shadowSigma + 2)).rounded(.up)
     let upper = (bounds.minY - spread).rounded(.down)
     let lower = (bounds.maxY + max(spread, shadow)).rounded(.up)
-    guard let topColour = EditRGB(hex: style.gradientTop),
-      let bottomColour = EditRGB(hex: style.gradientBottom)
-    else { throw ProAppsError.invalid("Caption colors must be #RRGGBB") }
+    guard let topColour = CaptionRGB(hex: style.gradientTop),
+      let bottomColour = CaptionRGB(hex: style.gradientBottom)
+    else { throw CaptionRenderError.invalid("Caption colors must be #RRGGBB") }
     self.style = style
     self.glyphs = glyphs
     self.boxTop = firstBaseline - ascent
@@ -202,7 +122,7 @@ public struct MotionCaptionRenderer {
   static func glyphs(
     _ line: String, font: CTFont, anchorX: Double, alignment: MotionCaptionAlignment?,
     baseline: Double, firstGrapheme: Int
-  ) -> [Glyph] {
+  ) throws -> [Glyph] {
     guard !line.isEmpty else { return [] }
     let attributed = NSAttributedString(
       string: line, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
@@ -216,7 +136,10 @@ public struct MotionCaptionRenderer {
       graphemeAt += Array(repeating: firstGrapheme + index, count: character.utf16.count)
     }
     var result: [Glyph] = []
-    for run in CTLineGetGlyphRuns(ctLine) as? [CTRun] ?? [] {
+    guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else {
+      throw CaptionRenderError.unavailable("CoreText returned no glyph runs")
+    }
+    for run in runs {
       let count = CTRunGetGlyphCount(run)
       var ids = [CGGlyph](repeating: 0, count: count)
       var positions = [CGPoint](repeating: .zero, count: count)
@@ -224,7 +147,10 @@ public struct MotionCaptionRenderer {
       CTRunGetGlyphs(run, CFRange(), &ids)
       CTRunGetPositions(run, CFRange(), &positions)
       CTRunGetStringIndices(run, CFRange(), &indices)
-      let runFont = Self.font(of: run) ?? font
+      // CoreText names the (possibly substituted) font of every run it lays out.
+      guard let runFont = Self.font(of: run) else {
+        throw CaptionRenderError.unavailable("A caption glyph run has no font")
+      }
       for index in 0..<count {
         var transform = CGAffineTransform(
           a: 1, b: 0, c: 0, d: -1, tx: left + positions[index].x,
@@ -325,7 +251,7 @@ public struct MotionCaptionRenderer {
       let context = CGContext(
         data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
         space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
-    else { throw ProAppsError.unavailable("Cannot allocate a caption mask") }
+    else { throw CaptionRenderError.unavailable("Cannot allocate a caption mask") }
     // Rows of the bitmap run top-down: flip so the paths' top-left coordinates land as is.
     context.translateBy(x: 0, y: CGFloat(height))
     context.scaleBy(x: 1, y: -1)
@@ -334,7 +260,7 @@ public struct MotionCaptionRenderer {
     context.addPath(path)
     context.fillPath()
     guard let data = context.data else {
-      throw ProAppsError.unavailable("Cannot read a caption mask")
+      throw CaptionRenderError.unavailable("Cannot read a caption mask")
     }
     let bytes = data.bindMemory(to: UInt8.self, capacity: width * height)
     return (0..<(width * height)).map { Float(bytes[$0]) / 255 }

@@ -1,3 +1,4 @@
+import CaptionRender
 import Foundation
 import Testing
 
