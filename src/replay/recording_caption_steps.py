@@ -161,6 +161,7 @@ REPAIR_PYTHON = Path("edits/.venv-voice-repair/bin/python")
 SPEAKER_MODEL = Path("edits/models/wavlm-base-plus-sv")
 VOICE_REPAIR = "voice-repair-v1"
 VOICE_DEESSER = "voice-deesser-v1"
+DEESSER_DEPTHS_DB = (8.0, 4.0, 2.0)  # the first is voice_deesser.MAX_REDUCTION_DB
 VOICE_REMUX = "voice-remux-v1"
 YOUTUBE_ENCODE = "youtube-encode-v1"
 VOICE_RESTORE = "voice-restore-v1"
@@ -606,23 +607,47 @@ def voice_repair(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         data = read_json(receipt)
         voice = Path(str(record(data["voice"])["path"]))
         outputs = {"receipt": pin(receipt), "repaired": data["repaired"] is True}
-    if "voiceDeesser" in captions:
-        directory = pipeline.work / VOICE_DEESSER
+    separated = separated_voice(pipeline)
+    if "voiceDeesser" not in captions:
+        if "voiceJudge" in captions and voice != separated:
+            report = judged(pipeline, run, voice, "judge.json")
+            if report is None:
+                raise ReplayError("The repaired voice fails the voice judge")
+            outputs["judge"] = pin(report)
+        return {"voice": pin(voice), **outputs}
+    # A voice whose sibilants the full depth re-colours past the judge is de-essed less deeply
+    # (eWgX9jkjNpA, 2026-11-03: 1.16-1.21 dB timbre shift at 8 dB); the limits never move.
+    for depth in DEESSER_DEPTHS_DB:
+        suffix = "" if depth == DEESSER_DEPTHS_DB[0] else f"-{depth:g}db"
+        directory = pipeline.work / f"{VOICE_DEESSER}{suffix}"
         receipt = directory / "receipt.json"
         if not receipt.exists():
-            command = module(pipeline, "voice_deesser", str(voice), str(directory))
+            command = module(pipeline, "voice_deesser", str(voice), str(directory),
+                             "--max-reduction-db", f"{depth:g}")  # fmt: skip
             run(command, pipeline.logs / "voice-repair.log")
-        voice = Path(str(record(read_json(receipt)["voice"])["path"]))
+        deessed = Path(str(record(read_json(receipt)["voice"])["path"]))
         outputs["deesser"] = pin(receipt)
-    separated = separated_voice(pipeline)
-    if "voiceJudge" in captions and voice != separated:
-        report = pipeline.work / VOICE_REPAIR / "judge.json"
-        if not report.exists():
-            report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            run(module(pipeline, "voice_judge", "same", str(separated), str(voice), str(report)),
-                pipeline.logs / "voice-repair.log")  # fmt: skip
-        outputs["judge"] = pin(report)
-    return {"voice": pin(voice), **outputs}
+        if "voiceJudge" not in captions:
+            return {"voice": pin(deessed), **outputs}
+        report = judged(pipeline, run, deessed, f"judge{suffix}.json")
+        if report is not None:
+            return {"voice": pin(deessed), **outputs, "judge": pin(report)}
+    raise ReplayError("The de-essed voice fails the voice judge at every depth")
+
+
+def judged(pipeline: Pipeline, run: Runner, voice: Path, name: str) -> Path | None:
+    """The judge's passing report on ``voice`` against the separated voice; None when it fails."""
+    report = pipeline.work / VOICE_REPAIR / name
+    if not report.exists():
+        report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        command = module(pipeline, "voice_judge", "same", str(separated_voice(pipeline)),
+                         str(voice), str(report))  # fmt: skip
+        try:
+            run(command, pipeline.logs / "voice-repair.log")
+        except ReplayError:
+            if not report.exists():
+                raise
+    return report if read_json(report).get("passed") is True else None
 
 
 def voice_pcm(pipeline: Pipeline, captions: Captions) -> Path:

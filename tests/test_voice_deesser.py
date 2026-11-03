@@ -53,6 +53,12 @@ def test_the_threshold_is_the_audible_ninetieth_percentile_plus_the_margin() -> 
         deesser.threshold_db(np.zeros(0))
 
 
+def test_a_lower_depth_bounds_the_reduction() -> None:
+    peaks = np.full(200, 1.0)
+    assert deesser.control(peaks, -40.0).min() == -8.0
+    assert deesser.control(peaks, -40.0, 4.0).min() == -4.0
+
+
 def test_sibilant_bursts_are_turned_down_and_everything_else_is_bit_identical(
     tmp_path: Path,
 ) -> None:

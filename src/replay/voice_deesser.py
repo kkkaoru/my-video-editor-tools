@@ -7,7 +7,8 @@ rises above the threshold: the whole recording's 90th-percentile band peak over 
 milliseconds (within ``AUDIBLE_DB`` of the loudest) plus ``MARGIN_DB``, computed in Polars, and
 never below the fixed ``MIN_THRESHOLD_DB``.
 The gain has a soft knee (``KNEE_DB``, ``RATIO``), a ``ATTACK_SECONDS`` / ``RELEASE_SECONDS``
-envelope at a 1 ms control rate (``voice_compressor``) and at most ``MAX_REDUCTION_DB``.
+envelope at a 1 ms control rate (``voice_compressor``) and at most ``MAX_REDUCTION_DB``
+(``--max-reduction-db``: the pipeline lowers it when the judge finds the voice re-coloured).
 
 The recording is read twice in blocks (the band's peaks, then the output), so memory stays
 bounded. Samples where the gain stays within ``PASS_DB`` of unity are copied unchanged, so the
@@ -112,13 +113,13 @@ def threshold_db(band_peaks: Floats) -> float:
     return max(float(value) + MARGIN_DB, MIN_THRESHOLD_DB)
 
 
-def control(band_peaks: Floats, threshold: float) -> Floats:
-    """The de-esser's gain (dB) per 1 ms, never below ``-MAX_REDUCTION_DB``."""
+def control(band_peaks: Floats, threshold: float, depth: float = MAX_REDUCTION_DB) -> Floats:
+    """The de-esser's gain (dB) per 1 ms, never below ``-depth``."""
     gain = compressor.control_gain(
         band_peaks, threshold=threshold, ratio=RATIO, knee=KNEE_DB,
         times=(ATTACK_SECONDS, RELEASE_SECONDS),
     )  # fmt: skip
-    return np.maximum(gain, -MAX_REDUCTION_DB)
+    return np.maximum(gain, -depth)
 
 
 def processed(signal: Floats, gain_db: Floats, rate: int) -> Floats:
@@ -127,11 +128,11 @@ def processed(signal: Floats, gain_db: Floats, rate: int) -> Floats:
     return np.asarray(low + high * (10 ** (gain_db / 20))[:, None])
 
 
-def deessed(voice: repair.Pcm, output: Path) -> dict[str, object]:
+def deessed(voice: repair.Pcm, output: Path, depth: float = MAX_REDUCTION_DB) -> dict[str, object]:
     """Write the de-essed voice to ``output``; the measurements for the receipt."""
     band_peaks = peaks(voice)
     threshold = threshold_db(band_peaks)
-    gain = control(band_peaks, threshold)
+    gain = control(band_peaks, threshold, depth)
     block = voice.rate // compressor.CONTROL_RATE
     staged = output.with_name(f".{output.name}.partial")
     shutil.copyfile(voice.path, staged)
@@ -173,14 +174,14 @@ def deessed(voice: repair.Pcm, output: Path) -> dict[str, object]:
     }
 
 
-def run(voice_path: Path, directory: Path) -> dict[str, object]:
+def run(voice_path: Path, directory: Path, depth: float = MAX_REDUCTION_DB) -> dict[str, object]:
     receipt = directory / "receipt.json"
     if receipt.exists():
         return dict(json.loads(receipt.read_text(encoding="utf-8")))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     voice = repair.pcm(voice_path)
     output = directory / "vocals.wav"
-    measured = deessed(voice, output)
+    measured = deessed(voice, output, depth)
     result: dict[str, object] = {
         "version": VERSION,
         "input": {"path": str(voice_path), "sha256": repair.digest(voice_path)},
@@ -196,8 +197,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("voice", type=Path, help="the voice (16-bit PCM WAV)")
     parser.add_argument("directory", type=Path, help="where the de-essed voice and receipt go")
+    parser.add_argument("--max-reduction-db", type=float, default=MAX_REDUCTION_DB)
     args = parser.parse_args(argv)
-    result = run(args.voice, args.directory)
+    result = run(args.voice, args.directory, args.max_reduction_db)
     print(json.dumps({key: result[key] for key in ("voice", "thresholdDb", "changedSeconds")}))
     return 0
 

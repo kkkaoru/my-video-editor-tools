@@ -1361,7 +1361,7 @@ def test_the_deesser_alone_turns_down_the_separated_voice_for_paging(tmp_path: P
     assert producers.commands[0] == [
         "/py", "-B", "-m", "replay.voice_deesser",
         str(tmp_path / "replay-123/separation-v1/pipeline/vocals.wav"),
-        str(tmp_path / "replay-123/voice-deesser-v1"),
+        str(tmp_path / "replay-123/voice-deesser-v1"), "--max-reduction-db", "8",
     ]  # fmt: skip
     outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
     deessed = tmp_path / "replay-123/voice-deesser-v1/vocals.wav"
@@ -1381,10 +1381,10 @@ def test_the_deesser_runs_on_the_repaired_voice_when_both_are_set(tmp_path: Path
     (tmp_path / "captions.json").write_text(json.dumps({**settings, "voiceDeesser": True}), "utf-8")
     producers = Producers(tmp_path)
     run_through(path, producers, "voice-repair")
-    assert producers.commands[1][-2:] == [
+    assert producers.commands[1][-4:] == [
         str(tmp_path / "replay-123/voice-repair-v1/vocals.wav"),
-        str(tmp_path / "replay-123/voice-deesser-v1"),
-    ]
+        str(tmp_path / "replay-123/voice-deesser-v1"), "--max-reduction-db", "8",
+    ]  # fmt: skip
     outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
     assert outputs["repaired"] is True
     assert outputs["deesser"]["path"] == str(tmp_path / "replay-123/voice-deesser-v1/receipt.json")
@@ -1557,6 +1557,59 @@ def test_voice_judge_gates_the_deessed_voice(tmp_path: Path) -> None:
     assert outputs["judge"] == steps.pin(report)
     assert outputs["voice"] == steps.pin(tmp_path / "replay-123/voice-deesser-v1/vocals.wav")
     assert "restore" not in outputs
+
+
+class Recolouring(Producers):
+    """A judge that fails the first ``failures`` voices it hears (a re-coloured timbre)."""
+
+    def __init__(self, tmp_path: Path, failures: int) -> None:
+        super().__init__(tmp_path)
+        self.failures = failures
+
+    def __call__(self, command: Sequence[str], log: Path) -> None:
+        super().__call__(command, log)
+        if "replay.voice_judge" in command and self.failures:
+            self.failures -= 1
+            Path(command[-1]).write_text('{"passed": false}', encoding="utf-8")
+            raise ReplayError("Producer failed (1)")
+
+
+def deesser_judged(tmp_path: Path, producers: Producers) -> None:
+    path = configure(tmp_path)
+    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
+    (tmp_path / "captions.json").write_text(
+        json.dumps({**settings, "voiceDeesser": True, "voiceJudge": True}), "utf-8"
+    )
+    (tmp_path / "steps/separation.json").write_text("{}", encoding="utf-8")
+    run_through(path, producers, "voice-repair")
+
+
+def test_a_voice_the_judge_finds_recoloured_is_de_essed_less_deeply(tmp_path: Path) -> None:
+    producers = Recolouring(tmp_path, failures=1)
+    deesser_judged(tmp_path, producers)
+    assert [command[-1] for command in producers.commands] == [
+        "8", str(tmp_path / "replay-123/voice-repair-v1/judge.json"),
+        "4", str(tmp_path / "replay-123/voice-repair-v1/judge-4db.json"),
+    ]  # fmt: skip
+    outputs = json.loads((tmp_path / "steps/voice-repair.json").read_text("utf-8"))["outputs"]
+    assert outputs["voice"] == steps.pin(tmp_path / "replay-123/voice-deesser-v1-4db/vocals.wav")
+    assert outputs["judge"] == steps.pin(tmp_path / "replay-123/voice-repair-v1/judge-4db.json")
+
+
+def test_a_voice_failing_the_judge_at_every_depth_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ReplayError, match="every depth"):
+        deesser_judged(tmp_path, Recolouring(tmp_path, failures=3))
+
+
+def test_a_judge_that_crashes_without_a_report_is_not_a_failing_voice(tmp_path: Path) -> None:
+    class Crashing(Producers):
+        def __call__(self, command: Sequence[str], log: Path) -> None:
+            if "replay.voice_judge" in command:
+                raise ReplayError("Producer failed (2)")
+            super().__call__(command, log)
+
+    with pytest.raises(ReplayError, match="failed"):
+        deesser_judged(tmp_path, Crashing(tmp_path))
 
 
 def test_voice_judge_alone_runs_no_ml_restoration(tmp_path: Path) -> None:
