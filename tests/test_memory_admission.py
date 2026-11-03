@@ -124,6 +124,15 @@ def test_memory_other_processes_use_keeps_a_job_waiting(tmp_path: Path) -> None:
     clips.release()
 
 
+def test_a_lone_job_over_the_budget_starts_once_most_of_it_is_free(tmp_path: Path) -> None:
+    settings = current(tmp_path)  # a 38 GiB budget
+    clips = admission.Reservation(tmp_path, "clips", "1", 51 * GIB)
+    assert clips.try_reserve(settings, lambda: (55, 1)) is False  # 26.4 GiB free
+    assert clips.try_reserve(settings, lambda: (76, 2)) is False  # pressure above normal
+    assert clips.try_reserve(settings, lambda: (76, 1)) is True  # 36.5 GiB free (11/2, 11-03)
+    clips.release()
+
+
 def test_low_free_memory_or_pressure_stops_a_second_job(tmp_path: Path) -> None:
     settings = current(tmp_path)
     first = admission.Reservation(tmp_path, "asr", "1", GIB)
@@ -151,7 +160,9 @@ def test_unknown_jobs_or_owners_are_refused(tmp_path: Path) -> None:
         admission.Reservation(tmp_path, "asr", "../x", 1)
 
 
-def test_reserve_waits_until_the_job_fits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reserve_waits_until_the_job_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(admission, "physical", lambda: TOTAL)
     blocker = admission.Reservation(tmp_path, "cleanup-chunk", "1", 36 * GIB)
     assert blocker.try_reserve(current(tmp_path), lambda: NORMAL) is True
@@ -165,6 +176,10 @@ def test_reserve_waits_until_the_job_fits(tmp_path: Path, monkeypatch: pytest.Mo
         assert admission.reserved(tmp_path) == 6 * GIB
     assert waits == [15.0]
     assert admission.reserved(tmp_path) == 0
+    assert capsys.readouterr().out == (
+        "memory admission: asr for 2 waits: needs 6.0 GiB, budget 38.0 GiB, held 36.0 GiB,"
+        " free 95 %, pressure 1\n"
+    )
 
 
 def test_reserve_defaults_to_the_checkout_directory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,8 +244,8 @@ def vm_stat(pageins: int, swapins: int) -> str:
     return VM_STAT.format(pageins=pageins, swapins=swapins)
 
 
-def test_paged_in_bytes_sums_swapins_and_pageins() -> None:
-    assert admission.paged_in_bytes(vm_stat(3, 1)) == 65536
+def test_paged_in_bytes_counts_swapins_not_file_pageins() -> None:
+    assert admission.paged_in_bytes(vm_stat(3, 1)) == 16384
     assert (
         admission.paged_in_bytes("Mach Virtual Memory Statistics: (page size of 16384 bytes)")
         is None
@@ -238,7 +253,7 @@ def test_paged_in_bytes_sums_swapins_and_pageins() -> None:
 
 
 def test_the_swap_in_rate_is_measured_between_shared_samples(tmp_path: Path) -> None:
-    readings = iter([vm_stat(0, 0), vm_stat(0, 0), vm_stat(65536, 0), vm_stat(65536, 0)])
+    readings = iter([vm_stat(0, 0), vm_stat(0, 0), vm_stat(9, 65536), vm_stat(9, 65536)])
     times = iter([0.0, 5.0, 60.0, 2000.0])
 
     def rate() -> float:

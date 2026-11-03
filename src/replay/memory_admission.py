@@ -11,11 +11,13 @@ so one job larger than the budget still runs alone. Nothing running is ever stop
 Other processes count too (another session's ~22-32 GB model server is a fact of life): a job
 starts only while the measured free memory (``kern.memorystatus_level`` of physical memory) covers
 it, with or without reservations held. Pressure counts as critical, so nothing starts, while the
-machine pages in faster than
-``SWAP_IN_LIMIT`` (``vm_stat`` Swapins + Pageins, per minute between samples at least
+machine swaps in faster than
+``SWAP_IN_LIMIT`` (``vm_stat`` Swapins only, per minute between samples at least
 ``SWAP_SAMPLE_SECONDS`` apart, shared by every caller in ``vm-sample.json``): the 10-24 thrash
 paged in 8 GB/min while normal running stays under about 1 GB/min, and a level or pressure reading
-alone reacted only after the machine was already swapping.
+alone reacted only after the machine was already swapping. Pageins are file reads from the disk
+(a 92-minute delivery hashed or uploaded read 29 GB/min on 11-03), not DRAM shortage, so they
+never count.
 
 A reservation is an flock-held marker file, as in ``gpu_lease``, so a killed job releases it at
 once; one ledger lock makes check-and-reserve atomic between processes. A job reserves the
@@ -85,13 +87,16 @@ RUSAGE_INFO_V4 = 4
 ESRCH = 3
 HEADROOM_GIB = 10.0  # OS, apps and the other agents' processes
 MEMORY_FREE_MIN = 20  # kern.memorystatus_level, as in workflow_parallel
+# A lone job over the budget starts with this share of the budget free (compressed pages
+# are given back).
+LONE_SHARE = 0.75
 PRESSURE_NORMAL = 1
 PRESSURE_CRITICAL = 4
 SWAP_IN_LIMIT = 2 * 1024**3  # bytes per minute (thrash 8 GB/min, normal < 1 GB/min, 10-24)
 SWAP_SAMPLE_SECONDS = 10.0
 SWAP_SAMPLE_MAX_SECONDS = 600.0  # an older sample says nothing about now
 VM_STAT = ("/usr/bin/vm_stat",)
-PAGED_IN = re.compile(r"^(?:Pageins|Swapins):\s+(\d+)\.$", re.MULTILINE)
+PAGED_IN = re.compile(r"^Swapins:\s+(\d+)\.$", re.MULTILINE)
 PAGE_SIZE = re.compile(r"page size of (\d+) bytes")
 POLL_SECONDS = 15.0
 FREE_WAIT_SECONDS = 1800.0  # a step waiting for free memory gives up after this
@@ -173,11 +178,11 @@ def await_free(
 
 
 def paged_in_bytes(text: str) -> int | None:
-    """Swapins + Pageins in bytes from ``vm_stat`` output; None when unreadable."""
+    """Swapins in bytes from ``vm_stat`` output; None when unreadable."""
     size, counts = PAGE_SIZE.search(text), PAGED_IN.findall(text)
-    if size is None or len(counts) != 2:
+    if size is None or len(counts) != 1:
         return None
-    return (int(counts[0]) + int(counts[1])) * int(size.group(1))
+    return int(counts[0]) * int(size.group(1))
 
 
 def _vm_stat() -> str:
@@ -356,9 +361,21 @@ class Reservation:
             held = reserved(self.directory)
             level, state = (pressure if measure is None else measure)()
             fits = held + self.size <= current.budget and level >= MEMORY_FREE_MIN
-            # What other processes use shows only in the measured free memory.
-            free = level * current.total // 100
-            covered = current.total == 0 or free >= min(self.size, current.budget)
+            # What other processes use shows only in the measured free memory. A job over the
+            # budget runs alone under normal pressure, as documented: free memory equal to the
+            # whole budget is out of reach while macOS keeps compressed pages (11/2's clips
+            # waited 8 h at 30-36 GiB free).
+            free, need = level * current.total // 100, min(self.size, current.budget)
+            covered = (
+                current.total == 0
+                or free >= need
+                or (
+                    not held
+                    and self.size > current.budget
+                    and state <= PRESSURE_NORMAL
+                    and free >= need * LONE_SHARE
+                )
+            )
             if (
                 state >= PRESSURE_CRITICAL
                 or not covered
@@ -391,7 +408,18 @@ def reserve(
     place = root() if directory is None else directory
     current = settings(place, physical())
     reservation = Reservation(place, job, owner, current.peaks[job])
+    waiting = False
     while not reservation.try_reserve(current, measure):
+        if not waiting:
+            # A wait that never ends showed nothing for 8 hours (11/2's clips, 2026-11-03).
+            level, state = (pressure if measure is None else measure)()
+            print(
+                f"memory admission: {job} for {owner} waits: needs {current.peaks[job] / GIB:.1f}"
+                f" GiB, budget {current.budget / GIB:.1f} GiB, held {reserved(place) / GIB:.1f}"
+                f" GiB, free {level} %, pressure {state}",
+                flush=True,
+            )
+            waiting = True
         sleep(poll_seconds)
         current = settings(place, physical())
     try:
