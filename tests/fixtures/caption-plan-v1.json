@@ -1,0 +1,111 @@
+{
+ "version": 1,
+ "clock": "delivery",
+ "movie": "synthetic-review.mp4",
+ "burned": false,
+ "width": 1920,
+ "height": 1080,
+ "rate": 30,
+ "frames": 300,
+ "style": {
+  "bottomLocation": 0.3944,
+  "faceGrow": 0.3,
+  "fontName": "NotoSansJP-Thin_Bold",
+  "fontSize": 82.95580110497238,
+  "gradientBottom": "#2FB0EE",
+  "gradientTop": "#97D8F7",
+  "keyline": 1.360286602209945,
+  "outputGamma": 1.961,
+  "rim": 12.33024861878453,
+  "shadowOffsetY": 15.082872928176796,
+  "shadowOpacity": 0.7,
+  "shadowSigma": 5.332600863644405,
+  "topLocation": 0.2688,
+  "whiteBorder": 9.502209944751382
+ },
+ "titles": [
+  {
+   "text": "ふぅ",
+   "startFrame": 14,
+   "endFrame": 34,
+   "x": -460.0,
+   "y": -404.0,
+   "graphemeFrames": [
+    14,
+    18
+   ],
+   "alignment": "left"
+  },
+  {
+   "text": "なんかミスっ\nてないかなぁ",
+   "startFrame": 40,
+   "endFrame": 120,
+   "x": -460.0,
+   "y": -322.0,
+   "graphemeFrames": [
+    50,
+    50,
+    50,
+    59,
+    65,
+    70,
+    70,
+    70,
+    74,
+    74,
+    85,
+    85,
+    85
+   ],
+   "alignment": "left"
+  },
+  {
+   "text": "来てくれてありがとう\nございます",
+   "startFrame": 120,
+   "endFrame": 157,
+   "x": -460.0,
+   "y": -322.0,
+   "graphemeFrames": [
+    120,
+    120,
+    120,
+    120,
+    120,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134,
+    134
+   ],
+   "alignment": "left",
+   "speaker": null
+  }
+ ],
+ "nameplate": {
+  "burned": false,
+  "icon": "synthetic-review.nameplate.png",
+  "iconSha256": "6cd98a911d1878785af963b56c9e6b1440678ece87715fdf585e35f0014f17c1",
+  "iconX": 320,
+  "iconY": 860,
+  "iconSize": 150,
+  "ringWidth": 4,
+  "ringColour": "#FFFFFF",
+  "name": "テスト",
+  "nameFont": "NotoSansJP-VariableFont_wght.ttf",
+  "nameFontSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "nameFontVariation": "Bold",
+  "nameSize": 36,
+  "nameColour": "#FFFFFF",
+  "nameStrokeWidth": 5,
+  "nameStrokeColour": "#000000",
+  "nameX": 395.0,
+  "nameY": 1016,
+  "nameAnchor": "mt"
+ }
+}

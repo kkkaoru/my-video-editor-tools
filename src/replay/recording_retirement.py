@@ -104,7 +104,7 @@ def manifest(pipeline: Pipeline) -> list[Entry]:
     tempo = pipeline.work / "paging-v1" / "prepared" / "tempo" / "candidate.wav"
     entries.append(Entry("tempo", tempo, "paging", ("onsets", "compose", "finish")))
     moti = pipeline.work / "caption-parts-v1" / "moti"
-    entries.append(Entry("moti", moti, "caption-parts", ("caption-render",)))
+    entries.append(Entry("moti", moti, "caption-parts", ("caption-plan",)))
     return entries
 
 

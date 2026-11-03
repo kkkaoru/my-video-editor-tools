@@ -3,18 +3,23 @@
 import json
 import time
 import wave
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from replay import caption_gradient_audit as gradient_audit
-from replay import compressor_guard, pipeline_completion, r2_fetch, voice_remux
+from replay import (
+    caption_faces,
+    caption_plan,
+    pipeline_completion,
+    r2_fetch,
+    voice_remux,
+    youtube_master,
+)
 from replay import recording_caption_steps as captions
 from replay import recording_steps as steps
 from replay import recording_viewer_steps as viewer
-from replay.caption_compose import Part
 from replay.core import ReplayError
 
 ROLE_NAMES = ("directory", "stereo", "mono", "monoReceipt", "clock", "clockReceipt", "video",
@@ -185,6 +190,11 @@ class Producers:
             Path(arguments[1]).mkdir()
             for output in ("parts.json", "jobs.json"):
                 (Path(arguments[1]) / output).write_text("[]", encoding="utf-8")
+            (Path(arguments[1]) / "moti").mkdir()
+            title = {"text": "あ", "startFrame": 0, "endFrame": 40, "graphemeFrames": [0]}
+            (Path(arguments[1]) / "moti/w000-part-0000.reveal.json").write_text(
+                json.dumps({"offsetFrame": 0, "titles": [title]}), "utf-8"
+            )
         elif name == "replay.caption_compose" and arguments[0] == "plan":
             Path(arguments[5]).mkdir(parents=True)
             groups = '[{"frames": 5}, {"frames": 2}]'
@@ -355,7 +365,7 @@ def test_onsets_align_the_tokens_in_the_ctc_environment_once(
     assert len(producers.commands) == 1  # an existing onsets file is reused
 
 
-def test_parts_render_compose_and_finish_chain_the_producers(
+def test_parts_compose_and_finish_chain_the_producers_without_captions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = configure(tmp_path)
@@ -364,29 +374,29 @@ def test_parts_render_compose_and_finish_chain_the_producers(
     upstream = ("cut-plan", "paging", "placement", "onsets")
     for name in upstream:
         (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(captions, "load_parts", lambda *_a: [])
     monkeypatch.setattr(captions, "packet_count", lambda _p: -1)  # the join's count is used
-    monkeypatch.setattr(captions, "rendered_gradient", lambda _parts: {"lines": 3})
-    run_through(path, producers, "caption-parts", "caption-render", "compose", "finish")
+    run_through(path, producers, "caption-parts", "compose", "finish")
     assert modules(producers) == [
-        "replay.caption_parts", "replay.compressor_batch", "replay.caption_compose",
-        "replay.caption_compose", "replay.caption_compose",
+        "replay.caption_parts", "replay.caption_compose", "replay.caption_compose",
+        "replay.caption_compose",
     ]  # fmt: skip
     parts = producers.commands[0]
     assert parts[parts.index("--") + 1 :] == ["--font-size", "82"]
     assert parts[parts.index("--tokens") + 1] == str(tmp_path / "replay-123/speech-onsets-v1.json")
-    assert producers.opened == ["open", "-g", "-a", "/Applications/Compressor Creator Studio.app"]
-    assert producers.commands[2][producers.commands[2].index("plan") + 3] == str(
-        tmp_path / "clean.mov"
-    )
-    planned = producers.commands[2]
+    planned = producers.commands[1]
+    uncaptioned = tmp_path / "replay-123/compose-v1/uncaptioned-parts.json"
+    assert planned[planned.index("plan") + 2 : planned.index("plan") + 4] == [
+        str(uncaptioned), str(tmp_path / "clean.mov")
+    ]  # fmt: skip
+    assert json.loads(uncaptioned.read_text(encoding="utf-8")) == []
+    assert "--states" not in planned
     assert planned[-4:] == [
         "--rate-source", str(tmp_path / "source.mp4"),
         "--frame-clock", str(tmp_path / "replay-123/video-clock.json"),
     ]  # fmt: skip
     composed = json.loads((tmp_path / "steps/compose.json").read_text(encoding="utf-8"))
     assert composed["outputs"]["averageBitRate"] == 8_200_000
-    render = producers.commands[3]
+    render = producers.commands[2]
     assert render[render.index("--tempo") :] == [
         "--tempo", str(tmp_path / "replay-123/paging-v1/prepared/tempo/candidate.wav"),
         "--audio", str(tmp_path / "media/replay-123/final/audio/tempo.m4a"),
@@ -418,14 +428,23 @@ def test_a_recording_palette_reaches_the_caption_parts(tmp_path: Path) -> None:
         captions.load_captions(steps.load(path))
 
 
-def test_forcing_the_render_removes_only_the_rendered_movies(tmp_path: Path) -> None:
+def test_caption_parts_whose_text_flashes_by_are_refused_before_the_render(
+    tmp_path: Path,
+) -> None:
     path = configure(tmp_path)
-    pipeline = steps.load(path)
-    rendered = tmp_path / "media/replay-123/alpha/w000-part-0000/compressor-batch-v1"
-    rendered.mkdir(parents=True)
-    removed = steps.reset(pipeline, "caption-render", captions.BACK)
-    assert [item["path"] for item in removed] == [str(rendered)]
-    assert rendered.parent.exists()
+    (tmp_path / "replay-123/placement-v1.json").write_text("{}", encoding="utf-8")
+    for name in ("cut-plan", "paging", "placement", "onsets"):
+        (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
+    parts = tmp_path / "replay-123/caption-parts-v1"
+    (parts / "moti").mkdir(parents=True)
+    for name in ("parts.json", "jobs.json"):
+        (parts / name).write_text("[]", encoding="utf-8")
+    flash = {"text": "あい", "startFrame": 0, "endFrame": 10, "graphemeFrames": [0, 9]}
+    (parts / "moti/w000-part-0000.reveal.json").write_text(
+        json.dumps({"offsetFrame": 0, "titles": [flash]}), encoding="utf-8"
+    )
+    with pytest.raises(ReplayError, match="too briefly"):
+        captions.caption_parts_step(steps.load(path), Producers(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -479,26 +498,6 @@ def test_a_paging_plan_without_a_paging_stage_is_refused(tmp_path: Path) -> None
     plan.write_text(json.dumps({"version": 1, "stages": [{"command": ["true"]}]}), "utf-8")
     with pytest.raises(ReplayError, match="no paging stage"):
         captions.limit_paging_lines(plan)
-
-
-def test_the_render_gradient_is_measured_on_parts_until_enough_lines(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[str] = []
-
-    def frames(path: str) -> list[str]:
-        seen.append(path)
-        return [path, path]
-
-    monkeypatch.setattr(gradient_audit, "frames", frames)
-    monkeypatch.setattr(gradient_audit, "line_measures", lambda _frame: [(80, 30.0)] * 10)
-    parts = [Part(f"p{index}", 0, 1, Path(f"/r{index}.mov")) for index in range(3)]
-    assert captions.rendered_gradient(parts) == {
-        "lines": 20,
-        "weakestLift": 30.0,
-        "minimumLift": 12.0,
-    }
-    assert seen == ["/r0.mov"]
 
 
 def test_the_mono_receipt_is_the_context_streams_own_when_present(tmp_path: Path) -> None:
@@ -717,23 +716,6 @@ def test_a_failed_gate_keeps_the_renders(tmp_path: Path, monkeypatch: pytest.Mon
     assert (tmp_path / "media/replay-123/alpha/w001/part.mov").read_bytes() == b"alpha"
 
 
-def test_the_in_flight_override_replaces_the_configured_count(tmp_path: Path) -> None:
-    override = tmp_path / "in-flight.json"
-    assert captions.in_flight(2, override) == 2
-    override.write_text('{"inFlight": 3}', encoding="utf-8")
-    assert captions.in_flight(2, override) == 3
-
-
-def test_an_in_flight_override_beyond_four_is_refused(tmp_path: Path) -> None:
-    override = tmp_path / "in-flight.json"
-    override.write_text('{"inFlight": 5}', encoding="utf-8")
-    with pytest.raises(ReplayError, match="inFlight integer from 1 to 4"):
-        captions.in_flight(2, override)
-    override.write_text('{"inFlight": "3"}', encoding="utf-8")
-    with pytest.raises(ReplayError, match="inFlight integer from 1 to 4"):
-        captions.in_flight(2, override)
-
-
 def test_finish_counts_a_movie_left_by_an_earlier_run_and_refuses_a_changed_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -771,131 +753,6 @@ def test_finish_fetches_an_offloaded_candidate_back_before_counting_it(
     assert asked == [(movie, pipeline.path_of("editRoot"))]
 
 
-def compressor_steps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[steps.Pipeline, list[str]]:
-    pipeline = steps.load(configure(tmp_path))
-    (tmp_path / "replay-123" / "caption-parts-v1").mkdir(parents=True)
-    (tmp_path / "replay-123" / "caption-parts-v1" / "parts.json").write_text("[]", "utf-8")
-    monkeypatch.setattr(captions, "load_parts", lambda *_a: [])
-    monkeypatch.setattr(captions, "rendered_gradient", lambda _parts: {"lines": 3})
-    events: list[str] = []
-    monkeypatch.setattr(compressor_guard, "restart", lambda _app: events.append("restart"))
-    return pipeline, events
-
-
-def test_caption_render_restarts_compressor_once_when_its_controller_is_down(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pipeline, events = compressor_steps(tmp_path, monkeypatch)
-
-    def run(command: Sequence[str], log: Path) -> None:
-        if "replay.compressor_batch" not in command:
-            return
-        events.append("batch")
-        if events.count("batch") == 1:
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as stream:
-                stream.write("COMPRESSOR_BATCH_ERROR … job controller is down\n")
-            raise ReplayError("Producer failed (1)")
-
-    captions.caption_render(pipeline, run)
-    assert events == ["batch", "restart", "batch"]
-
-
-def test_caption_render_does_not_restart_for_other_failures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pipeline, events = compressor_steps(tmp_path, monkeypatch)
-
-    def run(command: Sequence[str], _log: Path) -> None:
-        if "replay.compressor_batch" in command:
-            raise ReplayError("Producer failed (1)")
-
-    with pytest.raises(ReplayError):
-        captions.caption_render(pipeline, run)
-    assert events == []
-
-
-def test_caption_render_resubmits_parts_reported_successful_without_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pipeline, events = compressor_steps(tmp_path, monkeypatch)
-    monkeypatch.setattr(compressor_guard, "unverified", lambda *_a: ["w000-part-0001"])
-    monkeypatch.setattr(compressor_guard, "retire", lambda _s, names: events.extend(names))
-
-    def run(command: Sequence[str], _log: Path) -> None:
-        if "replay.compressor_batch" in command:
-            events.append("batch")
-
-    captions.caption_render(pipeline, run)
-    assert events == ["batch", "w000-part-0001", "batch"]
-
-
-def refusing_run(output: Path, events: list[str]) -> Callable[[Sequence[str], Path], None]:
-    """A batch whose first run refuses ``output`` as untracked, as compressor_batch does."""
-
-    def run(command: Sequence[str], log: Path) -> None:
-        if "replay.compressor_batch" not in command:
-            return
-        events.append("batch")
-        if events.count("batch") == 1:
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as stream:
-                stream.write(
-                    f"COMPRESSOR_BATCH_ERROR Refusing to overwrite an untracked output: {output}\n"
-                )
-            raise ReplayError("Producer failed (1)")
-
-    return run
-
-
-def test_caption_render_sets_an_untracked_output_aside_and_submits_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pipeline, events = compressor_steps(tmp_path, monkeypatch)
-    part = tmp_path / "media/replay-123/alpha/w028-part-0000"
-    output = part / "compressor-batch-v1/motion-alpha.mov"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"")
-    captions.caption_render(pipeline, refusing_run(output, events))
-    assert events == ["batch", "batch"]
-    assert list(output.parent.iterdir()) == []
-    assert [path.name.startswith("motion-alpha.unverified-") for path in part.glob("*.mov")] == [
-        True
-    ]
-
-
-def test_caption_render_never_moves_a_refused_file_outside_its_media(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pipeline, events = compressor_steps(tmp_path, monkeypatch)
-    output = tmp_path / "elsewhere/compressor-batch-v1/motion-alpha.mov"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"")
-    with pytest.raises(ReplayError):
-        captions.caption_render(pipeline, refusing_run(output, events))
-    assert events == ["batch"]
-    assert output.read_bytes() == b""
-
-
-def test_a_render_is_counted_once_per_version(tmp_path: Path) -> None:
-    movie = tmp_path / "motion-alpha.mov"
-    movie.write_bytes(b"abc")
-    counted: list[Path] = []
-
-    def count(path: Path) -> int:
-        counted.append(path)
-        return 3
-
-    packets = captions.remembered(count)
-    assert [packets(movie), packets(movie)] == [3, 3]
-    movie.write_bytes(b"abcdef")  # resubmitted: a new version is counted again
-    assert packets(movie) == 3
-    assert packets(tmp_path / "absent.mov") == 3
-    assert counted == [movie, movie, tmp_path / "absent.mov"]
-
-
 def test_closure_files_map_to_the_package_this_step_runs() -> None:
     package = Path(captions.__file__).resolve().parent
     assert captions.running_copy("/old/checkout/src/replay/stages.py") == str(package / "stages.py")
@@ -906,45 +763,6 @@ def test_closure_files_map_to_the_package_this_step_runs() -> None:
 def native_render(tmp_path: Path) -> dict[str, object]:
     return {"binary": "/native/caption-alpha-render", "binarySha256": "a" * 64,
             "floor": "/pinned/floor.json", "sample": 2, "workers": 2}  # fmt: skip
-
-
-def test_native_render_gates_then_renders_the_same_parts_instead_of_compressor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = configure(tmp_path)
-    settings = json.loads((tmp_path / "captions.json").read_text(encoding="utf-8"))
-    (tmp_path / "captions.json").write_text(
-        json.dumps({**settings, "nativeRender": native_render(tmp_path)}), "utf-8"
-    )
-    producers = Producers(tmp_path)
-    (tmp_path / "steps/caption-parts.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(captions, "load_parts", lambda *_a: [])
-    monkeypatch.setattr(captions, "rendered_gradient", lambda _parts: {"lines": 3})
-    native_work = tmp_path / "replay-123/caption-render-v1/native"
-    native_work.mkdir(parents=True)
-    (native_work / "receipt.json").write_text(
-        json.dumps({"renderer": "mixed", "fallback": {"w000-part-0000": "refused"}}), "utf-8"
-    )
-    monkeypatch.setattr(captions, "in_flight", lambda configured, _override: int(str(configured)))
-    hashed: list[Path] = []
-    monkeypatch.setattr(compressor_guard, "record_hashes", lambda *a: hashed.append(a[2]))
-    run_through(path, producers, "caption-render")
-    assert modules(producers) == ["replay.caption_render_native"]
-    assert producers.opened == ["open", "-g", "-a", "/Applications/Compressor Creator Studio.app"]
-    command = producers.commands[0]
-    parts = tmp_path / "replay-123/caption-parts-v1"
-    assert command[command.index("-m") + 2 :] == [
-        "run", str(parts / "parts.json"), str(parts / "jobs.json"),
-        "--binary", "/native/caption-alpha-render", "--binary-sha256", "a" * 64,
-        "--work", str(native_work), "--floor-json", "/pinned/floor.json", "--sample", "2",
-        "--state", str(tmp_path / "replay-123/caption-render-v1/state"), "--workers", "2",
-        "--in-flight", "2", "--submit-workers", "1",
-    ]  # fmt: skip
-    assert hashed == [tmp_path / "replay-123/caption-render-v1/verified-outputs.json"]
-    receipt = json.loads((tmp_path / "steps/caption-render.json").read_text(encoding="utf-8"))
-    outputs = receipt["outputs"]
-    assert (outputs["renderer"], outputs["fallback"]) == ("mixed", {"w000-part-0000": "refused"})
-    assert outputs["native"]["path"] == str(native_work / "receipt.json")
 
 
 def test_incomplete_native_render_settings_are_refused(tmp_path: Path) -> None:
@@ -967,7 +785,7 @@ def test_a_voice_level_policy_reaches_compose_and_finish_and_is_pinned(
         json.dumps({**settings, "voiceLoudness": level}), "utf-8"
     )
     producers = Producers(tmp_path)
-    (tmp_path / "steps/caption-render.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "steps/caption-parts.json").write_text("{}", encoding="utf-8")
     sidecar = tmp_path / "media/replay-123/final/audio/tempo.m4a.loudness.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text('{"gainDb": -9.4}', encoding="utf-8")
@@ -1065,13 +883,13 @@ def test_a_layout_places_left_aligned_bottom_captions_on_its_canvas(tmp_path: Pa
     assert "--yolo-track" not in command
 
 
-def test_a_layout_reaches_the_parts_and_puts_its_nameplate_over_every_group(
+def test_a_layout_reaches_the_parts_and_gives_compose_only_its_canvas(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = with_intents(tmp_path, layout=layout_settings(tmp_path))
     producers = LayoutProducers(tmp_path)
     (tmp_path / "replay-123/placement-v1.json").write_text("{}", encoding="utf-8")
-    for name in ("cut-plan", "paging", "placement", "onsets", "caption-render"):
+    for name in ("cut-plan", "paging", "placement", "onsets"):
         (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
     run_through(path, producers, "caption-parts")
     parts = producers.commands[0]
@@ -1080,29 +898,18 @@ def test_a_layout_reaches_the_parts_and_puts_its_nameplate_over_every_group(
     ]  # fmt: skip
     monkeypatch.setattr(captions, "packet_count", lambda _p: -1)
     run_through(path, producers, "compose")
-    badge = tmp_path / "media/replay-123/badge/badge.mov"
-    drawn, planned = producers.commands[1], producers.commands[2]
-    assert drawn[drawn.index("-m") + 1 :] == [
-        "replay.caption_layout", "badge", str(tmp_path / "captions.json"), str(badge),
-        "--ffmpeg", "/ffmpeg", "--seconds", "121",
-    ]  # fmt: skip
-    assert planned[-5:] == ["--canvas", "1920", "1080", "--badge", str(badge)]
+    planned = producers.commands[1]
+    assert planned[-3:] == ["--canvas", "1920", "1080"]  # the nameplate is drawn live
     composed = json.loads((tmp_path / "steps/compose.json").read_text(encoding="utf-8"))
-    assert composed["outputs"]["badge"]["path"] == str(badge)
+    assert "badge" not in composed["outputs"]
 
 
 def test_a_layout_without_a_speaker_gives_compose_only_its_canvas(tmp_path: Path) -> None:
     layout = layout_settings(tmp_path)
     del layout["speaker"]
     path = with_intents(tmp_path, layout=layout)
-    producers = LayoutProducers(tmp_path)
-    log = tmp_path / "log"
-    pipeline = steps.load(path)
-    settings = captions.load_captions(pipeline)
-    assert captions.compose_layout(pipeline, settings, producers, log) == [
-        "--canvas", "1920", "1080"
-    ]  # fmt: skip
-    assert producers.commands == []
+    settings = captions.load_captions(steps.load(path))
+    assert captions.compose_layout(settings) == ["--canvas", "1920", "1080"]
 
 
 def mix_inputs(tmp_path: Path) -> Path:
@@ -1119,7 +926,7 @@ def mix_inputs(tmp_path: Path) -> Path:
     gain = {"version": 1, "gainDB": -0.5, "peakDB": 0.4,
             "source": {"path": str(tmp_path / "decodable.mp4"), "sha256": "d" * 64}}  # fmt: skip
     (work / "separation-v1/input-gain.json").write_text(json.dumps(gain), "utf-8")
-    for name in ("cut-plan", "paging", "placement", "onsets", "caption-parts", "caption-render"):
+    for name in ("cut-plan", "paging", "placement", "onsets", "caption-parts"):
         (tmp_path / "steps" / f"{name}.json").write_text("{}", encoding="utf-8")
     return path
 
@@ -1320,6 +1127,8 @@ def test_voice_repair_runs_offline_and_paging_reads_the_repaired_voice(
         tmp_path / "replay-123/voice-repair-v1",
         tmp_path / "replay-123/voice-repair-scratch",
         tmp_path / "replay-123/voice-deesser-v1",
+        tmp_path / "replay-123/voice-deesser-v1-4db",
+        tmp_path / "replay-123/voice-deesser-v1-2db",
         tmp_path / "replay-123/voice-restore-v1",
     )
 
@@ -1702,3 +1511,78 @@ def test_the_youtube_encode_step_encodes_the_published_delivery(tmp_path: Path) 
             "sha256": "766adc67b02bf315b9b5057994bfe6cfbd9354c433f259b29ba415dbe0f7afa5",
         }
     }
+
+
+def test_the_youtube_master_step_replaces_the_delivery_and_syncs_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    delivery = tmp_path / "storage/revisions/p/delivery/S_JST_r-review.mp4"
+    (tmp_path / "steps" / "publish.json").write_text(
+        json.dumps({"outputs": {"delivery": str(delivery)}}), encoding="utf-8"
+    )
+    published = tmp_path / "storage/revisions/y/delivery/S_JST_r-review.mp4"
+    published.parent.mkdir(parents=True)
+    published.write_bytes(b"master")
+    seen: list[object] = []
+
+    def master(movie: Path, **_tools: str) -> Path:
+        seen.append(movie)
+        return published
+
+    monkeypatch.setattr(youtube_master, "master", master)
+    monkeypatch.setattr(viewer, "sync", lambda run, log, *options: seen.append(options))
+    monkeypatch.setattr(
+        viewer, "require_uploaded", lambda video, movie, root: seen.append((video, movie))
+    )
+    assert captions.youtube_master_step(pipeline, lambda _command, _log: None) == {
+        "master": {
+            "path": str(published),
+            "sha256": "fc613b4dfd6736a7bd268c8a0e74ed0d1c04a959f59dd74ef2874983fd443fc9",
+        }
+    }
+    assert seen == [
+        delivery,
+        ("--only", "S_JST_r-review"),
+        ("S_JST_r-review", published),
+    ]
+
+
+def test_the_caption_plan_step_writes_the_plan_and_faces_beside_the_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    delivery = tmp_path / "storage/delivery/d-review.mp4"
+    delivery.parent.mkdir(parents=True)
+    (tmp_path / "steps/publish.json").write_text(
+        json.dumps({"outputs": {"delivery": str(delivery)}}), encoding="utf-8"
+    )
+    plan = {"titles": [{"text": "a"}, {"text": "b"}], "burned": False}
+    built: list[tuple[Path, Path]] = []
+
+    def build(work: Path, movie: Path) -> tuple[dict[str, object], None]:
+        built.append((work, movie))
+        return plan, None
+
+    def write_plan(value: dict[str, object], directory: Path, icon: Path | None) -> Path:
+        target = directory / "d-review.captions.json"
+        target.write_text(json.dumps(value), encoding="utf-8")
+        return target
+
+    def write_faces(value: dict[str, object], movie: Path) -> Path:
+        target = movie.with_name("d-review.faces.json")
+        target.write_text(json.dumps(value), encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(caption_plan, "build", build)
+    monkeypatch.setattr(caption_plan, "write", write_plan)
+    monkeypatch.setattr(caption_faces, "build", lambda _work, _movie: {"samples": []})
+    monkeypatch.setattr(caption_faces, "write", write_faces)
+    receipt = captions.caption_plan_step(pipeline, lambda _c, _l: None)
+    assert built == [(pipeline.work, delivery)]
+    assert receipt == {
+        "plan": steps.pin(delivery.with_name("d-review.captions.json")),
+        "faces": steps.pin(delivery.with_name("d-review.faces.json")),
+        "titles": 2, "burned": False,
+    }  # fmt: skip
+    assert captions.step_outputs(pipeline, "caption-plan") == ()

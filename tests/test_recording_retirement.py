@@ -179,8 +179,8 @@ def test_a_later_run_forces_the_producers_of_retired_inputs_its_steps_need(
     # Once forced, a producer's receipt is gone; once re-made, its output exists again.
     (tmp_path / "steps/cleanup.json").unlink()
     write(tempo)
-    assert retirement.forced_producers(pipeline, {"compose", "caption-render"}) == [
-        ("caption-parts", "caption-render", pipeline.work / "caption-parts-v1/moti"),
+    assert retirement.forced_producers(pipeline, {"compose", "caption-plan"}) == [
+        ("caption-parts", "caption-plan", pipeline.work / "caption-parts-v1/moti"),
     ]
 
 

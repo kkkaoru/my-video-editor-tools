@@ -55,6 +55,14 @@ the deliverable's framework. A routing skill is not a rendering backend.
   geometry proportionally rather than treating it as raw Motion units. Do not
   equate sRGB with Motion controls or claim AAA/calibration from adopted defaults.
   Preserve existing projects/evidence and independently verify the actual render.
+- Captions are drawn by the viewers from the caption plan beside each delivery
+  (`<stem>.captions.json`, [caption plan](../../../docs/caption-plan.md)); the
+  pipeline does not burn them by default. When a captioned movie is needed (a
+  YouTube upload, a vertical excerpt, a review copy), burn it per video with
+  `caption-burn` as in [burning captions on demand](../../../docs/caption-plan.md#burning-captions-on-demand):
+  decide yourself, check free space first, write a new file (never overwrite the
+  delivery) and verify the output before reporting it. Do not re-run a pipeline
+  just to burn captions, and do not burn into a movie whose plan says `burned: true`.
 - Native face tracking must use `VNDetectFaceRectanglesRequest` →
   `VNTrackObjectRequest` → `VNSequenceRequestHandler`. Supply validated media paths,
   clocks, model/tool fingerprints and evidence-derived policy through configuration;
@@ -126,7 +134,7 @@ project or disuse note is not completion of the other requests.
    whole large timeline; fewer title instances alone do not establish performance.
 6. Pass `python -m replay.edit_completion check` for the recording using the
    configured environment. Music removal, non-speech cuts, source-caption masks,
-   transcription and burned dynamic captions remain mandatory. Do not publish or
+   transcription and dynamic captions (caption plan; burned path until the switch) remain mandatory. Do not publish or
    call a delivery finished with a skipped/degraded stage or missing quality proof.
 7. Complete requested Viewer playback/registration and summaries separately, using
    existing shared processing. Report completed videos/requested videos, intermediate

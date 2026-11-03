@@ -12,10 +12,15 @@ from those receipts and a few fast technical checks of the published movie, in m
 - ``source_caption_mask``: the cleanup step passed, every chunk of the cleanup has an accepted
   receipt, and the composition used the cleaned source; or the source's 240-frame profile survey
   is verified again (``caption_absence.verify``) to carry no caption band;
-- ``transcription``: the sidecar SRT holds one cue per displayed caption, in order;
-- ``dynamic_captions``: every caption was placed, every caption part rendered successfully and
-  the whole movie decodes without errors (``replay.movie_decode``: split at a keyframe and
-  counted against the probe's packets when that is safe, else one pass).
+- ``transcription``: the sidecar SRT holds one cue per displayed caption, in order, with only
+  its newly spoken text (``transcript``);
+- ``dynamic_captions``: every caption was placed; the caption plan beside the movie
+  (``replay.caption_plan``, drawn live by the viewers since 2026-11-03) is valid, is this
+  movie's (its name and frames) and shows every displayed caption the SRT was written from, in
+  order (``caption_plan.chain_failure``); and the whole movie decodes without errors
+  (``replay.movie_decode``: split at a keyframe and counted against the probe's packets when that
+  is safe, else one pass). A delivery published before the plan existed (its evidence pins the
+  ``caption-render`` step that burned its captions) passes with a rendered caption part instead.
 
 Receipts are local evidence, not attestations; ``qualityApproved`` stays false.
 """
@@ -29,7 +34,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from replay import caption_absence, movie_decode
+from replay import caption_absence, caption_plan, movie_decode
 from replay.core import ReplayError
 from replay.delivery_output_names import delivery_stem
 from replay.edit_completion import REQUIRED_STAGES, load_config
@@ -40,8 +45,9 @@ INDEX_NAME = "pipeline-evidence.json"
 RATE = 30
 STEP_NAMES = (
     "clocks", "separation", "cleanup-bootstrap", "cleanup", "asr", "yolo-track",
-    "cut-plan", "paging", "placement", "caption-parts", "caption-render", "compose", "finish",
+    "cut-plan", "paging", "placement", "caption-parts", "compose", "finish",
 )  # fmt: skip
+LEGACY_RENDER = "caption-render"  # the step that burned captions before the caption plan
 
 
 def sha256(path: Path) -> str:
@@ -64,8 +70,8 @@ def srt_time(frame: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 
-def displayed(candidate: Path) -> list[tuple[str, int, int]]:
-    """Displayed captions: each growing chain of placed cues as its final text and frames.
+def chains(candidate: Path) -> list[tuple[str, int, int, str]]:
+    """Each growing chain of placed cues: its final text, frames and first cue's carried words.
 
     A cue that starts on the frame the previous one ends, at the same origin, and extends its
     text is the same caption revealing more words (``motion_reveal_stages``).
@@ -73,7 +79,7 @@ def displayed(candidate: Path) -> list[tuple[str, int, int]]:
     rows = read(candidate).get("candidates")
     if not isinstance(rows, list) or not rows:
         raise ReplayError("The placement candidate has no cues")
-    shown: list[tuple[str, int, int, float, float]] = []
+    shown: list[tuple[str, int, int, float, float, str]] = []
     for raw in rows:
         item = record(raw)
         cue = record(item["cue"])
@@ -85,10 +91,38 @@ def displayed(candidate: Path) -> list[tuple[str, int, int]]:
             last = shown[-1]
             grows = start == last[2] and (x, y) == (last[3], last[4])
             if grows and len(text) > len(last[0]) and text.startswith(last[0]):
-                shown[-1] = (text, last[1], end, x, y)
+                shown[-1] = (text, last[1], end, x, y, last[5])
                 continue
-        shown.append((text, start, end, x, y))
-    return [(text, start, end) for text, start, end, _, _ in shown]
+        shown.append((text, start, end, x, y, str(cue.get("carried", ""))))
+    return [(text, start, end, carried) for text, start, end, _, _, carried in shown]
+
+
+def displayed(candidate: Path) -> list[tuple[str, int, int]]:
+    """Displayed captions: each growing chain of placed cues as its final, full text and frames."""
+    return [(text, start, end) for text, start, end, _ in chains(candidate)]
+
+
+def transcript(candidate: Path) -> list[tuple[str, int, int]]:
+    """The SRT's captions: each displayed caption with only its newly spoken text.
+
+    A page that leads with the replaced page's last words (paging's ``carried``) shows them
+    again; the SRT already holds them in the previous caption.
+    """
+    return [(spoken(text, carried), start, end) for text, start, end, carried in chains(candidate)]
+
+
+def spoken(text: str, carried: str) -> str:
+    """``text`` without its leading ``carried`` words (compared without line breaks)."""
+    flat = text.replace("\n", "")
+    if not carried:
+        return text
+    if len(flat) <= len(carried) or not flat.startswith(carried):
+        raise ReplayError("A caption's carried words do not lead its text")
+    position, remaining = 0, len(carried)
+    while remaining:
+        remaining -= text[position] != "\n"
+        position += 1
+    return text[position:].lstrip()  # a line may end in the space a word led with (eWgX, 11-03)
 
 
 def srt(captions: Sequence[tuple[str, int, int]]) -> str:
@@ -120,7 +154,7 @@ def publish(
     if not delivery.samefile(movie):
         raise ReplayError(f"{delivery} exists and is not the pipeline's movie")
     sidecar = delivery.with_suffix(".srt")
-    text = srt(displayed(candidate))
+    text = srt(transcript(candidate))
     if sidecar.exists() and sidecar.read_text(encoding="utf-8") != text:
         raise ReplayError(f"{sidecar} exists with other captions")
     sidecar.write_text(text, encoding="utf-8")
@@ -134,7 +168,11 @@ def publish(
         "movie": pin(delivery),
         "srt": pin(sidecar),
         "candidate": pin(candidate),
-        "steps": {name: pin(steps / f"{name}.json") for name in STEP_NAMES},
+        "steps": {
+            name: pin(steps / f"{name}.json")
+            for name in (*STEP_NAMES, LEGACY_RENDER)
+            if name != LEGACY_RENDER or (steps / f"{name}.json").is_file()
+        },
         "qualityApproved": False,
     }
     music = declared_music({name: read(steps / f"{name}.json") for name in ("compose", "finish")})
@@ -191,6 +229,24 @@ def declared_music(steps: dict[str, dict[str, object]]) -> dict[str, object] | N
     return {"source": declared["source"], "intent": reason}
 
 
+def caption_failure(
+    steps: dict[str, dict[str, object]], movie: Path, candidate: Path, frames: int
+) -> str | None:
+    """Why the movie's captions fail: its caption plan, or a legacy burned render without one."""
+    path = movie.with_name(f"{movie.stem}{caption_plan.SUFFIX}")
+    if not path.is_file():
+        if LEGACY_RENDER in steps and outputs(steps[LEGACY_RENDER]).get("parts"):
+            return None
+        return "no caption plan beside the movie"
+    try:
+        plan = caption_plan.validate(read(path))
+    except ReplayError as error:
+        return f"the caption plan is invalid: {error}"
+    if plan["movie"] != movie.name or plan["frames"] != frames:
+        return "the caption plan is not this movie's"
+    return caption_plan.chain_failure(plan, displayed(candidate))
+
+
 def stage_failures(index: dict[str, object], *, ffmpeg: str, ffprobe: str) -> dict[str, str]:
     """The failed stages with their reason; an empty mapping means all five passed."""
     steps = {name: read(Path(str(record(pinned)["path"])))
@@ -221,20 +277,18 @@ def stage_failures(index: dict[str, object], *, ffmpeg: str, ffprobe: str) -> di
     mask = mask_failure(outputs(steps["cleanup"]))
     if mask is not None:
         failures["source_caption_mask"] = mask
-    captions = displayed(Path(str(record(index["candidate"])["path"])))
+    captions = transcript(Path(str(record(index["candidate"])["path"])))
     sidecar = Path(str(record(index["srt"])["path"]))
     if not sidecar.is_file() or sidecar.read_text(encoding="utf-8") != srt(captions):
         failures["transcription"] = "the SRT sidecar differs from the displayed captions"
     placement = outputs(steps["placement"])
-    rendered = outputs(steps["caption-render"])
+    frames = int(str(video[0]["nb_read_packets"])) if video else 0
+    shown = caption_failure(steps, movie, Path(str(record(index["candidate"])["path"])), frames)
     if placement.get("failedRuns") != 0:
         failures["dynamic_captions"] = "some captions were not placed"
-    elif not rendered.get("parts"):
-        failures["dynamic_captions"] = "no caption part rendered"
-    elif not movie_decode.decodes(
-        movie, ffmpeg=ffmpeg, ffprobe=ffprobe,
-        frames=int(str(video[0]["nb_read_packets"])) if video else 0,
-    ):  # fmt: skip
+    elif shown is not None:
+        failures["dynamic_captions"] = shown
+    elif not movie_decode.decodes(movie, ffmpeg=ffmpeg, ffprobe=ffprobe, frames=frames):
         failures["dynamic_captions"] = "the movie does not decode cleanly"
     return failures
 

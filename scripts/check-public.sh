@@ -28,6 +28,7 @@ check_path() {
         web-viewer/.gitignore|web-viewer/README.md|web-viewer/biome.json|web-viewer/bun.lock|web-viewer/package.json|web-viewer/tsconfig.json|web-viewer/vitest.config.ts) ;;
         web-viewer/cloudflare.config.ts|web-viewer/wrangler.config.ts|web-viewer/sync.config.example.json|web-viewer/public/index.html) ;;
         web-viewer/secrets.example.json|web-viewer/deploy.env.example|web-viewer/src/fixtures/clip-record-contract.json) ;;
+        tests/fixtures/caption-*-v[12].json|tests/fixtures/synthetic-review.nameplate.png|tests/fixtures/synthetic-multi.speaker-*.png) ;;
         web-viewer/src/*.js|web-viewer/src/*.ts|web-viewer/tools/*.py) ;;
         native/apple-pro-apps/Sources/AudioClockProbe/*.swift|native/apple-pro-apps/Sources/AudioEncodingCapabilities/*.swift|native/apple-pro-apps/Sources/FontIdentityProbe/*.swift|native/apple-pro-apps/Sources/CaptionAlphaRender/*.swift) ;;
         native/apple-pro-apps/Tests/AudioClockProbeTests/*.swift|native/apple-pro-apps/Tests/AudioEncodingCapabilitiesTests/*.swift|native/apple-pro-apps/Tests/FontIdentityProbeTests/*.swift) ;;

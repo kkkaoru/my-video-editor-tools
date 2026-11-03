@@ -15,15 +15,17 @@ stale). Each runs the existing producers and keeps their checks:
 - ``placement``: ``caption_fixed_y_job`` over the whole output with the YOLO face track;
 - ``onsets``: ``replay.speech_onsets`` times each recognized character by CTC alignment against
   the tempo voice track (the delivered audio), in the pinned CTC alignment environment;
-- ``caption-parts``: ``replay.caption_parts`` (Motion parts and their Compressor jobs);
-- ``caption-render``: ``compressor_batch`` renders every part's alpha movie;
-- ``compose``: ``replay.caption_compose plan/render`` over the cleaned source;
+- ``caption-parts``: ``replay.caption_parts`` (the finished Motion parts, ``.moti``);
+- ``compose``: ``replay.caption_compose plan/render`` over the cleaned source, without captions:
+  the viewers draw them live and caption-burn burns them on demand (user, 2026-11-03);
 - ``finish``: ``replay.caption_compose finish`` adds the tempo-matched voice and joins the groups.
+- ``caption-plan``: the published delivery's caption plan and face track beside it
+  (``replay.caption_plan``, ``replay.caption_faces``), the data the viewers draw captions from;
 - ``upload-original``, ``excitement``, ``summarize``, ``summary`` and ``clips``: the viewer extras
   (``replay.recording_viewer_steps``); ``summarize`` runs beside the upload, first passing the
   completion gate and superseding incomplete older revisions;
-- ``retire-renders``: after the gate passed, deletes the render intermediates (``alpha/``,
-  ``compose/`` and a layout's ``badge/`` under the media root, ~43 GB a recording); ``final/``
+- ``retire-renders``: after the gate passed, deletes the render intermediates (``compose/``, and
+  ``alpha/`` and ``badge/`` left by an earlier burned run, under the media root); ``final/``
   is the delivery's hardlink;
 - ``upload``: the web viewer's ``sync`` (``web-viewer/src/bin/sync.ts``) uploads what changed,
   including the published delivery, to Cloudflare; one sync runs at a time on this checkout.
@@ -37,7 +39,7 @@ The style-20 calibration is the surviving envelope (``provisional``): receipts s
 
 A recording's editing intents (``replay.caption_layout``) reach these steps through
 ``captions.json``: ``layout`` gives placement, the parts and compose its canvas and left-aligned,
-bottom-anchored captions and the compose groups its nameplate; ``deliveryAudio`` makes compose
+bottom-anchored captions and the caption plan its nameplate; ``deliveryAudio`` makes compose
 and finish deliver the music back under the processed voice (the mix minus the separated voice,
 plus the voice the steps processed), cut and tempo-matched exactly as the voice
 (``delivery-audio-v1/``: the separation's own decode of the source, then ``clocked_tempo_audio``
@@ -55,29 +57,26 @@ from pathlib import Path
 
 import numpy as np
 
-from replay import caption_gradient_audit as gradient_audit
 from replay import (
+    caption_faces,
     caption_layout,
     caption_palette,
-    compressor_batch,
-    compressor_guard,
-    gpu_lease,
+    caption_plan,
+    caption_readability,
     r2_fetch,
     video_config,
     voice_remux,
     youtube_channels,
     youtube_encode,
+    youtube_master,
 )
 from replay import pipeline_completion as completion
 from replay import recording_steps as front
 from replay import recording_viewer_steps as viewer
 from replay.candidate_publication import SELECTION_NAME
 from replay.caption_compose import (
-    MAX_GROUP_SECONDS,
     Loudness,
-    Part,
     encode_audio,
-    load_parts,
     packet_count,
     voice,
 )
@@ -112,14 +111,9 @@ ROLES = frozenset(
 )  # fmt: skip
 PLACEMENT_KEYS = frozenset({"regionTop", "regionBottom", "clearance", "maximumDrift"})
 COMPRESSOR_KEYS = frozenset({"preset", "inFlight", "submitWorkers"})
-# Runtime override of the Compressor jobs in flight, outside every hashed configuration (so no
-# finished receipt goes stale): ``{"inFlight": n}``, read at each caption-render launch.
-IN_FLIGHT_OVERRIDE = "in-flight.json"
-MAX_IN_FLIGHT_OVERRIDE = 4  # 2 in flight was chosen for Compressor stability; raise in steps
 COMPOSE_KEYS = frozenset({"server", "serverSha256", "workers"})
-# Optional, off when absent: caption-render draws the finished Motion parts natively
-# (``replay.caption_render_native``); parts it cannot verify, or all parts when the parity gate
-# on sampled parts fails, are rendered by Motion + Compressor instead.
+# Optional, off when absent: the native reader of the finished Motion parts
+# (``caption-alpha-render --inspect``) the caption-plan step reads every part's titles with.
 NATIVE_RENDER_KEYS = frozenset({"binary", "binarySha256", "floor", "sample", "workers"})
 # Optional, off when absent: the delivered voice gets one static gain from one EBU R128
 # measurement of the tempo PCM, toward the target, capped so its true peak stays at the ceiling.
@@ -138,6 +132,7 @@ OPTIONAL = frozenset(
      "voiceDeesser", "voiceJudge"}
 )  # fmt: skip
 # Settings the pipeline defaults may carry for every new recording (the intents are per recording).
+UNCAPTIONED_PARTS = "uncaptioned-parts.json"  # compose's empty part list
 DEFAULT_OPTIONAL = OPTIONAL - {"palette", "layout", "deliveryAudio"}
 DELIVERY_AUDIO = "delivery-audio-v1"
 MAXIMUM_RATE_CHANGE = "0.5"  # caption_native_continuation's, for the voice's tempo audio
@@ -150,7 +145,6 @@ RATE = 30
 # Every page paging can produce is placed, and a run whose person no observation bounds goes
 # to the region top instead of being dropped: a delivery shows every caption.
 MAX_PAGE_LINES = 2  # the top-anchored Motion template has two text layers
-GRADIENT_LINES = 20  # rendered caption lines the gradient audit measures
 PAGING_MODULE, LINES_MODULE = "replay.caption_native_paging", "replay.caption_native_paging_lines"
 # The pinned CTC alignment environment (``--extra ctc-alignment``) and model, in the checkout.
 ALIGNER_PYTHON = Path("edits/.venv-ctc-alignment/bin/python")
@@ -695,7 +689,10 @@ def caption_parts_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
                    *layout_arguments(captions), "--", *finish),
             pipeline.logs / "caption-parts.log",
         )  # fmt: skip
-    return {"parts": pin(output / "parts.json"), "jobs": pin(output / "jobs.json")}
+    # The captions must stay readable once shown whole (user, 2026-11-03), before any render.
+    readable = caption_readability.check(output / "moti", RATE)
+    return {"parts": pin(output / "parts.json"), "jobs": pin(output / "jobs.json"),
+            "readability": readable}  # fmt: skip
 
 
 def layout_arguments(captions: Captions) -> list[str]:
@@ -713,133 +710,6 @@ def record_list(value: object) -> list[object]:
     return value
 
 
-def in_flight(configured: object, override: Path) -> int:
-    """The override file's ``inFlight`` (1-4) when present, else the configured value."""
-    if not override.is_file():
-        return int(str(configured))
-    value = record(json.loads(override.read_text(encoding="utf-8"))).get("inFlight")
-    if type(value) is not int or not 1 <= value <= MAX_IN_FLIGHT_OVERRIDE:
-        raise ReplayError(f"{override} needs an inFlight integer from 1 to 4")
-    return value
-
-
-def caption_render(pipeline: Pipeline, run: Runner) -> dict[str, object]:
-    """Render every part's alpha movie; Compressor continues from its recorded state."""
-    captions = load_captions(pipeline)
-    if "nativeRender" in captions.data:
-        return native_caption_render(pipeline, run, captions)
-    settings = captions.section("compressor")
-    parts = pipeline.work / "caption-parts-v1"
-    # Compressor fails CLI jobs ("job controller is down") unless its app is running, and nothing
-    # reopens it after a restart; open it in the background (no-op when already running).
-    app = compressor_batch.COMPRESSOR.parents[2]
-    log = pipeline.logs / "caption-render.log"
-    run(["open", "-g", "-a", str(app)], log)
-    batch = module(pipeline, "compressor_batch", str(parts / "jobs.json"),
-                   "--state", str(pipeline.work / "caption-render-v1" / "state"),
-                   "--in-flight", str(in_flight(settings["inFlight"], gpu_lease.root().parent
-                                                / "compressor-leases" / IN_FLIGHT_OVERRIDE)),
-                   "--submit-workers", str(settings["submitWorkers"]),
-                   "--retry-controller-failure")  # fmt: skip
-    since = log.stat().st_size if log.exists() else 0
-    try:
-        run(batch, log)
-    except ReplayError:
-        refused = compressor_guard.untracked(log, since, captions.media(pipeline))
-        if refused is not None:
-            # A Failed job's partial output whose state was retired: set it aside, submit again.
-            compressor_guard.set_aside(refused, time.time_ns())
-        elif compressor_guard.controller_down(log, since):
-            # Circuit breaker: stop submitting, restart Compressor, then resume the batch once.
-            compressor_guard.restart(app)
-        else:
-            raise
-        run(batch, log)
-    states = pipeline.work / "caption-render-v1" / "state"
-    packets = remembered(packet_count)  # verification and loading read each render once
-    missing = compressor_guard.unverified(parts / "parts.json", states, packets)
-    if missing:
-        # "Success without output": those parts are submitted once more.
-        compressor_guard.retire(states, missing)
-        run(batch, log)
-    compressor_guard.record_hashes(
-        parts / "parts.json", states, pipeline.work / "caption-render-v1" / "verified-outputs.json"
-    )
-    rendered = load_parts(parts / "parts.json", packets, states)  # recorded and complete
-    return {
-        "parts": len(rendered),
-        "frames": sum(part.frames for part in rendered),
-        "gradient": rendered_gradient(rendered),
-    }
-
-
-def remembered(count: compressor_guard.Packets) -> compressor_guard.Packets:
-    """``count`` once per file version (path, size, mtime), so a resubmitted render is counted
-    again but an unchanged one is read only once."""
-    seen: dict[tuple[str, int, int], int] = {}
-
-    def counted(path: Path) -> int:
-        try:
-            status = path.stat()
-        except OSError:
-            return count(path)
-        key = (str(path), status.st_size, status.st_mtime_ns)
-        if key not in seen:
-            seen[key] = count(path)
-        return seen[key]
-
-    return counted
-
-
-def native_caption_render(pipeline: Pipeline, run: Runner, captions: Captions) -> dict[str, object]:
-    """The same parts, alpha movies and job states, drawn natively from the finished ``.moti``.
-
-    ``replay.caption_render_native run`` gates on sampled parts first; a failed gate renders
-    every part with Motion + Compressor, and a part the native reader cannot verify is rendered
-    by them alone. Each fallback and its reason is in the receipt.
-    """
-    settings, compressor = captions.section("nativeRender"), captions.section("compressor")
-    parts, root = pipeline.work / "caption-parts-v1", pipeline.work / "caption-render-v1"
-    states, log = root / "state", pipeline.logs / "caption-render.log"
-    # The gate and any fallback render with Compressor, which needs its app running.
-    run(["open", "-g", "-a", str(compressor_batch.COMPRESSOR.parents[2])], log)
-    count = in_flight(
-        compressor["inFlight"], gpu_lease.root().parent / "compressor-leases" / IN_FLIGHT_OVERRIDE
-    )
-    run(
-        module(pipeline, "caption_render_native", "run", str(parts / "parts.json"),
-               str(parts / "jobs.json"), "--binary", str(settings["binary"]),
-               "--binary-sha256", str(settings["binarySha256"]),
-               "--work", str(root / "native"), "--floor-json", str(settings["floor"]),
-               "--sample", str(settings["sample"]), "--state", str(states),
-               "--workers", str(settings["workers"]), "--in-flight", str(count),
-               "--submit-workers", str(compressor["submitWorkers"])),
-        log,
-    )  # fmt: skip
-    compressor_guard.record_hashes(parts / "parts.json", states, root / "verified-outputs.json")
-    rendered = load_parts(parts / "parts.json", packet_count, states)  # recorded and complete
-    receipt = read_json(root / "native" / "receipt.json")
-    return {
-        "parts": len(rendered),
-        "frames": sum(part.frames for part in rendered),
-        "gradient": rendered_gradient(rendered),
-        "renderer": receipt["renderer"],
-        "fallback": receipt["fallback"],
-        "native": pin(root / "native" / "receipt.json"),
-    }
-
-
-def rendered_gradient(parts: Sequence[Part]) -> dict[str, object]:
-    """The style gradient measured on the first parts' rendered pixels; missing raises."""
-    measures: list[tuple[int, float]] = []
-    for part in parts:
-        if len(gradient_audit.full_lines(measures)) >= GRADIENT_LINES:
-            break
-        frames = gradient_audit.frames(str(part.render))
-        measures += [line for frame in frames for line in gradient_audit.line_measures(frame)]
-    return gradient_audit.audit(gradient_audit.full_lines(measures))
-
-
 def clean_source(pipeline: Pipeline) -> Path:
     """The assembled clean source the cleanup step recorded."""
     receipt = read_json(pipeline.steps / "cleanup.json")
@@ -850,16 +720,18 @@ def compose(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     captions = load_captions(pipeline)
     settings, root = captions.section("compose"), pipeline.work / "compose-v1"
     requests, log = root / "requests", pipeline.logs / "compose.log"
-    framed = compose_layout(pipeline, captions, run, log)
+    framed = compose_layout(captions)
     if not (requests / "groups.json").exists():
         root.mkdir(mode=0o700, exist_ok=True)
+        # No caption part is laid over the picture: the plan beside the delivery carries them.
+        uncaptioned = root / UNCAPTIONED_PARTS
+        uncaptioned.unlink(missing_ok=True)
+        write_json(uncaptioned, [])
         run(
             module(pipeline, "caption_compose", "plan",
-                   str(pipeline.work / "cut-plan-v1" / "supported-cuts.json"),
-                   str(pipeline.work / "caption-parts-v1" / "parts.json"),
+                   str(pipeline.work / "cut-plan-v1" / "supported-cuts.json"), str(uncaptioned),
                    str(clean_source(pipeline)), str(captions.media(pipeline) / "compose"),
-                   str(requests), "--states",
-                   str(pipeline.work / "caption-render-v1" / "state"),
+                   str(requests),
                    "--rate-source", str(pipeline.path_of("source")),
                    "--frame-clock", str(pipeline.work / "video-clock.json"), *framed),
             log,
@@ -879,32 +751,21 @@ def compose(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     first = requests / "g000.json"
     video = record(record(read_json(first)["recipe"])["video"]) if first.exists() else {}
     levelled = voice(final).with_name(f"{voice(final).name}.loudness.json")
-    badge = captions.media(pipeline) / "badge" / "badge.mov"
     return {
         "groups": pin(requests / "groups.json"),
         "averageBitRate": record(video.get("encoding", {})).get("averageBitRate"),
         **({"voiceLoudness": pin(levelled)} if levelled.exists() else {}),
-        **({"badge": pin(badge)} if "--badge" in framed else {}),
         **delivered_audio(captions, delivered),
     }
 
 
-def compose_layout(pipeline: Pipeline, captions: Captions, run: Runner, log: Path) -> list[str]:
-    """``caption_compose plan`` arguments of the recording's layout: its canvas, and its
-    nameplate movie (drawn once, a group long) when it names a speaker."""
+def compose_layout(captions: Captions) -> list[str]:
+    """``caption_compose plan`` arguments of the recording's layout: its canvas (the nameplate
+    is drawn live from the caption plan)."""
     if "layout" not in captions.data:
         return []
-    layout = captions.section("layout")
-    width, height = caption_layout.frame(layout)
-    if "speaker" not in layout:
-        return ["--canvas", str(width), str(height)]
-    badge = captions.media(pipeline) / "badge" / "badge.mov"
-    run(
-        module(pipeline, "caption_layout", "badge", str(captions.path), str(badge),
-               "--ffmpeg", pipeline.text("ffmpeg"), "--seconds", str(MAX_GROUP_SECONDS + 1)),
-        log,
-    )  # fmt: skip
-    return ["--canvas", str(width), str(height), "--badge", str(badge)]
+    width, height = caption_layout.frame(captions.section("layout"))
+    return ["--canvas", str(width), str(height)]
 
 
 def delivery_tempo(pipeline: Pipeline, captions: Captions, run: Runner, log: Path) -> Path:
@@ -1149,6 +1010,16 @@ def publish(pipeline: Pipeline, _run: Runner) -> dict[str, object]:
     return {"delivery": str(delivery), "evidence": pin(index)}
 
 
+def caption_plan_step(pipeline: Pipeline, _run: Runner) -> dict[str, object]:
+    """The published delivery's caption plan and face track, written beside it once."""
+    movie = Path(str(record(read_json(pipeline.steps / "publish.json")["outputs"])["delivery"]))
+    plan, icon = caption_plan.build(pipeline.work, movie)
+    written = caption_plan.write(plan, movie.parent, icon)
+    faces = caption_faces.write(caption_faces.build(pipeline.work, movie), movie)
+    return {"plan": pin(written), "faces": pin(faces), "titles": len(record_list(plan["titles"])),
+            "burned": plan["burned"]}  # fmt: skip
+
+
 def youtube_encode_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     """The published delivery encoded for YouTube by Compressor (``replay.youtube_encode``)."""
     movie = Path(str(record(read_json(pipeline.steps / "publish.json")["outputs"])["delivery"]))
@@ -1158,6 +1029,20 @@ def youtube_encode_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         pipeline.logs / "youtube-encode.log",
     )  # fmt: skip
     return {"youtube": pin(youtube_encode.output_of(movie))}
+
+
+def youtube_master_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+    """The verified YouTube encode published as the delivery (``replay.youtube_master``), once
+    the original passed its gate and gave the viewer its summary and clips; then the web viewer
+    is synced with it."""
+    movie = Path(str(record(read_json(pipeline.steps / "publish.json")["outputs"])["delivery"]))
+    published = youtube_master.master(
+        movie, ffmpeg=pipeline.text("ffmpeg"), ffprobe=pipeline.text("ffprobe")
+    )
+    log = pipeline.logs / "youtube-master.log"
+    viewer.sync(run, log, "--only", published.stem)
+    viewer.require_uploaded(published.stem, published, root=pipeline.path_of("editRoot"))
+    return {"master": pin(published)}
 
 
 def retire_selection(storage: Path) -> Path | None:
@@ -1259,15 +1144,16 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "placement": ("paging", "yolo-track"),
     "onsets": ("paging",),
     "caption-parts": ("placement", "onsets"),
-    "caption-render": ("caption-parts",),
-    "compose": ("caption-render", "cleanup"),
+    "compose": ("caption-parts", "cleanup"),
     "finish": ("compose",),
     "voice-remux": ("finish",),
     "publish": ("finish", "voice-remux"),
     "youtube-encode": ("publish",),
+    "caption-plan": ("publish", "caption-parts", "yolo-track"),
+    "youtube-master": ("youtube-encode", "caption-plan"),
     "excitement": ("publish",),
     "upload": ("publish", "excitement"),
-    "summarize": ("publish",),
+    "summarize": ("publish", "caption-plan"),
     "summary": ("upload",),
     "clips": ("upload", "summary"),
     "retire-renders": ("summary",),
@@ -1280,12 +1166,13 @@ STEPS: dict[str, front.StepFunction] = {
     "placement": placement,
     "onsets": onsets,
     "caption-parts": caption_parts_step,
-    "caption-render": caption_render,
     "compose": compose,
     "finish": finish,
     "voice-remux": voice_remux_step,
     "publish": publish,
+    "caption-plan": caption_plan_step,
     "youtube-encode": youtube_encode_step,
+    "youtube-master": youtube_master_step,
     "excitement": excitement,
     "upload": upload,
     "summarize": viewer.summarize,
@@ -1305,21 +1192,20 @@ def step_outputs(pipeline: Pipeline, step: str) -> tuple[Path, ...]:
             work / VOICE_REPAIR,
             work / "voice-repair-scratch",
             work / VOICE_DEESSER,
+            *(work / f"{VOICE_DEESSER}-{depth:g}db" for depth in DEESSER_DEPTHS_DB[1:]),
             work / VOICE_RESTORE,
         ),
         "paging": (work / "paging-v1",),
         "placement": (work / "placement-v1.json",),
         "onsets": (onsets_path(pipeline), work / "speech-onsets-scratch"),
         "caption-parts": (work / "caption-parts-v1", media / "alpha"),
-        "caption-render": (
-            work / "caption-render-v1",
-            *sorted((media / "alpha").glob("*/compressor-*")),
-        ),
         "compose": (work / "compose-v1", work / DELIVERY_AUDIO, media / "compose", media / "badge"),
         "finish": (media / "final",),
         "voice-remux": (work / VOICE_REMUX, media / "final-remux"),
         "publish": (),  # a published delivery is never deleted by a forced re-run
+        "caption-plan": (),  # written once beside the delivery; a re-run keeps an identical one
         "youtube-encode": (work / YOUTUBE_ENCODE,),  # the upload copy stays beside its delivery
+        "youtube-master": (),  # a master replaces its delivery once; nothing to redo
         "excitement": (),  # sidecars beside a delivery stay with it
         "upload": (),
         "summarize": (),

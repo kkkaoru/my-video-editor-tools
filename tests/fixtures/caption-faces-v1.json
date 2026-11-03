@@ -1,0 +1,69 @@
+{
+ "version": 1,
+ "clock": "delivery",
+ "rate": 30,
+ "width": 1920,
+ "height": 1080,
+ "source": {
+  "model": "synthetic-face.pt",
+  "modelSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "file": "synthetic-track.json",
+  "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+ },
+ "samples": [
+  {
+   "frame": 0,
+   "faceCount": 0,
+   "box": null
+  },
+  {
+   "frame": 20,
+   "faceCount": 1,
+   "box": {
+    "x": 800.0,
+    "y": 700.0,
+    "w": 300.0,
+    "h": 320.0,
+    "score": 0.9
+   }
+  },
+  {
+   "frame": 24,
+   "faceCount": 2,
+   "box": {
+    "x": 820.0,
+    "y": 300.0,
+    "w": 300.0,
+    "h": 320.0,
+    "score": 0.95
+   }
+  },
+  {
+   "frame": 26,
+   "faceCount": 1,
+   "box": {
+    "x": 810.0,
+    "y": 100.0,
+    "w": 300.0,
+    "h": 320.0,
+    "score": 0.3
+   }
+  },
+  {
+   "frame": 130,
+   "faceCount": 1,
+   "box": {
+    "x": 790.0,
+    "y": 760.0,
+    "w": 300.0,
+    "h": 300.0,
+    "score": 0.97
+   }
+  },
+  {
+   "frame": 200,
+   "faceCount": 0,
+   "box": null
+  }
+ ]
+}

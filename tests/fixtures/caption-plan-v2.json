@@ -1,0 +1,152 @@
+{
+ "version": 2,
+ "clock": "delivery",
+ "movie": "synthetic-multi.mp4",
+ "burned": false,
+ "width": 1920,
+ "height": 1080,
+ "rate": 30,
+ "frames": 300,
+ "style": {
+  "fontName": "NotoSansJP-Thin_Bold",
+  "fontSize": 40.0,
+  "faceGrow": 0.3,
+  "keyline": 0.655909,
+  "whiteBorder": 4.581818,
+  "rim": 5.945455,
+  "shadowOpacity": 0.7,
+  "shadowOffsetY": 7.272727,
+  "shadowSigma": 2.571297,
+  "gradientTop": "#E4E4E4",
+  "gradientBottom": "#C8C8C8",
+  "topLocation": 0.2688,
+  "bottomLocation": 0.3944,
+  "outputGamma": 1.961
+ },
+ "titles": [
+  {
+   "text": "こんにちは",
+   "startFrame": 10,
+   "endFrame": 60,
+   "x": -310.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    10,
+    13,
+    16,
+    19,
+    22
+   ],
+   "speaker": "left"
+  },
+  {
+   "text": "やっほー",
+   "startFrame": 30,
+   "endFrame": 90,
+   "x": 180.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    30,
+    33,
+    36,
+    39
+   ],
+   "speaker": "middle"
+  },
+  {
+   "text": "よろしく\nね",
+   "startFrame": 50,
+   "endFrame": 110,
+   "x": 690.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    50,
+    53,
+    56,
+    59,
+    62,
+    65
+   ],
+   "speaker": "right"
+  },
+  {
+   "text": "わいわい",
+   "startFrame": 70,
+   "endFrame": 130,
+   "x": 0.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    70,
+    73,
+    76,
+    79
+   ]
+  },
+  {
+   "text": "がやがや",
+   "startFrame": 90,
+   "endFrame": 150,
+   "x": 0.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    90,
+    93,
+    96,
+    99
+   ]
+  },
+  {
+   "text": "おわり",
+   "startFrame": 140,
+   "endFrame": 170,
+   "x": 0.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    140,
+    143,
+    146
+   ]
+  },
+  {
+   "text": "またね",
+   "startFrame": 160,
+   "endFrame": 200,
+   "x": -310.0,
+   "y": -430.0,
+   "graphemeFrames": [
+    160,
+    163,
+    166
+   ],
+   "speaker": "left"
+  }
+ ],
+ "nameplate": null,
+ "speakers": [
+  {
+   "id": "left",
+   "name": "ひだり",
+   "colorTop": "#E2C6FF",
+   "colorBottom": "#C48CFF",
+   "laneX": -310.0,
+   "icon": "synthetic-multi.speaker-left.png",
+   "iconSha256": "92a68a3060c3748b05c595d0109ac9b46078a5a4dceee9228558cab6304cef63"
+  },
+  {
+   "id": "middle",
+   "name": "まんなか",
+   "colorTop": "#BEEEC6",
+   "colorBottom": "#7CDC8C",
+   "laneX": 180.0
+  },
+  {
+   "id": "right",
+   "name": "みぎ",
+   "colorTop": "#B6EAFF",
+   "colorBottom": "#6CD4FF",
+   "laneX": 690.0,
+   "icon": "synthetic-multi.speaker-right.png",
+   "iconSha256": "9f686f29b9b501a4119347790fb9221b246df6dbdfb57eb583955be7472a5f59"
+  }
+ ]
+}

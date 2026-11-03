@@ -9,12 +9,14 @@ while its measured utilization leaves room:
     clocks ─┬─ cleanup-bootstrap ── cleanup ─────────────┐
             ├─ separation (GPU) ── asr (GPU) ─────────────┴─ retire-intermediates
             └─ yolo-track (GPU) ─────────────────────────────┐
-    asr ── cut-plan ── paging ── placement (+ yolo-track) ── caption-parts ── caption-render
+    asr ── cut-plan ── paging ── placement (+ yolo-track) ── caption-parts
                        └─ onsets ─────────────────────────────┘
-        ── compose (+ cleanup) ── finish ── publish ── excitement ── upload (web viewer sync)
+        ── compose (+ cleanup; no captions) ── finish ── publish ── excitement ── upload
+        ; publish ── caption-plan (the caption plan and face track the viewers draw from)
         ── summary (the completion gate and supersession, then on-device, then a data sync)
-        ── clips (the viewer's clip points are ready) ; summary ── retire-renders (alpha, compose)
+        ── clips (the viewer's clip points are ready) ; summary ── retire-renders (compose)
         ; publish ── youtube-encode (Compressor's YouTube setting, beside the delivery)
+        ; youtube-encode + summary + clips ── youtube-master (the verified encode replaces it)
 
 The caption half (``replay.recording_caption_steps``) reads ``captions.json``, written beside
 ``pipeline.json`` from the defaults' ``captions`` section; changing it marks only caption steps
@@ -108,9 +110,10 @@ ORDER = (
     "audio-clock", "clocks", "yolo-track", "separation", "cleanup-bootstrap", "cleanup", "asr",
     "upload-original",
     "voice-repair", "cut-plan",
-    "paging", "onsets", "placement", "caption-parts", "caption-render", "compose", "finish",
-    "voice-remux", "publish",
+    "paging", "onsets", "placement", "caption-parts", "compose", "finish",
+    "voice-remux", "publish", "caption-plan",
     "summarize", "excitement", "upload", "summary", "clips", "retire-renders", "youtube-encode",
+    "youtube-master",
 )  # fmt: skip
 DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
 # Start order only, not receipt inputs: summary reuses what summarize gated and generated, so it
@@ -119,18 +122,23 @@ DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
 # detecting them again: a cleanup started first gave up waiting and ran YOLO twice (10-28).
 SCHEDULE = {
     **DEPENDENCIES,
+    # The YouTube encode comes first, then the summary and the clips (user, 2026-11-03).
+    "summarize": (*DEPENDENCIES["summarize"], "youtube-encode"),
     "summary": (*DEPENDENCIES["summary"], "summarize"),
     "cleanup": (*DEPENDENCIES["cleanup"], "yolo-track"),
+    # The master replaces the delivery only after its gate, summary and clips read it; a redo of
+    # those never redoes the master.
+    "youtube-master": (*DEPENDENCIES["youtube-master"], "summary", "clips"),
 }
 OUTER_CAP = 24 * HOUR  # a backstop (stages.Stage allows at most 24 h); IDLE_SECONDS bound each step
 TIMEOUTS = dict.fromkeys(
     (
         "audio-clock", "clocks", "separation", "cleanup-bootstrap", "cleanup", "asr", "yolo-track",
         "retire-intermediates", "upload-original", "cut-plan", "voice-repair", "paging",
-        "placement", "onsets", "caption-parts", "caption-render", "compose", "finish",
-        "voice-remux", "publish",
+        "placement", "onsets", "caption-parts", "compose", "finish",
+        "voice-remux", "publish", "caption-plan",
         "excitement", "upload", "summarize", "summary", "clips", "retire-renders",
-        "youtube-encode",
+        "youtube-encode", "youtube-master",
     ),
     OUTER_CAP,
 )  # fmt: skip
@@ -138,30 +146,30 @@ TIMEOUTS = dict.fromkeys(
 # long neither its output trees and logs grew nor its processes used a minute of CPU
 # (step_progress, workflow_parallel.cpu_minutes); a 10-hour recording's steps run past any fixed
 # bound while they keep working. The bounds are the former per-step timeouts, at most two hours
-# (a 10-24 cleanup chunk took at most ~16 min; caption-render and compose may wait for a lease).
+# (a 10-24 cleanup chunk took at most ~16 min; compose may wait for a lease).
 IDLE_SECONDS = {
     "audio-clock": HOUR, "clocks": 2 * HOUR, "separation": 2 * HOUR,
     "cleanup-bootstrap": 2 * HOUR, "cleanup": HOUR, "asr": 2 * HOUR, "yolo-track": 2 * HOUR,
     "retire-intermediates": HOUR, "upload-original": 2 * HOUR, "cut-plan": HOUR,
     "voice-repair": 2 * HOUR,
     "paging": 2 * HOUR, "placement": HOUR, "onsets": HOUR, "caption-parts": 2 * HOUR,
-    "caption-render": 2 * HOUR, "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-remux": 2 * HOUR,
-    "publish": 2 * HOUR,
+    "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-remux": 2 * HOUR,
+    "publish": 2 * HOUR, "caption-plan": HOUR,
     "excitement": HOUR, "upload": 2 * HOUR, "summarize": 2 * HOUR, "summary": 2 * HOUR,
     "clips": 2 * HOUR, "retire-renders": HOUR, "youtube-encode": 2 * HOUR,
+    "youtube-master": 2 * HOUR,
 }  # fmt: skip
-# caption-render only waits on Compressor, which renders one job at a time machine-wide and
-# used ~18% of the GPU (2026-10-22); holding a GPU lease for its 50-80 min starved cleanup
-# chunks. It takes the one Compressor lease instead, so the first-started recording renders
-# alone rather than interleaving its parts with another's (and queues stay within 2 in flight).
+# youtube-encode only waits on Compressor, which renders one job at a time machine-wide: it
+# takes the one Compressor lease instead of a GPU lease.
 # compose runs three native media_edit renders at once; two recordings composing together timed
 # out every group (2026-10-23, 10/6 and 10/2), so composes take one machine-wide lease too.
 # finish streams the whole movie through the same SSD: beside another compose or finish it took
 # 760-2,518 s against 110-330 s alone (2026-10-22/23), so it shares the compose lease.
 # voice-repair is computation only on the CPU (no GPU lease).
-GPU_STEPS = frozenset({"separation", "asr", "yolo-track", "onsets", "compose"})
+# clips runs clef and clef-flash on Metal for most of its 30-minute budget: beside a compose or an
+# asr its prefill (at the matmul peak alone) slowed to a quarter (11/1, 2026-11-03).
+GPU_STEPS = frozenset({"separation", "asr", "yolo-track", "onsets", "compose", "clips"})
 SERIAL_STEPS = {
-    "caption-render": "compressor-leases",
     "compose": "compose-leases",
     "finish": "compose-leases",
     "youtube-encode": "compressor-leases",

@@ -61,7 +61,7 @@ LINKED = (
     "delivery-audio-v1/tempo/candidate.wav",
     "delivery-audio-v1/tempo/receipt.json",
 )
-STEPS = ("placement", "caption-parts", "caption-render", "compose", "finish")
+STEPS = ("placement", "caption-parts", "compose", "finish")  # captions are no longer burned
 
 
 def even(value: float) -> int:

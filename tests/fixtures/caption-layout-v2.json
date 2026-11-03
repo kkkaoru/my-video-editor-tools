@@ -1,0 +1,14 @@
+{
+ "version": 2,
+ "mode": "bottom",
+ "speakers": {
+  "left": {
+   "mode": "aboveFace"
+  },
+  "right": {
+   "mode": "aboveFace",
+   "minScore": 0.3,
+   "offsetY": -30
+  }
+ }
+}

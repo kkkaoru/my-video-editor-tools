@@ -1,0 +1,311 @@
+{
+ "version": 2,
+ "plan": "caption-plan-v2.json",
+ "tolerance": 1e-06,
+ "cases": [
+  {
+   "name": "absent",
+   "layout": {
+    "version": 1,
+    "mode": "plan"
+   },
+   "faces": "caption-faces-v2.json",
+   "titles": [
+    {
+     "x": -310.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": 180.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": 690.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": 0.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": 0.0,
+     "y": -345.6723276723277,
+     "basis": "plan"
+    },
+    {
+     "x": 0.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": -310.0,
+     "y": -430.0,
+     "basis": "plan"
+    }
+   ]
+  },
+  {
+   "name": "fixture-layout",
+   "layout": {
+    "version": 2,
+    "mode": "bottom",
+    "speakers": {
+     "left": {
+      "mode": "aboveFace"
+     },
+     "right": {
+      "mode": "aboveFace",
+      "minScore": 0.3,
+      "offsetY": -30
+     }
+    }
+   },
+   "faces": "caption-faces-v2.json",
+   "titles": [
+    {
+     "x": -310.0,
+     "y": 121.92767232767233,
+     "basis": "face"
+    },
+    {
+     "x": 180.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 690.0,
+     "y": 379.6,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 0.0,
+     "y": -333.74465534465537,
+     "basis": "mode"
+    },
+    {
+     "x": 0.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": -310.0,
+     "y": 1.927672327672326,
+     "basis": "face"
+    }
+   ]
+  },
+  {
+   "name": "bottom-all",
+   "layout": {
+    "version": 1,
+    "mode": "bottom"
+   },
+   "faces": "caption-faces-v2.json",
+   "titles": [
+    {
+     "x": -310.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 180.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 690.0,
+     "y": -360.1523276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 0.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": 0.0,
+     "y": -333.74465534465537,
+     "basis": "mode"
+    },
+    {
+     "x": 0.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    },
+    {
+     "x": -310.0,
+     "y": -418.0723276723277,
+     "basis": "mode"
+    }
+   ]
+  },
+  {
+   "name": "above-face-all",
+   "layout": {
+    "version": 1,
+    "mode": "aboveFace"
+   },
+   "faces": "caption-faces-v2.json",
+   "titles": [
+    {
+     "x": -310.0,
+     "y": 121.92767232767233,
+     "basis": "face"
+    },
+    {
+     "x": 180.0,
+     "y": 201.92767232767233,
+     "basis": "held"
+    },
+    {
+     "x": 690.0,
+     "y": 349.6,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": 301.9276723276723,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": 386.25534465534463,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": -310.0,
+     "y": 1.927672327672326,
+     "basis": "face"
+    }
+   ]
+  },
+  {
+   "name": "above-face-v1-faces",
+   "layout": {
+    "version": 1,
+    "mode": "aboveFace"
+   },
+   "faces": "caption-faces-v1.json",
+   "titles": [
+    {
+     "x": -310.0,
+     "y": -98.07232767232767,
+     "basis": "face"
+    },
+    {
+     "x": 180.0,
+     "y": -98.07232767232767,
+     "basis": "held"
+    },
+    {
+     "x": 690.0,
+     "y": -40.152327672327715,
+     "basis": "held"
+    },
+    {
+     "x": 0.0,
+     "y": -158.07232767232767,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": -73.74465534465537,
+     "basis": "face"
+    },
+    {
+     "x": 0.0,
+     "y": -430.0,
+     "basis": "plan"
+    },
+    {
+     "x": -310.0,
+     "y": -430.0,
+     "basis": "plan"
+    }
+   ]
+  },
+  {
+   "name": "per-speaker-offsets",
+   "layout": {
+    "version": 2,
+    "mode": "top",
+    "margin": 40,
+    "offsetX": -50,
+    "speakers": {
+     "middle": {
+      "mode": "center",
+      "offsetX": 100
+     }
+    }
+   },
+   "faces": "caption-faces-v2.json",
+   "titles": [
+    {
+     "x": -360.0,
+     "y": 429.6,
+     "basis": "mode"
+    },
+    {
+     "x": 280.0,
+     "y": -34.23616383616388,
+     "basis": "mode"
+    },
+    {
+     "x": 640.0,
+     "y": 429.6,
+     "basis": "mode"
+    },
+    {
+     "x": -50.0,
+     "y": 429.6,
+     "basis": "mode"
+    },
+    {
+     "x": -50.0,
+     "y": 513.9276723276723,
+     "basis": "mode"
+    },
+    {
+     "x": -50.0,
+     "y": 429.6,
+     "basis": "mode"
+    },
+    {
+     "x": -360.0,
+     "y": 429.6,
+     "basis": "mode"
+    }
+   ]
+  }
+ ],
+ "icons": [
+  {
+   "id": "left",
+   "x": 607,
+   "y": 972,
+   "size": 86,
+   "ring": 2
+  },
+  {
+   "id": "right",
+   "x": 1607,
+   "y": 972,
+   "size": 86,
+   "ring": 2
+  }
+ ]
+}

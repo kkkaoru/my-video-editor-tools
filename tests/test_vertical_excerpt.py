@@ -214,7 +214,7 @@ def test_run_places_the_captions_once_and_cuts_each_range(
     monkeypatch.setattr(subprocess, "run", lambda command, **k: calls.append(command[4]))
     monkeypatch.setattr(vertical, "excerpt", lambda *a, **k: calls.append(a[2]))
     assert vertical.main([str(pipeline)]) == 0
-    assert calls == ["caption-parts", "caption-render", "compose", (238.0, 840.0)]
+    assert calls == ["caption-parts", "compose", (238.0, 840.0)]
     made = tmp_path / "d" / "rec-vertical-0358-1400" / "delivery"
     assert capsys.readouterr().out == f"{made / 'S_JST_rec-vertical-0358-1400-review.mp4'}\n"
     assert (made / "S_JST_rec-vertical-0358-1400-review.srt").read_text(encoding="utf-8") == (

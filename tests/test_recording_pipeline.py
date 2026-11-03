@@ -249,7 +249,7 @@ def test_run_executes_every_step_then_skips_them_all(
     assert ran(tmp_path).index("cleanup") > ran(tmp_path).index("yolo-track")
     second = pipeline.run("42", path, checkout=tmp_path)
     assert set(second.values()) == {"reused"}
-    assert len(ran(tmp_path)) == 27
+    assert len(ran(tmp_path)) == 28
 
 
 def test_forcing_a_step_redoes_it_and_its_dependents(
@@ -275,11 +275,11 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "onsets": "completed",
         "placement": "completed",
         "caption-parts": "completed",
-        "caption-render": "completed",
         "compose": "completed",
         "finish": "completed",
         "voice-remux": "completed",
         "publish": "completed",
+        "caption-plan": "completed",
         "youtube-encode": "completed",
         "summarize": "completed",
         "excitement": "completed",
@@ -287,6 +287,7 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "summary": "completed",
         "clips": "completed",
         "retire-renders": "completed",
+        "youtube-master": "completed",
     }
 
 
@@ -298,7 +299,7 @@ def test_forcing_everything_redoes_every_step(
     pipeline.run("42", path, checkout=tmp_path)
     results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(every=True))
     assert set(results.values()) == {"completed"}
-    assert len(ran(tmp_path)) == 54
+    assert len(ran(tmp_path)) == 56
 
 
 def test_a_second_run_of_the_same_recording_is_refused(
@@ -323,6 +324,8 @@ def test_downstream_includes_every_dependent_step() -> None:
         "voice-remux",
         "publish",
         "youtube-encode",
+        "caption-plan",
+        "youtube-master",
         "excitement",
         "upload",
         "summarize",
@@ -598,11 +601,14 @@ def test_a_reframe_intent_crops_the_decodable_copy_before_the_lead_in(
 
 
 def test_caption_render_waits_on_compressor_without_a_gpu_lease() -> None:
-    assert frozenset({"separation", "asr", "yolo-track", "onsets", "compose"}) == pipeline.GPU_STEPS
+    assert (
+        frozenset({"separation", "asr", "yolo-track", "onsets", "compose", "clips"})
+        == pipeline.GPU_STEPS
+    )
 
 
 def test_compressor_leases_hold_one_render_at_a_time(tmp_path: Path) -> None:
-    directory = pipeline.serial_leases("caption-render")
+    directory = pipeline.serial_leases("youtube-encode")
     assert directory == tmp_path / "compressor-leases"
     assert gpu_lease.settings(directory) == (1, ())
     first = gpu_lease.Waiter(directory, "1", start=1)
@@ -1016,3 +1022,12 @@ def test_an_unpublished_redo_from_cut_plan_keeps_the_normal_behaviour(
     assert results["separation"] == "reused"
     assert results["retire-renders"] == "completed"
     assert "skipped" not in results.values()
+
+
+def test_the_youtube_encode_starts_before_the_summary_and_the_clips() -> None:
+    assert pipeline.SCHEDULE["summarize"] == ("publish", "caption-plan", "youtube-encode")
+    assert pipeline.SCHEDULE["summary"] == ("upload", "summarize")
+    assert pipeline.SCHEDULE["clips"] == ("upload", "summary")
+    assert pipeline.SCHEDULE["youtube-master"] == (
+        "youtube-encode", "caption-plan", "summary", "clips"
+    )  # fmt: skip
