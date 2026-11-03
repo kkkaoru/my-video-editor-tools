@@ -148,6 +148,27 @@ interface Funnel {
   shipped: number;
   titled: number;
   clips: number;
+  /** Items each stage left unasked to keep the record within its place's budget. */
+  left: Record<Stage, number>;
+}
+/** A stage's items, asked in turn while the next one still fits before the stage's end. */
+interface Timed<Item, Result> {
+  stage: Stage;
+  items: readonly Item[];
+  end: number;
+  work: (item: Item, index: number) => Promise<Result>;
+}
+interface InTime<Result> {
+  done: Result[];
+  left: number;
+}
+/** Drafts to read whole with `model`, until `end`. */
+interface Coherence {
+  ai: Ai;
+  drafts: readonly Draft[];
+  said: readonly Said[];
+  model: string;
+  end: number;
 }
 export interface Generation {
   ai: Ai;
@@ -246,12 +267,22 @@ interface PlaceRules {
   density: number;
   /** Regions looked at: the strongest bins of that mix. */
   peaks: number;
+  /** The models of the region and read stages; the gate always asks clef. */
+  regionModel: string;
+  /**
+   * The stronger model the strongest regions are read with while it fits the region stage (the
+   * rest then get `regionModel`); null: `regionModel` reads them all.
+   */
+  strongRegionModel: string | null;
+  readModel: string;
+  /** Seconds the stages may take in all, each cut to its share of them; null: unbounded. */
+  budget: number | null;
   /** The judge's chance of calling a clip good at which it ships. */
   least: number;
   /** Also ships a broadcast's `top` best candidates at `least` or above, if any (its own scale). */
   relative: { top: number; least: number } | null;
-  /** Below this screen chance clef does not read the candidate. */
-  floor: number;
+  /** Below this screen chance clef does not read the candidate; null: no screen, clef reads all. */
+  floor: number | null;
   /** The second reading of each candidate the gate combines with clef's rubric answers, if any. */
   second: { both: Fit; reader: Reader } | null;
   clefOnly: Fit;
@@ -386,6 +417,21 @@ const EDITOR_TOKENS: number = 12_000;
 const EDITOR_ATTEMPTS: number = 3;
 /** Gate chances the funnel log line lists. */
 const FUNNEL_BEST: number = 3;
+type Stage = "regions" | "reads" | "screen" | "gate";
+/**
+ * Where each stage ends, as a share of the budget from the record's start: on 11/1 the stages took
+ * 2711, 723, 87 and 207 s with clef (regions 73%, reads 19%, screen 2%, gate 6%); the rest is the
+ * editor's.
+ */
+const STAGE_ENDS: Record<Stage, number> = { regions: 0.62, reads: 0.84, screen: 0.89, gate: 0.97 };
+/**
+ * The Mac's records take at most 30 minutes (the user's 11-03 promise) with the model server's
+ * start and the record's upload: 27 for the stages, 3 for those.
+ */
+const MAC_BUDGET_SECONDS: number = 27 * 60;
+const MS_PER_SECOND: number = 1000;
+/** Seconds a region took on the Mac, all its requests (11/1, 2026-11-03: 2711 s and 818 s for 30). */
+const REGION_SECONDS: Record<string, number> = { [REGION_MODEL]: 90, [SCREEN_MODEL]: 27 };
 /** The best candidates clef reads with the judge's rubric. */
 const SLATE: number = 16;
 /**
@@ -473,6 +519,10 @@ export const PLACES: Record<Place, PlaceRules> = {
     shifts: [0],
     density: 0,
     peaks: 18,
+    regionModel: REGION_MODEL,
+    strongRegionModel: null,
+    readModel: READ_MODEL,
+    budget: null,
     least: GOOD_LEAST,
     relative: null,
     floor: CHEAP_FLOOR,
@@ -501,6 +551,16 @@ export const PLACES: Record<Place, PlaceRules> = {
     // with a slate half again as long for the gate to read their candidates.
     density: 0.5,
     peaks: 30,
+    // clef-flash (9B) reads regions and drafts 2.6 times as fast as clef (27B: 11/1 took 63 minutes,
+    // its prefill at 92% of the GPU's matmul peak), so the record fits the budget; clef still gates
+    // (the user's 11-03 choice).
+    regionModel: SCREEN_MODEL,
+    // clef-flash built 33 stories where clef built 57 (11/1): it crosses the boundary and interest
+    // thresholds half as often, and 3 of clef's 5 shipped moments had no flash story at all. So the
+    // strongest regions (they come first) are clef's while it still fits the stage.
+    strongRegionModel: REGION_MODEL,
+    readModel: SCREEN_MODEL,
+    budget: MAC_BUDGET_SECONDS,
     // No second reading (the user's 10-28 redesign drops Laya, which added nothing): clef alone,
     // fit on its answers to the 191 judged clips, ranks them at LOVO AUC 0.719. Precision holds at
     // 0.74-0.81 from 0.65 to 0.8, so the middle of that plateau ships the most good clips: 0.675 keeps
@@ -514,8 +574,9 @@ export const PLACES: Record<Place, PlaceRules> = {
     // optimistic; the comparison between the rules is what chose it (edits/work/finisher-20261027/
     // gate-analysis).
     relative: { top: 2, least: 0.55 },
-    // At 0.25 the clef-flash screen (AUC 0.653) leaves 91% for clef and loses no shipped clip.
-    floor: 0.25,
+    // No screen: at its 0.25 floor clef-flash left 29 of 29 candidates for clef (11/1, 2026-11-03) and
+    // 91% of the judged ones, so it only spent time (31 s) the strongest regions now get.
+    floor: null,
     second: null,
     clefOnly: {
       bias: -3.3042,
@@ -1787,25 +1848,86 @@ async function inTurn(ai: Ai, model: string, inputs: readonly unknown[]): Promis
   }, Promise.resolve([]));
 }
 
-/** Each region's topic block, reading the regions one after another. */
-export async function blocksOf(
-  ai: Ai,
-  regions: readonly Region[],
-  rules: Pick<PlaceRules, "early" | "shifts">,
-): Promise<Block[]> {
-  return regions.reduce<Promise<Block[]>>(async (done, region) => {
-    const list = await done;
-    const answers = await regionAnswers(ai, region, rules.early);
-    const blocks = answers
-      ? rules.shifts.flatMap((shift) => [
-          blockOf(
-            region,
-            answers.map((a) => shifted(a, shift)),
-          ),
-        ])
-      : [];
-    return [...list, ...blocks.flatMap((b) => (b ? [b] : []))];
-  }, Promise.resolve([]));
+/** Each region's topic blocks, reading the regions one after another, strongest first, in time. */
+export async function blocksOf({
+  ai,
+  regions,
+  rules,
+  end,
+}: {
+  ai: Ai;
+  regions: readonly Region[];
+  rules: Pick<PlaceRules, "early" | "shifts" | "regionModel" | "strongRegionModel">;
+  end: number;
+}): Promise<InTime<Block[]>> {
+  const read = await inTime({
+    stage: "regions",
+    items: regions,
+    end,
+    work: async (region, index) => {
+      const model = regionModelOf({ rules, left: regions.length - index, end });
+      const answers = await regionAnswers(ai, region, { early: rules.early, regionModel: model });
+      const blocks = answers
+        ? rules.shifts.flatMap((shift) => [
+            blockOf(
+              region,
+              answers.map((a) => shifted(a, shift)),
+            ),
+          ])
+        : [];
+      return blocks.flatMap((b) => (b ? [b] : []));
+    },
+  });
+  return { done: read.done, left: read.left };
+}
+
+/**
+ * The stronger model when this region and the `left - 1` after it, read by the quicker one, still
+ * end by `end` (each at its measured REGION_SECONDS); else the quicker one.
+ */
+export function regionModelOf({
+  rules: { regionModel, strongRegionModel },
+  left,
+  end,
+}: {
+  rules: Pick<PlaceRules, "regionModel" | "strongRegionModel">;
+  left: number;
+  end: number;
+}): string {
+  const fits =
+    strongRegionModel !== null &&
+    Date.now() +
+      ((REGION_SECONDS[strongRegionModel] ?? 0) + (left - 1) * (REGION_SECONDS[regionModel] ?? 0)) *
+        MS_PER_SECOND <=
+      end;
+  return fits && strongRegionModel !== null ? strongRegionModel : regionModel;
+}
+
+/**
+ * Asks each item in turn while the next one, at the mean time the asked ones took, still ends by
+ * `end`; once one does not, it and every later one are left (items come best first). Each one asked
+ * is logged, so a slow run is told apart from a stuck one.
+ */
+export async function inTime<Item, Result>({
+  stage,
+  items,
+  end,
+  work,
+}: Timed<Item, Result>): Promise<InTime<Result>> {
+  const started = Date.now();
+  return items.reduce<Promise<InTime<Result>>>(
+    async (previous, item) => {
+      const sofar = await previous;
+      const mean = sofar.done.length === 0 ? 0 : (Date.now() - started) / sofar.done.length;
+      if (sofar.left > 0 || Date.now() + mean > end) {
+        return { done: sofar.done, left: sofar.left + 1 };
+      }
+      const result = await work(item, sofar.done.length);
+      console.error(`clips ${stage}: ${sofar.done.length + 1}/${items.length}`);
+      return { done: [...sofar.done, result], left: 0 };
+    },
+    Promise.resolve({ done: [], left: 0 }),
+  );
 }
 
 /** A region reply with its boundary and topic chances moved by `shift`, kept within 0 to 1. */
@@ -1826,13 +1948,17 @@ function shifted(response: unknown, shift: number): unknown {
  * requests never sent, when no opening there reaches EARLY_HOOK. The requests themselves do not
  * change, and clef answers a request the same whenever it is sent.
  */
-async function regionAnswers(ai: Ai, region: Region, early: boolean): Promise<unknown[] | null> {
+async function regionAnswers(
+  ai: Ai,
+  region: Region,
+  { early, regionModel }: Pick<PlaceRules, "early" | "regionModel">,
+): Promise<unknown[] | null> {
   const requests = clefRequests(region);
   const at = Math.max(
     0,
     requests.findIndex((r) => `clip.${region.climax}` in Object(Object(r).questions)),
   );
-  const first = await ai.run(REGION_MODEL, requests[at]);
+  const first = await ai.run(regionModel, requests[at]);
   const hooks = Object.entries(answersOf([first])).flatMap(([id, a]) =>
     id.startsWith("hook.") && "score" in a ? [a.score] : [],
   );
@@ -1842,7 +1968,7 @@ async function regionAnswers(ai: Ai, region: Region, early: boolean): Promise<un
         first,
         ...(await inTurn(
           ai,
-          REGION_MODEL,
+          regionModel,
           requests.filter((_, i) => i !== at),
         )),
       ];
@@ -1852,30 +1978,43 @@ async function regionAnswers(ai: Ai, region: Region, early: boolean): Promise<un
  * Drafts read as whole clips, on sentence boundaries. One that is incoherent or has strays is
  * repaired and read again, up to REPAIRS times; every reading stays a candidate for pick.
  */
-export async function coherent(
-  ai: Ai,
-  drafts: readonly Draft[],
-  said: readonly Said[],
-): Promise<Draft[]> {
-  const read = (list: readonly Draft[]): Promise<Draft[]> =>
-    inTurn(ai, READ_MODEL, judgeRequests(list, said)).then((r) => judged(list, r, said));
-  const rounds = async (list: readonly Draft[], left: number): Promise<Draft[]> => {
-    const done = await read(list);
+export async function coherent({
+  ai,
+  drafts,
+  said,
+  model,
+  end,
+}: Coherence): Promise<InTime<Draft>> {
+  const read = async (list: readonly Draft[]): Promise<InTime<Draft>> => {
+    const asked = await inTime({
+      stage: "reads",
+      items: judgeRequests(list, said),
+      end,
+      work: (request) => ai.run(model, request),
+    });
+    return { done: judged(list.slice(0, asked.done.length), asked.done, said), left: asked.left };
+  };
+  const rounds = async (list: readonly Draft[], repairs: number): Promise<InTime<Draft>> => {
+    const { done, left } = await read(list);
     const next =
-      left > 0
+      repairs > 0
         ? done
             .filter(needsRepair)
             .flatMap(adjusted)
             .map((d) => closed(d, said))
         : [];
-    return next.length > 0 ? [...done, ...(await rounds(next, left - 1))] : done;
+    if (next.length === 0) {
+      return { done, left };
+    }
+    const more = await rounds(next, repairs - 1);
+    return { done: [...done, ...more.done], left: left + more.left };
   };
   return drafts.length > 0
     ? rounds(
         drafts.map((d) => closed(d, said)),
         REPAIRS,
       )
-    : [];
+    : { done: [], left: 0 };
 }
 
 /**
@@ -1902,35 +2041,57 @@ export async function generate({
   const said = utterances(data.cues);
   const rules = PLACES[place];
   const clock = stageClock();
+  const endOf = stageEnds(rules.budget, Date.now());
   const regions = regionsOf(data, rules);
-  const blocks = await blocksOf(ai, regions, rules);
+  const blocks = await blocksOf({ ai, regions, rules, end: endOf.regions });
   clock.lap("regions");
-  const all = blocks.flatMap(storiesOf);
+  const all = blocks.done.flat().flatMap(storiesOf);
   // Shifted blocks repeat most stories; Cloudflare keeps v9's list as it is (records stay v9's).
   const stories =
     rules.shifts.length > 1
       ? [...new Map(all.map((d) => [JSON.stringify([d.pattern, d.ranges]), d])).values()]
       : all;
-  const slate = slateOf(await coherent(ai, stories, said), rules.slate);
+  const read = await coherent({
+    ai,
+    drafts: stories,
+    said,
+    model: rules.readModel,
+    end: endOf.reads,
+  });
+  const slate = slateOf(read.done, rules.slate);
   clock.lap("reads");
   // Cloudflare reads each candidate with clairic too; the Mac's gate is clef's alone.
   const readings = rules.second ? await clairicReadings(ai, slate, said) : slate.map(() => null);
-  const quick = await inTurn(
-    ai,
-    SCREEN_MODEL,
-    slate.map((d) => rubricRequest(d, said, SCREEN_NAME)),
-  );
+  // The slate is best first, so a cut leaves its weakest candidates unread.
+  const floor = rules.floor;
+  const quick = await inTime({
+    stage: "screen",
+    items: floor === null ? [] : slate,
+    end: endOf.screen,
+    work: (d) => ai.run(SCREEN_MODEL, rubricRequest(d, said, SCREEN_NAME)),
+  });
   clock.lap("screen");
-  const kept = slate.flatMap((d, i) =>
-    cheapOf(quick[i], readings[i], place) >= rules.floor ? [{ d, reading: readings[i] }] : [],
-  );
-  const goods = await inTurn(
-    ai,
-    GATE_MODEL,
-    kept.map(({ d }) => rubricRequest(d, said, GATE_NAME)),
-  );
+  const kept =
+    floor === null
+      ? slate.map((d, i) => ({ d, reading: readings[i] }))
+      : slate
+          .slice(0, quick.done.length)
+          .flatMap((d, i) =>
+            cheapOf(quick.done[i], readings[i], place) >= floor
+              ? [{ d, reading: readings[i] }]
+              : [],
+          );
+  const gated = await inTime({
+    stage: "gate",
+    items: kept,
+    end: endOf.gate,
+    work: ({ d }) => ai.run(GATE_MODEL, rubricRequest(d, said, GATE_NAME)),
+  });
+  const goods = gated.done;
   clock.lap("gate");
-  const chance = new Map(kept.map(({ d, reading }, i) => [d, goodOf(goods[i], reading, place)]));
+  const chance = new Map(
+    kept.slice(0, goods.length).map(({ d, reading }, i) => [d, goodOf(goods[i], reading, place)]),
+  );
   const ranked = [...chance.values()].sort(descending);
   const passes = new Set([...chance].flatMap(([d, c]) => (passing(c, ranked, rules) ? [d] : [])));
   const shipped = pick(slate, (d) => (passes.has(d) ? (chance.get(d) ?? 0) : -1), 0);
@@ -1977,7 +2138,11 @@ export async function generate({
     shipped: shipped.length,
     titled: titled.size + (shipped.length - fresh.length),
     clips: clips.length,
+    left: { regions: blocks.left, reads: read.left, screen: quick.left, gate: gated.left },
   };
+  if (Object.values(funnel.left).some((n) => n > 0)) {
+    console.warn(`clips budget left unasked: ${JSON.stringify(funnel.left)}`);
+  }
   console.log(
     JSON.stringify({ clipsUsage: data.id, models: meter.usage, funnel, seconds: clock.seconds }),
   );
@@ -2056,6 +2221,18 @@ export function remembered(ai: Ai): Ai {
 }
 
 /** Wall seconds of each stage of one generation, for the log line (where a run's time goes). */
+/** A stage's end in epoch ms: its `share` of `budget` seconds from `start`, or never. */
+const endAt = (budget: number | null, start: number, share: number): number =>
+  budget === null ? Number.POSITIVE_INFINITY : start + budget * share * MS_PER_SECOND;
+
+/** Each stage's end in epoch ms. */
+const stageEnds = (budget: number | null, start: number): Record<Stage, number> => ({
+  regions: endAt(budget, start, STAGE_ENDS.regions),
+  reads: endAt(budget, start, STAGE_ENDS.reads),
+  screen: endAt(budget, start, STAGE_ENDS.screen),
+  gate: endAt(budget, start, STAGE_ENDS.gate),
+});
+
 function stageClock(): { lap(stage: string): void; seconds: Record<string, number> } {
   const seconds: Record<string, number> = {};
   let last = Date.now();

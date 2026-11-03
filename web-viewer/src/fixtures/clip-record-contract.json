@@ -4,7 +4,7 @@
   "version": 10,
   "videoId": "v1",
   "movieKey": "mac",
-  "inputHash": "6e355345bd106fa442960f5d5a09e186e813330078fc1967c38103d8ff9ab7c5",
+  "inputHash": "aa231aaac7b9e6196e455d14dfd8653e333cd4cc496e25ef3c289cbd62f5b3c7",
   "models": {
    "score": "mlx-community/clef-OptiQ-4bit",
    "summary": "LiquidAI/LFM3-1.7B-MLX-8bit"

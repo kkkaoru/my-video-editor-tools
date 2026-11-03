@@ -27,6 +27,7 @@ import {
   generate,
   goodOf,
   inputHash,
+  inTime,
   judged,
   judgeRequests,
   lookup,
@@ -41,6 +42,7 @@ import {
   RECORD_SCHEMA,
   rangesOf,
   refresh,
+  regionModelOf,
   regionsOf,
   remembered,
   requestOf,
@@ -1749,7 +1751,7 @@ it("asks no more of a region whose climax request holds no strong opening", asyn
   expect([record.clips, ai.calls]).toStrictEqual([[], ["@cf/cloudflare/clef"]]);
 });
 
-it("asks only the local clef and clef-flash screen on the Mac, no Cloudflare model, and names the local models", async () => {
+it("reads the strongest region with clef and drafts with clef-flash on the Mac, gates every candidate with clef, no Cloudflare model", async () => {
   const ai = fakeAi(ANSWERS);
   const record = await generate({
     place: "mac",
@@ -1766,8 +1768,6 @@ it("asks only the local clef and clef-flash screen on the Mac, no Cloudflare mod
     (await inputHash(DATA, "mac")) === (await inputHash(DATA, "cloudflare")),
   ]).toStrictEqual([
     [
-      "@cf/cloudflare/clef",
-      "@cf/cloudflare/clef",
       "@cf/cloudflare/clef",
       "@cf/cloudflare/clef-flash",
       "@cf/cloudflare/clef-flash",
@@ -1859,10 +1859,63 @@ it("makes the contract record the Worker's schema accepts", async () => {
     shipped: 1,
     titled: 1,
     clips: 1,
+    left: { regions: 0, reads: 0, screen: 0, gate: 0 },
   });
   const contract = { schema: RECORD_SCHEMA, record };
   expect(clipRecordSchema.safeParse(record).success).toBe(true);
   await expect(`${JSON.stringify(contract, null, 1)}\n`).toMatchFileSnapshot(
     "./fixtures/clip-record-contract.json",
   );
+});
+
+it("asks items in turn while the next one fits at the mean time so far, and leaves the rest", async () => {
+  vi.useFakeTimers({ now: 0 });
+  const progress = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const result = await inTime({
+    stage: "regions",
+    items: [1, 2, 3],
+    end: 250,
+    work: async (item: number) => {
+      vi.advanceTimersByTime(100);
+      return item * 10;
+    },
+  });
+  const logged = progress.mock.calls.map((call) => String(call[0]));
+  progress.mockRestore();
+  vi.useRealTimers();
+  expect([result, logged]).toStrictEqual([
+    { done: [10, 20], left: 1 },
+    ["clips regions: 1/3", "clips regions: 2/3"],
+  ]);
+});
+
+it("leaves every item once the stage has already ended", async () => {
+  vi.useFakeTimers({ now: 1000 });
+  const result = await inTime({
+    stage: "gate",
+    items: ["a", "b"],
+    end: 999,
+    work: async (item: string) => item,
+  });
+  vi.useRealTimers();
+  expect(result).toStrictEqual({ done: [], left: 2 });
+});
+
+it("reads a region with the stronger model only while it and the rest, read quickly, still fit", () => {
+  vi.useFakeTimers({ now: 0 });
+  const rules = {
+    regionModel: "@cf/cloudflare/clef-flash",
+    strongRegionModel: "@cf/cloudflare/clef",
+  };
+  const picked = [
+    regionModelOf({ rules, left: 3, end: 144_000 }),
+    regionModelOf({ rules, left: 3, end: 143_999 }),
+    regionModelOf({ rules: { ...rules, strongRegionModel: null }, left: 1, end: 1e9 }),
+  ];
+  vi.useRealTimers();
+  expect(picked).toStrictEqual([
+    "@cf/cloudflare/clef",
+    "@cf/cloudflare/clef-flash",
+    "@cf/cloudflare/clef-flash",
+  ]);
 });

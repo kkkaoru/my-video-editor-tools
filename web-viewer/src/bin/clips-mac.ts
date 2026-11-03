@@ -1,8 +1,9 @@
 // Runs with bun. Entry point: `bun run clips:mac -- [--force] <videoId|data.json>...` computes clip points on
 // the Mac (the default) for web-viewer/data/<id>.json (or a copy of it) and stores them through the
 // viewer's bearer PUT.
-// It reuses a model server already on PORT or starts `python -m replay.clip_models` in an isolated
-// uv environment (the shared .venv is left alone) and stops it afterwards. No Cloudflare model runs.
+// It reuses a model server already on PORT or starts `python -m replay.clip_models` in its own kept
+// uv environment (edits/work/clips-env; the shared .venv is left alone) and stops it afterwards. No
+// Cloudflare model runs.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -19,7 +20,6 @@ const BASE: string = `http://127.0.0.1:${PORT}`;
 const READY_TIMEOUT_MS: number = 20 * 60_000;
 const SERVER: string[] = [
   "run",
-  "--isolated",
   "--locked",
   "--extra",
   "clips",
@@ -32,6 +32,11 @@ const SERVER: string[] = [
 ];
 const projectDirectory = resolve(import.meta.dirname, "..", "..");
 const checkout = resolve(projectDirectory, "..");
+/**
+ * The server's environment, kept between runs: an isolated one was rebuilt every run (mlx-vlm built
+ * from git, about two minutes of the 30-minute budget, and none without the network).
+ */
+const SERVER_ENVIRONMENT: string = resolve(checkout, "edits/work/clips-env");
 /** The deciders' answers of earlier runs (a few kB each, about 1 MB per broadcast). */
 const ANSWERS: string = resolve(checkout, "edits/work/clips-answers");
 /** What the deciders' answers depend on: the server's code and the model folders' files. */
@@ -73,7 +78,11 @@ async function serving(): Promise<boolean> {
 }
 
 function started(): Promise<ChildProcess> {
-  const child = spawn("uv", SERVER, { cwd: checkout, stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn("uv", SERVER, {
+    cwd: checkout,
+    env: { ...process.env, UV_PROJECT_ENVIRONMENT: SERVER_ENVIRONMENT },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
   return new Promise((done, failed) => {
     const timer = setTimeout(
       () => failed(new Error("the local model server was not ready in time")),
