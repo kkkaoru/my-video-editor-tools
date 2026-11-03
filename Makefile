@@ -21,7 +21,7 @@ check:
 swift-check:
 	cd TranscriptViewer && swift format lint --strict --recursive Sources Tests Package.swift
 	cd TranscriptViewer && swift test --enable-code-coverage -Xswiftc -warnings-as-errors
-	cd TranscriptViewer && xcrun llvm-cov report .build/debug/TranscriptViewerPackageTests.xctest/Contents/MacOS/TranscriptViewerPackageTests -object=.build/debug/transcript-summary -object=.build/debug/transcript-check -instr-profile=.build/debug/codecov/default.profdata > .build/coverage.txt
+	cd TranscriptViewer && xcrun llvm-cov report .build/debug/TranscriptViewerPackageTests.xctest/Contents/MacOS/TranscriptViewerPackageTests -object=.build/debug/transcript-summary -object=.build/debug/transcript-check -instr-profile=.build/debug/codecov/default.profdata -ignore-filename-regex='/native/caption-render/' > .build/coverage.txt
 	bash scripts/check-swift-coverage.sh TranscriptViewer/.build/coverage.txt
 
 swift-tsan:

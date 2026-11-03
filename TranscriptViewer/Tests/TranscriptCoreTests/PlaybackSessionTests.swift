@@ -263,6 +263,29 @@ struct PlaybackSessionTests {
         #expect(session.timelineFollowsPlayback)
     }
 
+    @Test func loopingRestartsTheOpenedMovieAtItsEndUntilAnotherOneOpens() async throws {
+        let fixture = try SummaryFixture()
+        defer { #expect(throws: Never.self) { try fixture.remove() } }
+        let session = PlaybackSession()
+        defer {
+            session.player.pause()
+            session.stopObserving()
+        }
+        session.videos = [fixture.video]
+        session.selectedVideoID = fixture.video.id
+        session.openSelection()
+        await session.legibleSelection?.value
+        session.loopsVideo = true
+        #expect(session.player.actionAtItemEnd == .none)
+        session.playbackSpeed = .oneAndHalf
+        session.restartLoop()
+        #expect(session.player.rate == 1.5)
+        #expect(session.currentSeconds == 0)
+        session.openSelection()
+        #expect(!session.loopsVideo)
+        #expect(session.player.actionAtItemEnd == .pause)
+    }
+
     private func finishScan(_ session: PlaybackSession) async throws {
         while session.isScanning {
             try Task.checkCancellation()

@@ -6,9 +6,12 @@ import TranscriptCore
 struct PlayerSurface: NSViewRepresentable {
     let player: AVPlayer
     var selectedMovie: URL?
+    var captions = CaptionOverlaySettings()
+    var reportCaptionIssue: (String) -> Void = { _ in }
 
     @MainActor final class Coordinator {
         let playerView = AVPlayerView()
+        let captionOverlay = CaptionOverlayView()
         let diagnostics = PlaybackDiagnostic.Field.allCases.map { field in
             // AX diagnostics have a small native frame, without visible developer text.
             let label = PlaybackDiagnosticLabel(labelWithString: " ")
@@ -26,6 +29,10 @@ struct PlayerSurface: NSViewRepresentable {
         // Picture in Picture keeps the video in its own floating window above every app.
         native.allowsPictureInPicturePlayback = true
         native.setAccessibilityLabel("動画プレーヤー")
+        if let content = native.contentOverlayView {
+            context.coordinator.captionOverlay.frame = content.bounds
+            content.addSubview(context.coordinator.captionOverlay)
+        }
         for diagnostic in context.coordinator.diagnostics {
             diagnostic.nativePlayerView = native
             diagnostic.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -50,6 +57,10 @@ struct PlayerSurface: NSViewRepresentable {
 
     func updateNSView(_: NSStackView, context: Context) { update(context.coordinator) }
 
+    static func dismantleNSView(_: NSStackView, coordinator: Coordinator) {
+        coordinator.captionOverlay.stopObserving()
+    }
+
     private func update(_ coordinator: Coordinator) {
         for diagnostic in coordinator.diagnostics {
             diagnostic.expectedPlayer = player
@@ -58,6 +69,8 @@ struct PlayerSurface: NSViewRepresentable {
         if coordinator.playerView.player !== player {
             coordinator.playerView.player = player
         }
+        coordinator.captionOverlay.report = reportCaptionIssue
+        coordinator.captionOverlay.apply(captions, player: player)
     }
 }
 
@@ -66,6 +79,12 @@ struct TranscriptRootView: View {
     @Environment(\.openWindow) private var openWindow
     var directoryPanel: () -> NSOpenPanel = { NSOpenPanel() }
     var revealInFinder: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+    var copyPath: (String) -> Void = { path in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+    /// The player's height, dragged by the user and kept across launches.
+    @AppStorage("TranscriptViewer.playerHeight") var playerHeight = Double(Chrome.playerHeight)
 
     var body: some View {
         NavigationSplitView(columnVisibility: $session.columnVisibility) {
@@ -138,6 +157,14 @@ struct TranscriptRootView: View {
                     .padding(12)
                     .help(progress.failures.joined(separator: "\n"))
                 }
+                if let notice = session.volumeNotice {
+                    Text(notice)
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .accessibilityIdentifier("volume-notice")
+                }
                 if !session.scanIssues.isEmpty {
                     Text("未読込 \(session.scanIssues.count) 件")
                         .font(.callout)
@@ -185,11 +212,32 @@ struct TranscriptRootView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     // Pinned above everything that scrolls, so the video stays in sight while a
                     // clip, the summary or the transcript is browsed.
-                    PlayerSurface(player: session.player, selectedMovie: video.movieURL)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: Chrome.playerHeight)
-                        .clipped()
+                    // AVPlayerView's own controls show whole seconds only, so the millisecond
+                    // readout sits on the picture's corner.
+                    ZStack(alignment: .topTrailing) {
+                        PlayerSurface(
+                            player: session.player, selectedMovie: video.movieURL,
+                            captions: session.captions.overlaySettings,
+                            reportCaptionIssue: session.captions.report
+                        )
                         .accessibilityLabel("動画プレーヤー \(video.title)")
+                        PlaybackTimeReadout(session: session)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.6), in: .rect(cornerRadius: 6))
+                            .padding(8)
+                            .allowsHitTesting(false)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Chrome.clampedPlayerHeight(playerHeight))
+                    .clipped()
+                    PlayerHeightHandle(height: $playerHeight)
+                    if session.isUnavailable(video) {
+                        Text("SSD 未接続のため再生できません。接続し直すと続きから開きます。")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
                     HStack {
                         Picker("再生速度", selection: $session.playbackSpeed) {
                             ForEach(PlaybackSpeed.allCases, id: \.self) { speed in
@@ -224,64 +272,93 @@ struct TranscriptRootView: View {
                         .buttonStyle(.borderless)
                         .keyboardShortcut(.rightArrow, modifiers: [])
                         .help("→: 10秒送る")
+                        Toggle(isOn: $session.loopsVideo) {
+                            iconLabel("ループ再生", systemImage: "repeat")
+                        }
+                        .toggleStyle(.button)
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut("l", modifiers: [])
+                        .help("L: この動画を最後まで再生したら途切れずに頭から繰り返す")
+                        .accessibilityIdentifier("loop-video")
+                        CaptionControls(model: session.captions)
                         Spacer()
                     }
-                    ScrollView {
-                        timeline
-                    }
-                    // The clips list takes the room the timeline does not need (10-30).
-                    .frame(
-                        minHeight: Chrome.timelineHeights(clipsOpen: session.detailTab == .clips).min,
-                        maxHeight: Chrome.timelineHeights(clipsOpen: session.detailTab == .clips).max)
-                    // Outside the scroll area, so the BGM stays visible however short it gets.
-                    VideoBGMControls(model: session.videoBGM)
-                    Picker("表示内容", selection: $session.detailTab) {
-                        Text("要約").tag(DetailTab.summary)
-                        Text("認識結果").tag(DetailTab.utterances)
-                        Text("切り抜き").tag(DetailTab.clips)
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.large)
-                    switch session.detailTab {
-                    case .summary:
-                        NarrativeSummaryView(video: video, model: session.narrativeSummary) {
-                            seconds in
-                            session.resumeTimelineFollow()
-                            session.seek(to: seconds)
-                        }
-                        .id(video.id)
-                    case .clips:
+                    SpeakerChips(model: session.captions)
+                    if video.isOriginalOnly {
+                        // Playback only: no transcript, summary, excitement, clips or BGM, so
+                        // selecting an unedited original never starts a model.
+                        Text("未編集の原本です。字幕・要約・切り抜き・BGMはありません。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("original-only-note")
+                        Spacer()
+                    } else {
                         ScrollView {
-                            ClipsPanel(
-                                model: session.clips,
-                                play: { clip, index, loop in
-                                    session.play(clip, range: index, loop: loop)
-                                },
-                                seek: { seconds in
-                                    session.resumeTimelineFollow()
-                                    session.seek(to: seconds)
-                                })
+                            timeline
                         }
-                        .frame(minHeight: Chrome.clipsMinHeight, maxHeight: .infinity)
-                        .layoutPriority(1)
-                    case .utterances:
-                        HStack(spacing: 8) {
-                            Text("認識結果")
-                                .font(.title2)
-                                .accessibilityAddTraits(.isHeader)
-                            Button {
-                                session.showUtteranceWindow()
-                            } label: {
-                                Image(systemName: "macwindow")
-                                    .frame(width: Chrome.hit, height: Chrome.hit)
-                                    .contentShape(Rectangle())
+                        // The clips list takes the room the timeline does not need (10-30).
+                        .frame(
+                            minHeight: Chrome.timelineHeights(
+                                clipsOpen: [.clips, .export].contains(session.detailTab)
+                            ).min,
+                            maxHeight: Chrome.timelineHeights(
+                                clipsOpen: [.clips, .export].contains(session.detailTab)
+                            ).max)
+                        // Outside the scroll area, so the BGM stays visible however short it gets.
+                        VideoBGMControls(model: session.videoBGM)
+                        Picker("表示内容", selection: $session.detailTab) {
+                            Text("要約").tag(DetailTab.summary)
+                            Text("認識結果").tag(DetailTab.utterances)
+                            Text("切り抜き").tag(DetailTab.clips)
+                            Text("書き出し").tag(DetailTab.export)
+                        }
+                        .pickerStyle(.segmented)
+                        .controlSize(.large)
+                        switch session.detailTab {
+                        case .summary:
+                            NarrativeSummaryView(video: video, model: session.narrativeSummary) {
+                                seconds in
+                                session.resumeTimelineFollow()
+                                session.seek(to: seconds)
                             }
-                            .buttonStyle(.borderless)
-                            .help("認識結果を別ウィンドウで開く")
-                            .accessibilityLabel("認識結果を別ウィンドウで開く")
-                            Spacer()
+                            .id(video.id)
+                        case .clips:
+                            ScrollView {
+                                ClipsPanel(
+                                    model: session.clips,
+                                    play: { clip, index, loop in
+                                        session.play(clip, range: index, loop: loop)
+                                    },
+                                    seek: { seconds in
+                                        session.resumeTimelineFollow()
+                                        session.seek(to: seconds)
+                                    })
+                            }
+                            .frame(minHeight: Chrome.clipsMinHeight, maxHeight: .infinity)
+                            .layoutPriority(1)
+                        case .export:
+                            ExportPanel(session: session)
+                                .frame(minHeight: Chrome.clipsMinHeight, maxHeight: .infinity)
+                                .layoutPriority(1)
+                        case .utterances:
+                            HStack(spacing: 8) {
+                                Text("認識結果")
+                                    .font(.title2)
+                                    .accessibilityAddTraits(.isHeader)
+                                Button {
+                                    session.showUtteranceWindow()
+                                } label: {
+                                    Image(systemName: "macwindow")
+                                        .frame(width: Chrome.hit, height: Chrome.hit)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.borderless)
+                                .help("認識結果を別ウィンドウで開く")
+                                .accessibilityLabel("認識結果を別ウィンドウで開く")
+                                Spacer()
+                            }
+                            UtteranceListView(session: session)
                         }
-                        UtteranceListView(session: session)
                     }
                 }
                 .padding(12)
@@ -338,11 +415,12 @@ struct TranscriptRootView: View {
                             .lineLimit(3)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("\(utterance.startLabel) – \(utterance.endLabel)")
+                        Text(PlaybackClock.range(utterance.startSeconds, utterance.endSeconds))
                             .font(.title3.monospacedDigit())
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("現在の発話 \(utterance.startLabel) \(utterance.text)")
+                    .accessibilityLabel(
+                        "現在の発話 \(PlaybackClock.label(utterance.startSeconds)) \(utterance.text)")
                 } else {
                     Text("発話なし")
                         .font(.title3)
@@ -378,8 +456,12 @@ struct TranscriptRootView: View {
                 duration: session.sliderUpperBound,
                 currentSeconds: session.currentSeconds,
                 selectedID: session.selectedUtteranceID
-            )
+            ) { start, end in
+                session.export.ranges.append(ExportRange(start: start, end: end))
+                session.detailTab = .export
+            }
             .frame(height: 28)
+            .help("ドラッグで範囲を選ぶと書き出しの範囲に追加します")
             .accessibilityHidden(true)
             if let video = session.selectedVideo {
                 ExcitementSection(
@@ -396,7 +478,7 @@ struct TranscriptRootView: View {
                             session.seek(toUtterance: cue.id)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(cue.startLabel)
+                                Text(PlaybackClock.label(cue.startSeconds))
                                     .font(.title3.monospacedDigit())
                                 Text(cue.text)
                                     .font(.title3)
@@ -411,7 +493,7 @@ struct TranscriptRootView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.bordered)
-                        .accessibilityLabel("\(cue.startLabel) \(cue.text)")
+                        .accessibilityLabel("\(PlaybackClock.label(cue.startSeconds)) \(cue.text)")
                         .accessibilityHint("発話の先頭から再生します")
                         .accessibilityAddTraits(
                             session.selectedUtteranceID == cue.id ? [.isSelected] : [])
@@ -435,8 +517,12 @@ struct TranscriptRootView: View {
     }
 
     func fileMenu(for video: VideoTranscript) -> some View {
-        Button("Reveal Finder", systemImage: "folder") { revealInFinder(video.movieURL) }
-            .help("動画ファイルをFinderで表示します")
+        Group {
+            Button("Reveal Finder", systemImage: "folder") { revealInFinder(video.movieURL) }
+                .help("動画ファイルをFinderで表示します")
+            Button("Copy Path", systemImage: "doc.on.doc") { copyPath(video.movieURL.path) }
+                .help("動画ファイルのパスをコピーします")
+        }
     }
 
     func refreshOnActivation(_: Notification) {
@@ -456,11 +542,53 @@ struct TranscriptRootView: View {
     }
 }
 
+/// Position and length to the millisecond. Its own view, so the 30 Hz playhead redraws only it.
+struct PlaybackTimeReadout: View {
+    let session: PlaybackSession
+
+    var body: some View {
+        let text =
+            "\(PlaybackClock.label(session.displaySeconds)) / \(PlaybackClock.label(session.duration))"
+        Text(text)
+            .font(.title3.monospacedDigit())
+            .accessibilityLabel("再生位置 \(text)")
+            .accessibilityIdentifier("playback-time")
+    }
+}
+
 struct TimelineBar: View {
     let utterances: [TranscriptCue]
     let duration: Double
     let currentSeconds: Double
     let selectedID: Int?
+    /// Receives a range dragged across the bar, in seconds.
+    var select: (Double, Double) -> Void = { _, _ in }
+    /// The range being dragged, in fractions of the bar.
+    @State var dragged: ClosedRange<Double>?
+
+    func drag(_ value: DragGesture.Value, width: CGFloat, ended: Bool) {
+        drag(from: value.startLocation.x, to: value.location.x, width: width, ended: ended)
+    }
+
+    /// Shows the range dragged so far; once released, a non-empty one is selected.
+    func drag(from: CGFloat, to: CGFloat, width: CGFloat, ended: Bool) {
+        let span = Self.span(from, to, width: width)
+        guard ended else {
+            dragged = span
+            return
+        }
+        dragged = nil
+        guard let span, span.upperBound > span.lowerBound else { return }
+        select(span.lowerBound * duration, span.upperBound * duration)
+    }
+
+    /// The fractions of a `width`-wide bar between two x positions; nil for no width.
+    static func span(_ from: CGFloat, _ to: CGFloat, width: CGFloat) -> ClosedRange<Double>? {
+        guard width > 0 else { return nil }
+        let start = min(max(Double(from / width), 0), 1)
+        let end = min(max(Double(to / width), 0), 1)
+        return min(start, end)...max(start, end)
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -481,10 +609,25 @@ struct TimelineBar: View {
         .drawingGroup()
         .overlay {
             GeometryReader { geometry in
-                Rectangle()
-                    .fill(.primary)
-                    .frame(width: 2, height: geometry.size.height)
-                    .offset(x: currentSeconds / max(duration, 0.001) * geometry.size.width)
+                let width = geometry.size.width
+                ZStack(alignment: .leading) {
+                    if let dragged {
+                        Rectangle()
+                            .fill(.tint.opacity(0.35))
+                            .frame(width: (dragged.upperBound - dragged.lowerBound) * width)
+                            .offset(x: dragged.lowerBound * width)
+                    }
+                    Rectangle()
+                        .fill(.primary)
+                        .frame(width: 2, height: geometry.size.height)
+                        .offset(x: currentSeconds / max(duration, 0.001) * width)
+                }
+                .frame(width: width, height: geometry.size.height, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { drag($0, width: width, ended: false) }
+                        .onEnded { drag($0, width: width, ended: true) })
             }
         }
     }

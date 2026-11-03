@@ -13,10 +13,14 @@ struct RootViewTests {
         let fixture = try SummaryFixture()
         defer { #expect(throws: Never.self) { try fixture.remove() } }
         var revealed: URL?
+        var copied: String?
         let session = PlaybackSession()
-        let view = TranscriptRootView(session: session, revealInFinder: { revealed = $0 })
+        let view = TranscriptRootView(
+            session: session, revealInFinder: { revealed = $0 }, copyPath: { copied = $0 })
         try view.fileMenu(for: fixture.video).inspect().find(button: "Reveal Finder").tap()
         #expect(revealed == fixture.video.movieURL)
+        try view.fileMenu(for: fixture.video).inspect().find(button: "Copy Path").tap()
+        #expect(copied == fixture.video.movieURL.path)
         view.handleScrollPhase(.idle, .animating)
         #expect(session.timelineFollowsPlayback)
         view.handleScrollPhase(.idle, .interacting)

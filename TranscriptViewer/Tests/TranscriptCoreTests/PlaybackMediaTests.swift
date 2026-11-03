@@ -147,6 +147,35 @@ struct PlaybackMediaTests {
         return nil
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [(12.0, 12.0), (18.0, 0.0)])
+    func aVideoOpensPausedAtItsSavedPositionUnlessFinished(saved: Double, expected: Double)
+        async throws
+    {
+        let fixture = try SummaryFixture()
+        defer { #expect(throws: Never.self) { try fixture.remove() } }
+        try await writeSyntheticMovie(fixture, duration: 20)
+        let name = "PlaybackMediaResume-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(
+            [PlaybackResume.key(for: fixture.video.movieURL): saved],
+            forKey: PlaybackSession.positionsKey)
+        let session = PlaybackSession(
+            scanCatalog: { root, completion in
+                completion(Result { try TranscriptCatalog.scan(in: root) })
+            }, positionDefaults: defaults)
+        defer {
+            session.player.pause()
+            session.stopObserving()
+            session.player.replaceCurrentItem(with: nil)
+        }
+        session.load(root: fixture.root)
+        await session.legibleSelection?.value
+        #expect(session.currentSeconds == expected)
+        #expect(abs(session.player.currentTime().seconds - expected) < 0.2)
+        #expect(session.player.rate == 0)
+    }
+
     private func waitUntilReady(_ item: AVPlayerItem) async throws {
         while item.status == .unknown {
             try Task.checkCancellation()

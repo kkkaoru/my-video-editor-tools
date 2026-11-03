@@ -12,10 +12,14 @@ let package = Package(
         .executable(name: "transcript-summary", targets: ["TranscriptSummaryCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/nalexn/ViewInspector", exact: "0.10.5")
+        .package(url: "https://github.com/nalexn/ViewInspector", exact: "0.10.5"),
+        // The style-20 caption renderer the pipeline burns with, drawn live over deliveries.
+        .package(path: "../native/caption-render"),
     ],
     targets: [
-        .target(name: "TranscriptCore"),
+        .target(
+            name: "TranscriptCore",
+            dependencies: [.product(name: "CaptionRender", package: "caption-render")]),
         .target(name: "TranscriptSummaries", dependencies: ["TranscriptCore"]),
         .executableTarget(
             name: "TranscriptViewer", dependencies: ["TranscriptCore", "TranscriptSummaries"]),

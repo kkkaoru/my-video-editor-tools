@@ -19,7 +19,9 @@ struct TranscriptViewerApp: App {
                 clips: ClipsModel(api: ClipsModel.configured),
                 channels: ChannelsModel(
                     api: ClipsModel.configured, originals: ChannelsModel.configuredOriginals),
-                launchArguments: arguments))
+                captions: CaptionsModel(defaults: .standard),
+                export: ExportModel(),
+                launchArguments: arguments, positionDefaults: .standard))
     }
 
     var body: some Scene {
