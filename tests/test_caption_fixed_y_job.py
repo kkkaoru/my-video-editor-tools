@@ -388,12 +388,17 @@ def test_a_second_plan_into_the_same_output_is_refused(tmp_path: Path) -> None:
 
 
 def track_file(
-    path: Path, rows: list[dict[str, object]], *, rate: int = 30, width: int = 1080
+    path: Path,
+    rows: list[dict[str, object]],
+    *,
+    rate: int = 30,
+    width: int = 1080,
+    protocol: str = "yolo-face-caption-track-v2",
 ) -> Path:
     path.write_text(
         json.dumps(
             {
-                "protocol": "yolo-face-caption-track-v2",
+                "protocol": protocol,
                 "provenance": "yolo",
                 "width": width,
                 "rate": rate,
@@ -553,3 +558,14 @@ def test_a_left_origin_needs_left_alignment(tmp_path: Path) -> None:
     arguments = build_inputs(tmp_path)
     with pytest.raises(ReplayError, match="--origin-x goes with --align left"):
         job.run_plan(job.parse([*arguments, "--origin-x", "10"]), [])
+
+
+def test_a_track_with_every_face_reads_as_its_best_face(tmp_path: Path) -> None:
+    rows: list[dict[str, object]] = [
+        {"frame": 0, "pts": 0, "face": [110.0, 810.0, 310.0, 1010.0, 0.8], "faceCount": 1,
+         "faces": [[110.0, 810.0, 310.0, 1010.0, 0.8]], "captions": 0},
+    ]  # fmt: skip
+    track = track_file(tmp_path / "t.json", rows, protocol="yolo-face-caption-track-v3")
+    assert job.load_yolo(track, minimum_confidence=0.5, canvas_width=1080.0) == [
+        TrackingPosition(Fraction(0), 210.0, 810.0)
+    ]

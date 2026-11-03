@@ -89,8 +89,9 @@ def test_the_highest_confidence_face_is_chosen_and_scaled_to_source_pixels() -> 
         ]
     )
     assert tracking.row_from(9, boxes, scale=1.6875) == Row(
-        9, (16.875, 33.75, 50.625, 67.5, 0.9), 2, 1
-    )
+        9, (16.875, 33.75, 50.625, 67.5, 0.9), 2, 1,
+        ((16.875, 33.75, 50.625, 67.5, 0.9), (1.6875, 3.375, 5.0625, 6.75, 0.4)),
+    )  # fmt: skip
 
 
 def test_batches_are_filled_in_order_and_the_remainder_is_flushed() -> None:
@@ -163,7 +164,8 @@ def test_the_scaled_height_matches_the_training_images() -> None:
 
 
 def test_the_document_names_weights_video_rule_and_timing() -> None:
-    rows = [Row(0, (1.0, 2.0, 3.0, 4.0, 0.5), 1, 2), Row(30, None, 0, 0)]
+    face = (1.0, 2.0, 3.0, 4.0, 0.5)
+    rows = [Row(0, face, 2, 2, (face, (5.0, 6.0, 7.0, 8.0, 0.3))), Row(30, None, 0, 0)]
     clock = tracking.Clock(tuple(range(0, 3000 * 40, 3000)), Fraction(1, 90000))
     result = tracking.document(
         rows,
@@ -175,14 +177,21 @@ def test_the_document_names_weights_video_rule_and_timing() -> None:
         step=30,
         timing={"wallSeconds": 2.0},
     )
-    assert result["protocol"] == "yolo-face-caption-track-v2"
+    assert result["protocol"] == "yolo-face-caption-track-v3"
     assert result["timeBase"] == "1/90000"
     assert result["provenance"] == "yolo"
     assert result["weights"] == {"path": "w.pt", "sha256": "aa"}
     assert result["source"] == {"path": "v.mp4", "sha256": "bb"}
     assert result["frames"] == [
-        {"frame": 0, "pts": 0, "face": [1.0, 2.0, 3.0, 4.0, 0.5], "faceCount": 1, "captions": 2},
-        {"frame": 30, "pts": 90000, "face": None, "faceCount": 0, "captions": 0},
+        {
+            "frame": 0,
+            "pts": 0,
+            "face": [1.0, 2.0, 3.0, 4.0, 0.5],
+            "faceCount": 2,
+            "faces": [[1.0, 2.0, 3.0, 4.0, 0.5], [5.0, 6.0, 7.0, 8.0, 0.3]],
+            "captions": 2,
+        },
+        {"frame": 30, "pts": 90000, "face": None, "faceCount": 0, "faces": [], "captions": 0},
     ]
 
 

@@ -23,6 +23,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from replay import caption_fixed_y as fixed
+from replay import yolo_track
 from replay.core import ReplayError
 from replay.fcp_tracking_caption import (
     FaceObservation,
@@ -279,7 +280,7 @@ def load_yolo(
     source's pixels to the caption canvas (a 720x1280 source is composed onto 1080x1920).
     """
     data = json.loads(track.read_text(encoding="utf-8"))
-    if data.get("protocol") != "yolo-face-caption-track-v2" or data.get("provenance") != "yolo":
+    if data.get("protocol") not in yolo_track.PROTOCOLS or data.get("provenance") != "yolo":
         raise ReplayError("Not a timestamped (v2) YOLO face track")
     base = Fraction(str(data["timeBase"]))
     width = data.get("width")

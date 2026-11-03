@@ -7,7 +7,9 @@ decode yields the same bytes as the software decoder, and decoding runs ahead of
 two overlap. The result is a JSON
 evidence file that names the checkpoint and the video by sha256 and holds, per sampled frame, the
 single face box chosen by one fixed rule (highest confidence; the number of faces is kept so
-ambiguity stays visible) and the caption box count. Boxes are reported in source pixels. The
+ambiguity stays visible), every face box at or above the confidence floor (v3: ``faces``, highest
+confidence first, so several speakers can each find their own) and the caption box count. Boxes
+are reported in source pixels. The
 evidence is detection output, not a measurement: callers decide where it may replace Vision.
 
 With ``--boxes`` every frame is detected once and the sampled rows are taken from that same pass
@@ -44,8 +46,10 @@ from replay.yolo_labels import CAPTION, FACE
 from replay.yolo_train import check_checkpoint, check_settings
 
 # v2: every row carries the frame's presentation timestamp. v1 derived time as frame / rate,
-# which drifts on variable-frame-rate recordings (45 s by the end of 10-07).
-PROTOCOL = "yolo-face-caption-track-v2"
+# which drifts on variable-frame-rate recordings (45 s by the end of 10-07). v3 adds every face
+# box (``faces``) and keeps v2's ``face`` and ``faceCount``, so a v2 reader reads it unchanged.
+PROTOCOL = "yolo-face-caption-track-v3"
+PROTOCOLS = ("yolo-face-caption-track-v2", PROTOCOL)  # the timestamped tracks readers accept
 CONFIDENCE_FLOOR = 0.25
 TRAIN_WIDTH = 640
 MAX_BATCH = 64
@@ -72,6 +76,7 @@ class Row:
     face: tuple[float, float, float, float, float] | None
     face_count: int
     captions: int
+    faces: tuple[tuple[float, float, float, float, float], ...] = ()  # every face, best first
 
 
 class ResultLike(Protocol):
@@ -131,8 +136,11 @@ def row_from(frame: int, boxes: Any, *, scale: float) -> Row:
     captions = sum(1 for label in labels if int(label) == CAPTION)
     if not faces:
         return Row(frame, None, 0, captions)
-    score, corner = max(faces, key=lambda item: item[0])
-    return Row(frame, (corner[0], corner[1], corner[2], corner[3], score), len(faces), captions)
+    ranked = tuple(
+        (corner[0], corner[1], corner[2], corner[3], score)
+        for score, corner in sorted(faces, key=lambda item: -item[0])
+    )
+    return Row(frame, ranked[0], len(faces), captions, ranked)
 
 
 def track(
@@ -372,6 +380,7 @@ def document(
                 "pts": clock.pts[row.frame],
                 "face": list(row.face) if row.face is not None else None,
                 "faceCount": row.face_count,
+                "faces": [list(face) for face in row.faces],
                 "captions": row.captions,
             }
             for row in rows
