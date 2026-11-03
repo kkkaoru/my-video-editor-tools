@@ -137,7 +137,7 @@ struct ClipRow: View {
     var detailLabel: String {
         guard let start = clip.ranges.map(\.start).min(), let end = clip.ranges.map(\.end).max()
         else { return lengthLabel }
-        return "\(ExcitementTimeline.clock(start))–\(ExcitementTimeline.clock(end))・\(lengthLabel)"
+        return "\(PlaybackClock.label(start))–\(PlaybackClock.label(end))・\(lengthLabel)"
     }
 
     var lengthLabel: String {
@@ -148,6 +148,6 @@ struct ClipRow: View {
     }
 
     func rangeLabel(_ index: Int, _ range: ClipRange) -> String {
-        "\(index + 1). \(ExcitementTimeline.clock(range.start))〜（\(ClipPoint.seconds(range.duration))）"
+        "\(index + 1). \(PlaybackClock.label(range.start))〜（\(ClipPoint.seconds(range.duration))）"
     }
 }

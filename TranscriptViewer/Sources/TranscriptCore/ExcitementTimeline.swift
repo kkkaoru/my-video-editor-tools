@@ -113,7 +113,7 @@ public struct ExcitementTimeline: Equatable, Sendable {
     /// Relative scores with the absolute values behind them, for one bin.
     public func detail(ofBin bin: Int) -> String {
         let percent = { (value: Double) in "\(Int((value * 100).rounded()))%" }
-        var parts = ["\(Self.clock(seconds(ofBin: bin)))〜"]
+        var parts = ["\(PlaybackClock.label(seconds(ofBin: bin)))〜"]
         if let combined { parts.append("合算 \(percent(combined.score[bin]))") }
         var spoken = "\(Int(speech.characters[bin].rounded()))文字"
         if let levels = speech.loudnessDb, let level = levels[bin] { spoken += "・\(level)dB" }
@@ -124,10 +124,5 @@ public struct ExcitementTimeline: Equatable, Sendable {
                 "コメント \(percent(comments.score[bin]))（\(comments.count[bin])件・\(characters)文字）")
         }
         return parts.joined(separator: " / ")
-    }
-
-    public static func clock(_ seconds: Double) -> String {
-        let total = Int(seconds)
-        return String(format: "%d:%02d:%02d", total / 3600, total % 3600 / 60, total % 60)
     }
 }

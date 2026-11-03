@@ -151,7 +151,7 @@ struct SourceExcerptPanelTests {
         await model.loadExcerpts(video: fixture.source)
         var sought: Double?
         let raw = SourceExcerptPanel(state: model.excerptState) { sought = $0 }
-        try raw.inspect().find(button: "原動画 600秒から").tap()
+        try raw.inspect().find(button: "原動画 10:00.000から").tap()
         #expect(sought == 600)
     }
 

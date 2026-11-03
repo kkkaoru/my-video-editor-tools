@@ -21,15 +21,17 @@ struct SourceTopicSummaryPanel: View {
             ForEach(summary.sections) { section in
                 Divider()
                 Text(
-                    "\(Duration.seconds(section.startSeconds).formatted(.time(pattern: .hourMinuteSecond))) – \(Duration.seconds(section.endSeconds).formatted(.time(pattern: .hourMinuteSecond)))"
+                    PlaybackClock.range(section.startSeconds, section.endSeconds)
                 ).font(.headline.monospacedDigit())
                 Text(keywordText(section.keywords)).font(.subheadline).textSelection(.enabled)
                 ForEach(section.excerpts.indices, id: \.self) { index in
                     let clock = section.excerpts[index]
                     if canSeek {
-                        Button("\(clock.startSeconds.formatted())秒から") { seek(clock.startSeconds) }
+                        Button("\(PlaybackClock.label(clock.startSeconds))から") {
+                            seek(clock.startSeconds)
+                        }
                     } else {
-                        Text("原動画 \(clock.startSeconds.formatted())秒から")
+                        Text("原動画 \(PlaybackClock.label(clock.startSeconds))から")
                     }
                     Text("「\(clock.span.text)」").textSelection(.enabled)
                 }

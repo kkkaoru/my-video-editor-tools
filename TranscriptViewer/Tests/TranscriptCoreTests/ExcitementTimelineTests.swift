@@ -66,9 +66,10 @@ struct ExcitementTimelineTests {
         #expect(timeline.seconds(ofBin: 1) == 10)
         #expect(
             timeline.detail(ofBin: 0)
-                == "0:00:00〜 / 合算 75% / 発話 100%（12文字・-20.5dB） / コメント 50%（1件・4文字）")
-        #expect(timeline.detail(ofBin: 1) == "0:00:10〜 / 合算 100% / 発話 25%（0文字） / コメント 100%（3件・9文字）")
-        #expect(ExcitementTimeline.clock(3725) == "1:02:05")
+                == "00:00.000〜 / 合算 75% / 発話 100%（12文字・-20.5dB） / コメント 50%（1件・4文字）")
+        #expect(
+            timeline.detail(ofBin: 1) == "00:10.000〜 / 合算 100% / 発話 25%（0文字） / コメント 100%（3件・9文字）")
+        #expect(PlaybackClock.label(3725) == "1:02:05.000")
     }
 
     @Test func speechOnlyEstimateHasOneRowInEveryMode() throws {
@@ -77,7 +78,7 @@ struct ExcitementTimelineTests {
         try fixture.write(comments: false)
         let timeline = try #require(ExcitementTimeline.load(transcriptURL: fixture.transcript))
         #expect(timeline.rows(.split).map(\.label) == ["発話"])
-        #expect(timeline.detail(ofBin: 0) == "0:00:00〜 / 発話 100%（12文字・-20.5dB）")
+        #expect(timeline.detail(ofBin: 0) == "00:00.000〜 / 発話 100%（12文字・-20.5dB）")
     }
 
     @Test func ignoresMissingStaleWrongVersionAndInconsistentFiles() throws {
@@ -114,7 +115,7 @@ struct ExcitementPanelTests {
         var seeks: [Double] = []
         let panel = ExcitementPanel(timeline: timeline, currentSeconds: 5) { seeks.append($0) }
         UserDefaults.standard.removeObject(forKey: "excitementMode")
-        try panel.inspect().find(button: "0:00:10").tap()
+        try panel.inspect().find(button: "00:10.000").tap()
         #expect(throws: Never.self) { try panel.inspect().find(text: "合算") }
         panel.jump(fraction: 0.1)
         panel.tapHandler(width: 200)(CGPoint(x: 150, y: 5))
@@ -123,7 +124,7 @@ struct ExcitementPanelTests {
         #expect(seeks == [10, 0, 10])
         #expect(
             panel.peakTitle(row: timeline.rows(.split)[1], start: 10, split: true)
-                == "コメント 0:00:10")
+                == "コメント 00:10.000")
         #expect(throws: Never.self) { try panel.inspect().find(ExcitementBars.self) }
         #expect(ExcitementBars.color("コメント") == .green)
         #expect(ExcitementBars.color("合算") == .orange)

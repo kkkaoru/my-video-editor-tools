@@ -299,12 +299,12 @@ struct ClipsModelTests {
         #expect(panel.note == "1件")
         try panel.inspect().find(viewWithAccessibilityLabel: "山場をループ再生（40.0秒）").button().tap()
         try panel.inspect().find(viewWithAccessibilityLabel: "山場を1回だけ再生").button().tap()
-        try panel.inspect().find(button: "2. 0:05:00〜（20.0秒）").tap()
+        try panel.inspect().find(button: "2. 05:00.000〜（20.0秒）").tap()
         #expect(played == ["0 true", "0 false", "1 true"])
         // The second line: where the clip plays, its length, band and ranges.
         #expect(
-            try panel.inspect().find(text: "0:01:40–0:05:20・40.0秒・長尺 30〜90秒・2区間").string()
-                == "0:01:40–0:05:20・40.0秒・長尺 30〜90秒・2区間")
+            try panel.inspect().find(text: "01:40.000–05:20.000・40.0秒・長尺 30〜90秒・2区間").string()
+                == "01:40.000–05:20.000・40.0秒・長尺 30〜90秒・2区間")
         _ = model.start(twoRangeClip, range: 1, loop: false)
         #expect(panel.note == "再生中: 山場（40.0秒・区間2/2、20.0秒の区間）")
         _ = model.start(twoRangeClip, range: 0, loop: true)
@@ -334,7 +334,7 @@ struct ClipsModelTests {
             summary: "s")
         #expect(
             ClipRow(clip: climax, cursor: nil) { _, _, _ in }.detailLabel
-                == "0:12:56–0:13:21・20.0秒・15〜30秒・山場→経緯・2区間")
+                == "12:56.000–13:21.000・20.0秒・15〜30秒・山場→経緯・2区間")
         #expect(
             ClipRow(clip: ClipPoint(
                 id: "e", kind: "short", duration: 0, ranges: [], title: "t", summary: "s"),

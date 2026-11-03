@@ -80,7 +80,7 @@ struct ExcitementPanel: View {
     }
 
     func peakTitle(row: ExcitementTimeline.Row, start: Double, split: Bool) -> String {
-        (split ? "\(row.label) " : "") + ExcitementTimeline.clock(start)
+        (split ? "\(row.label) " : "") + PlaybackClock.label(start)
     }
 
     func hoverHandler(width: CGFloat) -> (HoverPhase) -> Void {

@@ -407,12 +407,12 @@ struct RepresentativeSummaryStoreTests {
         #expect(try content.find(text: "根拠の発話：「京都へ旅行する予定。」").string().contains("予定"))
         #expect(model.state == .idle)
         if edited {
-            try content.find(button: "600秒から").tap()
+            try content.find(button: "10:00.000から").tap()
             #expect(sought == 600)
             #expect(try content.find(text: "時刻は編集後の発話区間です。").string().contains("編集後"))
         } else {
             #expect(content.findAll(ViewInspector.ViewType.Button.self).isEmpty)
-            #expect(try content.find(text: "原動画 600秒から").string().contains("原動画"))
+            #expect(try content.find(text: "原動画 10:00.000から").string().contains("原動画"))
         }
     }
     @Test(arguments: [false, true]) func topicPanelUsesExactWordsAndValidatedSpeechClock(
@@ -439,7 +439,7 @@ struct RepresentativeSummaryStoreTests {
                 try $0.string() == "挨拶"
             }.count == 2)
         if edited {
-            try content.find(button: "600秒から").tap()
+            try content.find(button: "10:00.000から").tap()
             #expect(sought == 600)
         } else {
             #expect(content.findAll(ViewInspector.ViewType.Button.self).isEmpty)
@@ -499,7 +499,7 @@ struct RepresentativeSummaryStoreTests {
         #expect(try content.find(text: "発話抜粋による要約・未検証").string().contains("未検証"))
         #expect(model.state == .idle)
         if edited {
-            try content.find(button: "600秒から").tap()
+            try content.find(button: "10:00.000から").tap()
             #expect(sought == 600)
         } else {
             #expect(!candidate.canSeekSelectedMovie)

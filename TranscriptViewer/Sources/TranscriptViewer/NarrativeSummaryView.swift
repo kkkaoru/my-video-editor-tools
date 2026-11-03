@@ -82,7 +82,8 @@ struct NarrativeSummaryView: View {
                                 seek(section.source.startSeconds)
                             } label: {
                                 Label(
-                                    "\(section.source.startLabel) – \(section.source.endLabel)",
+                                    PlaybackClock.range(
+                                        section.source.startSeconds, section.source.endSeconds),
                                     systemImage: "play.circle"
                                 )
                                 .font(.headline.monospacedDigit())

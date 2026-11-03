@@ -38,11 +38,11 @@ struct SourceExcerptPanel: View {
                 .foregroundStyle(.secondary)
                 ForEach(candidate.summary.sections, id: \.startSeconds) { section in
                     if candidate.canSeekSelectedMovie {
-                        Button("原動画 \(section.startSeconds.formatted())秒から") {
+                        Button("原動画 \(PlaybackClock.label(section.startSeconds))から") {
                             seek(section.startSeconds)
                         }
                     } else {
-                        Text("原動画 \(section.startSeconds.formatted())秒から")
+                        Text("原動画 \(PlaybackClock.label(section.startSeconds))から")
                             .font(.subheadline.monospacedDigit())
                     }
                     ForEach(section.excerpts, id: \.lowerCharacter) { span in

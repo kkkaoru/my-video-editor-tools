@@ -22,7 +22,7 @@ struct SourceSupportedProsePanel: View {
             ForEach(summary.sections) { section in
                 Divider()
                 Text(
-                    "\(Duration.seconds(section.startSeconds).formatted(.time(pattern: .hourMinuteSecond))) – \(Duration.seconds(section.endSeconds).formatted(.time(pattern: .hourMinuteSecond)))"
+                    PlaybackClock.range(section.startSeconds, section.endSeconds)
                 )
                 .font(.headline.monospacedDigit())
                 Text(section.text).textSelection(.enabled)
@@ -30,11 +30,11 @@ struct SourceSupportedProsePanel: View {
                     let clock = section.evidence[index]
                     VStack(alignment: .leading, spacing: 12) {
                         if canSeek {
-                            Button("\(clock.startSeconds.formatted())秒から") {
+                            Button("\(PlaybackClock.label(clock.startSeconds))から") {
                                 seek(clock.startSeconds)
                             }
                         } else {
-                            Text("原動画 \(clock.startSeconds.formatted())秒から")
+                            Text("原動画 \(PlaybackClock.label(clock.startSeconds))から")
                         }
                         Text("根拠の発話：「\(clock.span.text)」").font(.caption).textSelection(.enabled)
                     }

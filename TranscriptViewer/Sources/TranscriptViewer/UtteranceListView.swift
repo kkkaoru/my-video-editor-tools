@@ -10,7 +10,7 @@ struct UtteranceListView: View {
                 session.seek(toUtterance: cue.id)
             } label: {
                 HStack(alignment: .top, spacing: 16) {
-                    Text(cue.startLabel)
+                    Text(PlaybackClock.label(cue.startSeconds))
                         .font(.title2.monospacedDigit())
                         .frame(minWidth: 168, minHeight: Chrome.hit, alignment: .leading)
                     Text(cue.text)
@@ -22,7 +22,7 @@ struct UtteranceListView: View {
                 .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(cue.startLabel) \(cue.text)")
+            .accessibilityLabel("\(PlaybackClock.label(cue.startSeconds)) \(cue.text)")
             .accessibilityHint("発話の先頭から再生します")
             .accessibilityAddTraits(session.selectedUtteranceID == cue.id ? [.isSelected] : [])
         }

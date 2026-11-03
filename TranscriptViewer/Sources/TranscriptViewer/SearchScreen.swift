@@ -92,7 +92,7 @@ struct SearchScreen: View {
                         Text(hit.videoTitle)
                             .font(.headline)
                             .foregroundStyle(.secondary)
-                        Text(hit.cue.startLabel)
+                        Text(PlaybackClock.label(hit.cue.startSeconds))
                             .font(.title2.monospacedDigit())
                         Text(hit.cue.text)
                             .font(.title2)
@@ -103,7 +103,9 @@ struct SearchScreen: View {
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(hit.videoTitle) \(hit.cue.startLabel) \(hit.cue.text)")
+                .accessibilityLabel(
+                    "\(hit.videoTitle) \(PlaybackClock.label(hit.cue.startSeconds)) \(hit.cue.text)"
+                )
                 .accessibilityHint("発話の先頭から再生します")
             }
             .accessibilityLabel("検索結果 \(session.searchHits.count)件")

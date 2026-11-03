@@ -120,11 +120,11 @@ struct SummaryEvidenceNavigationTests {
         }
         #expect(try row.find(text: "根拠の発話：「明日は京都に行く予定。」").string().contains("予定"))
         if canSeek {
-            try row.find(button: "614.25秒から").tap()
+            try row.find(button: "10:14.250から").tap()
             #expect(sought == 614.25)
         } else {
             #expect(row.findAll(ViewType.Button.self).isEmpty)
-            #expect(try row.find(text: "原動画 614.25秒から").string().contains("原動画"))
+            #expect(try row.find(text: "原動画 10:14.250から").string().contains("原動画"))
             #expect(sought == nil)
         }
         #expect(summary.sections[0].evidence[0] == fixture.clock)

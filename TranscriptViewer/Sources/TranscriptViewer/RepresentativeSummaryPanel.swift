@@ -1,4 +1,5 @@
 import SwiftUI
+import TranscriptCore
 import TranscriptSummaries
 
 struct RepresentativeSummaryPanel: View {
@@ -19,9 +20,11 @@ struct RepresentativeSummaryPanel: View {
             ForEach(candidate.summary.clocks.indices, id: \.self) { index in
                 let clock = candidate.summary.clocks[index]
                 if candidate.canSeekSelectedMovie {
-                    Button("\(clock.startSeconds.formatted())秒から") { seek(clock.startSeconds) }
+                    Button("\(PlaybackClock.label(clock.startSeconds))から") {
+                        seek(clock.startSeconds)
+                    }
                 } else {
-                    Text("原動画 \(clock.startSeconds.formatted())秒から")
+                    Text("原動画 \(PlaybackClock.label(clock.startSeconds))から")
                 }
                 Text(clock.span.text).textSelection(.enabled)
             }
