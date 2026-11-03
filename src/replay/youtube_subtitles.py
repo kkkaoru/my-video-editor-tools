@@ -9,9 +9,10 @@ from dataclasses import asdict, dataclass
 from hashlib import file_digest
 from pathlib import Path
 
+from replay import speaker_caption_plan
 from replay.core import ReplayError
 from replay.recordings import record
-from replay.speaker_subtitles import SpeakerCue, render_ass, render_srt
+from replay.speaker_subtitles import SpeakerCue, multiple_speakers, render_ass, render_srt
 from replay.youtube_delivery import new_edit_directory, source_stem
 
 
@@ -361,9 +362,11 @@ def run_job(job: SubtitleJob, *, resume: Path | None = None) -> Path:
 def render_subtitles(job: SubtitleJob, *, output: Path, cues: tuple[SpeakerCue, ...]) -> Path:
     """Shared non-overwriting burn-in/full-decode renderer.
 
-    Captions are burned exactly once from ASS (no speaker names, bordered styles).
-    No subtitle track is embedded, so players cannot display a second copy; the SRT
-    sidecar remains for TranscriptViewer.
+    Several speakers' captions are not burned: a version-2 caption plan
+    (``replay.speaker_caption_plan``) and the derived ``.srt.speakers.json`` beside the
+    movie carry them. Fewer than two speakers are burned exactly once from ASS (no
+    speaker names, bordered styles). No subtitle track is embedded, so players cannot
+    display a second copy; the SRT sidecar remains for TranscriptViewer.
     """
     ordered = cues
     metadata = output / "metadata"
@@ -372,9 +375,11 @@ def render_subtitles(job: SubtitleJob, *, output: Path, cues: tuple[SpeakerCue, 
     subtitle = output / f"{output.name}.srt"
     with subtitle.open("x", encoding="utf-8") as stream:
         stream.write(render_srt(ordered))
+    live = multiple_speakers(ordered)
     burned = output / f"{output.name}.ass"
-    with burned.open("x", encoding="utf-8") as stream:
-        stream.write(render_ass(ordered))
+    if not live:
+        with burned.open("x", encoding="utf-8") as stream:
+            stream.write(render_ass(ordered))
     movie = output / f"{output.name}.mp4"
     _run(
         [
@@ -389,8 +394,7 @@ def render_subtitles(job: SubtitleJob, *, output: Path, cues: tuple[SpeakerCue, 
             "0:v:0",
             "-map",
             "0:a:0",
-            "-vf",
-            f"ass={burned.name}",
+            *([] if live else ["-vf", f"ass={burned.name}"]),
             "-sn",
             "-c:v",
             "h264_videotoolbox",
@@ -424,6 +428,13 @@ def render_subtitles(job: SubtitleJob, *, output: Path, cues: tuple[SpeakerCue, 
             "-",
         ]
     )
+    if live:
+        used = {cue.speaker for cue in ordered} - {"unassigned"}
+        plan, icons, _ = speaker_caption_plan.build(
+            ordered, speaker_caption_plan.default_table(used), movie, burned=False,
+            ffprobe=str(job.ffprobe),
+        )  # fmt: skip
+        speaker_caption_plan.write(plan, movie, icons)
     with (metadata / "result.json").open("x", encoding="utf-8") as stream:
         json.dump(
             {
@@ -431,11 +442,19 @@ def render_subtitles(job: SubtitleJob, *, output: Path, cues: tuple[SpeakerCue, 
                 "cues": len(ordered),
                 "movie": str(movie),
                 "subtitle": str(subtitle),
-                "burned_subtitle": str(burned),
+                **(
+                    {"caption_plan": str(movie.with_suffix(".captions.json"))}
+                    if live
+                    else {"burned_subtitle": str(burned)}
+                ),
                 "keep_bgm": job.keep_bgm,
                 "audio_policy": job.audio_policy,
                 "audio": "selected input, AAC256k; no new separation/muting",
-                "video": "H264 burn-in from ASS; no embedded subtitle track",
+                "video": (
+                    "H264 without captions; a version-2 caption plan beside it"
+                    if live
+                    else "H264 burn-in from ASS; no embedded subtitle track"
+                ),
                 "subtitle_mode": job.subtitle_mode,
                 "full_decode": "passed",
                 "limitations": (

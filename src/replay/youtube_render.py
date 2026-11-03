@@ -1,7 +1,10 @@
 """Render a YouTube edit from its original video, validated cues and per-video config.
 
-Captions are burned in exactly once from ASS. No subtitle track is embedded, so a
-player cannot show a second copy over the burned text; the SRT sidecar is kept for
+Several speakers' captions are not burned (user, 2026-11-03): a version-2 caption plan
+(``replay.speaker_caption_plan``) beside the movie, with the derived ``.srt.speakers.json``,
+is what the viewers draw them from and caption-burn burns on demand. Fewer than two
+speakers are burned in exactly once from ASS. No subtitle track is embedded, so a player
+cannot show a second copy over the burned text; the SRT sidecar is kept for
 TranscriptViewer. Sources inside an edits directory are refused because they may
 already carry burned captions.
 
@@ -21,9 +24,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from replay import speaker_caption_plan
 from replay.core import ReplayError
 from replay.recordings import record
-from replay.speaker_subtitles import read_cues, render_ass, render_srt
+from replay.speaker_subtitles import multiple_speakers, read_cues, render_ass, render_srt
 from replay.youtube_delivery import source_stem
 
 CONFIG_KEYS = frozenset(
@@ -40,6 +44,9 @@ CONFIG_KEYS = frozenset(
         "ffprobe",
     }
 )
+# Optional: ``"speakers": [{"id", "name", "color"?, "icon"?, "iconSha256"?}]`` names the lanes
+# (and gives their colours and icons) in the caption plan; without it they are 左, 中央 and 右.
+OPTIONAL_KEYS = frozenset({"speakers"})
 EDITED_MARKERS = ("youtube-edits", "-edit-", "-review")
 MAX_CUTS = 10_000
 
@@ -55,6 +62,7 @@ class RenderConfig:
     output_root: Path
     ffmpeg: Path
     ffprobe: Path
+    speakers: dict[str, object] | None = None
 
 
 def _path(value: object, label: str) -> Path:
@@ -82,9 +90,16 @@ def _cuts(path: Path) -> tuple[tuple[int, int], ...]:
     return tuple(cuts)
 
 
+def speaker_table(value: object) -> dict[str, object]:
+    """The config's speaker table, checked now so a bad one fails before rendering."""
+    table = {"speakers": value}
+    speaker_caption_plan.speaker_table(table, set())
+    return table
+
+
 def load_config(path: Path) -> RenderConfig:
     data = record(json.loads(path.read_text(encoding="utf-8")))
-    if set(data) != CONFIG_KEYS or data.get("version") != 1:
+    if set(data) - OPTIONAL_KEYS != CONFIG_KEYS or data.get("version") != 1:
         raise ReplayError("Render config has unknown, missing or unsupported fields")
     video_id = data["video_id"]
     if not isinstance(video_id, str) or not video_id:
@@ -106,17 +121,21 @@ def load_config(path: Path) -> RenderConfig:
         output_root=_path(data["output_root"], "output_root"),
         ffmpeg=_path(data["ffmpeg"], "ffmpeg"),
         ffprobe=_path(data["ffprobe"], "ffprobe"),
+        speakers=speaker_table(data["speakers"]) if "speakers" in data else None,
     )
 
 
-def video_filter(cuts: tuple[tuple[int, int], ...], ass: Path) -> str:
-    """Drop the configured source frames, retime, then burn the ASS once."""
-    escaped = str(ass).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
-    burn = f"ass=filename='{escaped}'"
+def video_filter(cuts: tuple[tuple[int, int], ...], ass: Path | None) -> str:
+    """Drop the configured source frames, retime, then burn the ASS once (if any)."""
+    burns = []
+    if ass is not None:
+        escaped = str(ass).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+        burns = [f"ass=filename='{escaped}'"]
     if not cuts:
-        return f"[0:v:0]{burn}[v]"
+        return f"[0:v:0]{burns[0] if burns else 'null'}[v]"
     removed = "+".join(f"between(n,{first},{last})" for first, last in cuts)
-    return f"[0:v:0]select='not({removed})',setpts=N/(30*TB),{burn}[v]"
+    steps = [f"select='not({removed})'", "setpts=N/(30*TB)", *burns]
+    return f"[0:v:0]{','.join(steps)}[v]"
 
 
 def render(config: RenderConfig, *, replace: bool = False) -> Path:
@@ -134,10 +153,12 @@ def render(config: RenderConfig, *, replace: bool = False) -> Path:
     output = config.output_root / f".{stem}.rendering"
     output.mkdir(mode=0o700)
     cues = read_cues(config.cues)
-    ass = output / f"{stem}.ass"
+    live = multiple_speakers(cues)  # several speakers are drawn live from the caption plan
+    ass = None if live else output / f"{stem}.ass"
     srt = output / f"{stem}.srt"
-    with ass.open("x", encoding="utf-8") as stream:
-        stream.write(render_ass(cues))
+    if ass is not None:
+        with ass.open("x", encoding="utf-8") as stream:
+            stream.write(render_ass(cues))
     with srt.open("x", encoding="utf-8") as stream:
         stream.write(render_srt(cues))
     wav_audio = config.source_audio is not None and config.source_audio.suffix == ".wav"
@@ -170,6 +191,14 @@ def render(config: RenderConfig, *, replace: bool = False) -> Path:
     command += ["-movflags", "+faststart", str(movie)]
     subprocess.run(command, check=True)
     verify(config, movie)
+    if live:
+        used = {cue.speaker for cue in cues} - {"unassigned"}
+        plan, icons, _ = speaker_caption_plan.build(
+            cues, config.speakers or speaker_caption_plan.default_table(used), movie,
+            burned=False,
+            ffprobe=str(config.ffprobe),
+        )  # fmt: skip
+        speaker_caption_plan.write(plan, movie, icons)
     with movie.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256")
     with (output / "render.json").open("x", encoding="utf-8") as stream:
@@ -181,7 +210,11 @@ def render(config: RenderConfig, *, replace: bool = False) -> Path:
                 "cut_spans": len(config.cut_frames),
                 "source_video": str(config.source_video),
                 "source_audio": str(config.source_audio) if config.source_audio else None,
-                "captions": "burned once from ASS; no embedded subtitle track",
+                "captions": (
+                    "a version-2 caption plan beside the movie, not burned"
+                    if live
+                    else "burned once from ASS; no embedded subtitle track"
+                ),
                 "full_decode": "passed",
             },
             stream,

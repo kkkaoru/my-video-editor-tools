@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from replay import caption_plan
 from replay.core import ReplayError
 from replay.youtube_render import load_config, main, render, video_filter
 
@@ -37,6 +38,12 @@ def write_config(tmp_path: Path, **overrides: object) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def delivery_canvas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rendered movie's canvas, rate and frames, as the caption plan probes them."""
+    monkeypatch.setattr(caption_plan, "probed", lambda _movie, _ffprobe: (1920, 1080, 30, 90))
+
+
 def fake_run(
     streams: list[str], commands: list[list[str]]
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
@@ -52,7 +59,7 @@ def fake_run(
     return run
 
 
-def test_render_burns_ass_once_with_dated_review_name(
+def test_several_speakers_get_a_caption_plan_instead_of_a_burn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
@@ -62,8 +69,16 @@ def test_render_burns_ass_once_with_dated_review_name(
     assert output == tmp_path / "out" / stem
     assert (output / f"{stem}.mov").read_bytes() == b"movie"
     assert "[左] 左です" in (output / f"{stem}.srt").read_text(encoding="utf-8")
-    assert "[" not in (output / f"{stem}.ass").read_text(encoding="utf-8").split("[Events]")[1]
+    assert not (output / f"{stem}.ass").exists()
+    plan = json.loads((output / f"{stem}.captions.json").read_text(encoding="utf-8"))
+    assert (plan["version"], plan["burned"], plan["movie"]) == (2, False, f"{stem}.mov")
+    assert [title["text"] for title in plan["titles"]] == ["左です", "中です"]
+    assert json.loads((output / f"{stem}.srt.speakers.json").read_text(encoding="utf-8")) == {
+        "speakers": {"left": {"label": "左", "color": "#C48CFF"},
+                     "middle": {"label": "中央", "color": "#7CDC8C"}}
+    }  # fmt: skip
     encode = commands[0]
+    assert "ass=" not in encode[encode.index("-filter_complex") + 1]
     assert encode[encode.index("-map") + 3] == "1:a:0"
     assert "-sn" in encode
     assert encode[encode.index("-c:a") + 1] == "copy"
@@ -71,7 +86,7 @@ def test_render_burns_ass_once_with_dated_review_name(
     report = json.loads((output / "render.json").read_text(encoding="utf-8"))
     assert report["cut_spans"] == 2
     assert report["cues"] == 2
-    assert report["captions"] == "burned once from ASS; no embedded subtitle track"
+    assert report["captions"] == "a version-2 caption plan beside the movie, not burned"
     with pytest.raises(FileExistsError, match="--replace"):
         render(load_config(tmp_path / "edits/youtube-abcdefghijk/render-config.json"))
     assert sorted(path.name for path in (tmp_path / "out").iterdir()) == [stem]
@@ -123,7 +138,28 @@ def test_render_refuses_an_embedded_subtitle_stream(
         render(load_config(write_config(tmp_path)))
 
 
+def test_one_speaker_is_still_burned_once_from_ass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", fake_run(["video", "audio"], commands))
+    config = write_config(tmp_path)
+    (config.parent / "inputs/cues.csv").write_text(
+        "start,end,speaker,text\n1,2,left,左です\n", encoding="utf-8"
+    )
+    output = render(load_config(config))
+    assert (output / f"{output.name}.ass").is_file()
+    assert not (output / f"{output.name}.captions.json").exists()
+    assert "ass=filename=" in commands[0][commands[0].index("-filter_complex") + 1]
+    report = json.loads((output / "render.json").read_text(encoding="utf-8"))
+    assert report["captions"] == "burned once from ASS; no embedded subtitle track"
+
+
 def test_video_filter_cuts_then_burns_once() -> None:
+    assert video_filter((), None) == "[0:v:0]null[v]"
+    assert video_filter(((1, 2),), None) == (
+        "[0:v:0]select='not(between(n,1,2))',setpts=N/(30*TB)[v]"
+    )
     assert video_filter((), Path("/a/b.ass")) == "[0:v:0]ass=filename='/a/b.ass'[v]"
     assert video_filter(((1, 2), (5, 9)), Path("/a/x:y.ass")) == (
         "[0:v:0]select='not(between(n,1,2)+between(n,5,9))',setpts=N/(30*TB),"
@@ -169,3 +205,20 @@ def test_cli_prints_the_new_directory(
     assert capsys.readouterr().out.strip().endswith("_JST_youtube-abcdefghijk-review")
     assert main([path, "--replace"]) == 0
     assert capsys.readouterr().out.strip().endswith("_JST_youtube-abcdefghijk-review")
+
+
+def test_a_configured_speaker_table_names_the_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", fake_run(["video", "audio"], commands))
+    table = [{"id": "left", "name": "あい", "color": "#112233"}, {"id": "middle", "name": "うえ"}]
+    output = render(load_config(write_config(tmp_path, speakers=table)))
+    names = json.loads((output / f"{output.name}.srt.speakers.json").read_text(encoding="utf-8"))
+    assert names == {"speakers": {"left": {"label": "あい", "color": "#112233"},
+                                  "middle": {"label": "うえ", "color": "#7CDC8C"}}}  # fmt: skip
+
+
+def test_a_bad_speaker_table_is_refused_before_rendering(tmp_path: Path) -> None:
+    with pytest.raises(ReplayError, match="A speaker has id"):
+        load_config(write_config(tmp_path, speakers=[{"id": "far", "name": "x"}]))

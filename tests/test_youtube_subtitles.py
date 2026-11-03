@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from replay import caption_plan
 from replay import youtube_subtitle_finalize as finalizer
 from replay import youtube_subtitle_repair as repair
 from replay import youtube_subtitles as yt
@@ -169,11 +170,12 @@ def test_pipeline_burns_embeds_preserves_audio_and_never_overwrites(
     assert not (first / "metadata/embedded-display-states.srt").exists()
 
 
-def test_renderer_burns_ass_once_without_an_embedded_track(
+def test_several_speakers_get_a_caption_plan_instead_of_a_burn(
     config: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     commands: list[list[str]] = []
+    monkeypatch.setattr(caption_plan, "probed", lambda _movie, _ffprobe: (1920, 1080, 30, 120))
 
     def capture(command: list[str], *, cwd: Path | None = None) -> str:
         commands.append(command)
@@ -193,8 +195,15 @@ def test_renderer_burns_ass_once_without_an_embedded_track(
     assert (output / "rendered.srt").read_text(encoding="utf-8") == (
         "1\n00:00:01,000 --> 00:00:02,000\n[左] 左\n\n2\n00:00:01,000 --> 00:00:03,000\n[右] 右\n"
     )
-    assert "[左]" not in (output / "rendered.ass").read_text(encoding="utf-8")
-    assert commands[0][commands[0].index("-vf") + 1] == "ass=rendered.ass"
+    assert not (output / "rendered.ass").exists()
+    assert "-vf" not in commands[0]
+    plan = json.loads((output / "rendered.captions.json").read_text(encoding="utf-8"))
+    assert [item["id"] for item in plan["speakers"]] == ["left", "right"]
+    assert (output / "rendered.srt.speakers.json").is_file()
+    result = json.loads((output / "metadata/result.json").read_text(encoding="utf-8"))
+    assert result["caption_plan"] == str(output / "rendered.captions.json")
+    assert result["video"] == "H264 without captions; a version-2 caption plan beside it"
+    assert "burned_subtitle" not in result
     assert "-sn" in commands[0]
     assert "mov_text" not in commands[0]
     assert commands[0].count("-i") == 1
