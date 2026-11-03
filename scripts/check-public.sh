@@ -27,6 +27,7 @@ check_path() {
         native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/README.md|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/black.mp4|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/quadrants-30.mp4|native/apple-pro-apps/Tests/ProAppsNativeTests/Fixtures/motion-caption-part.moti) ;;
         web-viewer/.gitignore|web-viewer/README.md|web-viewer/biome.json|web-viewer/bun.lock|web-viewer/package.json|web-viewer/tsconfig.json|web-viewer/vitest.config.ts) ;;
         web-viewer/cloudflare.config.ts|web-viewer/wrangler.config.ts|web-viewer/sync.config.example.json|web-viewer/public/index.html) ;;
+        web-viewer/public/*.js|web-viewer/public/fonts/OFL.txt) ;;
         web-viewer/secrets.example.json|web-viewer/deploy.env.example|web-viewer/src/fixtures/clip-record-contract.json) ;;
         tests/fixtures/caption-*-v[12].json|tests/fixtures/synthetic-review.nameplate.png|tests/fixtures/synthetic-multi.speaker-*.png) ;;
         web-viewer/src/*.js|web-viewer/src/*.ts|web-viewer/tools/*.py) ;;

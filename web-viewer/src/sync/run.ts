@@ -1,10 +1,12 @@
 // Runs with bun. Publishes new or re-edited videos to the private viewer: rebuilds the catalog,
 // fingerprints every source file (movie, original, transcript, summary and neighbours), plans
 // the changed objects and uploads media first, then data JSON, then the catalog.
+
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import { listRemoteSizes, putJson } from "./cf.ts";
 import { collectSources, fingerprintPath } from "./fingerprint.ts";
+import { DEFAULT_LOCK_WAIT_MINUTES, LOCK_FILE, withSyncLock } from "./lock.ts";
 import type { SyncOptions } from "./options.ts";
 import { type Change, isMediaChange, type MediaChange, planChanges, settledKey } from "./plan.ts";
 import type { FileSystem, HttpClient, Logger, ProcessRunner } from "./ports.ts";
@@ -24,6 +26,7 @@ import {
   uploadFile,
   waitUntilReady,
 } from "./uploader.ts";
+import { libraryRoots, missingRoots, requireRoots, waitForRoots } from "./volumes.ts";
 
 export interface SyncServices {
   fs: FileSystem;
@@ -35,11 +38,23 @@ export interface SyncServices {
   projectDirectory: string;
   // Milliseconds; when given, each phase logs one "PHASE <name> <seconds> s" line.
   clock?: () => number;
+  // For the sync lock (lock.ts): wall-clock milliseconds, this process and a liveness check.
+  now: () => number;
+  pid: number;
+  alive: (pid: number) => boolean;
 }
 
 export interface SyncRequest {
   options: SyncOptions;
   services: SyncServices;
+}
+
+interface Attempt {
+  request: SyncRequest;
+  config: SyncConfig;
+  roots: string[];
+  restarts: number;
+  budgetMs: number;
 }
 
 interface Built {
@@ -51,6 +66,7 @@ interface Built {
 interface Measured {
   current: Record<string, Sources>;
   dataSha: Record<string, string>;
+  captionsSha: Record<string, string>;
   catalogSha: string;
 }
 
@@ -67,6 +83,11 @@ interface MediaRequest {
 const CONFIG_FILE = "sync.config.json";
 const MILLISECONDS = 1000;
 const MEGABYTE = 1_000_000;
+const MINUTE_MS = 60_000;
+// Used when --volume-wait-minutes is not given: long enough to replug and remount the SSD.
+const DEFAULT_VOLUME_WAIT_MINUTES = 360;
+// Restarts after a library path vanished mid-run; each one waits for it first.
+const MAX_VOLUME_RESTARTS = 5;
 
 async function timed<T>(
   services: SyncServices,
@@ -90,11 +111,18 @@ const STATE_FILE = "sync-state.json";
 // A copy of the catalog.json last put to the bucket (scopedCatalog keeps entries from it).
 const PUBLISHED_CATALOG = "catalog.published.json";
 
-async function build(services: SyncServices): Promise<Built> {
+const readConfig = async ({ fs, projectDirectory }: SyncServices): Promise<SyncConfig> =>
+  configSchema.parse(JSON.parse(await fs.readText(join(projectDirectory, CONFIG_FILE))));
+
+// Every configured library path (any of them may sit on the external SSD).
+const configPaths = (config: SyncConfig): string[] => [
+  ...config.roots,
+  ...(config.youtubeOriginals === null ? [] : [config.youtubeOriginals]),
+  ...(config.raw === null ? [] : [config.raw]),
+];
+
+async function build(services: SyncServices, config: SyncConfig): Promise<Built> {
   const { fs, runner, projectDirectory } = services;
-  const config = configSchema.parse(
-    JSON.parse(await fs.readText(join(projectDirectory, CONFIG_FILE))),
-  );
   const nextDirectory = join(projectDirectory, "data.next");
   await fs.removeTree(nextDirectory);
   const youtube =
@@ -136,6 +164,11 @@ async function build(services: SyncServices): Promise<Built> {
   return { config, catalog, nextDirectory };
 }
 
+// build_catalog writes a plan only for a delivery that has one (a kept video has none).
+async function captionsSha(fs: SyncServices["fs"], path: string): Promise<string | null> {
+  return (await fs.stat(path)) === null ? null : fs.sha256(path);
+}
+
 async function measure(args: {
   services: SyncServices;
   built: Built;
@@ -150,11 +183,15 @@ async function measure(args: {
         ? (args.state.sources[video.id] ?? {})
         : await collectSources({ fs, video }),
       sha: await fs.sha256(join(nextDirectory, `${video.id}.json`)),
+      captions: await captionsSha(fs, join(nextDirectory, `${video.id}.captions.json`)),
     })),
   );
   return {
     current: Object.fromEntries(perVideo.map((item) => [item.id, item.sources])),
     dataSha: Object.fromEntries(perVideo.map((item) => [item.id, item.sha])),
+    captionsSha: Object.fromEntries(
+      perVideo.flatMap((item) => (item.captions === null ? [] : [[item.id, item.captions]])),
+    ),
     catalogSha: await fs.sha256(join(nextDirectory, "catalog.json")),
   };
 }
@@ -252,8 +289,13 @@ const catalogFileSchema = z
   .object({ videos: z.array(z.object({ id: z.string() }).passthrough()) })
   .passthrough();
 
+function folderOf(video: Record<string, unknown>): string | undefined {
+  return typeof video.title === "string" ? video.title.split(" ")[0] : undefined;
+}
+
 // The built catalog in which each video whose movie is absent from the bucket keeps the entry the
-// last published catalog had for it (or none); the built one itself when none is absent.
+// last published catalog had for it, by ID or else by folder (or none); the built one itself when
+// none is absent.
 async function scopedCatalog(args: {
   services: SyncServices;
   directory: string;
@@ -272,11 +314,16 @@ async function scopedCatalog(args: {
       ? []
       : catalogFileSchema.parse(JSON.parse(await fs.readText(publishedPath))).videos;
   const previous = new Map(published.map((video) => [video.id, video]));
+  const ids = new Set(raw.videos.map((video) => video.id));
+  // A recording keeps its folder (the title's first word) when its raw entry becomes a delivery.
+  const byFolder = new Map(
+    published.filter((video) => !ids.has(video.id)).map((video) => [folderOf(video), video]),
+  );
   const videos = raw.videos.flatMap((video) => {
     if (!omitted.has(video.id)) {
       return [video];
     }
-    const kept = previous.get(video.id);
+    const kept = previous.get(video.id) ?? byFolder.get(folderOf(video));
     return kept === undefined ? [] : [kept];
   });
   const path = join(args.directory, "catalog.scoped.json");
@@ -287,13 +334,16 @@ async function scopedCatalog(args: {
   return { path, sha: await fs.sha256(path) };
 }
 
-export async function runSync({ options, services }: SyncRequest): Promise<void> {
+async function syncOnce({ request, config, roots }: Attempt): Promise<void> {
+  const { options, services } = request;
   const { fs, runner, logger, projectDirectory } = services;
-  const built = await timed(services, "build", () => build(services));
+  const built = await timed(services, "build", () => build(services, config));
   requireListed(built.catalog, options.only);
   const statePath = join(projectDirectory, STATE_FILE);
   const state = await loadState({ fs, path: statePath });
   const measured = await timed(services, "measure", () => measure({ services, built, state }));
+  // A volume that vanished while the catalog was built or measured leaves it incomplete.
+  await requireRoots(fs, roots);
   const proxySizes = await localProxySizes({ services, videos: built.catalog.videos });
   const remoteSizes = await timed(services, "list", () =>
     listRemoteSizes({ runner, cwd: projectDirectory, bucket: built.config.bucket }),
@@ -302,6 +352,7 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
     videos: built.catalog.videos,
     current: measured.current,
     dataSha: measured.dataSha,
+    captionsSha: measured.captionsSha,
     catalogSha: measured.catalogSha,
     dataDirectory: built.nextDirectory,
     state,
@@ -327,6 +378,7 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
       previous: state,
       current: measured.current,
       dataSha: measured.dataSha,
+      captionsSha: measured.captionsSha,
       catalogSha,
       settledMedia: settled,
       dataPublished: published,
@@ -371,6 +423,8 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
         ),
       })
     : { path: join(built.nextDirectory, "catalog.json"), sha: measured.catalogSha };
+  // Last check before anything names the measured videos: data, catalog and the published state.
+  await requireRoots(fs, roots);
   const small = plan.changes
     .filter((change) => change.kind === "data" || (change.kind === "catalog" && !mediaPending))
     .map((change) => (change.kind === "catalog" ? { ...change, path: catalog.path } : change));
@@ -399,4 +453,57 @@ export async function runSync({ options, services }: SyncRequest): Promise<void>
   await fs.removeTree(join(projectDirectory, "data"));
   await fs.rename({ from: built.nextDirectory, to: join(projectDirectory, "data") });
   logger.info("SYNC DONE");
+}
+
+// One attempt after the paths are back. A failure while a library path is missing restarts the
+// whole sync once it returns (state and multipart uploads resume); any other failure propagates.
+async function attempt(args: Attempt): Promise<void> {
+  const { fs, logger, sleep } = args.request.services;
+  const waitedMs = await waitForRoots({
+    fs,
+    logger,
+    sleep,
+    roots: args.roots,
+    budgetMs: args.budgetMs,
+  });
+  try {
+    await syncOnce(args);
+  } catch (error) {
+    const missing = await missingRoots(fs, args.roots);
+    if (missing.length === 0) {
+      throw error;
+    }
+    if (args.restarts >= MAX_VOLUME_RESTARTS) {
+      throw new Error(
+        `sync gave up after ${args.restarts} restart(s) for missing library path(s)`,
+        { cause: error },
+      );
+    }
+    logger.info(
+      `sync stopped (${error instanceof Error ? error.message : String(error)}); library path(s) missing: ${missing.join(", ")}; restarting when back`,
+    );
+    await attempt({ ...args, restarts: args.restarts + 1, budgetMs: args.budgetMs - waitedMs });
+  }
+}
+
+// The whole sync, dry runs included, holds the lock: data.next and sync-state.json are shared.
+export async function runSync(request: SyncRequest): Promise<void> {
+  const { options, services } = request;
+  await withSyncLock(
+    {
+      services,
+      path: join(services.projectDirectory, LOCK_FILE),
+      waitMinutes: options.lockWaitMinutes ?? DEFAULT_LOCK_WAIT_MINUTES,
+    },
+    async () => {
+      const config = await readConfig(services);
+      await attempt({
+        request,
+        config,
+        roots: libraryRoots(services.projectDirectory, configPaths(config)),
+        restarts: 0,
+        budgetMs: (options.volumeWaitMinutes ?? DEFAULT_VOLUME_WAIT_MINUTES) * MINUTE_MS,
+      });
+    },
+  );
 }

@@ -30,6 +30,8 @@ export interface PlanInput {
   videos: CatalogVideo[];
   current: Record<string, Sources>;
   dataSha: Record<string, string>;
+  // Per video with a caption plan built beside its data (<id>.captions.json), that file's SHA-256.
+  captionsSha: Record<string, string>;
   catalogSha: string;
   dataDirectory: string;
   state: SyncState;
@@ -174,6 +176,19 @@ function dataReason({ previousSha, sha, labels }: DataReasonRequest): string | n
   return previousSha === sha ? null : "generated data changed";
 }
 
+export const captionsKey = (videoId: string): string => `captions/${videoId}.json`;
+
+// A caption plan is its own object (not under data/, whose notifications start clip work).
+function captionsChange(videoId: string, input: PlanInput): ObjectChange | null {
+  const key = captionsKey(videoId);
+  const previousSha = input.state.data[key];
+  if (previousSha === input.captionsSha[videoId]) {
+    return null;
+  }
+  const reason = previousSha === undefined ? "not uploaded yet" : "caption plan changed";
+  return { kind: "data", key, path: `${input.dataDirectory}/${videoId}.captions.json`, reason };
+}
+
 export function planChanges(input: PlanInput): Plan {
   const decisions = input.videos.flatMap((video) =>
     mediaCandidates(video).map((candidate) => ({
@@ -187,10 +202,12 @@ export function planChanges(input: PlanInput): Plan {
   const settledMedia = decisions
     .filter((item) => item.decision.settled)
     .map((item) => settledKey(item.candidate.video.id, item.candidate.label));
-  const data = input.videos.flatMap((video) => {
-    const change = dataChange(video, input);
-    return change === null ? [] : [change];
-  });
+  const data = input.videos.flatMap((video) =>
+    [
+      dataChange(video, input),
+      video.id in input.captionsSha ? captionsChange(video.id, input) : null,
+    ].filter((change) => change !== null),
+  );
   const listed = [...media, ...data];
   const catalogChanged = listed.length > 0 || input.state.catalogSha256 !== input.catalogSha;
   const catalog: Change[] = catalogChanged

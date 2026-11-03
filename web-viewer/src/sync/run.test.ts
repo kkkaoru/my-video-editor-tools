@@ -13,8 +13,9 @@ import { runSync, type SyncServices } from "./run.ts";
 
 const CONFIG = JSON.stringify({
   streamer: "s",
-  roots: ["roots/a"],
-  youtubeOriginals: "yt",
+  // Library paths must exist: the sync waits for unreadable ones (an unplugged SSD).
+  roots: ["/lib"],
+  youtubeOriginals: "/lib",
   bucket: "bucket",
   uploaderWorker: "up",
 });
@@ -37,6 +38,7 @@ interface ScenarioOptions {
   kept: boolean;
   second: boolean;
   localPath: string | null;
+  captions: boolean;
 }
 
 function scenario(options: ScenarioOptions): Scenario {
@@ -56,6 +58,7 @@ function scenario(options: ScenarioOptions): Scenario {
     transcriptPath: "/lib/b-review.srt",
     original: null,
     kept: false,
+    title: "b",
   };
   const catalog = JSON.stringify({
     videos: [
@@ -76,6 +79,9 @@ function scenario(options: ScenarioOptions): Scenario {
       fsHandle.files.set("/p/data.next/catalog.json", fakeFile({ text: catalog, sha: "c1" }));
       fsHandle.files.set("/p/data.next/a-review.json", fakeFile({ sha: "d1" }));
       fsHandle.files.set("/p/data.next/b-review.json", fakeFile({ sha: "d2" }));
+      if (options.captions) {
+        fsHandle.files.set("/p/data.next/a-review.captions.json", fakeFile({ sha: "p1" }));
+      }
       return { code: options.buildExitCode, stderr: "build error" };
     }
     if (call.command === "uv") {
@@ -124,6 +130,9 @@ function scenario(options: ScenarioOptions): Scenario {
     logger: { info: (message) => logs.push(message) },
     sleep: async () => {},
     newToken: () => "token",
+    now: () => 0,
+    pid: 1,
+    alive: () => true,
     projectDirectory: "/p",
   };
   return { fsHandle, services, runs, http: httpCalls, logs };
@@ -139,6 +148,7 @@ const base: ScenarioOptions = {
   kept: false,
   second: false,
   localPath: "/lib/a-review.mp4",
+  captions: false,
 };
 
 const cfSteps = (runs: RunnerCall[]) =>
@@ -171,7 +181,14 @@ it("uploads media, then data, then the catalog and removes the uploader", async 
     "cf r2 objects put",
   ]);
   expect(logs.at(-1)).toBe("SYNC DONE");
-  expect(fsHandle.calls.at(-1)).toBe("rename /p/data.next /p/data");
+  // data.next becomes data inside the lock, which is released last.
+  expect(fsHandle.calls.slice(-2)).toStrictEqual([
+    "rename /p/data.next /p/data",
+    "remove /p/.sync.lock",
+  ]);
+  expect(fsHandle.calls.filter((call) => call.startsWith("create "))).toStrictEqual([
+    "create /p/.sync.lock 600",
+  ]);
   expect(JSON.parse(fsHandle.files.get("/p/sync-state.json")?.text ?? "{}").uploads).toStrictEqual({
     "media/a-review.mp4": {
       size: 100,
@@ -311,7 +328,7 @@ it("omits the YouTube originals option when none is configured", async () => {
     "/p/sync.config.json": {
       text: JSON.stringify({
         streamer: "s",
-        roots: ["r"],
+        roots: ["/lib"],
         youtubeOriginals: null,
         bucket: "b",
         uploaderWorker: "up",
@@ -331,7 +348,7 @@ it("passes the raw downloads directory to the catalog build", async () => {
     "/p/sync.config.json": {
       text: JSON.stringify({
         streamer: "s",
-        roots: ["r"],
+        roots: ["/lib"],
         youtubeOriginals: null,
         raw: "../downloads",
         bucket: "b",
@@ -340,6 +357,7 @@ it("passes the raw downloads directory to the catalog build", async () => {
     },
     "/lib/a-review.mp4": {},
     "/lib/a-review.srt": {},
+    "/downloads/a.mp4": {},
   });
   const { services, runs } = scenario({ ...base, existing: handle });
   await runSync({ options: { dryRun: true, dataOnly: false }, services });
@@ -375,6 +393,8 @@ it("carries a kept published video without reading its retired files", async () 
         catalogSha256: "c1",
       }),
     },
+    // The library root is mounted; the kept video's own files are gone.
+    "/lib/other.mp4": {},
   });
   const { services, logs } = scenario({ ...base, existing: handle, kept: true });
   await runSync({ options: { dryRun: true, dataOnly: false }, services });
@@ -479,6 +499,34 @@ it("keeps the published entry of a video whose movie is not in the bucket with -
   ]);
 });
 
+it("keeps the published raw entry of a recording whose delivery is not in the bucket", async () => {
+  const handle = createFakeFs({
+    "/p/sync.config.json": { text: CONFIG },
+    "/p/catalog.published.json": {
+      text: JSON.stringify({
+        videos: [
+          { id: "b", title: "b [未編集・字幕なし]", movie: null },
+          { id: "c", title: "c [未編集・字幕なし]", movie: null },
+        ],
+      }),
+    },
+    "/lib/a-review.mp4": { size: 100, mtimeNs: 5n },
+    "/lib/a-review.srt": { size: 1, mtimeNs: 2n, sha: "t" },
+    "/lib/b-review.mp4": { size: 200, mtimeNs: 7n },
+    "/lib/b-review.srt": { size: 1, mtimeNs: 8n, sha: "u" },
+  });
+  const run = scenario({ ...base, existing: handle, second: true });
+  await runSync({
+    options: { dryRun: false, dataOnly: false, only: "a-review" },
+    services: run.services,
+  });
+  const published = JSON.parse(run.fsHandle.files.get("/p/data/catalog.scoped.json")?.text ?? "");
+  expect(published.videos.map((video: { id: string }) => video.id)).toStrictEqual([
+    "a-review",
+    "b",
+  ]);
+});
+
 it("publishes the whole catalog with --only when every other movie is in the bucket", async () => {
   const handle = createFakeFs({
     "/p/sync.config.json": { text: CONFIG },
@@ -533,4 +581,189 @@ it("logs one timing line per phase when given a clock", async () => {
     "PHASE put 0.5 s 2 object(s)",
   ]);
   expect(logs.some((line) => line.includes("token"))).toBe(false);
+});
+
+const SSD_MARKER = "/Volumes/ssd/lib/a-review.mp4";
+
+function ssdFs(present: boolean): FakeFsHandle {
+  return createFakeFs({
+    "/p/sync.config.json": {
+      text: JSON.stringify({
+        streamer: "s",
+        roots: ["/Volumes/ssd/lib"],
+        youtubeOriginals: null,
+        bucket: "bucket",
+        uploaderWorker: "up",
+      }),
+    },
+    "/lib/a-review.mp4": { size: 100, mtimeNs: 5n },
+    "/lib/a-review.srt": { size: 1, mtimeNs: 2n, sha: "t" },
+    ...(present ? { [SSD_MARKER]: {} } : {}),
+  });
+}
+
+it("waits for an unplugged library volume before building the catalog", async () => {
+  const existing = ssdFs(false);
+  const { services, runs, logs } = scenario({ ...base, existing });
+  const sleeps: number[] = [];
+  const sleep = async (milliseconds: number) => {
+    sleeps.push(milliseconds);
+    existing.files.set(SSD_MARKER, fakeFile({}));
+  };
+  await runSync({ options: { dryRun: true, dataOnly: false }, services: { ...services, sleep } });
+  expect(sleeps).toStrictEqual([30_000]);
+  expect(logs.slice(0, 2)).toStrictEqual([
+    "waiting for library path(s): /Volumes/ssd/lib (missing)",
+    "library path(s) back after 30 s",
+  ]);
+  expect(cfSteps(runs)[0]).toBe("python3 /p/tools/build_catalog.py --streamer s");
+});
+
+it("fails without building once the volume wait is used up", async () => {
+  const { services, runs } = scenario({ ...base, existing: ssdFs(false) });
+  await expect(
+    runSync({ options: { dryRun: false, dataOnly: false, volumeWaitMinutes: 1 }, services }),
+  ).rejects.toThrow("library path(s) still missing after 60 s: /Volumes/ssd/lib (missing)");
+  expect(runs).toStrictEqual([]);
+});
+
+it("publishes no catalog built while the volume vanished and restarts once it is back", async () => {
+  const existing = ssdFs(true);
+  const { services, runs, logs } = scenario({ ...base, existing });
+  const builds: string[] = [];
+  const runner = {
+    run: async (call: RunnerCall) => {
+      if (call.command === "python3" && builds.push("build") === 1) {
+        existing.files.delete(SSD_MARKER);
+      }
+      return services.runner.run(call);
+    },
+  };
+  const sleep = async () => {
+    existing.files.set(SSD_MARKER, fakeFile({}));
+  };
+  await runSync({
+    options: { dryRun: false, dataOnly: false },
+    services: { ...services, runner, sleep },
+  });
+  expect(cfSteps(runs)).toStrictEqual([
+    "python3 /p/tools/build_catalog.py --streamer s",
+    "uv run --no-sync python",
+    "python3 /p/tools/build_catalog.py --streamer s",
+    "uv run --no-sync python",
+    "cf r2 objects list",
+    "cf r2 objects list",
+    "cf deploy --secrets-file secrets.json",
+    "cf workers delete up",
+    "cf r2 objects put",
+    "cf r2 objects put",
+  ]);
+  expect(logs.slice(0, 3)).toStrictEqual([
+    "sync stopped (library path(s) missing: /Volumes/ssd/lib (missing)); library path(s) missing: /Volumes/ssd/lib (missing); restarting when back",
+    "waiting for library path(s): /Volumes/ssd/lib (missing)",
+    "library path(s) back after 30 s",
+  ]);
+  expect(logs.at(-1)).toBe("SYNC DONE");
+});
+
+it("restarts an upload that failed because the volume vanished", async () => {
+  const existing = ssdFs(true);
+  const { services, runs, logs, fsHandle } = scenario({ ...base, existing });
+  const reads: string[] = [];
+  const fs = {
+    ...existing.fs,
+    readChunk: async (args: Parameters<SyncServices["fs"]["readChunk"]>[0]) => {
+      if (reads.push(args.path) === 1) {
+        existing.files.delete(SSD_MARKER);
+        throw new Error("EIO: i/o error, read");
+      }
+      return existing.fs.readChunk(args);
+    },
+  };
+  const sleep = async () => {
+    existing.files.set(SSD_MARKER, fakeFile({}));
+  };
+  await runSync({
+    options: { dryRun: false, dataOnly: false },
+    services: { ...services, fs, sleep },
+  });
+  expect(cfSteps(runs).filter((step) => step === "cf r2 objects put").length).toBe(2);
+  expect(cfSteps(runs).filter((step) => step === "cf workers delete up").length).toBe(2);
+  expect(
+    logs.filter((line) => line.startsWith("sync stopped") || line.startsWith("uploaded")),
+  ).toStrictEqual([
+    "sync stopped (EIO: i/o error, read); library path(s) missing: /Volumes/ssd/lib (missing); restarting when back",
+    "uploaded media/a-review.mp4 in 1 part(s)",
+    "uploaded data/a-review.json",
+    "uploaded catalog.json",
+  ]);
+  expect(fsHandle.files.has("/p/data/catalog.json")).toBe(true);
+});
+
+it("publishes neither data nor the catalog when the volume vanished after the uploads", async () => {
+  const existing = ssdFs(true);
+  const { services, runs, logs } = scenario({ ...base, existing });
+  const deletes: string[] = [];
+  const runner = {
+    run: async (call: RunnerCall) => {
+      if (call.command === "cf" && call.args[0] === "workers" && deletes.push("delete") === 1) {
+        existing.files.delete(SSD_MARKER);
+      }
+      return services.runner.run(call);
+    },
+  };
+  const sleep = async () => {
+    existing.files.set(SSD_MARKER, fakeFile({}));
+  };
+  await runSync({
+    options: { dryRun: false, dataOnly: false },
+    services: { ...services, runner, sleep },
+  });
+  expect(cfSteps(runs).slice(4)).toStrictEqual([
+    "cf deploy --secrets-file secrets.json",
+    "cf workers delete up",
+    "python3 /p/tools/build_catalog.py --streamer s",
+    "uv run --no-sync python",
+    "cf r2 objects list",
+    "cf r2 objects list",
+    "cf r2 objects put",
+    "cf r2 objects put",
+  ]);
+  expect(logs.filter((line) => line.startsWith("sync stopped"))).toStrictEqual([
+    "sync stopped (library path(s) missing: /Volumes/ssd/lib (missing)); library path(s) missing: /Volumes/ssd/lib (missing); restarting when back",
+  ]);
+  expect(logs.at(-1)).toBe("SYNC DONE");
+});
+
+it("gives up after a bounded number of volume restarts", async () => {
+  const existing = ssdFs(true);
+  const { services, runs } = scenario({ ...base, existing });
+  const runner = {
+    run: async (call: RunnerCall) => {
+      if (call.command === "python3") {
+        existing.files.delete(SSD_MARKER);
+      }
+      return services.runner.run(call);
+    },
+  };
+  const sleep = async () => {
+    existing.files.set(SSD_MARKER, fakeFile({}));
+  };
+  await expect(
+    runSync({
+      options: { dryRun: false, dataOnly: false },
+      services: { ...services, runner, sleep },
+    }),
+  ).rejects.toThrow("sync gave up after 5 restart(s) for missing library path(s)");
+  expect(cfSteps(runs).filter((step) => step.startsWith("python3")).length).toBe(6);
+  expect(cfSteps(runs).some((step) => step === "cf r2 objects put")).toBe(false);
+});
+
+it("publishes a built caption plan beside the data and records it", async () => {
+  const { services, runs, fsHandle } = scenario({ ...base, captions: true, remoteMediaSize: 100 });
+  await runSync({ options: { dryRun: false, dataOnly: true }, services });
+  const puts = runs.filter((run) => run.args[2] === "put").map((run) => run.args[3]);
+  expect(puts).toStrictEqual(["data/a-review.json", "captions/a-review.json", "catalog.json"]);
+  const state = JSON.parse(fsHandle.files.get("/p/sync-state.json")?.text ?? "{}");
+  expect(state.data).toStrictEqual({ "data/a-review.json": "d1", "captions/a-review.json": "p1" });
 });

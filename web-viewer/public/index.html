@@ -18,6 +18,12 @@ window.__api = (location.pathname.match(/^\/s\/[A-Za-z0-9_-]+/) || [""])[0];
 if (window.__api) document.documentElement.dataset.share = "";
 window.__catalog = fetch(window.__api + "/api/catalog", { cache: "no-cache" }).then(r => r.json());  // always revalidate: syncs replace it
 // YouTube channel → streamer label (shared with the Mac viewer); unreadable means default labels.
+// Time labels and the millisecond clock (playtime.js); awaited before the first render.
+window.__playtime = import(window.__api + "/playtime.js");
+// Resume positions (resume.js); without it playback simply starts at 0.
+window.__resume = import(window.__api + "/resume.js").catch(error => { console.warn(`resume: loading the module failed: ${error}`); return null; });
+// Live captions from a delivery's caption plan (captions.js); without it the movie plays as is.
+window.__captions = import(window.__api + "/captions.js").catch(error => { console.warn(`captions: loading the module failed: ${error}`); return null; });
 window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : {}).then(c => c.channels || {}, () => ({}));
 </script>
 <style>
@@ -99,6 +105,20 @@ window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cach
   .seg button.on { background:var(--accent-bg); border-color:var(--accent); color:var(--on-accent); }
   #cur { font-size:24px; min-height:68px; margin:8px 0 2px; }
   #curTime { color:var(--muted); font-variant-numeric:tabular-nums; min-height:22px; }
+  /* Sized like the movie box (same --cap/--ratio), so the clock sits on the picture's corner. */
+  #videoSlot { position:relative; --cap:56dvh; --ratio:1.777778; width:min(100%, calc(var(--cap) * var(--ratio))); margin-inline:auto; }
+  /* Over the video: native controls show whole seconds only. */
+  #clock { position:absolute; top:8px; right:8px; z-index:1; pointer-events:none; padding:2px 8px; border-radius:6px; background:rgba(0,0,0,.6); color:#fff; font-variant-numeric:tabular-nums; font-size:15px; }
+  #videoSlot.floating #clock { position:fixed; top:80px; right:24px; z-index:11; }
+  /* Live captions: a canvas over the movie's box (captions.js letterboxes inside it). */
+  #captionCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
+  #videoSlot.floating #captionCanvas { position:fixed; inset:auto; right:16px; top:72px; width:min(360px,calc(100vw - 32px)); height:auto; aspect-ratio:var(--ratio); z-index:10; }
+  #videoSlot:fullscreen { width:100%; height:100%; background:#000; }
+  #videoSlot:fullscreen video { width:100%; height:100%; aspect-ratio:auto; border-radius:0; }
+  #capControls label:not([hidden]), #capPosition label, #capSpeakers label { display:inline-flex; align-items:center; gap:4px; }
+  #capPosition input[type=number] { width:72px; font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--text); }
+  #capPosition select { font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--text); }
+  #capControls input[type=color] { width:36px; height:28px; padding:0; border:1px solid var(--line); border-radius:6px; background:none; }
   input[type=range] { width:100%; height:32px; accent-color:var(--accent); }
   #nearby { display:flex; gap:8px; overflow-x:auto; padding:6px 0; min-height:96px; }
   .near { min-width:280px; max-width:360px; text-align:left; white-space:normal; flex:none; }
@@ -148,6 +168,8 @@ window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cach
     button, input[type=text] { min-height:44px; }
     video { --cap:40dvh; }
     video.portrait { --cap:68dvh; }
+    #videoSlot { --cap:40dvh; }
+    #videoSlot:has(video.portrait) { --cap:68dvh; }
   }
   @media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important; } }
 </style>
@@ -169,11 +191,31 @@ window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cach
     <p id="empty">左の一覧から動画を選んでください</p>
     <div id="player" hidden>
       <h2 id="title"></h2><div id="titleTags"></div>
-      <div id="videoSlot"><video id="video" controls preload="metadata" playsinline></video></div>
+      <div id="videoSlot"><video id="video" controls preload="metadata" playsinline autopictureinpicture></video><canvas id="captionCanvas" aria-hidden="true" hidden></canvas><div id="clock" aria-label="再生位置 / 長さ"></div></div>
       <div class="seg" role="group" aria-label="素材の切り替え">
         素材:
         <button id="srcEdited" class="on">編集済み</button><button id="srcOriginal">元動画</button>
         <span class="note" id="srcNote"></span>
+      </div>
+      <div class="seg" id="capControls" role="group" aria-label="字幕" hidden>
+        字幕:
+        <label><input type="checkbox" id="capShow">表示</label>
+        <label id="capIconLabel"><input type="checkbox" id="capIcon">アイコン</label>
+        <label><input type="checkbox" id="capGradient">グラデーション</label>
+        <label>上<input type="color" id="capTop" aria-label="字幕の色（上）"></label>
+        <label id="capBottomLabel">下<input type="color" id="capBottom" aria-label="字幕の色（下）"></label>
+        <button id="capReset">色を戻す</button>
+        <button id="capFull">字幕つき全画面</button>
+        <span class="note" id="capNote"></span>
+      </div>
+      <div class="seg" id="capSpeakers" role="group" aria-label="表示する話者" hidden></div>
+      <div class="seg" id="capPosition" role="group" aria-label="字幕の位置" hidden>
+        位置:
+        <select id="capMode" aria-label="字幕の位置の種類"><option value="plan">今の位置</option><option value="aboveFace">顔の上</option><option value="bottom">下部</option><option value="top">上部</option><option value="center">中央</option></select>
+        <button id="capUp" aria-label="上へ10px">↑</button><button id="capDown" aria-label="下へ10px">↓</button><button id="capLeft" aria-label="左へ10px">←</button><button id="capRight" aria-label="右へ10px">→</button>
+        <label>X<input type="number" id="capX" step="1" aria-label="横のずらし（px）"></label>
+        <label>Y<input type="number" id="capY" step="1" aria-label="縦のずらし（px、下が正）"></label>
+        <button id="capPosReset">位置を戻す</button>
       </div>
       <div class="seg" role="group" aria-label="ダウンロードと共有">
         ダウンロード:
@@ -262,12 +304,27 @@ $("#video").addEventListener("loadedmetadata", (event) => {
   const { videoWidth: width, videoHeight: height } = event.target;
   if (!width || !height) return;
   event.target.style.setProperty("--ratio", (width / height).toFixed(6));
+  $("#videoSlot").style.setProperty("--ratio", (width / height).toFixed(6));
   event.target.classList.toggle("portrait", height > width);
 });
 const mediaSrc = (v, kind) => kind === "original" ? `${API}/media-original/${v.original.movie}` : `${API}/media/${v.movie}`;
 const state = { channels: {}, date: "", month: null, navs: 0, streamer: "", filter: "all", videos: [], current: null, data: new Map(), utterances: [], curIdx: -2, source: "edited" };
-const fmt = s => { s = Math.max(0, Math.floor(s)); const h = s/3600|0, m = s%3600/60|0, r = s%60;
-  return `${h}時間${m}分${r}秒`; };
+// Accessed lazily: reading localStorage itself throws when site data is blocked (resume.js catches).
+const resumeStore = () => localStorage;
+window.__resume.then(resume => {
+  if (!resume) return;
+  state.resume = resume;
+  state.savePosition = resume.trackPositions({ video: $("#video"), page: window, document, storage: resumeStore, now: Date.now });
+});
+// Points the player at a movie. The outgoing movie's position is saved first, and the resume key
+// is set with the src so the new movie's events never write under the old key (or vice versa).
+function loadMovie(video, v, kind) {
+  state.savePosition?.();
+  video.dataset.resumeKey = state.resume ? state.resume.resumeKey(v.id, kind) : "";
+  video.src = mediaSrc(v, kind);
+}
+// Every time label (H:MM:SS.mmm) comes from playtime.js, loaded before route() first renders.
+const fmt = s => state.playtime.formatTime(s);
 
 // Same merge as CueTimeline.utterances: cumulative captions collapse to the final text.
 function utterancesFrom(cues) {
@@ -352,17 +409,18 @@ function loadList() {
 async function select(v, seekTo = 0) {
   // A recording not edited yet has only its original movie.
   state.current = v; state.source = v.movie ? "edited" : "original"; syncSourceButtons(); loadList();
-  const data = await getData(v.id);
+  const [data] = await Promise.all([getData(v.id), window.__resume]);
   if (state.current !== v) return;
   state.utterances = utterancesFrom(data.cues); state.speakers = data.speakers || {};
   $("#empty").hidden = true; $("#player").hidden = false;
   $("#title").textContent = `${v.broadcastStartJST ?? ""} ${v.title}`;
   $("#titleTags").replaceChildren(...tagsFor(v));
   const video = $("#video");
-  video.src = mediaSrc(v, state.source);
+  loadMovie(video, v, state.source);
+  loadCaptions(v);
   $("#srcOriginal").disabled = !v.original;
   $("#srcEdited").disabled = !v.movie;
-  video.onloadedmetadata = () => { $("#seek").max = video.duration || v.duration || 0; drawBar(); if (seekTo) video.currentTime = seekTo; };
+  video.onloadedmetadata = () => { $("#seek").max = video.duration || v.duration || 0; drawBar(); if (seekTo) video.currentTime = seekTo; else state.resume?.restorePosition(video, resumeStore); };
   state.excite = data.excitement || null; renderExcite(); stopClip(); loadClips(v);
   renderUtterances(); renderSummary(data.summary); state.curIdx = -2; updateCurrent(); syncDownload();
 }
@@ -373,7 +431,7 @@ function renderUtterances() {
     const b = document.createElement("button");
     b.className = "utt"; b.dataset.id = u.id;
     b.innerHTML = `<span class="ts"></span><span></span>`;
-    b.children[0].textContent = u.startLabel; b.children[1].replaceChildren(...speakerChip(u), u.text);
+    b.children[0].textContent = fmt(u.start); b.children[1].replaceChildren(...speakerChip(u), u.text);
     b.onclick = () => seek(u.start);
     frag.appendChild(b);
   }
@@ -418,14 +476,14 @@ function updateCurrent() {
   state.curIdx = idx;
   const u = state.utterances[idx];
   $("#cur").replaceChildren(...(u ? [...speakerChip(u), u.text] : ["発話なし"]));
-  $("#curTime").textContent = u ? `${u.startLabel} – ${u.endLabel}` : "";
+  $("#curTime").textContent = u ? `${fmt(u.start)} – ${fmt(u.end)}` : "";
   UTTS.querySelectorAll(".utt").forEach(el => el.classList.toggle("sel", Boolean(u) && +el.dataset.id === u.id));
   const near = $("#nearby"); near.textContent = "";
   const center = idx >= 0 ? idx : 0;
   for (const n of state.utterances.slice(Math.max(0, center - 8), center + 9)) {
     const b = document.createElement("button");
     b.className = "near" + (u && n.id === u.id ? " sel" : "");
-    b.replaceChildren(`${n.startLabel} `, ...speakerChip(n), n.text);
+    b.replaceChildren(`${fmt(n.start)} `, ...speakerChip(n), n.text);
     b.onclick = () => seek(n.start);
     near.appendChild(b);
   }
@@ -452,9 +510,84 @@ function setSource(kind) {
   const v = state.current; if (!v || (kind === "original" && !v.original) || (kind === "edited" && !v.movie)) return;
   const video = $("#video"), t = video.currentTime || 0, wasPlaying = !video.paused;
   state.source = kind; syncSourceButtons();
-  video.src = mediaSrc(v, kind); syncDownload();
+  loadMovie(video, v, kind); syncDownload(); syncCaptions();
   video.onloadedmetadata = () => { video.currentTime = t; if (wasPlaying) video.play().catch(() => {}); };
 }
+// Live captions (captions.js) over the edited movie only: the plan's frames are its frames.
+// Captions default to off where the plan says they are burned in; settings stay in this browser.
+const captionStore = () => localStorage;
+const captions = { module: null, plan: null, video: null, overlay: null };
+async function loadCaptions(v) {
+  captions.plan = null; syncCaptions();
+  const module = await window.__captions;
+  if (!module || !v.captions || state.current !== v) return;
+  try {
+    const [plan] = await Promise.all([
+      fetch(`${API}/api/captions/${v.id}.json`, { cache: "no-cache" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }),
+      module.loadFont(document, API),
+    ]);
+    if (state.current !== v) return;
+    Object.assign(captions, { module, plan: module.parsePlan(plan), video: v });
+    // A version 2 plan's speaker table is the source the legacy .speakers.json is derived from.
+    if (captions.plan.speakers) { state.speakers = Object.fromEntries(captions.plan.speakers.map(s => [s.id, { label: s.name, color: s.colorBottom }])); renderUtterances(); }
+    syncCaptions();
+  } catch (error) { console.warn(`captions: loading ${v.id} failed: ${error}`); }
+}
+function syncCaptions() {
+  const { module, plan, video: v } = captions, player = $("#video");
+  const active = Boolean(plan) && state.current === v && state.source === "edited";
+  $("#capControls").hidden = !active; $("#capPosition").hidden = !active; $("#captionCanvas").hidden = !active;
+  $("#capSpeakers").hidden = !active || !plan.speakers;
+  if (!active) { captions.overlay?.stop(); captions.overlay = null; player.controlsList?.remove("nofullscreen"); return; }
+  const settings = module.readSettings(captionStore, v.id, plan);
+  $("#capShow").checked = settings.captions; $("#capIcon").checked = settings.icon; $("#capIconLabel").hidden = !plan.nameplate && module.speakerIcons(plan).length === 0;
+  $("#capGradient").checked = settings.gradient; $("#capTop").value = settings.top.toLowerCase(); $("#capBottom").value = settings.bottom.toLowerCase();
+  $("#capBottomLabel").hidden = !settings.gradient;
+  if (plan.speakers) renderSpeakerChips(plan, settings.hidden);
+  $("#capMode").value = settings.layout.mode; $("#capMode").querySelector("[value=aboveFace]").disabled = !plan.faceTops;
+  $("#capX").value = settings.layout.offsetX ?? 0; $("#capY").value = settings.layout.offsetY ?? 0;
+  $("#capNote").textContent = plan.burned ? "この動画は字幕が焼き込み済みです（表示すると重なります）" : "";
+  // The native fullscreen shows the <video> alone; captions go fullscreen with the slot instead.
+  player.controlsList?.toggle("nofullscreen", settings.captions || settings.icon);
+  if (captions.overlay) captions.overlay.set(settings);
+  else captions.overlay = module.overlay({ video: player, canvas: $("#captionCanvas"), plan, settings, window });
+}
+const setCaption = (key, value) => { if (!captions.plan) return; captions.module.writeSetting(captionStore, key, value); syncCaptions(); };
+const captionKeys = () => captions.module.SETTING_KEYS;
+$("#capShow").onchange = e => setCaption(captionKeys().captions(captions.video.id), e.target.checked ? "1" : "0");
+$("#capIcon").onchange = e => setCaption(captionKeys().icon(captions.video.id), e.target.checked ? "1" : "0");
+$("#capGradient").onchange = e => setCaption(captionKeys().gradient, e.target.checked ? "1" : "0");
+$("#capTop").onchange = e => setCaption(captionKeys().top, e.target.value);
+$("#capBottom").onchange = e => setCaption(captionKeys().bottom, e.target.value);
+$("#capReset").onclick = () => { for (const key of ["gradient", "top", "bottom"]) captions.module.writeSetting(captionStore, captionKeys()[key], null); syncCaptions(); };
+// Version 2 plans: one chip per speaker (in its colour) and one for the unassigned titles; a hidden
+// speaker's titles are dropped after positions are resolved, so the others never move.
+function renderSpeakerChips(plan, hidden) {
+  const chips = [...plan.speakers.map(s => [s.id, s.name, s.colorBottom]), [captions.module.UNASSIGNED, "話者なし", plan.style.gradientBottom]].map(([id, name, colour]) => {
+    const label = document.createElement("label"), box = document.createElement("input"), chip = document.createElement("span");
+    box.type = "checkbox"; box.checked = !hidden.has(id);
+    box.onchange = () => { const next = new Set(hidden); box.checked ? next.delete(id) : next.add(id); setCaption(captionKeys().hidden(captions.video.id), next.size ? JSON.stringify([...next]) : null); };
+    chip.className = "spk"; chip.style.background = colour; chip.textContent = name;
+    label.append(box, chip); return label;
+  });
+  $("#capSpeakers").replaceChildren("話者:", ...chips);
+}
+// The viewer's own caption position (mode and offsets) over the delivery's caption-layout.json.
+function setPosition(change) {
+  if (!captions.plan) return;
+  const { mode, offsetX = 0, offsetY = 0 } = captions.module.readSettings(captionStore, captions.video.id, captions.plan).layout;
+  setCaption(captionKeys().layout(captions.video.id), JSON.stringify({ mode, offsetX, offsetY, ...change }));
+}
+const nudge = (dx, dy) => setPosition({ offsetX: (+$("#capX").value || 0) + dx, offsetY: (+$("#capY").value || 0) + dy });
+$("#capMode").onchange = e => setPosition({ mode: e.target.value });
+$("#capUp").onclick = () => nudge(0, -10);
+$("#capDown").onclick = () => nudge(0, 10);
+$("#capLeft").onclick = () => nudge(-10, 0);
+$("#capRight").onclick = () => nudge(10, 0);
+$("#capX").onchange = e => setPosition({ offsetX: +e.target.value || 0 });
+$("#capY").onchange = e => setPosition({ offsetY: +e.target.value || 0 });
+$("#capPosReset").onclick = () => setCaption(captionKeys().layout(captions.video.id), null);
+$("#capFull").onclick = () => document.fullscreenElement ? document.exitFullscreen() : $("#videoSlot").requestFullscreen().catch(error => console.warn(`captions: fullscreen failed: ${error}`));
 $("#srcEdited").onclick = () => setSource("edited");
 $("#srcOriginal").onclick = () => setSource("original");
 // Excitement (盛り上がり): scores are computed by `python -m replay.excitement`, relative to
@@ -512,7 +645,6 @@ function showExInfo(ev) {
 }
 // Clips (切り抜き): computed on the Mac by default (local clef and Bonsai) and stored per movie
 // content (the Worker runs no model). A clip may join several ranges; playing it runs them in order.
-const secs = d => `${(Math.round(d * 10) / 10).toFixed(1)}秒`;
 const KIND = { "5-10": "5〜10秒", "15-30": "15〜30秒", "35-60": "35〜60秒", "90-120": "90〜120秒", short: "短尺 10〜30秒", long: "長尺 30〜90秒" };
 const PATTERN = { "climax-first": "山場→経緯", "hook-to-climax": "引き→山場" };
 async function loadClips(v) {
@@ -534,15 +666,15 @@ function renderClips(status = state.clipStatus) {
     const li = document.createElement("li"), head = document.createElement("div"), play = document.createElement("button");
     const title = document.createElement("span"), len = document.createElement("span"), summary = document.createElement("p"), ranges = document.createElement("div");
     li.className = "clip"; li.dataset.id = clip.id; head.className = "head"; title.className = "title"; len.className = "len"; ranges.className = "ranges";
-    play.textContent = "🔁 再生"; play.setAttribute("aria-label", `${clip.title}をループ再生（${secs(clip.duration)}）`); play.onclick = () => playClip(clip);
+    play.textContent = "🔁 再生"; play.setAttribute("aria-label", `${clip.title}をループ再生（${fmt(clip.duration)}）`); play.onclick = () => playClip(clip);
     const loop = document.createElement("button");
     loop.textContent = "▶ 1回再生"; loop.setAttribute("aria-label", `${clip.title}を1回だけ再生`); loop.onclick = () => playClip(clip, 0, false);
     title.textContent = clip.title;
-    len.textContent = `${secs(clip.duration)}・${KIND[clip.kind] ?? clip.kind}${PATTERN[clip.pattern] ? `・${PATTERN[clip.pattern]}` : ""}${clip.ranges.length > 1 ? `・${clip.ranges.length}区間` : ""}`;
+    len.textContent = `${fmt(clip.duration)}・${KIND[clip.kind] ?? clip.kind}${PATTERN[clip.pattern] ? `・${PATTERN[clip.pattern]}` : ""}${clip.ranges.length > 1 ? `・${clip.ranges.length}区間` : ""}`;
     summary.textContent = clip.summary;
     ranges.setAttribute("role", "group"); ranges.setAttribute("aria-label", `${clip.title}の区間`);
     ranges.append(...clip.ranges.map((r, i) => {
-      const b = document.createElement("button"); b.textContent = `${i + 1}. ${fmt(r.start)}〜（${secs(r.end - r.start)}）`;
+      const b = document.createElement("button"); b.textContent = `${i + 1}. ${fmt(r.start)}〜（${fmt(r.end - r.start)}）`;
       b.onclick = () => playClip(clip, i); return b;
     }));
     head.append(play, loop, title, len); li.append(head, summary, ranges); return li;
@@ -565,7 +697,7 @@ function followClip() {
   const p = state.clipPlay; if (!p) return;
   const video = $("#video"), range = p.clip.ranges[p.index], t = video.currentTime;
   const done = p.clip.ranges.slice(0, p.index).reduce((sum, r) => sum + r.end - r.start, 0) + Math.max(0, Math.min(t, range.end) - range.start);
-  $("#clipNote").textContent = `${p.loop ? "ループ再生中" : "再生中"}: ${p.clip.title}（${secs(done)} / ${secs(p.clip.duration)}${p.clip.ranges.length > 1 ? `・区間${p.index + 1}/${p.clip.ranges.length}` : ""}）`;
+  $("#clipNote").textContent = `${p.loop ? "ループ再生中" : "再生中"}: ${p.clip.title}（${fmt(done)} / ${fmt(p.clip.duration)}${p.clip.ranges.length > 1 ? `・区間${p.index + 1}/${p.clip.ranges.length}` : ""}）`;
   // Seeking well outside the range (seek bar, transcript) leaves clip playback.
   if (!video.seeking && (t < range.start - 1.5 || t > range.end + 1.5)) { stopClip(); renderClips(); return; }
   if (t >= range.end) {
@@ -637,6 +769,9 @@ new IntersectionObserver(([e]) => {
   }
 }).observe($("#videoSlot"));
 $("#video").addEventListener("leavepictureinpicture", () => { if (autoPip === "native") autoPip = null; });
+// Leaving the tab or app while playing: Chrome enters PiP through this Media Session action and
+// Safari through autopictureinpicture, instead of pausing the backgrounded video.
+try { navigator.mediaSession?.setActionHandler("enterpictureinpicture", () => $("#video").requestPictureInPicture().catch(() => {})); } catch {}
 $("#tabUttBtn").onclick = () => showTab(false);
 // Lazy thumbnails: a hidden <video> seeks to the hit time once its row is near the
 // viewport; two at a time so ranged fetches do not starve the main player.
@@ -787,7 +922,7 @@ function route() {
     if (state.current !== v) select(v, t); else if (t) seek(t);
   } else {
     document.body.dataset.view = "list"; document.title = state.streamer;
-    if (matchMedia("(max-width: 760px)").matches) $("#video").pause();
+    if (matchMedia("(max-width: 760px)").matches && !document.pictureInPictureElement && !$("#videoSlot").classList.contains("floating")) $("#video").pause();
   }
 }
 addEventListener("popstate", route);
@@ -812,7 +947,7 @@ function hitsFor(data, q, mode) {
     for (const sec of data.summary.sections) if (sec.text.includes(q)) out.push({ start: sec.start, label: fmt(sec.start), text: snippet(sec.text, q), kind: "要約" });
   }
   if (mode !== "summary") {
-    for (const u of utterancesFrom(data.cues)) if (u.text.includes(q)) out.push({ start: u.start, label: u.startLabel, text: u.text, kind: "文字起こし" });
+    for (const u of utterancesFrom(data.cues)) if (u.text.includes(q)) out.push({ start: u.start, label: fmt(u.start), text: u.text, kind: "文字起こし" });
   }
   return out;
 }
@@ -864,7 +999,7 @@ async function transcriptText(v) {
     out.push("■ 要約", d.summary.overview, "");
     for (const s of d.summary.sections) out.push(`[${fmt(s.start)} – ${fmt(s.end)}]`, s.text, "");
   }
-  if (d.cues.length) out.push("■ 文字起こし", ...utterancesFrom(d.cues).map(u => `[${u.startLabel}] ${u.text.replace(/\n/g, " ")}`));
+  if (d.cues.length) out.push("■ 文字起こし", ...utterancesFrom(d.cues).map(u => `[${fmt(u.start)}] ${u.text.replace(/\n/g, " ")}`));
   return out.join("\n") + "\n";
 }
 $("#dlText").onclick = async () => {
@@ -907,7 +1042,11 @@ $("#shareForm").onsubmit = async e => {
     $("#shareMsg").textContent = `発行しました: ${shareUrl(share)}`; loadShares();
   } catch (err) { $("#shareMsg").textContent = err.message; }
 };
-Promise.all([window.__catalog, window.__channels]).then(([c, channels]) => { state.videos = c.videos; state.channels = channels; route(); });
+Promise.all([window.__catalog, window.__channels, window.__playtime]).then(([c, channels, playtime]) => {
+  state.videos = c.videos; state.channels = channels; state.playtime = playtime;
+  playtime.trackClock({ video: $("#video"), element: $("#clock"), document, frame: tick => requestAnimationFrame(tick), cancel: id => cancelAnimationFrame(id) });
+  route();
+});
 </script>
 </body>
 </html>

@@ -48,6 +48,7 @@ it("records published data, catalog and settled media", () => {
     previous,
     current,
     dataSha: { a: "new" },
+    captionsSha: { a: "plan" },
     catalogSha: "new-catalog",
     settledMedia: new Set(["a:movie"]),
     dataPublished: true,
@@ -59,7 +60,7 @@ it("records published data, catalog and settled media", () => {
     "transcript",
   ]);
   expect(state.sources.a?.movie).toStrictEqual(fp(100, null));
-  expect(state.data).toStrictEqual({ "data/a.json": "new" });
+  expect(state.data).toStrictEqual({ "data/a.json": "new", "captions/a.json": "plan" });
   expect(state.catalogSha256).toBe("new-catalog");
   expect(state.uploads).toStrictEqual({
     "media/a.mp4": { size: 90, sha256: "a".repeat(64), etag: "e-1" },
@@ -71,6 +72,7 @@ it("keeps the previous media record until the upload succeeds", () => {
     previous,
     current,
     dataSha: { a: "new" },
+    captionsSha: {},
     catalogSha: "new-catalog",
     settledMedia: new Set(),
     dataPublished: true,
@@ -85,6 +87,7 @@ it("keeps previous non-media records and data until data is published", () => {
     previous,
     current,
     dataSha: { a: "new" },
+    captionsSha: {},
     catalogSha: "new-catalog",
     settledMedia: new Set(["a:movie"]),
     dataPublished: false,

@@ -19,6 +19,44 @@
 R2バケットには `catalog.json`、`data/<id>.json`（字幕・保存済み要約）、`media/`（編集済み動画）、
 `media-original/`（元動画。MKVはH.264プロキシ）、`config/allowed-users.json`（許可リスト）を置きます。
 
+時刻はすべて `時:分:秒.ミリ秒`（例 `1:02:03.456`）で表示します（`public/playtime.js` の1つの関数）。プレーヤーの下に
+現在位置／長さをミリ秒まで出し、再生中は毎フレーム更新します（一時停止中・タブを隠している間は止めます）。
+
+再生位置は動画ごと・編集済み／元動画ごとにブラウザの localStorage（`resume:<動画ID>:edited|original`）へ
+再生中は5秒ごと、一時停止・終了・タブを隠したとき・ページを離れたときに保存し、次に開くとその位置から始めます
+（`public/resume.js`）。先頭から5秒未満・終わりの10秒以内は最初から。検索結果などで時刻を指定して開いたときは
+その時刻が優先です。保存できないブラウザ（プライベートモード等）でも再生はそのまま動きます。
+
+## 字幕（ライブ描画）
+
+配信の隣に字幕プラン `<動画>.captions.json`（リポジトリの `docs/caption-plan.md`）がある編集済み動画では、
+`public/captions.js` がスタイル20の字幕を `<video>` の上のcanvasへ描きます（ネイティブの
+`native/caption-render` の MotionCaptionRenderer と同じ手順: 固定レイアウトのType On、正方形の縁取り、
+ガウスぼかしの影、線形光での合成と出力ガンマ）。ascent/descentはCoreTextと同じhhea値を使います。
+
+- フォント: ネイティブと同じ Noto Sans JP 可変フォント（`~/Library/Fonts/NotoSansJP-VariableFont_wght.ttf`、
+  `CAPTION_FONT` で別の場所も可）を `bun run deploy` が SHA-256 照合のうえ無損失WOFF2（約4.3MB）へ変換して
+  `public/fonts/` に置きます（`src/sync/captionFont.ts`。変換はリポジトリの `.venv` の fontTools）。
+  WOFF2はGitに入れません（`OFL.txt` だけ追跡）。前回の変換結果は `cache/caption-font.json` の記録と一致すれば
+  再利用します。TTFが無い・ハッシュが違う・変換に失敗した場合はデプロイしません。
+- 位置: 配信の隣の `<動画>.caption-layout.json`（位置の種類と微調整）と `<動画>.faces.json`（顔トラック）を
+  `docs/caption-plan.md`「Caption position」と同じ式で解きます。顔トラックは数MBあるため、
+  `build_catalog.py` がタイトルごとの顔の上端と根拠（`faceTops`: `[上端, "face"|"held"]` か null。
+  レイアウトファイルの minScore・maxDrift で `replay.caption_layout_file` と同じ規則）を前計算して字幕プランに
+  入れ、画面（`resolveTitles`）は種類と微調整だけを解きます。期待値フィクスチャ10件と、実データ8本×10通りで
+  Pythonの `resolve` と完全一致。画面の「位置」（今の位置／顔の上／下部／上部／中央、↑↓←→は10px、X・Yは数値）は
+  この閲覧者だけの上書き（`captions:layout:<id>`）で、既定はファイルの値。「位置を戻す」で上書きを消します。
+
+- 同期: `build_catalog.py` がプランを `data.next/<id>.captions.json`（ネームプレートのアイコンはdata URLで内包）に
+  書き、カタログの動画に `captions: {key, burned}` を付けます。同期はR2の `captions/<id>.json` へ、内容が
+  変わったときだけ送ります（`data/` の下に置くと切り抜きの通知が走るため別の場所）。
+- Worker: `/api/captions/<id>.json`（ログイン済み）。共有リンクは「編集済み」を共有したときだけ読めます。
+- 画面: 「字幕」の表示（動画ごと。プランが焼き込み済み `burned` なら既定オフ）、アイコン（動画ごと）、
+  グラデーション（オフは上の色1色）、上下の色（既定はプランの色、「色を戻す」）。設定はこのブラウザの
+  localStorage（`captions:*`）。元動画の表示中・プランのない動画では出しません。
+- 全画面: ネイティブの全画面は `<video>` だけを出すため、字幕を表示中はそれを隠し「字幕つき全画面」で
+  プレーヤー枠ごと全画面にします。ピクチャインピクチャとiOSの全画面には字幕は出ません。
+
 ## URL
 
 - `/` → `/streamers`（配信者一覧）
@@ -76,6 +114,19 @@ bun run debug /api/me       # 管理者の読み取り専用セッションで�
    デプロイし、**成功・失敗にかかわらず終了時に削除**します。続いて `data/<id>.json`、最後に
    `catalog.json` を `cf r2 objects put` で送ります（カタログが未送信の動画を指さないため）。
 5. `--data-only` はメディアとカタログを送りません。
+6. ライブラリのルート（`youtubeOriginals`・`raw` も）が `/Volumes/<名前>/` 以下にあり読めない
+   （SSDが外れている・EIO）ときは、カタログを作らずに30秒ごとに確認して戻るのを待ちます（状態が変わったときだけ
+   ログ。合計の上限は `--volume-wait-minutes`、既定360分。超えたらエラー）。カタログを作った後とデータ・カタログを
+   送る直前にも確認し、途中で外れたら（読み取り・アップロードの失敗）その回はカタログも状態の「公開済み」も
+   書かずに中断し、戻るのを待って最初からやり直します（最大5回。状態とマルチパートで続きから再開）。
+   取り外し中に `/Volumes/<名前>` へ書き込まれて普通のフォルダが残ると、SSDは `<名前> 1` にマウントされるため
+   上限まで待ってエラーになります。
+
+7. 同期（`--dry-run` を含む）は同時に1つだけです。`data.next/` と `sync-state.json` を共有するため、開始時に
+   `web-viewer/.sync.lock`（保持者のpidと開始時刻）を排他的に作り、終了時（失敗時も）に消します。ほかの同期が
+   持っていれば保持者を表示して15秒ごとに確認しながら待ち（`--lock-wait-minutes`、既定60分。超えたらエラー）、
+   保持者のプロセスがもう無い・中身が読めないロックは古いものとして引き継ぎます（`src/sync/lock.ts`）。
+   ロックは一時ファイルからのハードリンクで作るので、読む側が書きかけを見ることはありません。
 
 設定は `sync.config.json`（Git管理外。`sync.config.example.json` が雛形）で、配信者名・
 ライブラリのルート・バケット名を指定します。同期ではWorker本体を再デプロイしません。

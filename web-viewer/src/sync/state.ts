@@ -1,6 +1,6 @@
 // Runs with bun. Persistent record of what was last published, plus the pure update rule.
 import { isMediaLabel } from "./fingerprint.ts";
-import { settledKey } from "./plan.ts";
+import { captionsKey, settledKey } from "./plan.ts";
 import type { FileSystem } from "./ports.ts";
 import { EMPTY_STATE, type Sources, type SyncState, stateSchema } from "./schemas.ts";
 
@@ -8,6 +8,7 @@ export interface NextStateRequest {
   previous: SyncState;
   current: Record<string, Sources>;
   dataSha: Record<string, string>;
+  captionsSha: Record<string, string>;
   catalogSha: string;
   settledMedia: ReadonlySet<string>;
   dataPublished: boolean;
@@ -61,9 +62,10 @@ export function nextState(request: NextStateRequest): SyncState {
       videoSources({ id, current, request }),
     ]),
   );
-  const publishedData = Object.fromEntries(
-    Object.entries(request.dataSha).map(([id, sha]) => [`data/${id}.json`, sha]),
-  );
+  const publishedData = Object.fromEntries([
+    ...Object.entries(request.dataSha).map(([id, sha]) => [`data/${id}.json`, sha]),
+    ...Object.entries(request.captionsSha).map(([id, sha]) => [captionsKey(id), sha]),
+  ]);
   return {
     sources,
     data: request.dataPublished ? publishedData : request.previous.data,

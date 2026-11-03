@@ -7,15 +7,19 @@ Rules mirror TranscriptCatalog/CandidateSelection (subset, fail-closed):
  2. Otherwise a canonical `<stamp>_JST_<folder>-review.mp4` under a `delivery`
     directory with a same-stem .srt/.csv beside it; superseded deliveries
     (evidence/superseded/*.json path+size match) are excluded.
-Outputs data/catalog.json plus data/<id>.json (cues + saved summary).
+Outputs data/catalog.json plus data/<id>.json (cues + saved summary) and, for a delivery with
+a caption plan, data/<id>.captions.json.
 Stdlib only. Never writes outside the given output dir.
 """
 
 import argparse
+import base64
+import bisect
 import csv
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -24,6 +28,9 @@ import sys
 from pathlib import Path
 
 RAW = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_JST_replay-(\d+)\.mp4$")
+YOUTUBE_ORIGINAL = re.compile(
+    r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_JST_youtube-([A-Za-z0-9_-]{11})$"
+)
 STAMP = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})_JST_")
 
 
@@ -166,6 +173,160 @@ def load_excitement(transcript_path):
         return None
     rec.pop("inputs", None)  # local fingerprints only
     return rec
+
+
+LAYOUT_MODES = ("plan", "aboveFace", "bottom", "top", "center")
+LAYOUT_NUMBERS = ("offsetX", "offsetY", "margin", "faceGap", "minScore", "maxDrift")
+
+
+def layout_options_valid(options, required):
+    """A layout's options (its top level, or one speaker's in version 2), checked as
+    replay.caption_layout_file checks them."""
+    keys = set(options)
+    numbers = keys & set(LAYOUT_NUMBERS)
+    return (
+        required <= keys <= {*required, "mode", *LAYOUT_NUMBERS}
+        and options.get("mode", "plan") in LAYOUT_MODES
+        and all(
+            isinstance(options[k], (int, float))
+            and not isinstance(options[k], bool)
+            and math.isfinite(options[k])
+            for k in numbers
+        )  # fmt: skip
+        and all(options.get(k, 0) >= 0 for k in ("margin", "faceGap", "maxDrift"))
+        and 0 <= options.get("minScore", 0.5) <= 1
+    )
+
+
+def caption_layout(stem, plan):
+    """<stem>.caption-layout.json (docs/caption-plan.md "Caption position", version 2 with
+    per-speaker options for the plan's speakers); None when absent."""
+    p = stem + ".caption-layout.json"
+    if not os.path.isfile(p):
+        return None
+    layout = json.loads(Path(p).read_text(encoding="utf-8"))
+    speakers = layout.get("speakers", {}) if layout.get("version") == 2 else {}
+    known = {speaker["id"] for speaker in plan.get("speakers", [])}
+    top = {k: v for k, v in layout.items() if not (k == "speakers" and layout.get("version") == 2)}
+    valid = (
+        layout.get("version") in (1, 2)
+        and layout_options_valid(top, {"version", "mode"})
+        and isinstance(speakers, dict)
+        and set(speakers) <= known
+        and all(isinstance(o, dict) and layout_options_valid(o, set()) for o in speakers.values())
+    )
+    if not valid:
+        raise ValueError("invalid caption layout")
+    return layout
+
+
+def title_options(layout, title):
+    """A title's options: defaults, the layout's top level, then its speaker's (version 2)."""
+    options = {"minScore": 0.5, "maxDrift": 150, **(layout or {})}
+    return {**options, **(layout or {}).get("speakers", {}).get(title.get("speaker") or "", {})}
+
+
+def lane_band(plan, speaker_id):
+    """A speaker's horizontal band: lanes sorted by laneX, split at the midpoints between
+    neighbouring lane centres (a midpoint belongs to the right band), the outer bands open."""
+    centres = sorted((plan["width"] / 2 + s["laneX"], s["id"]) for s in plan["speakers"])
+    at = [i for _, i in centres].index(speaker_id)
+    low = -math.inf if at == 0 else (centres[at - 1][0] + centres[at][0]) / 2
+    high = math.inf if at == len(centres) - 1 else (centres[at][0] + centres[at + 1][0]) / 2
+    return low, high
+
+
+def observed_tops(faces, plan, title, min_score):
+    """(frame, top) of the samples a title's face position trusts, in frame order."""
+    found = []
+    for sample in faces["samples"]:
+        if faces["version"] == 1:
+            box = sample["box"]
+            if sample["faceCount"] == 1 and box and box["score"] >= min_score:
+                found.append((sample["frame"], box["y"]))
+            continue
+        boxes = sample["boxes"]
+        if plan["version"] == 2 and title.get("speaker"):
+            low, high = lane_band(plan, title["speaker"])
+            boxes = [
+                b for b in boxes if b["score"] >= min_score and low <= b["x"] + b["w"] / 2 < high
+            ]
+            if len(boxes) == 1:
+                found.append((sample["frame"], boxes[0]["y"]))
+        elif len(boxes) == 1 and boxes[0]["score"] >= min_score:
+            found.append((sample["frame"], boxes[0]["y"]))
+    return sorted(found, key=lambda face: face[0])
+
+
+def caption_face_tops(stem, plan, layout):
+    """Per title, the face top the "aboveFace" position reads, as [top, "face"|"held"] or None:
+    replay.caption_layout_file's rule (person_top_with_hold over the trusted samples, held only
+    from both sides within maxDrift) with that title's minScore and maxDrift; version 2 face
+    tracks give a speaker's title the one face in its lane band. The viewer resolves only mode
+    and offsets, so the megabytes of track stay here. None when there is no face track."""
+    p = stem + ".faces.json"
+    if not os.path.isfile(p):
+        return None
+    faces = json.loads(Path(p).read_text(encoding="utf-8"))
+    if (faces.get("version") not in (1, 2) or faces.get("clock") != "delivery") or (
+        faces.get("width"),
+        faces.get("height"),
+    ) != (plan["width"], plan["height"]):
+        raise ValueError("face track is not version 1 or 2 on the plan's canvas")
+    cache, tops = {}, []
+    for title in plan["titles"]:
+        options = title_options(layout, title)
+        lane = title.get("speaker") if plan["version"] == 2 and faces["version"] == 2 else None
+        key = (options["minScore"], lane)
+        if key not in cache:
+            trusted = observed_tops(faces, plan, title, options["minScore"])
+            cache[key] = (trusted, [face[0] for face in trusted])
+        trusted, frames = cache[key]
+        low = bisect.bisect_left(frames, title["startFrame"])
+        high = bisect.bisect_right(frames, title["endFrame"])
+        if low < high:
+            tops.append([min(face[1] for face in trusted[low:high]), "face"])
+        elif low == 0 or high == len(trusted):
+            tops.append(None)
+        else:
+            before, after = trusted[low - 1][1], trusted[high][1]
+            drift = options["maxDrift"]
+            tops.append(None if abs(before - after) > drift else [min(before, after), "held"])
+    return tops
+
+
+def caption_plan(transcript_path, movie_name, vid, out, issues):
+    """The caption plan beside a delivery (docs/caption-plan.md) for live drawing, written as
+    <out>/<id>.captions.json with its nameplate icon inlined; only a plan of this very movie."""
+    p = transcript_path[: -len(Path(transcript_path).suffix)] + ".captions.json"
+    if not os.path.isfile(p):
+        return None
+    try:
+        plan = json.loads(Path(p).read_text(encoding="utf-8"))
+        if plan.get("version") not in (1, 2) or plan.get("clock") != "delivery":
+            raise ValueError("unsupported version or clock")
+        if plan.get("movie") != movie_name or not isinstance(plan.get("burned"), bool):
+            raise ValueError("not this delivery's plan")
+        # The nameplate's and each version 2 speaker's icon, inlined once checked.
+        owners = [plan.get("nameplate")] + [s for s in plan.get("speakers", []) if "icon" in s]
+        for owner in filter(None, owners):
+            icon = Path(os.path.dirname(p), owner["icon"]).read_bytes()
+            if hashlib.sha256(icon).hexdigest() != owner["iconSha256"]:
+                raise ValueError(f"{owner['icon']} does not have its recorded SHA-256")
+            owner["iconData"] = "data:image/png;base64," + base64.b64encode(icon).decode()
+        stem = p[: -len(".captions.json")]
+        layout = caption_layout(stem, plan)
+        tops = caption_face_tops(stem, plan, layout)
+        if layout is not None:
+            plan["layout"] = layout
+        if tops is not None:
+            plan["faceTops"] = tops
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        issues.append(f"caption plan: {vid} ({e})")
+        return None
+    with open(os.path.join(out, vid + ".captions.json"), "w", encoding="utf-8") as fh:
+        json.dump(plan, fh, ensure_ascii=False, separators=(",", ":"))
+    return {"key": f"captions/{vid}.json", "burned": plan["burned"]}
 
 
 def superseded(folder):
@@ -384,6 +545,7 @@ def main():
                 if not playable and not original:
                     continue  # a transcript alone has nothing to play
                 channel_id = channel_of(name, original, issues)
+                captions = caption_plan(transcript, base, vid, a.out, issues) if playable else None
                 if a.no_duration:
                     seconds = None
                 elif offloaded:
@@ -421,6 +583,7 @@ def main():
                         "hasSummary": data["summary"] is not None,
                         "localPath": os.path.abspath(movie) if movie else None,
                         **({"channelId": channel_id} if channel_id else {}),
+                        **({"captions": captions} if captions else {}),
                     }
                 )
             except Exception as e:  # fail-closed per recording, like the native scan
@@ -447,6 +610,49 @@ def main():
             )
             delivered.add(folder)
             issues.append(f"kept published: {folder} (local delivery not found)")
+    if a.youtube_originals:
+        # A YouTube original with no edit yet is published alone, like a raw TikTok download.
+        for name in sorted(os.listdir(a.youtube_originals)):
+            match = YOUTUBE_ORIGINAL.match(name)
+            if not match or f"youtube-{match.group(1)}" in delivered:
+                continue
+            folder = f"youtube-{match.group(1)}"
+            media = [
+                os.path.join(a.youtube_originals, name, f)
+                for f in os.listdir(os.path.join(a.youtube_originals, name))
+                if f.lower().endswith((".mp4", ".mkv"))
+            ]
+            if len(media) != 1:
+                issues.append(f"no single original: {name}")
+                continue
+            original = media[0]
+            vid = name
+            data_path = os.path.join(a.out, vid + ".json")
+            with open(data_path, "w", encoding="utf-8") as fh:
+                json.dump({"id": vid, "cues": [], "summary": None}, fh, separators=(",", ":"))
+            channel_id = channel_of(folder, original, issues)
+            videos.append(
+                {
+                    "id": vid,
+                    "streamer": a.streamer,
+                    "title": f"{folder} [未編集・字幕なし]",
+                    "broadcastStartJST": stamp_label(name),
+                    "movie": None,
+                    "size": os.path.getsize(original),
+                    "original": {
+                        # MKV originals are served as their H.264 MP4 proxy, as above.
+                        "movie": os.path.basename(original)[:-4] + ".mp4",
+                        "size": os.path.getsize(original),
+                        "localPath": os.path.abspath(original),
+                    },
+                    "duration": None if a.no_duration else duration(original),
+                    "transcriptPath": os.path.abspath(data_path),
+                    "cueCount": 0,
+                    "hasSummary": False,
+                    "localPath": None,
+                    **({"channelId": channel_id} if channel_id else {}),
+                }
+            )
     if a.raw:
         for base in sorted(os.listdir(a.raw)):
             match = RAW.match(base)

@@ -261,6 +261,58 @@ it("issues a random 7-day share that serves only the shared video without login"
   ]);
 });
 
+it("serves the page modules to a share visitor who passed the challenge only", async () => {
+  const env = shareEnvironment();
+  const token = await createShare(env, { edited: true });
+  const before = await shareCall(env, `/s/${token}/resume.js`);
+  const headers = { Cookie: await passChallenge(env, token) };
+  const resume = await shareCall(env, `/s/${token}/resume.js`, { headers });
+  const playtime = await shareCall(env, `/s/${token}/playtime.js`, { headers });
+  expect([before.status, await resume.text(), await playtime.text()]).toStrictEqual([
+    403,
+    "INDEX:/resume.js",
+    "INDEX:/playtime.js",
+  ]);
+});
+
+it("serves a caption plan to viewers and, for an edited share, to its visitors", async () => {
+  const env = shareEnvironment();
+  const captions = { key: "captions/v1.json", burned: true };
+  await env.MEDIA.put("catalog.json", JSON.stringify({ videos: [{ ...VIDEO, captions }] }));
+  await env.MEDIA.put("captions/v1.json", '{"version":1}');
+  const edited = await createShare(env, { edited: true });
+  const original = await createShare(env, { original: true });
+  const viewer = await shareCall(env, "/api/captions/v1.json", { headers: { Cookie: cookie } });
+  const visitor = { Cookie: await passChallenge(env, edited) };
+  const shared = await shareCall(env, `/s/${edited}/api/captions/v1.json`, { headers: visitor });
+  const catalog = await (
+    await shareCall(env, `/s/${edited}/api/catalog`, { headers: visitor })
+  ).json();
+  const module = await shareCall(env, `/s/${edited}/captions.js`, { headers: visitor });
+  const font = await shareCall(env, `/s/${edited}/fonts/NotoSansJP-VariableFont_wght.woff2`, {
+    headers: visitor,
+  });
+  const other = { Cookie: await passChallenge(env, original) };
+  const refused = await shareCall(env, `/s/${original}/api/captions/v1.json`, { headers: other });
+  expect([
+    viewer.status,
+    await viewer.text(),
+    await shared.text(),
+    catalog.videos[0].captions,
+    await module.text(),
+    await font.text(),
+    refused.status,
+  ]).toStrictEqual([
+    200,
+    '{"version":1}',
+    '{"version":1}',
+    { key: "captions/v1.json", burned: true },
+    "INDEX:/captions.js",
+    "INDEX:/fonts/NotoSansJP-VariableFont_wght.woff2",
+    404,
+  ]);
+});
+
 it("honors the chosen days, both kinds, and adds a download header", async () => {
   const env = shareEnvironment();
   const token = await createShare(env, { edited: true, original: true, days: 2 });

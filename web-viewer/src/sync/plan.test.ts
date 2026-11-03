@@ -28,6 +28,7 @@ function input(overrides: Partial<PlanInput>): PlanInput {
     ],
     current: { "a-review": sources },
     dataSha: { "a-review": "d1" },
+    captionsSha: {},
     catalogSha: "c1",
     dataDirectory: "/next",
     state: {
@@ -242,4 +243,33 @@ it("publishes only the original of a recording not edited yet", () => {
     "data/raw.json",
     "catalog.json",
   ]);
+});
+
+it("publishes a new or changed plan as its own object, and keeps an unchanged one", () => {
+  const captions = (previous: string | undefined, current: string) =>
+    planChanges(
+      input({
+        captionsSha: { "a-review": current },
+        state: {
+          sources: { "a-review": sources },
+          data: {
+            "data/a-review.json": "d1",
+            ...(previous === undefined ? {} : { "captions/a-review.json": previous }),
+          },
+          catalogSha256: "c1",
+          uploads: {},
+        },
+      }),
+    ).changes;
+  const object = {
+    kind: "data",
+    key: "captions/a-review.json",
+    path: "/next/a-review.captions.json",
+  };
+  expect(captions(undefined, "p1")).toStrictEqual([
+    { ...object, reason: "not uploaded yet" },
+    { kind: "catalog", key: "catalog.json", path: "/next/catalog.json", reason: "videos changed" },
+  ]);
+  expect(captions("p0", "p1")[0]).toStrictEqual({ ...object, reason: "caption plan changed" });
+  expect(captions("p1", "p1")).toStrictEqual([]);
 });

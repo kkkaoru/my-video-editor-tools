@@ -82,6 +82,11 @@ export default {
     }
     if (url.pathname === CHANNELS_PATH) return channelsRoute(request, env, false);
     if (CLIPS_PATH.test(url.pathname)) return clipsRoute(request, url, env, { bearer: false });
+    // A delivery's caption plan (docs/caption-plan.md), drawn live over the movie by captions.js.
+    const captionsMatch = url.pathname.match(/^\/api\/captions\/([A-Za-z0-9._-]+)\.json$/);
+    if (captionsMatch) {
+      return r2Json(request, env, `captions/${captionsMatch[1]}.json`);
+    }
     const dataMatch = url.pathname.match(/^\/api\/videos\/([A-Za-z0-9._-]+)\.json$/);
     if (dataMatch) {
       return r2Json(request, env, `data/${dataMatch[1]}.json`);
@@ -686,6 +691,8 @@ async function shareWrite(request, env, session) {
       duration: entry.duration,
       movie: body.edited ? entry.movie : null,
       original: body.original ? { movie: entry.original.movie } : null,
+      // The caption plan runs on the edited movie's clock.
+      ...(body.edited && entry.captions ? { captions: entry.captions } : {}),
     },
   };
   await env.MEDIA.put(shareKey(share.token), JSON.stringify(share), { httpMetadata: { contentType: "application/json" } });
@@ -699,6 +706,8 @@ function shareGone(url) {
 <main><p>この共有リンクは無効か、有効期限が切れています。</p></main></html>`;
   return new Response(html, { status: 404, headers: { ...PAGE_HEADERS, "X-Robots-Tag": "noindex" } });
 }
+
+const PAGE_MODULES = new Set(["/resume.js", "/playtime.js", "/captions.js", "/fonts/NotoSansJP-VariableFont_wght.woff2"]);
 
 // Missing, malformed, expired and revoked (deleted) shares all look the same.
 async function shareRoute(request, url, env) {
@@ -723,6 +732,8 @@ async function shareRoute(request, url, env) {
     headers.set("Cache-Control", "no-store");
     return new Response(page.body, { status: page.status, headers });
   }
+  // The page's modules (static code, no data); the page imports them under its prefix.
+  if (PAGE_MODULES.has(path)) return env.ASSETS.fetch(new Request(new URL(path, url)));
   if (path === "/api/catalog") return json({ videos: [video], share: { expiresAt: share.expiresAt } });
   if (path === CHANNELS_PATH) {
     const entry = video.channelId ? (await readChannels(env)).channels[video.channelId] : undefined;
@@ -731,6 +742,10 @@ async function shareRoute(request, url, env) {
   if (path === `/api/clips/${video.id}.json`) return json(await lookup(env, { videoId: video.id, key: null, now: new Date() }));
   if (path === `/api/videos/${video.id}.json`) {
     const obj = await env.MEDIA.get(`data/${video.id}.json`);
+    return obj ? new Response(obj.body, { headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } }) : shareGone(url);
+  }
+  if (video.captions && path === `/api/captions/${video.id}.json`) {
+    const obj = await env.MEDIA.get(`captions/${video.id}.json`);
     return obj ? new Response(obj.body, { headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } }) : shareGone(url);
   }
   if (video.movie && path === `/media/${video.movie}`) return serveMedia(request, url, env, `media/${video.movie}`);
