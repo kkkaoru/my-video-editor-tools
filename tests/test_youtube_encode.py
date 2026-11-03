@@ -31,8 +31,12 @@ def movie(path: Path, size: str) -> Path:
 def test_orientation_follows_the_delivery_size(tmp_path: Path) -> None:
     assert youtube.orientation(movie(tmp_path / "v.mp4", "1080x1920"), FFPROBE) == "vertical"
     assert youtube.orientation(movie(tmp_path / "h.mp4", "1920x1080"), FFPROBE) == "landscape"
-    with pytest.raises(ReplayError, match="neither 1080x1920 nor 1920x1080"):
-        youtube.orientation(movie(tmp_path / "s.mp4", "720x1280"), FFPROBE)
+    assert youtube.orientation(movie(tmp_path / "v7.mp4", "720x1280"), FFPROBE) == "vertical"
+    assert youtube.orientation(movie(tmp_path / "h7.mp4", "1280x720"), FFPROBE) == "landscape"
+    with pytest.raises(ReplayError, match="not a 1080p or 720p frame"):
+        youtube.orientation(movie(tmp_path / "s.mp4", "640x360"), FFPROBE)
+    assert youtube.allowed((720, 1280)) is True
+    assert youtube.allowed((640, 360)) is False
 
 
 def test_the_output_sits_beside_the_delivery_folder() -> None:
@@ -104,3 +108,8 @@ def test_a_lease_is_held_for_each_movie(
     assert youtube.main([str(source), "--state", str(tmp_path / "s"), "--lease", str(leases)]) == 0
     assert held == [(leases, "A_JST_a", "youtube-encode")]
     assert capsys.readouterr().out == f"{youtube.output_of(source)}\n"
+
+
+def test_a_delivery_replaced_by_its_master_is_skipped(tmp_path: Path) -> None:
+    gone = tmp_path / "r/delivery/A_JST_a-review.mp4"
+    assert youtube.encode([gone], tmp_path / "s", python="py", ffprobe=FFPROBE) == []

@@ -1,10 +1,12 @@
 """YouTube uploads of finished deliveries, encoded by Compressor's own "Publish to YouTube" setting.
 
 The setting (H.264 High, AAC) keeps the source frame up to 4096x2304, so each orientation gets
-its own size from its delivery: a vertical delivery is encoded at 1080x1920 and a landscape one
-at 1920x1080. A delivery of any other size is refused rather than rescaled, and every output is
-checked for its orientation's size. The output sits beside the delivery's own folder, at
-``<revision>/youtube/<stem>-youtube.mov`` (outside ``delivery``, so the viewers never list it).
+its own size from its delivery: a vertical delivery is encoded at 1080x1920 or 720x1280 and a
+landscape one at 1920x1080 or 1280x720 (720p allowed by the user, 2026-11-02). A delivery of any
+other size is refused rather than rescaled, and every output must keep its delivery's size. A
+delivery already replaced by its encode (``replay.youtube_master``) is skipped. The output sits
+beside the delivery's own folder, at ``<revision>/youtube/<stem>-youtube.mov`` (outside
+``delivery``, so the viewers never list it).
 Jobs run one at a time, in the order given, through ``replay.compressor_batch``, which records
 each submission and resumes a stopped run. Outside a pipeline step (which holds it already),
 ``--lease DIR`` takes the machine-wide Compressor lease for each movie in turn, so a recording's
@@ -30,7 +32,10 @@ SETTINGS = Path(
     "/Contents/Frameworks/Compressor.framework/Versions/A/Frameworks/StompUI.framework/Versions/A"
     "/Resources/BuiltInSettings/Publish to YouTube/WebShareName.compressorsetting"
 )
-SIZES = {"vertical": (1080, 1920), "landscape": (1920, 1080)}
+SIZES = {
+    "vertical": frozenset({(1080, 1920), (720, 1280)}),
+    "landscape": frozenset({(1920, 1080), (1280, 720)}),
+}
 DIRECTORY = "youtube"
 SUFFIX = "-youtube.mov"
 NAME_LIMIT = 120
@@ -49,10 +54,14 @@ def frame(movie: Path, ffprobe: str) -> tuple[int, int]:
 def orientation(movie: Path, ffprobe: str) -> str:
     """The delivery's orientation, refused unless it has that orientation's YouTube size."""
     size = frame(movie, ffprobe)
-    for name, expected in SIZES.items():
-        if size == expected:
+    for name, sizes in SIZES.items():
+        if size in sizes:
             return name
-    raise ReplayError(f"{movie.name} is {size[0]}x{size[1]}, neither 1080x1920 nor 1920x1080")
+    raise ReplayError(f"{movie.name} is {size[0]}x{size[1]}, not a 1080p or 720p frame")
+
+
+def allowed(size: tuple[int, int]) -> bool:
+    return any(size in sizes for sizes in SIZES.values())
 
 
 def output_of(movie: Path) -> Path:
@@ -67,7 +76,10 @@ def job_name(movie: Path) -> str:
 
 def encode(movies: Sequence[Path], state: Path, *, python: str, ffprobe: str) -> list[Path]:
     """Encode every movie not encoded yet, in order; the outputs, each checked for its size."""
-    expected = {movie: SIZES[orientation(movie, ffprobe)] for movie in movies}
+    movies = [movie for movie in movies if movie.exists()]  # the rest became their masters
+    for movie in movies:
+        orientation(movie, ffprobe)
+    expected = {movie: frame(movie, ffprobe) for movie in movies}
     pending = [movie for movie in movies if not output_of(movie).exists()]
     if pending:
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -106,8 +118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             else gpu_lease.lease(args.lease, job_name(movie), step="youtube-encode")
         )
         with held:
-            (path,) = encode([movie], args.state, python=sys.executable, ffprobe=args.ffprobe)
-        print(path)
+            for path in encode([movie], args.state, python=sys.executable, ffprobe=args.ffprobe):
+                print(path, flush=True)
     return 0
 
 
