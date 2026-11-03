@@ -1,3 +1,4 @@
+import importlib
 import json
 import threading
 import urllib.error
@@ -188,6 +189,22 @@ def test_head_gives_one_logit_per_option() -> None:
         [0.696, 0.705],
         [1.009, 1.011],
     ]
+
+
+def test_the_metal_head_matches_the_cpu_head() -> None:
+    mx = importlib.import_module("mlx.core")
+    backbone = FakeBackbone()
+    encoded = clip_models.encode(backbone.tokenize, REQUEST)
+    inputs = backbone.inputs(encoded, weights())
+    cpu = clip_models.head(weights(), CONFIG, inputs, encoded.questions)
+    metal = clip_models.head(weights(), CONFIG, inputs, encoded.questions, gpu=mx)
+    assert [[round(float(value), 3) for value in row] for row in metal] == [
+        [0.714, 0.715],
+        [0.696, 0.705],
+        [1.009, 1.011],
+    ]
+    # Metal sums float32 products in another order (and in tiles): about 1e-4 apart, not bit-equal.
+    assert max(float(np.max(np.abs(a - b))) for a, b in zip(cpu, metal, strict=True)) < 5e-4
 
 
 def test_answers_take_the_systemone_form() -> None:
@@ -470,6 +487,7 @@ def test_load_decider_reads_the_head_config_and_weights(
     decider = clip_models.load_decider(tmp_path)
     assert decider.config == clip_models.HeadConfig(heads=16, routing_layers=2, layers=4)
     assert float(decider.weights["prior_logit_scale"]) == 0.5
+    assert decider.gpu is fake.core
 
 
 def test_chat_renders_without_thinking_and_caps_the_answer_length(

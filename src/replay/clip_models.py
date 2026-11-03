@@ -263,8 +263,18 @@ def unit(x: Array) -> Array:
     )
 
 
-def attention(q: Array, kv: Array, w: Mapping[str, Array], name: str, heads: int) -> Array:
+def attention(
+    q: Array,
+    kv: Array,
+    w: Mapping[str, Array],
+    name: str,
+    heads: int,
+    *,
+    gpu: ModuleType | None = None,
+) -> Array:
     """torch.nn.MultiheadAttention (batch_first, no mask) on unbatched (length, width) inputs."""
+    if gpu is not None:
+        return _metal_attention(gpu, q, kv, w, name, heads)
     width = q.shape[-1]
     dh = width // heads
     wq, wk, wv = np.split(w[f"{name}.in_proj_weight"], 3)
@@ -279,24 +289,61 @@ def attention(q: Array, kv: Array, w: Mapping[str, Array], name: str, heads: int
     return linear(out, w, f"{name}.out_proj")
 
 
-def _routed(w: Mapping[str, Array], config: HeadConfig, memory: Array, queries: Array) -> Array:
+def _metal_attention(
+    mx: ModuleType, q: Array, kv: Array, w: Mapping[str, Array], name: str, heads: int
+) -> Array:
+    """`attention` with its projections, scores and weighted sum on Metal (``mlx.core``): against
+    the 13k-token memory they were 70% of the head's CPU time (11/1: 1.66 s a request, 0.56 s on
+    the GPU; answers move by at most 2e-4, float32 sums taken in another order)."""
+    width = q.shape[-1]
+    dh = width // heads
+    wq, wk, wv = (mx.array(part) for part in np.split(w[f"{name}.in_proj_weight"], 3))
+    bq, bk, bv = (mx.array(part) for part in np.split(w[f"{name}.in_proj_bias"], 3))
+    query, memory = mx.array(q), mx.array(kv)
+
+    def split(x: object, length: int) -> object:
+        return mx.transpose(mx.reshape(x, (length, heads, dh)), (1, 0, 2))
+
+    qh = split(query @ wq.T + bq, q.shape[0])
+    kh, vh = split(memory @ wk.T + bk, kv.shape[0]), split(memory @ wv.T + bv, kv.shape[0])
+    scores = mx.matmul(qh, mx.transpose(kh, (0, 2, 1))) / math.sqrt(dh)
+    out = mx.reshape(
+        mx.transpose(mx.matmul(mx.softmax(scores, axis=-1, precise=True), vh), (1, 0, 2)),
+        (q.shape[0], width),
+    )
+    return linear(np.array(out, dtype=np.float32), w, f"{name}.out_proj")
+
+
+def _routed(
+    w: Mapping[str, Array],
+    config: HeadConfig,
+    memory: Array,
+    queries: Array,
+    gpu: ModuleType | None,
+) -> Array:
     for n in range(config.routing_layers):
         p = f"evidence_layers.{n}"
         mem = layer_norm(memory, w, f"{p}.memory_norm")
         normalized = layer_norm(queries, w, f"{p}.query_norm")
-        queries = queries + attention(normalized, mem, w, f"{p}.attention", config.heads)
+        queries = queries + attention(normalized, mem, w, f"{p}.attention", config.heads, gpu=gpu)
         ff = gelu(linear(layer_norm(queries, w, f"{p}.feedforward_norm"), w, f"{p}.feedforward.0"))
         queries = queries + linear(ff, w, f"{p}.feedforward.3")
     return queries
 
 
-def _decoded(w: Mapping[str, Array], config: HeadConfig, fields: Array, memory: Array) -> Array:
+def _decoded(
+    w: Mapping[str, Array],
+    config: HeadConfig,
+    fields: Array,
+    memory: Array,
+    gpu: ModuleType | None,
+) -> Array:
     for n in range(config.layers):
         p = f"layers.{n}"
         x = layer_norm(fields, w, f"{p}.norm1")
         fields = fields + attention(x, x, w, f"{p}.self_attn", config.heads)
         cross = layer_norm(fields, w, f"{p}.norm2")
-        fields = fields + attention(cross, memory, w, f"{p}.multihead_attn", config.heads)
+        fields = fields + attention(cross, memory, w, f"{p}.multihead_attn", config.heads, gpu=gpu)
         ff = gelu(linear(layer_norm(fields, w, f"{p}.norm3"), w, f"{p}.linear1"))
         fields = fields + linear(ff, w, f"{p}.linear2")
     return layer_norm(fields, w, "field_norm")
@@ -327,8 +374,11 @@ def head(
     config: HeadConfig,
     inputs: HeadInputs,
     questions: Sequence[Question],
+    *,
+    gpu: ModuleType | None = None,
 ) -> list[Array]:
-    """JointSchemaHead.forward for one record: the option logits of every question."""
+    """JointSchemaHead.forward for one record: the option logits of every question; ``gpu`` runs
+    its attention over the memory on Metal."""
     memory, global_vector, qvec = inputs.memory, inputs.last, inputs.questions
     contexts, lexical = inputs.options, inputs.lexical
     queries = np.concatenate(
@@ -340,7 +390,7 @@ def head(
         ]
     )
     routed = np.split(
-        _routed(w, config, memory, queries),
+        _routed(w, config, memory, queries, gpu),
         np.cumsum([len(q.options) for q in questions])[:-1],
     )
     base = linear(qvec, w, "question_projection", bias=False)
@@ -354,7 +404,7 @@ def head(
         + linear(global_vector, w, "global_projection", bias=False)[None]
         + w["type_embedding.weight"][[q.kind for q in questions]]
     )
-    fields = _decoded(w, config, fields, memory)
+    fields = _decoded(w, config, fields, memory, gpu)
     prior_scale = math.exp(min(float(w["prior_logit_scale"]), LOGIT_SCALE_CAP))
     joint_scale = math.exp(min(float(w["joint_logit_scale"]), LOGIT_SCALE_CAP))
     gate = 1 / (1 + math.exp(-float(w["residual_gate"])))
@@ -397,15 +447,26 @@ def answer(question: Mapping[str, object], probabilities: Mapping[str, float]) -
 class Decider:
     """clef's SystemOne endpoint over a backbone and the joint schema head's weights."""
 
-    def __init__(self, backbone: Backbone, weights: Mapping[str, Array], config: HeadConfig):
-        self.backbone, self.weights, self.config = backbone, weights, config
+    def __init__(
+        self,
+        backbone: Backbone,
+        weights: Mapping[str, Array],
+        config: HeadConfig,
+        gpu: ModuleType | None = None,
+    ):
+        """``gpu`` (``mlx.core``) runs the head's attention over the memory on Metal."""
+        self.backbone, self.weights, self.config, self.gpu = backbone, weights, config, gpu
 
     def respond(self, body: Json) -> Json:
         request = body
         encoded = encode(self.backbone.tokenize, request)
         ids, questions = encoded.ids, encoded.questions
         logits = head(
-            self.weights, self.config, self.backbone.inputs(encoded, self.weights), questions
+            self.weights,
+            self.config,
+            self.backbone.inputs(encoded, self.weights),
+            questions,
+            gpu=self.gpu,
         )
         asked = _mapping(request["questions"], "questions")
         answers = {
@@ -588,7 +649,7 @@ def load_decider(model_dir: Path) -> Decider:
     raw = mx.load(str(model_dir / "joint_head.safetensors"))
     weights = {key: np.array(value.astype(mx.float32)) for key, value in raw.items()}
     head_config = HeadConfig(config["heads"], config["routing_layers"], config["layers"])
-    return Decider(MlxBackbone(model_dir), weights, head_config)
+    return Decider(MlxBackbone(model_dir), weights, head_config, mx)
 
 
 class MlxLaya:
