@@ -1,8 +1,10 @@
 """Viewer extras of a published recording: summary, excitement and clip points.
 
 - ``upload-original`` (right after clocks): a dry run, then ``sync --originals-only`` sends the
-  downloaded originals to ``media-original/`` only, publishing no data or catalog; the delivery's
-  upload later finds the original in the bucket instead of sending it in the pipeline's tail;
+  downloaded originals to ``media-original/``, then ``sync --only <source stem>`` publishes the
+  recording's catalog entry so the web viewer lists (and plays) the original before its delivery
+  exists; the delivery's upload later finds the original in the bucket instead of sending it in
+  the pipeline's tail;
 - ``excitement`` (before the upload): ``replay.excitement build`` writes
   ``<srt>.excitement.json`` from the delivered transcript and movie; the upload carries it;
 - ``summarize`` (beside the upload, so the slow gate and on-device model neither hold the movie
@@ -105,7 +107,21 @@ def upload_original(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     log = pipeline.logs / "upload-original.log"
     sync(run, log, "--originals-only", "--dry-run")
     sync(run, log, "--originals-only")
+    if not earlier_delivery(pipeline.path_of("editRoot")):
+        sync(run, log, "--only", pipeline.path_of("source").stem)
     return {"originals": "sent", "log": str(log)}
+
+
+def earlier_delivery(edit_root: Path) -> bool:
+    """Whether a delivery of the recording exists already (a redo, 2026-11-03 eWgX9jkjNpA): the
+    catalog then lists the original under that delivery, never as an entry of its own."""
+    config = edit_root / "edit-config.json"
+    storage = (
+        json.loads(config.read_text(encoding="utf-8")).get("storage_root")
+        if config.is_file()
+        else None
+    )
+    return isinstance(storage, str) and any(Path(storage).glob("revisions/*/delivery/*.mp4"))
 
 
 def gate(pipeline: Pipeline) -> dict[str, object]:

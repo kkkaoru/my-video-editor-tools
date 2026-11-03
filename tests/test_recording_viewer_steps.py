@@ -264,6 +264,26 @@ def test_upload_original_dry_runs_then_sends_only_the_originals(
     commands: list[list[str]] = []
     outputs = viewer.upload_original(pipeline, lambda command, _log: commands.append(list(command)))
     sync = ["/bin/bun", str(tmp_path / "web/src/bin/sync.ts"), "--originals-only"]
+    listed = [sync[0], sync[1], "--only", pipeline.path_of("source").stem]
+    assert commands == [[*sync, "--dry-run"], sync, listed]
+    assert outputs["originals"] == "sent"
+
+
+def test_upload_original_of_a_redo_does_not_list_the_original_on_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = published(tmp_path)
+    monkeypatch.setattr(viewer, "WEB_VIEWER", web(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+    edit_root = pipeline.path_of("editRoot")
+    edit_root.mkdir(parents=True, exist_ok=True)
+    storage = tmp_path / "deliveries/replay-123"
+    (edit_root / "edit-config.json").write_text(
+        json.dumps({"storage_root": str(storage)}), encoding="utf-8"
+    )
+    commands: list[list[str]] = []
+    outputs = viewer.upload_original(pipeline, lambda command, _log: commands.append(list(command)))
+    sync = ["/bin/bun", str(tmp_path / "web/src/bin/sync.ts"), "--originals-only"]
     assert commands == [[*sync, "--dry-run"], sync]
     assert outputs["originals"] == "sent"
 
