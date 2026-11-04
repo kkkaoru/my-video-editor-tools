@@ -25,7 +25,6 @@ from pathlib import Path
 from replay.core import ReplayError
 from replay.recordings import record
 
-UNTRACKED = re.compile(r"Refusing to overwrite an untracked output: (/\S+)")
 CONTROLLER_DOWN = re.compile(r"ジョブコントローラがダウンしています|job controller is down")
 QUIT_SECONDS = 30.0
 READY_SECONDS = 120.0
@@ -89,20 +88,6 @@ def unverified(parts: Path, states: Path, packets: Packets) -> list[str]:
         ):
             found.append(name)
     return found
-
-
-def untracked(log: Path, since: int, media: Path) -> Path | None:
-    """The output the batch refused as untracked in its part of ``log`` (a Failed job's partial
-    output whose state was retired), when it lies under ``media``; else None."""
-    if not log.is_file():
-        return None
-    with log.open("rb") as stream:
-        stream.seek(since)
-        found = UNTRACKED.findall(stream.read().decode("utf-8", errors="replace"))
-    if not found:
-        return None
-    output = Path(found[-1])
-    return output if output.is_relative_to(media) and output.is_file() else None
 
 
 def set_aside(output: Path, stamp: int) -> Path:
