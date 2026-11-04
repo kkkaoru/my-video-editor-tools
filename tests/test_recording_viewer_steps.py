@@ -557,3 +557,42 @@ def test_a_video_config_without_clips_makes_none(tmp_path: Path) -> None:
     assert viewer.clips(pipeline, lambda _command, _log: None) == {
         "skipped": "video-config.json clips: false"
     }
+
+
+def test_web_hls_publishes_the_final_delivery_s_ladder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = published(tmp_path)
+    (pipeline.steps / "youtube-master.json").write_text(
+        '{"outputs": {"master": {"path": "/d/2026-11-03_22-00-21_JST_replay-1-review.mp4",'
+        ' "sha256": "x"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(viewer, "WEB_VIEWER", tmp_path / "web")
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+    commands: list[tuple[list[str], str]] = []
+
+    def run(command: Sequence[str], log: Path) -> None:
+        commands.append((list(command), log.name))
+
+    assert viewer.web_hls(pipeline, run) == {"video": "2026-11-03_22-00-21_JST_replay-1-review"}
+    assert commands == [
+        (
+            [
+                "/bin/bun",
+                str(tmp_path / "web/src/bin/hls.ts"),
+                "2026-11-03_22-00-21_JST_replay-1-review",
+            ],
+            "web-hls.log",
+        )
+    ]
+
+
+def test_web_hls_without_bun_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = published(tmp_path)
+    (pipeline.steps / "youtube-master.json").write_text(
+        '{"outputs": {"master": {"path": "/d/m.mp4", "sha256": "x"}}}', encoding="utf-8"
+    )
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    with pytest.raises(ReplayError, match="bun is required to publish the web viewer's HLS"):
+        viewer.web_hls(pipeline, lambda _command, _log: None)

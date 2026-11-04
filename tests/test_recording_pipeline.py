@@ -249,7 +249,7 @@ def test_run_executes_every_step_then_skips_them_all(
     assert ran(tmp_path).index("cleanup") > ran(tmp_path).index("yolo-track")
     second = pipeline.run("42", path, checkout=tmp_path)
     assert set(second.values()) == {"reused"}
-    assert len(ran(tmp_path)) == 28
+    assert len(ran(tmp_path)) == 29
 
 
 def test_forcing_a_step_redoes_it_and_its_dependents(
@@ -288,6 +288,7 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "clips": "completed",
         "retire-renders": "completed",
         "youtube-master": "completed",
+        "web-hls": "completed",
     }
 
 
@@ -299,7 +300,7 @@ def test_forcing_everything_redoes_every_step(
     pipeline.run("42", path, checkout=tmp_path)
     results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(every=True))
     assert set(results.values()) == {"completed"}
-    assert len(ran(tmp_path)) == 56
+    assert len(ran(tmp_path)) == 58
 
 
 def test_a_second_run_of_the_same_recording_is_refused(
@@ -326,6 +327,7 @@ def test_downstream_includes_every_dependent_step() -> None:
         "youtube-encode",
         "caption-plan",
         "youtube-master",
+        "web-hls",
         "excitement",
         "upload",
         "summarize",

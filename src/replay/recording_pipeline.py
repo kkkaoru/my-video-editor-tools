@@ -17,6 +17,7 @@ while its measured utilization leaves room:
         ── clips (the viewer's clip points are ready) ; summary ── retire-renders (compose)
         ; publish ── youtube-encode (Compressor's YouTube setting, beside the delivery)
         ; youtube-encode + summary + clips ── youtube-master (the verified encode replaces it)
+        ── web-hls (the web viewer's HLS ladder of the final delivery)
 
 The caption half (``replay.recording_caption_steps``) reads ``captions.json``, written beside
 ``pipeline.json`` from the defaults' ``captions`` section; changing it marks only caption steps
@@ -113,7 +114,7 @@ ORDER = (
     "paging", "onsets", "placement", "caption-parts", "compose", "finish",
     "voice-remux", "publish", "caption-plan",
     "summarize", "excitement", "upload", "summary", "clips", "retire-renders", "youtube-encode",
-    "youtube-master",
+    "youtube-master", "web-hls",
 )  # fmt: skip
 DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
 # Start order only, not receipt inputs: summary reuses what summarize gated and generated, so it
@@ -138,7 +139,7 @@ TIMEOUTS = dict.fromkeys(
         "placement", "onsets", "caption-parts", "compose", "finish",
         "voice-remux", "publish", "caption-plan",
         "excitement", "upload", "summarize", "summary", "clips", "retire-renders",
-        "youtube-encode", "youtube-master",
+        "youtube-encode", "youtube-master", "web-hls",
     ),
     OUTER_CAP,
 )  # fmt: skip
@@ -157,7 +158,7 @@ IDLE_SECONDS = {
     "publish": 2 * HOUR, "caption-plan": HOUR,
     "excitement": HOUR, "upload": 2 * HOUR, "summarize": 2 * HOUR, "summary": 2 * HOUR,
     "clips": 2 * HOUR, "retire-renders": HOUR, "youtube-encode": 2 * HOUR,
-    "youtube-master": 2 * HOUR,
+    "youtube-master": 2 * HOUR, "web-hls": 2 * HOUR,
 }  # fmt: skip
 # youtube-encode only waits on Compressor, which renders one job at a time machine-wide: it
 # takes the one Compressor lease instead of a GPU lease.
@@ -173,6 +174,8 @@ SERIAL_STEPS = {
     "compose": "compose-leases",
     "finish": "compose-leases",
     "youtube-encode": "compressor-leases",
+    # x264 takes every CPU core: two recordings' ladders at once would only slow both.
+    "web-hls": "web-hls-leases",
 }
 SERIAL_SETTINGS = '{"capacity": 1}\n'
 

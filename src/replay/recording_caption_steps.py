@@ -1151,6 +1151,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "youtube-encode": ("publish",),
     "caption-plan": ("publish", "caption-parts", "yolo-track"),
     "youtube-master": ("youtube-encode", "caption-plan"),
+    "web-hls": ("youtube-master",),
     "excitement": ("publish",),
     "upload": ("publish", "excitement"),
     "summarize": ("publish", "caption-plan"),
@@ -1173,6 +1174,7 @@ STEPS: dict[str, front.StepFunction] = {
     "caption-plan": caption_plan_step,
     "youtube-encode": youtube_encode_step,
     "youtube-master": youtube_master_step,
+    "web-hls": viewer.web_hls,
     "excitement": excitement,
     "upload": upload,
     "summarize": viewer.summarize,
@@ -1206,6 +1208,7 @@ def step_outputs(pipeline: Pipeline, step: str) -> tuple[Path, ...]:
         "caption-plan": (),  # written once beside the delivery; a re-run keeps an identical one
         "youtube-encode": (work / YOUTUBE_ENCODE,),  # the upload copy stays beside its delivery
         "youtube-master": (),  # a master replaces its delivery once; nothing to redo
+        "web-hls": (),  # the ladder lives only in the bucket; its local encode is always removed
         "excitement": (),  # sidecars beside a delivery stay with it
         "upload": (),
         "summarize": (),
