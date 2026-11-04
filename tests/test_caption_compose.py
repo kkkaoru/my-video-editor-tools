@@ -680,3 +680,59 @@ def test_a_mix_that_keeps_its_music_is_levelled_by_its_voice(tmp_path: Path) -> 
     assert record["gainDb"] == round(-18.0 - integrated, 2)
     assert record["mixLufs"] > integrated
     assert record["limitedTruePeakDbtp"] <= -1.0
+
+
+def test_a_clip_through_the_source_s_last_frame_keeps_its_frames_inside_the_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = part_files(tmp_path, [("p0", 0, 60)])
+    cuts = cut_file(tmp_path, [(0, 60, 0)])
+    monkeypatch.setattr(compose, "video_end", lambda _source: 1.99)
+    compose.plan(cuts, parts, Path("/src.mov"), tmp_path / "out", tmp_path / "req", packets=size)
+    recipe = json.loads((tmp_path / "req/g000.json").read_text(encoding="utf-8"))["recipe"]
+    selection = recipe["clips"][0]["selection"]
+    assert selection["durationSeconds"] == pytest.approx(59.5 / 30 + 16 / 60000)
+    assert selection["startSeconds"] + selection["durationSeconds"] == pytest.approx(
+        1.99 - 8 / 60000
+    )
+    assert selection["startSeconds"] == pytest.approx(0.00626667, abs=1e-6)
+    assert recipe["additionalVideo"][0]["selection"]["durationSeconds"] == pytest.approx(
+        59.5 / 30 + 16 / 60000
+    )
+
+
+def test_a_track_ending_half_a_slot_too_early_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = part_files(tmp_path, [("p0", 0, 60)])
+    cuts = cut_file(tmp_path, [(0, 60, 0)])
+    monkeypatch.setattr(compose, "video_end", lambda _source: 1.98)
+    with pytest.raises(ReplayError, match="ends too early for its cut"):
+        compose.plan(
+            cuts, parts, Path("/src.mov"), tmp_path / "out", tmp_path / "req", packets=size
+        )
+
+
+def test_a_clip_inside_the_video_track_keeps_its_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = part_files(tmp_path, [("p0", 0, 60)])
+    cuts = cut_file(tmp_path, [(0, 60, 0)])
+    monkeypatch.setattr(compose, "video_end", lambda _source: 2.5)
+    compose.plan(cuts, parts, Path("/src.mov"), tmp_path / "out", tmp_path / "req", packets=size)
+    recipe = json.loads((tmp_path / "req/g000.json").read_text(encoding="utf-8"))["recipe"]
+    assert recipe["clips"][0]["selection"]["durationSeconds"] == 2.0
+    assert recipe["additionalVideo"][0]["selection"]["durationSeconds"] == 2.0
+
+
+def test_the_video_end_is_the_probed_track_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    probed(monkeypatch, '{"streams": [{"duration": "5874.266312"}]}')
+    assert compose.video_end(Path("/s.mp4")) == 5874.266312
+
+
+@pytest.mark.parametrize(
+    "stdout", ['{"streams": {}}', '{"streams": []}', '{"streams": [{"duration": "N/A"}]}', "x"]
+)
+def test_an_unreadable_video_end_is_unknown(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+    probed(monkeypatch, stdout)
+    assert compose.video_end(Path("/s.mp4")) is None

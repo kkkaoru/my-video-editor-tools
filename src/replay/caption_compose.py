@@ -68,6 +68,8 @@ TRIM_TICKS = 2
 NATIVE_TICKS = 60000
 # How far, in native ticks, the last clip may move to end on the reader's range (2000 = 1 frame).
 ALIGN_TICKS = 8
+# A clip stops this far inside the source's video track, so aligning its end stays inside too.
+END_MARGIN_SECONDS = ALIGN_TICKS / NATIVE_TICKS
 AUDIO_RATE = 44100
 AUDIO_ARGUMENTS = ("-c:a", "aac", "-b:a", "256k", "-ar", str(AUDIO_RATE), "-ac", "2")
 # One EBU R128 pass over the tempo voice (integrated loudness, true peak) sets one static gain.
@@ -313,6 +315,49 @@ def bit_rate(source: Path) -> int:
     return min(MAX_BIT_RATE, max(MIN_BIT_RATE, round(scaled / 100_000) * 100_000))
 
 
+def video_end(source: Path) -> float | None:
+    """Where ``source``'s video track ends; ``None`` when ffprobe cannot tell."""
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration", "-of", "json", str(source)],
+            capture_output=True, text=True, check=True, timeout=PROBE_TIMEOUT,
+        )  # fmt: skip
+        streams = record(json.loads(probe.stdout))["streams"]
+        if not isinstance(streams, list):
+            return None
+        return float(str(record(streams[0])["duration"]))
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ReplayError):
+        return None
+
+
+def end_within_source(recipe: dict[str, object], source_end: float) -> None:
+    """End clips inside the source's video track, which media_edit refuses to read past.
+
+    A cut through the source's last frame reads half a slot past its nominal end (``sampled``),
+    and a variable-rate track can also end short of the grid (youtube-1GUiocLmiFw g049 asked for
+    5874.283 s of 5874.266 s). media_edit renders ``round(duration * RATE)`` frames, so the clip
+    keeps just enough duration for its planned frames and starts that much earlier; a shift of
+    half a slot could read another frame, so it is refused. ``render_group`` counts the frames.
+    """
+    shortened = False
+    for clip in recipe_items(recipe, "clips"):
+        selection = record(clip["selection"])
+        start = float(str(selection["startSeconds"]))
+        duration = float(str(selection["durationSeconds"]))
+        room = source_end - END_MARGIN_SECONDS - start
+        if duration <= room:
+            continue
+        kept = max(room, (round(duration * RATE) - 0.5) / RATE + 2 * END_MARGIN_SECONDS)
+        if kept - room >= 0.5 / RATE:
+            raise ReplayError(f"The source's video track ends too early for its cut: {source_end}")
+        selection["startSeconds"] = start - (kept - room)
+        selection["durationSeconds"] = kept
+        shortened = True
+    if shortened:
+        cut_layers(recipe)
+
+
 def request(
     cuts: Sequence[Cut],
     parts: Sequence[Part],
@@ -422,12 +467,15 @@ def plan(
         cuts = phased(cuts, frame_clock, source, packets or packet_count)
     requests.mkdir(mode=0o700, parents=True, exist_ok=True)
     rate = bit_rate(rate_source or source)
+    source_end = video_end(source)
     rows = []
     for index, (first, last) in enumerate(group_bounds(cuts, parts, layers)):
         name = f"g{index:03d}"
         directory = output_root / name
         body, frames = request(cuts[first:last], parts, source, directory, name, rate=rate,
                                canvas=canvas, badge=badge)  # fmt: skip
+        if source_end is not None:
+            end_within_source(record(body["recipe"]), source_end)
         write_json(requests / f"{name}.json", body)
         rows.append({"group": index, "name": name, "frames": frames, "directory": str(directory)})
     groups = requests / "groups.json"
