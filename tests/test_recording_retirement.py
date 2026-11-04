@@ -272,3 +272,26 @@ def test_a_deessed_voice_is_retired_with_its_step(
                                 "repaired": False, "deesser": {"path": "/r", "sha256": "r"}}}),
     )  # fmt: skip
     assert "repaired-voice" in [entry.category for entry in retirement.manifest(pipeline)]
+
+
+def test_a_recording_whose_master_replaced_its_publication_still_retires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    published_movie = viewer.delivery(pipeline)
+    master = tmp_path / "deliveries/edit/revisions/youtube-abc/delivery" / published_movie.name
+    master.parent.mkdir(parents=True)
+    published_movie.rename(master)
+    write(
+        tmp_path / "steps/youtube-master.json",
+        json.dumps({"outputs": {"master": {"path": str(master), "sha256": "m"}}}),
+    )
+    found = master.stat()
+    state = {"sources": {master.stem: {"movie": {
+        "size": found.st_size, "mtimeNs": str(found.st_mtime_ns)}}}}  # fmt: skip
+    write(tmp_path / "web/sync-state.json", json.dumps(state))
+    assert viewer.delivery(pipeline) == master
+    assert retirement.ready(pipeline) is None
+    vocals = pipeline.work / "separation-v1/pipeline/vocals.wav"
+    assert "removed" in retirement.retire(pipeline, retirement.Settings())
+    assert not vocals.exists() and master.is_file()

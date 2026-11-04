@@ -55,7 +55,12 @@ Fetch = Callable[[urllib.request.Request], dict[str, object]]
 
 
 def delivery(pipeline: Pipeline) -> Path:
-    """The published movie (``<deliveryRoot>/<recording>/revisions/<rev>/delivery/<name>.mp4``)."""
+    """The current movie (``<deliveryRoot>/<recording>/revisions/<rev>/delivery/<name>.mp4``):
+    the verified master once it replaced the publication, which then no longer holds the movie."""
+    master = pipeline.steps / "youtube-master.json"
+    if master.is_file():
+        outputs = record(json.loads(master.read_text(encoding="utf-8"))["outputs"])
+        return Path(str(record(outputs["master"])["path"]))
     published = json.loads((pipeline.steps / "publish.json").read_text(encoding="utf-8"))
     return Path(str(record(published["outputs"])["delivery"]))
 
