@@ -20,7 +20,15 @@ const SETTLE_MS: number = 5000;
 const APP_NAME: string = "Transcribe for Resolve";
 const TEST_FILE: RegExp = /\.test\.tsx?$/;
 
-const isRunning = (): boolean => spawnSync("pgrep", ["-x", "transcribe-app"]).status === 0;
+const BUNDLE: string = join(
+  process.env.CARGO_TARGET_DIR ?? join(APP_DIR, "src-tauri/target"),
+  "release/bundle/macos",
+  `${APP_NAME}.app`,
+);
+// The full path: a headless verification run has the same process name and must survive a rebuild.
+const BUNDLE_PROCESS: string = `${BUNDLE}/Contents/MacOS/`;
+
+const isRunning = (): boolean => spawnSync("pgrep", ["-f", BUNDLE_PROCESS]).status === 0;
 
 function buildAndRestart(): void {
   const wasRunning: boolean = isRunning();
@@ -31,11 +39,8 @@ function buildAndRestart(): void {
     return;
   }
   if (wasRunning) {
-    spawnSync("pkill", ["-x", "transcribe-app"]);
-    spawnSync("open", [
-      "-g",
-      join(process.env.CARGO_TARGET_DIR ?? "src-tauri/target", "release/bundle/macos", `${APP_NAME}.app`),
-    ]);
+    spawnSync("pkill", ["-f", BUNDLE_PROCESS]);
+    spawnSync("open", ["-g", BUNDLE]);
   }
   console.log(`watch-app: rebuilt at ${new Date().toISOString()}`);
 }

@@ -152,6 +152,18 @@ fn mac() -> Hardware {
     }
 }
 
+/// These jobs are not about faces, so they skip the scan the default placement asks for.
+fn bottom_anchored() -> Settings {
+    Settings {
+        placement: Placement {
+            anchor: Anchor::VideoBottom,
+            offset_x_percent: 0.0,
+            offset_y_percent: 0.0,
+        },
+        ..Settings::default()
+    }
+}
+
 fn face_anchored() -> Settings {
     Settings {
         placement: Placement {
@@ -210,7 +222,7 @@ fn a_job_with_the_default_model_writes_every_format() {
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
@@ -254,7 +266,7 @@ fn a_second_job_on_the_same_video_keeps_the_first_files() {
         pipeline::run_job(
             &video,
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {},
@@ -285,7 +297,7 @@ fn a_job_with_a_speech_llm_merges_word_speakers_into_turns() {
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         language: "ja".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -316,7 +328,7 @@ fn a_job_converts_the_whisper_checkpoint_once() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
@@ -351,7 +363,7 @@ fn a_job_uses_the_downloaded_cuda_tools_on_a_geforce() {
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &hardware,
         &CancelToken::default(),
         &mut |_| {},
@@ -385,7 +397,7 @@ fn a_job_refuses_invalid_settings_before_anything_else() {
     let root = scratch("job-invalid-settings");
     let settings = Settings {
         palette: Vec::new(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let paths = with_tools(&root);
     assert_eq!(
@@ -411,7 +423,7 @@ fn a_job_without_any_speaker_model_names_the_role() {
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -428,7 +440,7 @@ fn a_job_with_an_unknown_speaker_model_fails() {
     let paths = with_tools(&root);
     let settings = Settings {
         diarize_model: "nope".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     assert_eq!(
         pipeline::run_job(
@@ -451,7 +463,7 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
     let paths = with_tools(&root);
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q8".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let hardware = Hardware {
         memory_gib: 12,
@@ -478,7 +490,7 @@ fn a_job_refuses_a_chosen_model_that_is_not_installed() {
     let paths = with_tools(&root);
     let settings = Settings {
         diarize_model: "nemotron-3-diarization".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     assert_eq!(
         pipeline::run_job(
@@ -507,7 +519,7 @@ fn a_job_without_bundled_tools_says_which_is_missing() {
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
@@ -529,7 +541,7 @@ fn a_job_on_a_file_without_video_reports_the_user_error() {
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -549,7 +561,7 @@ fn a_job_without_a_whisper_model_names_it() {
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -578,7 +590,7 @@ echo '{"transcription":[]}' > "$out.json"
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -599,7 +611,7 @@ fn a_cancelled_job_stops_before_the_audio_stage() {
     let result = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &cancel,
         &mut |_| {},
@@ -620,7 +632,7 @@ fn cancelling_during_transcription_kills_the_tool() {
     let result = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &cancel,
         &mut |progress: Progress| {
@@ -713,7 +725,7 @@ fn relayout_rewrites_the_earlier_files_in_place() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
@@ -725,7 +737,7 @@ fn relayout_rewrites_the_earlier_files_in_place() {
         &paths,
         &Settings {
             font_ratio: 0.1,
-            ..Settings::default()
+            ..bottom_anchored()
         },
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
@@ -751,7 +763,7 @@ fn relayout_scans_faces_the_transcript_does_not_have_yet() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
@@ -776,7 +788,7 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
     let paths = with_tools(&root);
     let invalid = Settings {
         language: String::new(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let refused = pipeline::relayout(
         &root.join("a.transcript.json"),
@@ -791,7 +803,7 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
     let missing = pipeline::relayout(
         &root.join("a.transcript.json"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -1341,7 +1353,7 @@ fn this_machine_reports_its_memory() {
 #[test]
 fn outputs_land_beside_the_video_and_load_back() {
     let root = scratch("export-round-trip");
-    let settings = Settings::default();
+    let settings = bottom_anchored();
     let metrics = transcribe_app::captions::metrics_for(&VIDEO, &settings);
     let transcript = Transcript::new(
         root.join("a.mp4"),
@@ -1388,6 +1400,12 @@ fn a_transcript_that_is_not_json_is_refused() {
 fn the_cli_runs_a_whole_job_and_prints_the_outcome() {
     let root = scratch("cli-success");
     ready(&root);
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("data/settings.json"),
+        serde_json::to_vec(&bottom_anchored()).unwrap(),
+    )
+    .unwrap();
     let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
     assert_eq!(stderr(&output), "");
     assert_eq!(output.status.code(), Some(0));
@@ -1469,7 +1487,7 @@ fn a_job_reports_a_checkpoint_that_cannot_convert() {
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -1493,7 +1511,7 @@ fn a_job_reports_a_failing_audio_tool() {
         pipeline::run_job(
             &root.join("clip.mp4"),
             &paths,
-            &Settings::default(),
+            &bottom_anchored(),
             &mac(),
             &CancelToken::default(),
             &mut |_| {}
@@ -1511,7 +1529,7 @@ fn relayout_reports_a_face_scan_that_cannot_start() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
@@ -1549,7 +1567,7 @@ fn progress_carries_the_plan_and_reaches_the_end() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| seen.push(progress),
@@ -1579,7 +1597,7 @@ fn a_silent_speaker_model_still_moves_the_estimate() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| {
@@ -1603,7 +1621,7 @@ fn a_radeon_job_runs_the_vulkan_build_on_its_gpu() {
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &radeon(),
         &CancelToken::default(),
         &mut |_| {},
@@ -1650,7 +1668,7 @@ fn a_cuda_only_model_asks_for_the_runtime_on_vulkan() {
     );
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2m".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let hardware = Hardware {
         is_mac: false,
@@ -1688,7 +1706,7 @@ fn a_video_too_long_for_the_model_fails_before_any_long_work() {
     );
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -1719,7 +1737,7 @@ fn one_known_speaker_skips_separation_entirely() {
     );
     let settings = Settings {
         speaker_count: 1,
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let mut plan: Vec<Stage> = Vec::new();
     let mut stages: Vec<Stage> = Vec::new();
@@ -1777,7 +1795,7 @@ fn too_few_voices_are_retried_once_with_a_lower_onset() {
     );
     let settings = Settings {
         speaker_count: 2,
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -1812,7 +1830,7 @@ fn voices_still_missing_after_the_retry_are_reported_not_invented() {
     );
     let settings = Settings {
         speaker_count: 3,
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -1839,7 +1857,7 @@ fn enough_voices_need_no_retry() {
     );
     let settings = Settings {
         speaker_count: 2,
-        ..Settings::default()
+        ..bottom_anchored()
     };
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -1870,7 +1888,7 @@ fn a_speech_llm_is_not_retried() {
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         speaker_count: 2,
-        ..Settings::default()
+        ..bottom_anchored()
     };
     pipeline::run_job(
         &root.join("clip.mp4"),
@@ -1894,7 +1912,7 @@ fn relayout_reports_the_requested_speaker_count() {
     pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &Settings::default(),
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
@@ -1905,7 +1923,7 @@ fn relayout_reports_the_requested_speaker_count() {
         &paths,
         &Settings {
             speaker_count: 2,
-            ..Settings::default()
+            ..bottom_anchored()
         },
         &CancelToken::default(),
         &mut |_| {},

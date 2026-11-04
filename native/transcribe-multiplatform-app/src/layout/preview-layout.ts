@@ -40,8 +40,11 @@ const FACE_CENTER_Y_RATIO: number = 0.6;
 const FACE_HEIGHT_RATIO: number = 0.2;
 /** `HEAD_EXTENSION_FACE_HEIGHT_RATIO`: hair and head reach this far above a measured face. */
 const HEAD_EXTENSION_RATIO: number = 1.25;
-const FACE_GAP_EM: number = 0.46;
-const VIDEO_MARGIN_RATIO: number = 0.05;
+/** `caption_layout_file`: one line's measured box, and the distances at a 1080 short edge. */
+const EM_LINE_HEIGHT: number = 150 / 82.955_801_104_972_38;
+const REFERENCE_SHORT_EDGE: number = 1080;
+const MARGIN_PX: number = 120;
+const FACE_GAP_PX: number = 60;
 const PERCENT: number = 100;
 const WRAP_ORPHAN_MAXIMUM: number = 4;
 const FACE_ANCHORS: ReadonlySet<string> = new Set(["face_above", "face_below"]);
@@ -49,7 +52,8 @@ const FACE_ANCHORS: ReadonlySet<string> = new Set(["face_above", "face_below"]);
 export const metricsFor = ({ width, height }: FrameSize, settings: Settings): Metrics => {
   const fontPx: number = Math.max(1, Math.round(Math.min(width, height) * settings.font_ratio));
   const outlinePx: number = Math.max(1, fontPx * settings.outline_ratio);
-  return { fontPx, outlinePx, maxLinePx: Math.max(fontPx, width * settings.width_ratio - 2 * outlinePx) };
+  const edgePx: number = outlinePx + fontPx * settings.rim_ratio;
+  return { fontPx, outlinePx, maxLinePx: Math.max(fontPx, width * settings.width_ratio - 2 * edgePx) };
 };
 
 const sliceLines = (text: string, perLine: number): string[] =>
@@ -89,25 +93,24 @@ const aroundFaceY = (above: boolean, face: FaceBox, block: BlockSize, gap: numbe
   return above && aboveY >= block.height / 2 ? aboveY : face.bottom + gap + block.height / 2;
 };
 
-const anchorY = (
-  anchor: Settings["placement"]["anchor"],
-  block: BlockSize,
-  frame: FrameSize,
-  gap: number,
-): number =>
-  ({
-    face_above: (): number => aroundFaceY(true, sampleFace(frame), block, gap),
-    face_below: (): number => aroundFaceY(false, sampleFace(frame), block, gap),
-    video_top: (): number => frame.height * VIDEO_MARGIN_RATIO + block.height / 2,
-    video_bottom: (): number => frame.height * (1 - VIDEO_MARGIN_RATIO) - block.height / 2,
-  })[anchor]();
+const anchorY = (anchor: Settings["placement"]["anchor"], block: BlockSize, frame: FrameSize): number => {
+  const scale: number = Math.min(frame.width, frame.height) / REFERENCE_SHORT_EDGE;
+  return {
+    face_above: (): number => aroundFaceY(true, sampleFace(frame), block, FACE_GAP_PX * scale),
+    face_below: (): number => aroundFaceY(false, sampleFace(frame), block, FACE_GAP_PX * scale),
+    video_top: (): number => MARGIN_PX * scale + block.height / 2,
+    video_bottom: (): number => frame.height - MARGIN_PX * scale - block.height / 2,
+  }[anchor]();
+};
 
 export function previewLayout(text: string, frame: FrameSize, settings: Settings): PreviewLayout {
   const { fontPx, outlinePx, maxLinePx } = metricsFor(frame, settings);
   const lines: string[] = wrapText(text, Math.max(1, Math.floor(maxLinePx / fontPx)));
   const block: BlockSize = {
-    width: Math.max(...lines.map((line: string): number => line.length)) * fontPx + 2 * outlinePx,
-    height: lines.length * fontPx * settings.line_height + 2 * (outlinePx + fontPx * settings.rim_ratio),
+    width:
+      Math.max(...lines.map((line: string): number => line.length)) * fontPx +
+      2 * (outlinePx + fontPx * settings.rim_ratio),
+    height: fontPx * (EM_LINE_HEIGHT + (lines.length - 1) * settings.line_height),
   };
   const { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY } = settings.placement;
   return {
@@ -118,7 +121,7 @@ export function previewLayout(text: string, frame: FrameSize, settings: Settings
     lines,
     x: clampCenter(frame.width / 2 + (offsetX / PERCENT) * frame.width, block.width, frame.width),
     y: clampCenter(
-      anchorY(anchor, block, frame, fontPx * FACE_GAP_EM) + (offsetY / PERCENT) * frame.height,
+      anchorY(anchor, block, frame) + (offsetY / PERCENT) * frame.height,
       block.height,
       frame.height,
     ),

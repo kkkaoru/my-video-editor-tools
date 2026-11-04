@@ -17,7 +17,8 @@ const config: PlaywrightTestConfig = defineConfig({
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
   ],
   webServer: {
-    command: `bun run build && bunx vite preview --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
+    // Its own folder: the app rebuild empties dist/ while a long sweep is still loading pages.
+    command: `bunx vite build --outDir node_modules/.cache/a11y-dist && bunx vite preview --outDir node_modules/.cache/a11y-dist --host 127.0.0.1 --port ${PREVIEW_PORT} --strictPort`,
     cwd: "../..",
     url: PREVIEW_URL,
     reuseExistingServer: true,

@@ -17,10 +17,12 @@ use crate::speakers::{limit_speakers, speaker_total};
 use crate::whisper_ggml;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Sortformer's activation threshold for the retry: below its default, so quieter voices count.
 const RETRY_ONSET: f64 = 0.3;
+/// A job folder untouched this long was left by a killed process; no step is silent for a day.
+const ABANDONED_JOB_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Reports a step's own progress; `None` when the tool gives no percentage.
 type Report<'a> = &'a mut dyn FnMut(Stage, Option<f64>);
@@ -114,7 +116,24 @@ fn wants_faces(settings: &Settings) -> bool {
     )
 }
 
+/// Best effort: a folder that cannot be removed now is tried again by the next job.
+fn remove_abandoned_jobs(jobs_dir: &Path, age: Duration) {
+    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
+        return;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified.elapsed().is_ok_and(|elapsed| elapsed >= age))
+        })
+        .for_each(|entry| drop(std::fs::remove_dir_all(entry.path())));
+}
+
 fn job_folder(paths: &AppPaths) -> AppResult<WorkDir> {
+    remove_abandoned_jobs(&paths.jobs_dir(), ABANDONED_JOB_AGE);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
@@ -453,6 +472,22 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(error, "unknown diarize model nope");
+    }
+
+    #[test]
+    fn abandoned_job_folders_are_removed_and_recent_ones_stay() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test-abandoned");
+        std::fs::create_dir_all(root.join("left-behind/nested")).unwrap();
+        remove_abandoned_jobs(&root, Duration::from_secs(3600));
+        assert!(root.join("left-behind").exists());
+        remove_abandoned_jobs(&root, Duration::ZERO);
+        assert!(!root.join("left-behind").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_missing_jobs_folder_has_nothing_to_remove() {
+        remove_abandoned_jobs(Path::new("/nonexistent/jobs"), Duration::ZERO);
     }
 
     #[test]

@@ -93,6 +93,7 @@ const PAGE_COST: f64 = 1.0;
 const CLOSING_BREAK_COST: f64 = 0.3;
 const CONNECTIVE_BREAK_COST: f64 = 0.6;
 const PARTICLE_BREAK_COST: f64 = 1.2;
+const ARGUMENT_BREAK_COST: f64 = 4.0;
 const PLAIN_BREAK_COST: f64 = 2.0;
 const INSIDE_TOKEN_COST: f64 = 0.5;
 const ATOMIC_BREAK_COST: f64 = 6.0;
@@ -107,6 +108,8 @@ const SHORT_PAGE_COST: f64 = 2.0;
 const FLASH_COST: f64 = 30.0;
 const FAST_PAGE_COST: f64 = 3.0;
 const FORCED_PAGE_COST: f64 = 1000.0;
+/// Full-width characters of imbalance a line break accepts per unit of break cost.
+const LINE_BREAK_EMS_PER_COST: f64 = 4.0;
 
 /// One speaker's continuous speech, by character, with everything paging needs.
 struct Run<'a> {
@@ -624,6 +627,18 @@ fn merge_strays(groups: Vec<Vec<Word>>) -> Vec<Vec<Word>> {
     merged
 }
 
+fn class_cost(class: BreakClass) -> f64 {
+    match class {
+        BreakClass::Clause => 0.0,
+        BreakClass::Closing | BreakClass::Predicate => CLOSING_BREAK_COST,
+        BreakClass::Connective => CONNECTIVE_BREAK_COST,
+        BreakClass::Particle => PARTICLE_BREAK_COST,
+        BreakClass::Plain => PLAIN_BREAK_COST,
+        BreakClass::Argument => ARGUMENT_BREAK_COST,
+        BreakClass::Ambiguous => ATOMIC_BREAK_COST,
+    }
+}
+
 fn is_line_start_prohibited(c: char) -> bool {
     NO_LINE_START.contains(c) || DEPENDENT_KANA.contains(c)
 }
@@ -727,7 +742,18 @@ impl<'a> Run<'a> {
             && !NO_LINE_END.contains(self.chars[last - 1])
     }
 
-    /// The most balanced legal two-line split among `points` (`wrap_measured_lines`).
+    /// What a line break at `point` costs beyond imbalance: only phrase ends differ in strength.
+    fn line_break_cost(&self, point: usize, phrase_tier: bool) -> f64 {
+        let phrases = &self.boundaries.phrases;
+        let found = phrases.binary_search_by_key(&point, |phrase| phrase.offset);
+        match found {
+            Ok(index) if phrase_tier => class_cost(phrases[index].class) * LINE_BREAK_EMS_PER_COST,
+            _ => 0.0,
+        }
+    }
+
+    /// The most balanced legal two-line split among `points` (`wrap_measured_lines`), weighing how
+    /// strong each phrase end is, so a clause wins over a slightly evener mid-phrase break.
     fn balanced_split(
         &self,
         points: &[usize],
@@ -751,8 +777,9 @@ impl<'a> Run<'a> {
                     self.width(left_start, left_end),
                     self.width(right_start, right_end),
                 );
+                let imbalance = (left - right).abs() / self.metrics.font_px;
                 (left.max(right) <= self.metrics.max_line_px)
-                    .then_some((point, (left - right).abs()))
+                    .then_some((point, imbalance + self.line_break_cost(point, keep_runs)))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(point, _)| point)
@@ -803,18 +830,15 @@ impl<'a> Run<'a> {
     }
 
     fn phrase_cost(&self, phrase: &PhraseEnd) -> f64 {
-        let class_cost = match phrase.class {
-            BreakClass::Clause => 0.0,
-            BreakClass::Closing => CLOSING_BREAK_COST,
-            BreakClass::Connective => CONNECTIVE_BREAK_COST,
-            BreakClass::Particle => PARTICLE_BREAK_COST,
-            BreakClass::Plain => PLAIN_BREAK_COST,
-        };
+        let class_cost = class_cost(phrase.class);
         if phrase.offset >= self.chars.len() {
             return 0.0;
         }
         let gap = self.times[phrase.offset].0 - self.times[phrase.offset - 1].1;
-        if gap >= PHRASE_GAP_SECONDS {
+        // A real gap makes any phrase end a natural break, except where a predicate or a misread
+        // word would be cut off: a speaker can pause there without finishing.
+        let weak = matches!(phrase.class, BreakClass::Argument | BreakClass::Ambiguous);
+        if gap >= PHRASE_GAP_SECONDS && !weak {
             return 0.0;
         }
         if self.token_edges.contains(&phrase.offset) {
@@ -1927,7 +1951,7 @@ mod tests {
             Anchor::FaceBelow
         ));
         assert!(!talking_over(
-            (0.0, 1000.0, 1700.0),
+            (100.0, 800.0, 1700.0),
             &FULL_HD,
             Anchor::FaceBelow
         ));
@@ -2541,7 +2565,7 @@ mod tests {
             cues.iter()
                 .map(|cue| cue.lines.join(""))
                 .collect::<Vec<_>>(),
-            vec!["今日は天気が", "良いので公園へ", "行きました"]
+            vec!["今日は天気が良いので", "公園へ行きました"]
         );
     }
 
@@ -2969,5 +2993,107 @@ mod tests {
         .unwrap();
         assert_eq!(cues, Vec::<Cue>::new());
         assert!(!faceless);
+    }
+
+    #[test]
+    fn a_light_verb_is_never_cut_from_its_word_on_a_line() {
+        let words = [
+            spoken(0.0, 1.0, "方がいいかも", 1),
+            spoken(1.0, 1.1, "も", 1),
+            spoken(1.1, 1.3, "しか", 1),
+            spoken(1.3, 1.5, "した", 1),
+            spoken(1.5, 1.6, "ら", 1),
+            spoken(1.6, 3.0, "私あられあんま入んなかった", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &VERTICAL_SMALL,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| cue.lines.join("/"))
+                .collect::<Vec<_>>(),
+            vec!["方がいいかももしかしたら/私あられあんま入んなかった"]
+        );
+    }
+
+    #[test]
+    fn a_word_read_two_ways_never_ends_a_page_by_choice() {
+        let words = [
+            spoken(0.0, 1.5, "これ皆さんよく", 1),
+            spoken(1.5, 1.7, "振", 1),
+            spoken(1.7, 2.0, "って", 1),
+            spoken(2.0, 2.3, "から", 1),
+            spoken(2.3, 2.4, "い", 1),
+            spoken(2.4, 2.6, "ある", 1),
+            spoken(2.6, 3.0, "入れた", 1),
+            spoken(3.0, 3.1, " ", 1),
+            spoken(3.1, 6.0, "方がいいかもしかしたら", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues[0].lines.join("/"),
+            "これ皆さんよく振ってからいある入れた 方がいいかもしかしたら"
+        );
+    }
+
+    #[test]
+    fn a_predicate_stays_with_its_particle_across_whispers_space() {
+        let words = [
+            spoken(0.0, 2.8, "塗りがある名前も出たちゃんと", 1),
+            spoken(2.8, 3.0, "チャ", 1),
+            spoken(3.0, 3.1, "パ", 1),
+            spoken(3.1, 3.3, "が", 1),
+            spoken(3.3, 3.31, " ", 1),
+            spoken(3.31, 3.7, "いる", 1),
+            spoken(3.7, 3.9, "チャ", 1),
+            spoken(3.9, 4.1, "ッ", 1),
+            spoken(4.1, 4.3, "パ", 1),
+            spoken(4.3, 7.0, "がチャッパがあります", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| cue.lines.join("/"))
+                .collect::<Vec<_>>(),
+            vec![
+                "塗りがある名前も出た",
+                "ちゃんとチャパが いるチャッパがチャッパがあります"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_prefers_a_clause_to_a_slightly_evener_mid_phrase_break() {
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 120.0,
+        };
+        let group = [spoken(0.0, 3.0, "今日は天気がいいので、みんなで公園へ", 1)];
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        let lines: Vec<Vec<String>> = run.pages().into_iter().map(|page| page.lines).collect();
+        assert_eq!(
+            lines,
+            vec![vec!["今日は天気がいいので、", "みんなで公園へ"]]
+        );
     }
 }

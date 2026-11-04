@@ -26,6 +26,8 @@ const DEPENDENT_PARTS: [&str; 2] = ["助詞", "助動詞"];
 pub(crate) const DEPENDENT_KANA: &str = "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶーﾞﾟ々ゝゞヽヾ";
 /// Only repeated units with at least this many independent characters count as rhythm.
 const RHYTHM_MINIMUM_UNIT: usize = 2;
+/// One-character particles are too common at word starts to say anything.
+const PARTICLE_PREFIX_MINIMUM: usize = 2;
 const CLAUSE_MARKS: [char; 6] = [',', ';', ':', '、', '，', '。'];
 
 /// What the text before a phrase end looks like; a page reads best when it ends at a strong one.
@@ -37,6 +39,12 @@ pub(crate) enum BreakClass {
     Closing,
     /// After a conjunctive particle such as けど or から.
     Connective,
+    /// After a finished predicate (基本形), unless it modifies a noun next.
+    Predicate,
+    /// Between a case or topic particle and the verb or adjective it belongs to.
+    Argument,
+    /// Beside a word whose opening also reads as a particle (`からい` after て may be `から`).
+    Ambiguous,
     /// After any other particle.
     Particle,
     /// A phrase end with nothing closing it.
@@ -212,13 +220,51 @@ fn break_class(previous: &Morpheme, item: &Morpheme) -> BreakClass {
     if item.part(0) == "感動詞" || previous.part(1) == "終助詞" {
         return BreakClass::Closing;
     }
+    if matches!(previous.part(0), "動詞" | "形容詞" | "助動詞")
+        && previous.part(5) == "基本形"
+        && item.part(0) != "名詞"
+    {
+        return BreakClass::Predicate;
+    }
     if previous.part(1) == "接続助詞" {
         return BreakClass::Connective;
+    }
+    if matches!(previous.part(1), "格助詞" | "係助詞") && matches!(item.part(0), "動詞" | "形容詞")
+    {
+        return BreakClass::Argument;
     }
     if previous.part(0) == "助詞" {
         return BreakClass::Particle;
     }
     BreakClass::Plain
+}
+
+/// An adjective before a noun modifies it (今日は|青い空): no predicate is being cut off.
+fn relaxed_modifier(class: BreakClass, item: &Morpheme, next: Option<&Morpheme>) -> BreakClass {
+    let modifies = item.part(0) == "形容詞" && next.is_some_and(|word| word.part(0) == "名詞");
+    if class == BreakClass::Argument && modifies {
+        return BreakClass::Particle;
+    }
+    class
+}
+
+/// Whisper's space marks a segment edge, not grammar: it reads as a clause break, unless it falls
+/// between a particle and the predicate it belongs to (が| いる).
+fn spaced_break_class(before: &[Morpheme], item: &Morpheme) -> BreakClass {
+    let class = before
+        .last()
+        .map_or(BreakClass::Plain, |last| break_class(last, item));
+    let Some(word) = before
+        .iter()
+        .rev()
+        .find(|earlier| earlier.part(1) != "空白")
+    else {
+        return class;
+    };
+    if break_class(word, item) == BreakClass::Argument {
+        return BreakClass::Argument;
+    }
+    class
 }
 
 /// A dependent or prefix-bound morpheme never opens a phrase; 非自立 follows
@@ -228,7 +274,12 @@ fn opens_phrase(previous: &Morpheme, item: &Morpheme) -> bool {
         || matches!(item.part(1), "接尾" | "非自立")
         || (item.part(0) == "記号" && item.part(1) != "括弧開");
     let after_prefix = previous.part(0) == "接頭詞" || previous.part(1) == "括弧開";
-    !dependent && !after_prefix
+    // A light する belongs to what it verbalizes (勉強|する, もしか|したら), unless a particle
+    // already closed that (本を|する).
+    let light_verb = item.part(0) == "動詞"
+        && item.part(6) == "する"
+        && !matches!(previous.part(0), "助詞" | "記号");
+    !dependent && !after_prefix && !light_verb
 }
 
 /// Inside a run of katakana or Latin, an uncertain name stays whole.
@@ -304,7 +355,7 @@ fn analyze(text: &str, items: &[Morpheme]) -> Boundaries {
     let mut phrases: Vec<PhraseEnd> = Vec::new();
     let mut atomic: BTreeSet<usize> = BTreeSet::new();
     let mut polite: Vec<usize> = Vec::new();
-    for pair in items.windows(2) {
+    for (index, pair) in items.windows(2).enumerate() {
         let (previous, item) = (&pair[0], &pair[1]);
         if is_dependent_kana(chars[item.start]) || splits_uncertain_name(&chars, previous, item) {
             protected.insert(item.start);
@@ -318,7 +369,11 @@ fn analyze(text: &str, items: &[Morpheme]) -> Boundaries {
         if name_starts.contains(&item.start) || opens_phrase(previous, item) {
             phrases.push(PhraseEnd {
                 offset: item.start,
-                class: break_class(previous, item),
+                class: relaxed_modifier(
+                    spaced_break_class(&items[..=index], item),
+                    item,
+                    items.get(index + 2),
+                ),
             });
         }
         if !dependent_or_suffix_start(&chars, previous, item) {
@@ -443,12 +498,43 @@ impl Segmenter {
             .collect())
     }
 
+    /// Whether a hiragana word opens with something that reads as a particle by itself.
+    fn opens_with_particle(&self, item: &Morpheme) -> AppResult<bool> {
+        let chars: Vec<char> = item.surface.chars().collect();
+        if !chars.first().is_some_and(|c| is_hiragana(*c)) {
+            return Ok(false);
+        }
+        for length in PARTICLE_PREFIX_MINIMUM..chars.len() {
+            let prefix: String = chars[..length].iter().collect();
+            let parts = self.morphemes(&prefix)?;
+            if parts.len() == 1 && parts[0].part(0) == "助詞" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Candidate break offsets of `text`. Only text with Japanese loads the dictionary.
     pub(crate) fn boundaries(&self, text: &str) -> AppResult<Boundaries> {
         if !is_japanese(text) {
             return Ok(spaced_boundaries(text));
         }
-        Ok(analyze(text, &self.morphemes(text)?))
+        let items = self.morphemes(text)?;
+        let mut boundaries = analyze(text, &items);
+        for phrase in &mut boundaries.phrases {
+            // A misread word makes both of its edges unreliable.
+            let touching = items
+                .iter()
+                .filter(|item| item.start == phrase.offset || item.end == phrase.offset);
+            if phrase.class != BreakClass::Clause {
+                for item in touching {
+                    if self.opens_with_particle(item)? {
+                        phrase.class = BreakClass::Ambiguous;
+                    }
+                }
+            }
+        }
+        Ok(boundaries)
     }
 }
 
@@ -514,7 +600,7 @@ mod tests {
                 },
                 PhraseEnd {
                     offset: 7,
-                    class: BreakClass::Particle
+                    class: BreakClass::Argument
                 },
                 PhraseEnd {
                     offset: 12,
@@ -522,7 +608,7 @@ mod tests {
                 },
                 PhraseEnd {
                     offset: 15,
-                    class: BreakClass::Particle
+                    class: BreakClass::Argument
                 },
                 PhraseEnd {
                     offset: 21,
@@ -728,5 +814,65 @@ mod tests {
         };
         assert_eq!(item.part(3), "");
         assert!(!item.is_known());
+    }
+
+    #[test]
+    fn a_light_verb_stays_with_what_it_verbalizes() {
+        assert_eq!(phrase_offsets("もしかしたら私"), vec![6, 7]);
+        assert_eq!(phrase_offsets("勉強します"), vec![5]);
+    }
+
+    #[test]
+    fn a_light_verb_after_a_particle_keeps_its_phrase() {
+        assert_eq!(phrase_offsets("本をする"), vec![2, 4]);
+    }
+
+    #[test]
+    fn a_word_that_opens_like_a_particle_is_an_ambiguous_break_on_both_sides() {
+        let boundaries = test_segmenter()
+            .boundaries("振ってからいある入れた")
+            .unwrap();
+        assert_eq!(boundaries.phrases[0].offset, 3);
+        assert_eq!(boundaries.phrases[0].class, BreakClass::Ambiguous);
+        assert_eq!(boundaries.phrases[1].offset, 6);
+        assert_eq!(boundaries.phrases[1].class, BreakClass::Ambiguous);
+    }
+
+    #[test]
+    fn a_finished_predicate_is_a_strong_break_unless_it_modifies_a_noun() {
+        let finished = test_segmenter().boundaries("行くもうすぐ").unwrap();
+        assert_eq!(finished.phrases[0].class, BreakClass::Predicate);
+        let modifying = test_segmenter().boundaries("行く人").unwrap();
+        assert_eq!(modifying.phrases[0].class, BreakClass::Plain);
+    }
+
+    #[test]
+    fn a_particle_and_its_predicate_are_a_weak_break_even_across_a_space() {
+        let plain = test_segmenter().boundaries("犬がいる").unwrap();
+        assert_eq!(plain.phrases[0].class, BreakClass::Argument);
+        let spaced = test_segmenter().boundaries("犬が いる").unwrap();
+        assert_eq!(spaced.phrases[0].class, BreakClass::Argument);
+        let clause = test_segmenter().boundaries("犬 猫").unwrap();
+        assert_eq!(clause.phrases[0].class, BreakClass::Clause);
+    }
+
+    #[test]
+    fn a_text_of_only_a_space_before_a_word_has_no_earlier_word() {
+        let boundaries = test_segmenter().boundaries(" 犬").unwrap();
+        assert_eq!(boundaries.phrases.last().unwrap().offset, 2);
+        let item = Morpheme {
+            start: 1,
+            end: 2,
+            surface: "犬".to_owned(),
+            features: vec!["名詞".to_owned(), "一般".to_owned()],
+        };
+        let space = Morpheme {
+            start: 0,
+            end: 1,
+            surface: " ".to_owned(),
+            features: vec!["記号".to_owned(), "空白".to_owned()],
+        };
+        assert_eq!(spaced_break_class(&[space], &item), BreakClass::Clause);
+        assert_eq!(spaced_break_class(&[], &item), BreakClass::Plain);
     }
 }

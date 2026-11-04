@@ -65,7 +65,8 @@ windows_whisper_vulkan() {
   rm -rf "$work/whisper-src" "$work/whisper-vulkan-build"
   git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$work/whisper-src"
   cmake -S "$work/whisper-src" -B "$work/whisper-vulkan-build" -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >/dev/null
-  cmake --build "$work/whisper-vulkan-build" --config Release --target whisper-cli -j 8 >/dev/null
+  cmake --build "$work/whisper-vulkan-build" --config Release --target whisper-cli -j 8 >"$work/whisper-vulkan-build.log" ||
+    { tail -40 "$work/whisper-vulkan-build.log"; return 1; }
   rm -rf "$runtime/whisper-vulkan" && mkdir -p "$runtime/whisper-vulkan"
   cp "$work/whisper-vulkan-build/bin/Release/whisper-cli.exe" "$runtime/whisper-vulkan/"
 }

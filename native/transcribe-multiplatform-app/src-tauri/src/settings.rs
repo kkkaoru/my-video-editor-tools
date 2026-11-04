@@ -119,7 +119,7 @@ impl Default for Settings {
             },
             width_ratio: DEFAULT_WIDTH_RATIO,
             placement: Placement {
-                anchor: Anchor::VideoBottom,
+                anchor: Anchor::FaceAbove,
                 offset_x_percent: 0.0,
                 offset_y_percent: 0.0,
             },

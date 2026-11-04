@@ -28,15 +28,17 @@ it("derives the metrics from the short edge and the width", () => {
   );
   expect(metrics.fontPx).toBe(54);
   expect(metrics.outlinePx).toBeCloseTo(5.4);
-  expect(metrics.maxLinePx).toBeCloseTo(1525.2);
+  expect(metrics.maxLinePx).toBeCloseTo(1521.53, 1);
 });
 
 it("keeps the metrics at their minimums on a tiny frame", () => {
-  expect(metricsFor({ width: 4, height: 4 }, settingsWith("video_top", 0, 0))).toStrictEqual({
-    fontPx: 1,
-    outlinePx: 1,
-    maxLinePx: 1.2000000000000002,
-  });
+  const metrics: ReturnType<typeof metricsFor> = metricsFor(
+    { width: 4, height: 4 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect(metrics.fontPx).toBe(1);
+  expect(metrics.outlinePx).toBe(1);
+  expect(metrics.maxLinePx).toBeCloseTo(1.132);
 });
 
 it("never lets a line be shorter than one character", () => {
@@ -102,7 +104,7 @@ it("places the block at the bottom of the video", () => {
   );
   expect(layout.lines).toStrictEqual(["abcd"]);
   expect(layout.x).toBe(960);
-  expect(layout.y).toBeCloseTo(979.668);
+  expect(layout.y).toBeCloseTo(911.18, 1);
   expect(layout.face).toBe(null);
 });
 
@@ -112,7 +114,7 @@ it("places the block at the top of the video", () => {
     { width: 1920, height: 1080 },
     settingsWith("video_top", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(100.332);
+  expect(layout.y).toBeCloseTo(168.82, 1);
   expect(layout.face).toBe(null);
 });
 
@@ -122,7 +124,7 @@ it("places the block above the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_above", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(198.828);
+  expect(layout.y).toBeCloseTo(161.18, 1);
   expect(layout.face?.centerX).toBe(960);
 });
 
@@ -132,7 +134,7 @@ it("places the block below the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_below", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(827.172);
+  expect(layout.y).toBeCloseTo(864.82, 1);
   expect(layout.face?.centerX).toBe(960);
 });
 
@@ -143,7 +145,7 @@ it("applies the percentage offsets", () => {
     settingsWith("video_top", 10, 20),
   );
   expect(layout.x).toBe(600);
-  expect(layout.y).toBeCloseTo(292.9);
+  expect(layout.y).toBeCloseTo(356.32, 1);
 });
 
 it("keeps the block inside the frame when the offset pushes it out", () => {
@@ -152,8 +154,8 @@ it("keeps the block inside the frame when the offset pushes it out", () => {
     { width: 1000, height: 1000 },
     settingsWith("video_bottom", -50, 50),
   );
-  expect(layout.x).toBe(105);
-  expect(layout.y).toBeCloseTo(957.1);
+  expect(layout.x).toBeCloseTo(106.7);
+  expect(layout.y).toBeCloseTo(954.8, 1);
 });
 
 it("centres a block wider than the frame", () => {

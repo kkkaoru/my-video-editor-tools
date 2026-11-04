@@ -198,7 +198,7 @@ it("converts the rim width to a ratio", () => {
 it("describes the preview in the landscape frame by default", () => {
   show(SETTINGS);
   expect(descriptionText()).toBe(
-    "Sample caption at 51% across and 89% down the 1920×1080 frame. Text size at this resolution: 54 px.",
+    "Sample caption at 51% across and 83% down the 1920×1080 frame. Text size at this resolution: 54 px.",
   );
 });
 
@@ -206,7 +206,7 @@ it("shows the vertical frame narrower", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Vertical 1080×1920" }));
   expect(descriptionText()).toBe(
-    "Sample caption at 51% across and 88% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
+    "Sample caption at 51% across and 87% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
   );
 });
 
@@ -214,7 +214,7 @@ it("shows the 4K frame", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "4K" }));
   expect(descriptionText()).toBe(
-    "Sample caption at 51% across and 89% down the 4K frame. Text size at this resolution: 108 px.",
+    "Sample caption at 51% across and 83% down the 4K frame. Text size at this resolution: 108 px.",
   );
 });
 
@@ -265,7 +265,7 @@ it("changes the unknown speaker's colours", () => {
 it("still draws the sample with an empty palette", () => {
   show({ ...SETTINGS, palette: [] });
   expect(descriptionText()).toBe(
-    "Sample caption at 51% across and 89% down the 1920×1080 frame. Text size at this resolution: 54 px.",
+    "Sample caption at 51% across and 83% down the 1920×1080 frame. Text size at this resolution: 54 px.",
   );
   expect(screen.queryByRole("button", { name: "Remove a speaker" })).toBe(null);
 });
