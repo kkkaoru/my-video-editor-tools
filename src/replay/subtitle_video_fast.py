@@ -10,7 +10,6 @@ safe; the default spatial measure is a pure function. Temporal-context (register
 not supported here; use the original renderer for it.
 """
 
-import re
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -25,6 +24,7 @@ from time import monotonic
 import numpy as np
 from numpy.typing import NDArray
 
+from replay.showinfo import SHOWN_PTS
 from replay.subtitle_inpaint import Image, ramp_softness
 from replay.subtitle_repair import QualityMeasure, RepairedFrame, TextDetector, repair_with_retries
 from replay.subtitle_stream import BatchDetector, EvidenceSink, ReceiptSink, SubtitleSpan
@@ -460,13 +460,7 @@ def render_repaired_video_fast(
         if decoder.wait(timeout=30) != 0 or (encoder is not None and encoder.wait(timeout=30) != 0):
             raise RuntimeError("FFmpeg repair pipeline failed")
     if job.source_clock is not None:
-        observed = tuple(
-            int(value)
-            for value in re.findall(
-                rb"\bn:\s*\d+\s+pts:\s*(-?\d+)\s",
-                decode_log_path.read_bytes(),
-            )
-        )
+        observed = tuple(int(value) for value in SHOWN_PTS.findall(decode_log_path.read_bytes()))
         if observed != job.source_clock.pts:
             raise ValueError("Actual decoded PTS differ from the supplied source clock")
     quality_measured = totals[1] > 0 and totals[0] == totals[1]

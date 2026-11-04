@@ -22,7 +22,6 @@ import hashlib
 import json
 import os
 import queue
-import re
 import subprocess
 import sys
 import threading
@@ -42,6 +41,7 @@ from replay import packet_clock
 from replay.core import ReplayError
 from replay.delivery_media import read_clock
 from replay.mps_graph_cache import released_mps_graphs
+from replay.showinfo import SHOWN_PTS
 from replay.yolo_labels import CAPTION, FACE
 from replay.yolo_train import check_checkpoint, check_settings
 
@@ -432,10 +432,7 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
 
 def decoded_clock(decode_log: Path, frame_clock: Path, *, end: int) -> None:
     """Refuse a packet clock whose first ``end`` PTS are not the ones the decoder output."""
-    observed = [
-        int(value)
-        for value in re.findall(rb"\bn:\s*\d+\s+pts:\s*(-?\d+)\s", decode_log.read_bytes())
-    ]
+    observed = [int(value) for value in SHOWN_PTS.findall(decode_log.read_bytes())]
     expected = list(read_clock(frame_clock).pts[:end])
     if observed[: len(expected)] != expected:
         raise packet_clock.refuse(

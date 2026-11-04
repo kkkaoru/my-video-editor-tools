@@ -27,7 +27,6 @@ splices, dropped and re-stamped PTS are recorded.
 
 import json
 import math
-import re
 import subprocess
 from fractions import Fraction
 from itertools import pairwise
@@ -35,6 +34,7 @@ from pathlib import Path
 
 from replay.core import ReplayError
 from replay.recordings import record
+from replay.showinfo import SHOWN_PTS
 from replay.source_lead_in import BITRATE, COLOUR, sha256, video_pts
 
 DIRECTORY = "source-decodable"
@@ -48,7 +48,6 @@ SPLICE_FRAMES = 8
 DROPS_PER_SPLICE = 8
 MAX_CHANGED_SHARE = 0.001
 MONOTONIC = "select='isnan(prev_selected_pts)+gt(pts,prev_selected_pts)'"
-SHOWN = re.compile(rb"\bn:\s*\d+\s+pts:\s*(-?\d+)\s")
 SPLICE_CHECK = "splice-check.json"  # a source whose splices decode in order
 
 
@@ -145,7 +144,7 @@ def hardware_pts(movie: Path, ffmpeg: str) -> list[int]:
          "-vf", "showinfo", "-fps_mode", "passthrough", "-f", "null", "-"],
         capture_output=True, check=True,
     )  # fmt: skip
-    return [int(value) for value in SHOWN.findall(done.stderr)]
+    return [int(value) for value in SHOWN_PTS.findall(done.stderr)]
 
 
 def repair_record(

@@ -1,6 +1,5 @@
 """Streaming FFmpeg repair of CFR parts or normalized windows; video only."""
 
-import re
 from collections.abc import Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from time import monotonic
 
 import numpy as np
 
+from replay.showinfo import SHOWN_PTS
 from replay.subtitle_clock import VideoFrameClock
 from replay.subtitle_inpaint import Image, ramp_softness, unchanged_outside_support
 from replay.subtitle_repair import QualityMeasure, RepairedFrame, TextDetector
@@ -370,13 +370,7 @@ def render_repaired_video(
         if decoder.wait(timeout=30) != 0 or encoder.wait(timeout=30) != 0:
             raise RuntimeError("FFmpeg repair pipeline failed")
     if job.source_clock is not None:
-        observed = tuple(
-            int(value)
-            for value in re.findall(
-                rb"\bn:\s*\d+\s+pts:\s*(-?\d+)\s",
-                decode_log_path.read_bytes(),
-            )
-        )
+        observed = tuple(int(value) for value in SHOWN_PTS.findall(decode_log_path.read_bytes()))
         if observed != job.source_clock.pts:
             raise ValueError("Actual decoded PTS differ from the supplied source clock")
     quality_measured = repaired_frames > 0 and measured_frames == repaired_frames
