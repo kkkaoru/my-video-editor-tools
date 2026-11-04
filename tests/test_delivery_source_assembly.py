@@ -223,18 +223,6 @@ def test_nonmicrosecond_terminal_extent(
             "chunks": [first_ref, second_ref],
         },
     )
-    if inexact_first:
-        with pytest.raises(ReplayError, match="exact ffconcat serialization"):
-            assembly.assemble(
-                manifest,
-                sha256=assembly._digest(manifest),
-                output=tmp_path / "joined.mov",
-                evidence=tmp_path / "evidence",
-                ffmpeg=tools[0],
-                ffprobe=tools[1],
-            )
-        assert not (tmp_path / "joined.mov").exists()
-        return
     receipt = assembly.assemble(
         manifest,
         sha256=assembly._digest(manifest),
@@ -246,10 +234,12 @@ def test_nonmicrosecond_terminal_extent(
     assert assembly._json(receipt)["compressedPacketsIdentical"] is True
     assert assembly._json(receipt)["frames"] == 8
     result = assembly._json(tmp_path / "evidence/single-source-index.json")
-    assert record(assembly._array(result["ranges"], 1)[0])["sourceEndPTS"] == 769
+    # A gap-shaped 385/3000 s extent rounds to 0.128333 s and still joins tick-exact.
+    end = 770 if inexact_first else 769
+    assert record(assembly._array(result["ranges"], 1)[0])["sourceEndPTS"] == end
     concat = (tmp_path / "evidence/sources.ffconcat").read_text(encoding="utf-8")
     assert concat.count("duration ") == 1
-    assert "duration 0.128000\n" in concat
+    assert f"duration {'0.128333' if inexact_first else '0.128000'}\n" in concat
 
 
 @pytest.mark.parametrize("manifest", ["libx264", "libx265"], indirect=True)
@@ -336,9 +326,19 @@ def test_vfr_seam_lossless_integration(manifest: Path, tools: tuple[Path, Path])
 
 
 @pytest.mark.parametrize("duration", [1, 2])
-def test_inexact_duration_rejected(duration: int) -> None:
+def test_tick_shorter_than_a_microsecond_rejected(duration: int) -> None:
     with pytest.raises(ReplayError, match="serialization"):
-        assembly.duration_text(VideoFrameClock((0,), Fraction(1, 30000), duration))
+        assembly.duration_texts((VideoFrameClock((0,), Fraction(1, 3_000_000), duration),))
+
+
+def test_gap_extent_rounds_cumulatively_to_exact_ticks() -> None:
+    # A timestamp gap leaves 31.961333... s; three such chunks would drift if rounded alone.
+    base = Fraction(1, 90000)
+    clocks = tuple(VideoFrameClock((i * 2876520,), base, 2876520) for i in range(3))
+    texts = assembly.duration_texts(clocks)
+    assert texts == ("31.961333", "31.961334", "31.961333")
+    total = sum(round(Fraction(t) * 1_000_000) for t in texts)
+    assert Fraction(total, 1_000_000) / base == 3 * 2876520
 
 
 @pytest.mark.parametrize(

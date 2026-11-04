@@ -328,15 +328,24 @@ def probe(
     return Probe(stream, frames, tuple(packets))
 
 
-def duration_text(clock: VideoFrameClock) -> str:
-    """Only exactly serializable native extents; no microsecond rounding."""
-    microseconds = (
-        (clock.pts[-1] + clock.last_duration - clock.pts[0]) * clock.time_base * 1_000_000
-    )
-    if microseconds.denominator != 1:
-        raise ReplayError("Native duration has no exact ffconcat serialization")
-    value = microseconds.numerator
-    return f"{value // 1_000_000}.{value % 1_000_000:06d}"
+def duration_texts(clocks: tuple[VideoFrameClock, ...]) -> tuple[str, ...]:
+    """Contiguous native extents in whole microseconds, each end exact in its time base.
+
+    A source timestamp gap leaves an end off the microsecond grid. The concat demuxer sums
+    microseconds and rescales them to the nearest stream tick, so each cumulative end is
+    rounded once and accepted only when it maps back to its exact tick (no drift builds up).
+    """
+    first = clocks[0].pts[0] if clocks else 0
+    texts: list[str] = []
+    done = 0
+    for clock in clocks:
+        ticks = clock.pts[-1] + clock.last_duration - first
+        end = round(ticks * clock.time_base * 1_000_000)
+        if round(Fraction(end, 1_000_000) / clock.time_base) != ticks:
+            raise ReplayError("Native duration has no exact ffconcat serialization")
+        value, done = end - done, end
+        texts.append(f"{value // 1_000_000}.{value % 1_000_000:06d}")
+    return tuple(texts)
 
 
 def verify_chunk(chunk: Chunk, measured: Probe) -> None:
@@ -367,7 +376,7 @@ def assemble(
     for tool in (ffmpeg, ffprobe, Path(__file__).resolve()):
         _bind(_path(str(tool)), _digest(tool), bindings)
     # Only nonterminal extents determine the next file's timestamp offset.
-    durations = tuple(duration_text(c.clock) for c in chunks[:-1])
+    durations = duration_texts(tuple(c.clock for c in chunks[:-1]))
     evidence.mkdir(mode=0o700)
     pending_directory = output.with_name(output.name + ".assembly")
     pending_directory.mkdir(mode=0o700)
