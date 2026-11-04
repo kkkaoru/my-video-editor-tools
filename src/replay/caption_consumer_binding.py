@@ -153,14 +153,7 @@ def verify_support(config: Path, output: Path) -> None:
         {
             "cuts": [asdict(cut) for cut in result.cuts],
             "parentSHA256": parents,
-            "audioSupport": {
-                "policy": "outer-envelope-whole-frames-no-recognition-removal",
-                "firstFrame": result.first_frame,
-                "endFrame": result.end_frame,
-                "removedFrames": [list(span) for span in result.removed],
-                "recognizedSpeechRemoved": False,
-                "internalGapsVerified": False,
-            },
+            "audioSupport": cut_audio_support.support_record(result),
             "nonSpeechRemovalVerified": False,
             "humanReviewed": False,
             "deliveryComplete": False,

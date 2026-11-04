@@ -280,10 +280,26 @@ def test_a_hole_in_the_audio_stream_splits_the_cut_across_it() -> None:
     assert (result.first_frame, result.end_frame) == (0, 40)
 
 
-def test_speech_inside_an_audio_hole_is_refused() -> None:
+def test_a_silent_label_over_an_audio_hole_is_removed_and_reported() -> None:
+    # 11/03 (2026-11-04): a 1.97 s source hole, ASR text over it with 20 ms of samples.
+    clock = AudioFrameClock((0, 20000), (8000, 8000), 8000, Fraction(1, 8000))
+    labels = (ClockLabel("声", 1.5, 1.7, "raw:1"), ClockLabel("縁", 0.99, 2.505, "raw:2"))
+    result = intersect((CutSpan(0, 40, 0),), labels, clock, fps=10)
+    assert result.removed == ((10, 25), (35, 40))
+    assert result.silent_labels == labels
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        ClockLabel("聞こえる", 0.8, 1.5, "raw:1"),  # 0.2 s of samples before the hole
+        ClockLabel("点", 1.5, 1.5, "raw:2"),
+    ],
+)
+def test_audible_speech_or_a_point_in_an_audio_hole_is_refused(label: ClockLabel) -> None:
     clock = AudioFrameClock((0, 20000), (8000, 8000), 8000, Fraction(1, 8000))
     with pytest.raises(ReplayError, match="intersects recognized speech"):
-        intersect((CutSpan(0, 40, 0),), (ClockLabel("声", 1.5, 1.7, "raw:1"),), clock, fps=10)
+        intersect((CutSpan(0, 40, 0),), (label,), clock, fps=10)
 
 
 def test_a_short_cut_mostly_inside_a_sub_second_hole_is_split_around_it() -> None:

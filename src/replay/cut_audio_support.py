@@ -42,6 +42,7 @@ class SupportIntersection:
     removed: tuple[tuple[int, int], ...]
     first_frame: int
     end_frame: int
+    silent_labels: tuple[ClockLabel, ...] = ()
 
 
 def _protect_labels(
@@ -49,13 +50,20 @@ def _protect_labels(
     labels: tuple[ClockLabel, ...],
     fps: int,
     support: tuple[tuple[Fraction, Fraction], ...],
-) -> None:
-    """Reject every label in a removed frame, except speech wholly inside decoded audio.
+    decoded: tuple[tuple[Fraction, Fraction], ...],
+) -> tuple[ClockLabel, ...]:
+    """Reject every label in a removed frame, except speech wholly inside decoded audio and
+    silent labels over a hole; return the silent ones.
 
     Trimming to whole frames removes the partial frame at each end of the decoded audio. An
     interval label inside the audio may start (or end) in that frame; the shared token
-    projection keeps it and clamps it to the retained cut. Points are never exempt.
+    projection keeps it and clamps it to the retained cut. A label across an internal hole
+    with under one video frame of decoded samples in all has no audible speech (cuts and
+    recognition share one decoded clock): it is recognition over missing audio, removed and
+    reported. Points are never exempt.
     """
+    holes = tuple((a[1], b[0]) for a, b in zip(support, support[1:], strict=False))
+    silent: list[ClockLabel] = []
     ends = tuple(Fraction(end, fps) for _, end in removed)
     for label in labels:
         start, end = Fraction(str(label.start)), Fraction(str(label.end))
@@ -66,7 +74,17 @@ def _protect_labels(
         point_removed = start == end and low <= start < high
         supported = start < end and any(low <= start and end <= high for low, high in support)
         if point_removed or (start < high and end > low and not supported):
-            raise ReplayError("Audio-support trimming intersects recognized speech or a point")
+            heard = sum(
+                (max(min(end, b) - max(start, a), Fraction(0)) for a, b in decoded), Fraction(0)
+            )
+            if (
+                point_removed
+                or heard >= Fraction(1, fps)
+                or not any(start < b and end > a for a, b in holes)
+            ):
+                raise ReplayError("Audio-support trimming intersects recognized speech or a point")
+            silent.append(label)
+    return tuple(silent)
 
 
 def support_spans(
@@ -110,7 +128,8 @@ def intersect(
         raise ReplayError("Audio-support intersection exceeds its input budget")
     audio = support_spans(clock, fps=fps)
     frames = whole_frames(audio, fps)
-    fine = whole_frames(support_spans(clock, fps=fps, hole=Fraction(0)), fps)
+    samples = support_spans(clock, fps=fps, hole=Fraction(0))
+    fine = whole_frames(samples, fps)
     if not frames:
         raise ReplayError("No complete video frame lies inside decoded audio support")
     first, end = frames[0][0], frames[-1][1]
@@ -141,10 +160,26 @@ def intersect(
             position = high
         if position < cut.source_end_frame:
             removed.append((position, cut.source_end_frame))
-    _protect_labels(tuple(removed), labels, fps, audio)
+    silent = _protect_labels(tuple(removed), labels, fps, audio, samples)
     if not result:
         raise ReplayError("Audio-support intersection removes every retained cut")
-    return SupportIntersection(tuple(result), tuple(removed), first, end)
+    return SupportIntersection(tuple(result), tuple(removed), first, end, silent)
+
+
+def support_record(result: SupportIntersection) -> dict[str, object]:
+    """The ``audioSupport`` evidence a candidate cut plan records (and its verifier rebuilds)."""
+    return {
+        "policy": "outer-envelope-whole-frames-no-recognition-removal",
+        "firstFrame": result.first_frame,
+        "endFrame": result.end_frame,
+        "removedFrames": [list(span) for span in result.removed],
+        "recognizedSpeechRemoved": False,
+        "silentLabelsRemoved": [
+            {"text": label.text, "start": label.start, "end": label.end}
+            for label in result.silent_labels
+        ],
+        "internalGapsVerified": False,
+    }
 
 
 def _local(path: Path, *, output: bool = False) -> Path:
@@ -240,14 +275,7 @@ def run(config: Path, output: Path) -> SupportIntersection:
         {
             "cuts": [asdict(cut) for cut in result.cuts],
             "parentSHA256": {**cut_parents, **parents},
-            "audioSupport": {
-                "policy": "outer-envelope-whole-frames-no-recognition-removal",
-                "firstFrame": result.first_frame,
-                "endFrame": result.end_frame,
-                "removedFrames": [list(span) for span in result.removed],
-                "recognizedSpeechRemoved": False,
-                "internalGapsVerified": False,
-            },
+            "audioSupport": support_record(result),
             "nonSpeechRemovalVerified": False,
             "humanReviewed": False,
             "deliveryComplete": False,
