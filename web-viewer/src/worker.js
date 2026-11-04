@@ -29,6 +29,18 @@ const CHANNELS_KEY = "config/youtube-channels.json";
 const CHANNEL_ID = /^UC[A-Za-z0-9_-]{22}$/;
 const LABEL_MAX = 64;
 let allowCache = { at: 0, users: [] };
+// Media chunk cache (serveMedia): bounded ranges come from aligned chunks kept in this data
+// center's Cache API, keyed by the R2 etag so two revisions of one key never mix.
+const MEDIA_CHUNK_BYTES = 8 * 1024 * 1024;
+// Only small ranges (Safari's 64 KiB MP4 reads) wait for a chunk: an HLS segment (~2.6 MB) read
+// straight from R2 arrives in ~0.6 s, while filling its 8 MiB chunk first took ~1.8 s.
+const MEDIA_CHUNKED_MAX_BYTES = 1024 * 1024;
+const MEDIA_CACHE_URL = "https://media.internal/v1/";
+const MEDIA_CACHE_SECONDS = 60 * 60 * 24 * 7;
+const MEDIA_HEAD_MS = 60_000;
+const MEDIA_HEADS_MAX = 256;
+const mediaHeads = new Map();
+const chunkLoads = new Map();
 
 export default {
   async fetch(request, env) {
@@ -535,9 +547,12 @@ async function r2Json(request, env, key) {
 
 // R2 honors HTTP range reads; without this a <video> element cannot seek.
 // ?download=1 adds Content-Disposition; Range stays on so large downloads can resume.
-// A ranged GET asks R2 for the range directly (its answer carries the size); head() is needed
-// only without a range, for HEAD, and when R2 refuses the range so the 416 can name the size.
+// A small bounded range is answered from the chunk cache (chunkedRange). Any other ranged GET asks
+// R2 for the range directly (its answer carries the size); head() is needed only without a
+// range, for HEAD, and when R2 refuses the range so the 416 can name the size.
 async function serveMedia(request, url, env, key) {
+  const chunked = request.method === "HEAD" ? null : await chunkedRange(request, url, env, key);
+  if (chunked) return chunked;
   const wanted = request.method === "HEAD" ? null : r2Range(request.headers.get("Range"));
   if (wanted) {
     let obj;
@@ -587,6 +602,101 @@ async function serveMedia(request, url, env, key) {
       "Content-Range": `bytes ${range.start}-${range.end}/${size}`,
     },
   });
+}
+
+// iPhone Safari reads a movie in bounded 64 KiB ranges, one after another; straight from R2
+// each took ~200 ms (measured 2026-11-04), so playback over a mobile link fell behind the
+// movie's bitrate. A bounded range of at most 1 MiB is cut from at most two cached chunks.
+// Anything else (open-ended reads, which stream well, missing keys, unsatisfiable ranges or a
+// revision replaced mid-read) returns null and takes the direct R2 path.
+async function chunkedRange(request, url, env, key) {
+  const m = (request.headers.get("Range") || "").match(/^bytes=(\d+)-(\d+)$/);
+  if (!m) return null;
+  const start = Number(m[1]);
+  if (Number(m[2]) < start || Number(m[2]) - start >= MEDIA_CHUNKED_MAX_BYTES) return null;
+  const head = await mediaHead(env, key);
+  if (!head || start >= head.size) return null;
+  const end = Math.min(Number(m[2]), head.size - 1);
+  const first = Math.floor(start / MEDIA_CHUNK_BYTES), last = Math.floor(end / MEDIA_CHUNK_BYTES);
+  const parts = await Promise.all(
+    [first, last].slice(0, last - first + 1).map((index) => {
+      const base = index * MEDIA_CHUNK_BYTES;
+      return chunkSlice(env, key, head, index, Math.max(start, base) - base, Math.min(end, base + MEDIA_CHUNK_BYTES - 1) - base);
+    }),
+  );
+  if (parts.includes(null)) {
+    mediaHeads.delete(key);
+    return null;
+  }
+  return new Response(parts.length === 1 ? parts[0] : joinChunks(parts[0], parts[1]), {
+    status: 206,
+    headers: {
+      ...mediaHeaders(url, key, head),
+      "Content-Length": String(end - start + 1),
+      "Content-Range": `bytes ${start}-${end}/${head.size}`,
+    },
+  });
+}
+
+function joinChunks(first, second) {
+  const bytes = new Uint8Array(first.length + second.length);
+  bytes.set(first);
+  bytes.set(second, first.length);
+  return bytes;
+}
+
+// head() costs about as much as a small read, so it is remembered per isolate for a minute.
+async function mediaHead(env, key) {
+  const memo = mediaHeads.get(key);
+  if (memo && Date.now() - memo.at < MEDIA_HEAD_MS) return memo.head;
+  const head = await env.MEDIA.head(key);
+  if (mediaHeads.size >= MEDIA_HEADS_MAX) mediaHeads.clear();
+  mediaHeads.set(key, { at: Date.now(), head });
+  return head;
+}
+
+// Bytes from..to (inclusive) of one chunk. A cached chunk answers the Range itself (Cache API
+// match() returns 206), so a hit reads only the slice, never the whole chunk.
+async function chunkSlice(env, key, head, index, from, to) {
+  const cacheUrl = `${MEDIA_CACHE_URL}${encodeURIComponent(key)}/${encodeURIComponent(head.etag)}/${index}`;
+  const hit = await caches.default.match(new Request(cacheUrl, { headers: { Range: `bytes=${from}-${to}` } }));
+  if (hit) {
+    const bytes = new Uint8Array(await hit.arrayBuffer());
+    return hit.status === 206 ? bytes : bytes.subarray(from, to + 1);
+  }
+  const chunk = await mediaChunk(env, key, head, index, cacheUrl);
+  return chunk && chunk.subarray(from, to + 1);
+}
+
+// Concurrent misses of one chunk share a single R2 read.
+function mediaChunk(env, key, head, index, cacheUrl) {
+  if (!chunkLoads.has(cacheUrl)) {
+    chunkLoads.set(cacheUrl, loadChunk(env, key, head, index, cacheUrl).finally(() => chunkLoads.delete(cacheUrl)));
+  }
+  return chunkLoads.get(cacheUrl);
+}
+
+// null when the object changed since head(): its etag no longer matches.
+async function loadChunk(env, key, head, index, cacheUrl) {
+  const offset = index * MEDIA_CHUNK_BYTES;
+  const obj = await env.MEDIA.get(key, {
+    range: { offset, length: Math.min(MEDIA_CHUNK_BYTES, head.size - offset) },
+    onlyIf: { etagMatches: head.etag },
+  });
+  if (!obj?.body) return null;
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  try {
+    await caches.default.put(
+      cacheUrl,
+      // Content-Length lets later match() calls answer a Range with 206.
+      new Response(bytes, {
+        headers: { "Cache-Control": `public, max-age=${MEDIA_CACHE_SECONDS}`, "Content-Length": String(bytes.length) },
+      }),
+    );
+  } catch (error) {
+    console.warn(`media: caching ${cacheUrl} failed: ${error}`); // this answer still goes out
+  }
+  return bytes;
 }
 
 function mediaHeaders(url, key, object) {

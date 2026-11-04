@@ -837,20 +837,33 @@ it("gives a share only its own video's channel label", async () => {
   });
 });
 
-// R2's ranged get: offset/length, offset only or suffix; it answers with the whole size.
-function rangeBucket(content: string, refuses: boolean) {
+// R2's ranged get: offset/length, offset only or suffix; it answers with the whole size, and
+// with no body when onlyIf.etagMatches names another revision.
+function rangeBucket(content: string, refuses: boolean, etag = "m", name = "media/v.mp4") {
   const heads: string[] = [];
-  const object = (body: string) => ({ size: content.length, httpEtag: '"m"', body });
+  const gets: string[] = [];
+  const object = (body: string) => ({
+    size: content.length,
+    etag,
+    httpEtag: `"${etag}"`,
+    body,
+    arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+  });
   type R2Range = { offset?: number; length?: number; suffix?: number };
   return {
     heads,
+    gets,
     head: async (key: string) => {
       heads.push(key);
-      return key === "media/v.mp4" ? object(content) : null;
+      return key === name ? object(content) : null;
     },
-    get: async (key: string, options?: { range?: R2Range }) => {
-      if (key !== "media/v.mp4") return null;
+    get: async (key: string, options?: { range?: R2Range; onlyIf?: { etagMatches: string } }) => {
+      if (key !== name) return null;
       const range = options?.range;
+      gets.push(`${range?.offset}+${range?.length}`);
+      if (options?.onlyIf && options.onlyIf.etagMatches !== etag) {
+        return { size: content.length, etag, httpEtag: `"${etag}"` };
+      }
       if (range === undefined) return object(content);
       const start =
         range.suffix === undefined ? (range.offset ?? 0) : content.length - range.suffix;
@@ -891,7 +904,7 @@ async function media(
   ];
 }
 
-it("serves media ranges straight from R2 and asks head() only without a usable range", async () => {
+it("serves media ranges from R2 and asks head() without a usable range or, once, for a bounded one", async () => {
   expect([
     await media(null),
     await media("bytes=4-"),
@@ -910,7 +923,7 @@ it("serves media ranges straight from R2 and asks head() only without a usable r
   ]).toStrictEqual([
     [200, null, "10", '"m"', "0123456789", 1],
     [206, "bytes 4-9/10", "6", '"m"', "456789", 0],
-    [206, "bytes 2-5/10", "4", '"m"', "2345", 0],
+    [206, "bytes 2-5/10", "4", '"m"', "2345", 1],
     [206, "bytes 8-9/10", "2", '"m"', "89", 0],
     [206, "bytes 7-9/10", "3", '"m"', "789", 0],
     [206, "bytes 0-9/10", "10", '"m"', "0123456789", 0],
@@ -920,7 +933,7 @@ it("serves media ranges straight from R2 and asks head() only without a usable r
     [416, "bytes */10", null, null, "Invalid range", 1],
     [416, "bytes */10", null, null, "Invalid range", 1],
     [200, null, "10", '"m"', "", 1],
-    [404, null, null, null, "Not found", 0],
+    [404, null, null, null, "Not found", 1],
     [404, null, null, null, "Not found", 1],
   ]);
 });
@@ -945,4 +958,146 @@ it("keeps the download header on a ranged media answer", async () => {
     response.headers.get("Content-Disposition"),
     await response.text(),
   ]).toStrictEqual([206, 'attachment; filename="v.mp4"', "0"]);
+});
+
+// A Cache API stand-in for the media chunk cache: stores bodies by URL and, like Cloudflare's,
+// answers a Range on match() with 206 and only those bytes.
+function memoryCache() {
+  const entries = new Map<string, ArrayBuffer>();
+  const ranges: string[] = [];
+  return {
+    entries,
+    ranges,
+    match: async (request: Request) => {
+      const body = entries.get(request.url);
+      const range = (request.headers.get("Range") ?? "").match(/^bytes=(\d+)-(\d+)$/);
+      ranges.push(request.headers.get("Range") ?? "");
+      if (body === undefined) {
+        return undefined;
+      }
+      return range === null
+        ? new Response(body)
+        : new Response(body.slice(Number(range[1]), Number(range[2]) + 1), { status: 206 });
+    },
+    put: async (url: string, response: Response) => {
+      entries.set(url, await response.arrayBuffer());
+    },
+  };
+}
+
+async function chunkCall(env: Record<string, unknown>, path: string, range: string) {
+  const response = await worker.fetch(
+    new Request(`https://example.test${path}`, {
+      headers: {
+        Cookie: await sessionCookie({
+          uid: "1",
+          u: "tester",
+          exp: Math.floor(Date.now() / 1000) + 600,
+        }),
+        Range: range,
+      },
+    }),
+    env,
+  );
+  return [response.status, response.headers.get("Content-Range"), await response.text()];
+}
+
+it("answers bounded ranges from cached 8 MiB chunks, joining two across a boundary", async () => {
+  const cache = memoryCache();
+  vi.stubGlobal("caches", { default: cache });
+  const chunk = 8 * 1024 * 1024;
+  const MEDIA = rangeBucket(
+    `${"a".repeat(chunk - 3)}bcd${"efghij"}`,
+    true,
+    "e1",
+    "media/chunks.mp4",
+  );
+  const env = { ...environment, MEDIA };
+  const first = await chunkCall(env, "/media/chunks.mp4", "bytes=8388605-8388610");
+  const again = await chunkCall(env, "/media/chunks.mp4", "bytes=8388606-8388607");
+  const open = await chunkCall(env, "/media/chunks.mp4", "bytes=8388610-");
+  vi.stubGlobal("caches", {
+    default: { match: async () => undefined, put: async () => undefined },
+  });
+  expect([
+    first,
+    again,
+    open,
+    MEDIA.heads.length,
+    MEDIA.gets,
+    cache.ranges,
+    [...cache.entries.keys()],
+  ]).toStrictEqual([
+    [206, "bytes 8388605-8388610/8388614", "bcdefg"],
+    [206, "bytes 8388606-8388607/8388614", "cd"],
+    [206, "bytes 8388610-8388613/8388614", "ghij"],
+    1,
+    ["0+8388608", "8388608+6", "8388610+undefined"],
+    ["bytes=8388605-8388607", "bytes=0-2", "bytes=8388606-8388607"],
+    [
+      "https://media.internal/v1/media%2Fchunks.mp4/e1/0",
+      "https://media.internal/v1/media%2Fchunks.mp4/e1/1",
+    ],
+  ]);
+});
+
+it("falls back to a direct R2 read when the object changed since head() or caching fails", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.stubGlobal("caches", {
+    default: {
+      match: async () => undefined,
+      put: async () => {
+        throw new Error("cache full");
+      },
+    },
+  });
+  const MEDIA = rangeBucket("0123456789", true, "new", "media/changed.mp4");
+  const stale = { ...MEDIA, head: async () => ({ size: 10, etag: "old", httpEtag: '"old"' }) };
+  const replaced = await chunkCall(
+    { ...environment, MEDIA: stale },
+    "/media/changed.mp4",
+    "bytes=2-4",
+  );
+  const uncached = await chunkCall(
+    { ...environment, MEDIA: rangeBucket("0123456789", true, "c", "media/uncached.mp4") },
+    "/media/uncached.mp4",
+    "bytes=1-2",
+  );
+  const beyond = await chunkCall(
+    { ...environment, MEDIA: rangeBucket("0123456789", true, "c", "media/uncached.mp4") },
+    "/media/uncached.mp4",
+    "bytes=20-30",
+  );
+  vi.stubGlobal("caches", {
+    default: { match: async () => undefined, put: async () => undefined },
+  });
+  expect([replaced, MEDIA.gets, uncached, beyond, warn.mock.calls.length]).toStrictEqual([
+    [206, "bytes 2-4/10", "234"],
+    ["0+10", "2+3"],
+    [206, "bytes 1-2/10", "12"],
+    [416, "bytes */10", "Invalid range"],
+    1,
+  ]);
+  warn.mockRestore();
+});
+
+it("reads bounded ranges over 1 MiB (HLS segments) straight from R2, without a chunk", async () => {
+  const cache = memoryCache();
+  vi.stubGlobal("caches", { default: cache });
+  const MEDIA = rangeBucket("x".repeat(3 * 1024 * 1024), true, "s", "media/segments.mp4");
+  const answer = await chunkCall(
+    { ...environment, MEDIA },
+    "/media/segments.mp4",
+    "bytes=10-2097161",
+  );
+  vi.stubGlobal("caches", {
+    default: { match: async () => undefined, put: async () => undefined },
+  });
+  expect([answer[0], answer[1], MEDIA.heads.length, MEDIA.gets, cache.entries.size]).toStrictEqual([
+    206,
+    "bytes 10-2097161/3145728",
+    0,
+    ["10+2097152"],
+    0,
+  ]);
 });
