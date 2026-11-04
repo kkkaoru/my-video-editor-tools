@@ -81,10 +81,37 @@ fn pump_lines(mut stream: impl Read, sender: &mpsc::Sender<String>) {
 
 /// Runs to completion, feeding each stderr line to `on_line`; stdout is discarded.
 pub fn run_with_progress(
-    mut command: Command,
+    command: Command,
     tool: &str,
     cancel: &CancelToken,
     mut on_line: impl FnMut(&str),
+) -> AppResult<()> {
+    run_tool(command, tool, cancel, |line| {
+        if let Some(line) = line {
+            on_line(line);
+        }
+    })
+}
+
+/// For tools that report no progress: `on_tick` fires a few times a second while they run.
+pub fn run_with_ticks(
+    command: Command,
+    tool: &str,
+    cancel: &CancelToken,
+    mut on_tick: impl FnMut(),
+) -> AppResult<()> {
+    run_tool(command, tool, cancel, |line| {
+        if line.is_none() {
+            on_tick();
+        }
+    })
+}
+
+fn run_tool(
+    mut command: Command,
+    tool: &str,
+    cancel: &CancelToken,
+    mut on_event: impl FnMut(Option<&str>),
 ) -> AppResult<()> {
     command
         .stdin(Stdio::null())
@@ -103,13 +130,13 @@ pub fn run_with_progress(
     let status = loop {
         match receiver.recv_timeout(POLL_INTERVAL) {
             Ok(line) => {
-                on_line(&line);
+                on_event(Some(&line));
                 if tail.len() == ERROR_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line);
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => on_event(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break child
                     .wait()
@@ -220,5 +247,62 @@ mod tests {
         let mut command = background_command(Path::new("/bin/sh"));
         command.args(["-c", "printf hello"]);
         assert_eq!(run_capture(command, "fake").unwrap(), b"hello".to_vec());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_long_failure_keeps_only_the_last_lines() {
+        let mut command = background_command(Path::new("/bin/sh"));
+        command.args(["-c", "echo 1 >&2; echo 2 >&2; echo 3 >&2; echo 4 >&2; echo 5 >&2; echo 6 >&2; echo 7 >&2; echo 8 >&2; echo 9 >&2; echo 10 >&2; echo 11 >&2; echo 12 >&2; echo 13 >&2; exit 1"]);
+        let error = run_with_progress(command, "fake", &CancelToken::default(), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "fake failed: exit status: 1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_cannot_start_names_the_tool_in_progress_mode() {
+        let command = background_command(Path::new("/nonexistent/tool"));
+        let error = run_with_progress(command, "tool", &CancelToken::default(), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("start tool: "), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_capture_reports_stderr() {
+        let mut command = background_command(Path::new("/bin/sh"));
+        command.args(["-c", "printf oops >&2; exit 2"]);
+        assert_eq!(
+            run_capture(command, "fake").unwrap_err().to_string(),
+            "fake failed: oops"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ticks_fire_while_a_silent_tool_runs_and_ignore_its_lines() {
+        let mut command = background_command(Path::new("/bin/sh"));
+        command.args(["-c", "echo noise >&2; sleep 0.25"]);
+        let mut ticks = 0;
+        run_with_ticks(command, "fake", &CancelToken::default(), || ticks += 1).unwrap();
+        assert!(ticks >= 1, "{ticks}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_mode_ignores_ticks() {
+        let mut command = background_command(Path::new("/bin/sh"));
+        command.args(["-c", "sleep 0.25; echo done >&2"]);
+        let mut seen = Vec::new();
+        run_with_progress(command, "fake", &CancelToken::default(), |line| {
+            seen.push(line.to_owned())
+        })
+        .unwrap();
+        assert_eq!(seen, vec!["done"]);
     }
 }

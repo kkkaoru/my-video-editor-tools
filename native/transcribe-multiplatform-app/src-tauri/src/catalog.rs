@@ -8,7 +8,25 @@ use std::path::{Path, PathBuf};
 
 const HF_RESOLVE: &str = "https://huggingface.co";
 const GIB: u64 = 1 << 30;
-const MEMORY_QUERY: (&str, &[&str]) = if cfg!(windows) {
+/// Below this an adapter is an integrated GPU sharing system memory: slower than the CPU path for speech.
+const MIN_GPU_MEMORY_GIB: u64 = 4;
+/// The speech-LLM takes a recording of up to an hour; Q2_0_M's `max_context` holds about 7 minutes.
+const SPEECH_LLM_MAX_SECONDS: u64 = 3600;
+const Q2M_MAX_SECONDS: u64 = 420;
+const SECONDS_PER_MINUTE: u64 = 60;
+const GPU_QUERY: Option<ToolQuery> = if cfg!(windows) {
+    Some((
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            r"Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*' -EA SilentlyContinue | ForEach-Object { $_.DriverDesc + '|' + $_.'HardwareInformation.qwMemorySize' }",
+        ],
+    ))
+} else {
+    None
+};
+const MEMORY_QUERY: ToolQuery = if cfg!(windows) {
     (
         "powershell",
         &[
@@ -81,6 +99,8 @@ const Q2M_ARGS: [&str; 12] = [
 ];
 /// Blackwell GPUs are the ones with native NVFP4 kernels.
 const BLACKWELL_MARKERS: [&str; 3] = ["RTX 50", "RTX PRO 6000 Blackwell", "DGX Spark"];
+
+type ToolQuery = (&'static str, &'static [&'static str]);
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -156,6 +176,8 @@ pub struct ModelEntry {
     pub diarize_kind: Option<DiarizeKind>,
     pub needs_cuda: bool,
     pub extra_args: &'static [&'static str],
+    /// The longest recording the model takes, if it has a limit.
+    pub max_audio_seconds: Option<u64>,
 }
 
 const fn nemotron_file(path: &'static str, size: u64, sha256: &'static str) -> FileSpec {
@@ -186,6 +208,7 @@ const fn nemotron(
         diarize_kind: Some(DiarizeKind::SpeechLlm),
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: Some(SPEECH_LLM_MAX_SECONDS),
     }
 }
 
@@ -274,6 +297,7 @@ pub const CATALOG: [ModelEntry; 10] = [
         diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: None,
     },
     nemotron(
         IQ4_ID,
@@ -293,6 +317,7 @@ pub const CATALOG: [ModelEntry; 10] = [
     ModelEntry {
         needs_cuda: true,
         extra_args: &Q2M_ARGS,
+        max_audio_seconds: Some(Q2M_MAX_SECONDS),
         ..nemotron(
             Q2M_ID,
             "Nemotron 3.5 Transcribe 30B-A4B (Q2_0_M)",
@@ -322,6 +347,7 @@ pub const CATALOG: [ModelEntry; 10] = [
         diarize_kind: Some(DiarizeKind::Sortformer),
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: None,
     },
     ModelEntry {
         id: YUNET_ID,
@@ -333,6 +359,7 @@ pub const CATALOG: [ModelEntry; 10] = [
         diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: None,
     },
     ModelEntry {
         id: AVATAR_YOLO_ID,
@@ -344,6 +371,7 @@ pub const CATALOG: [ModelEntry; 10] = [
         diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: None,
     },
     ModelEntry {
         id: GEFORCE_RUNTIME_ID,
@@ -355,15 +383,41 @@ pub const CATALOG: [ModelEntry; 10] = [
         diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
+        max_audio_seconds: None,
     },
 ];
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuVendor {
+    Nvidia,
+    Radeon,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Gpu {
+    pub vendor: GpuVendor,
+    pub name: String,
+    pub memory_gib: u64,
+}
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct Hardware {
     pub is_mac: bool,
     pub memory_gib: u64,
-    pub nvidia_name: Option<String>,
-    pub nvidia_memory_gib: u64,
+    /// A discrete Windows GPU the speech tools can use; Macs use Metal without this.
+    pub gpu: Option<Gpu>,
+}
+
+/// Which build of the speech tools runs: GeForce uses CUDA once downloaded, and Vulkan until then.
+/// Radeon uses Vulkan, the only GPU path NeMo-Speech.cpp and whisper.cpp offer it.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    /// Metal on a Mac, the CPU elsewhere.
+    Default,
+    Vulkan,
+    Cuda,
 }
 
 /// One row of the model manager.
@@ -382,23 +436,41 @@ pub struct ModelStatus {
     pub hidden: bool,
 }
 
-/// Parses `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`.
+/// Parses `DriverDesc|bytes` lines from the display adapters' registry keys. The registry, unlike
+/// `Win32_VideoController.AdapterRAM`, reports more than 4 GB. The largest usable GPU wins.
 #[must_use]
-pub fn parse_nvidia_smi(output: &str) -> Option<(String, u64)> {
-    let line = output.lines().next()?;
-    let (name, mebibytes) = line.rsplit_once(',')?;
-    let mebibytes: u64 = mebibytes.trim().parse().ok()?;
-    Some((name.trim().to_owned(), mebibytes / 1024))
+pub fn parse_display_adapters(output: &str) -> Option<Gpu> {
+    output
+        .lines()
+        .filter_map(parse_display_adapter)
+        .max_by_key(|gpu| gpu.memory_gib)
 }
 
-fn query_nvidia() -> Option<(String, u64)> {
-    let mut command = background_command(Path::new("nvidia-smi"));
-    command.args([
-        "--query-gpu=name,memory.total",
-        "--format=csv,noheader,nounits",
-    ]);
-    let output = run_capture(command, "nvidia-smi").ok()?;
-    parse_nvidia_smi(&String::from_utf8_lossy(&output))
+fn parse_display_adapter(line: &str) -> Option<Gpu> {
+    let (name, bytes) = line.trim().rsplit_once('|')?;
+    let vendor = gpu_vendor(name)?;
+    let memory_gib = bytes.trim().parse::<u64>().ok()? / GIB;
+    (memory_gib >= MIN_GPU_MEMORY_GIB).then(|| Gpu {
+        vendor,
+        name: name.trim().to_owned(),
+        memory_gib,
+    })
+}
+
+fn gpu_vendor(name: &str) -> Option<GpuVendor> {
+    let upper = name.to_uppercase();
+    if upper.contains("NVIDIA") || upper.contains("GEFORCE") {
+        return Some(GpuVendor::Nvidia);
+    }
+    upper.contains("RADEON").then_some(GpuVendor::Radeon)
+}
+
+fn query_gpu(query: Option<ToolQuery>) -> Option<Gpu> {
+    let (program, args) = query?;
+    let mut command = background_command(Path::new(program));
+    command.args(args);
+    let output = run_capture(command, "display adapter query").ok()?;
+    parse_display_adapters(&String::from_utf8_lossy(&output))
 }
 
 fn parse_memory_bytes(output: &[u8]) -> AppResult<u64> {
@@ -414,14 +486,12 @@ fn query_memory_bytes() -> AppResult<u64> {
     parse_memory_bytes(&run_capture(command, "memory query")?)
 }
 
-/// Queries this machine; a missing `nvidia-smi` simply means no GeForce.
+/// Queries this machine. Macs and PCs without a discrete GPU simply have no `gpu`.
 pub fn detect_hardware() -> AppResult<Hardware> {
-    let nvidia = query_nvidia();
     Ok(Hardware {
         is_mac: cfg!(target_os = "macos"),
         memory_gib: query_memory_bytes()?.div_ceil(GIB),
-        nvidia_memory_gib: nvidia.as_ref().map_or(0, |gpu| gpu.1),
-        nvidia_name: nvidia.map(|gpu| gpu.0),
+        gpu: query_gpu(GPU_QUERY),
     })
 }
 
@@ -434,15 +504,31 @@ fn is_blackwell(name: &str) -> bool {
     BLACKWELL_MARKERS.iter().any(|marker| name.contains(marker))
 }
 
+const fn recommended_for_nvidia(memory_gib: u64, blackwell: bool) -> Option<&'static str> {
+    match memory_gib {
+        24.. if blackwell => Some(NVFP4_ID),
+        24.. => Some(IQ4_ID),
+        16.. => Some(Q2M_ID),
+        _ => None,
+    }
+}
+
+/// Vulkan runs upstream llama.cpp kernels, which the model's documentation pairs with IQ4_NL and Q8_0.
+const fn recommended_for_radeon(memory_gib: u64) -> Option<&'static str> {
+    match memory_gib {
+        48.. => Some(Q8_ID),
+        24.. => Some(IQ4_ID),
+        _ => None,
+    }
+}
+
 /// The Nemotron 3.5 build the model card lists for this hardware; `None` means none will fit.
 #[must_use]
 pub fn recommended_speech_llm(hardware: &Hardware) -> Option<&'static str> {
-    if let Some(name) = &hardware.nvidia_name {
-        return match hardware.nvidia_memory_gib {
-            24.. if is_blackwell(name) => Some(NVFP4_ID),
-            24.. => Some(IQ4_ID),
-            16.. => Some(Q2M_ID),
-            _ => None,
+    if let Some(gpu) = &hardware.gpu {
+        return match gpu.vendor {
+            GpuVendor::Nvidia => recommended_for_nvidia(gpu.memory_gib, is_blackwell(&gpu.name)),
+            GpuVendor::Radeon => recommended_for_radeon(gpu.memory_gib),
         };
     }
     match hardware.memory_gib {
@@ -453,16 +539,66 @@ pub fn recommended_speech_llm(hardware: &Hardware) -> Option<&'static str> {
     }
 }
 
+const fn has_nvidia(hardware: &Hardware) -> bool {
+    matches!(
+        &hardware.gpu,
+        Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            ..
+        })
+    )
+}
+
+/// GeForce: CUDA when its runtime is downloaded, otherwise Vulkan. Radeon: Vulkan.
+#[must_use]
+pub fn backend_for(hardware: &Hardware, paths: &AppPaths) -> Backend {
+    match &hardware.gpu {
+        Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            ..
+        }) if locate_runtime(paths).is_some() => Backend::Cuda,
+        Some(_) => Backend::Vulkan,
+        None => Backend::Default,
+    }
+}
+
+/// The `--device` for a model: the GPU when the model fits in its memory, else system memory on the CPU.
+#[must_use]
+pub fn device_for(entry: &ModelEntry, hardware: &Hardware, backend: Backend) -> &'static str {
+    let fits_gpu = hardware
+        .gpu
+        .as_ref()
+        .is_some_and(|gpu| gpu.memory_gib >= entry.min_memory_gib);
+    match backend {
+        Backend::Default => "auto",
+        Backend::Cuda | Backend::Vulkan if !fits_gpu => "cpu",
+        Backend::Cuda => "cuda",
+        Backend::Vulkan => "vulkan",
+    }
+}
+
+/// `TooLongForModel` when the video exceeds what the model takes.
+#[must_use]
+pub fn too_long(entry: &ModelEntry, duration_seconds: f64) -> Option<UserError> {
+    let limit = entry.max_audio_seconds?;
+    (duration_seconds > limit as f64).then(|| UserError::TooLongForModel {
+        model: entry.id.to_owned(),
+        limit_minutes: limit / SECONDS_PER_MINUTE,
+    })
+}
+
 /// Why this hardware cannot run the model, if it cannot.
 #[must_use]
 pub fn blocked_reason(entry: &ModelEntry, hardware: &Hardware) -> Option<UserError> {
-    if entry.needs_cuda && hardware.nvidia_name.is_none() {
+    if entry.needs_cuda && !has_nvidia(hardware) {
         return Some(UserError::NeedsNvidia {
             model: entry.id.to_owned(),
         });
     }
-    let available = if hardware.nvidia_name.is_some() && entry.role == Role::Diarize {
-        hardware.nvidia_memory_gib.max(hardware.memory_gib)
+    // A model too big for the GPU still runs from system memory on the CPU (see `device_for`).
+    let gpu_memory = hardware.gpu.as_ref().map_or(0, |gpu| gpu.memory_gib);
+    let available = if entry.role == Role::Diarize {
+        gpu_memory.max(hardware.memory_gib)
     } else {
         hardware.memory_gib
     };
@@ -474,7 +610,7 @@ pub fn blocked_reason(entry: &ModelEntry, hardware: &Hardware) -> Option<UserErr
 }
 
 fn is_hidden(entry: &ModelEntry, hardware: &Hardware) -> bool {
-    entry.id == GEFORCE_RUNTIME_ID && hardware.nvidia_name.is_none()
+    entry.id == GEFORCE_RUNTIME_ID && !has_nvidia(hardware)
 }
 
 fn find_named(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
@@ -508,7 +644,7 @@ fn hf_snapshots(hub: Option<&Path>, repo: &str) -> Vec<PathBuf> {
 }
 
 /// Finds a complete copy of one catalogued file: right name, right size. Hugging Face cache included.
-fn locate_file(file: &FileSpec, roots: &[PathBuf], hub: Option<&Path>) -> Option<PathBuf> {
+pub fn locate_file(file: &FileSpec, roots: &[PathBuf], hub: Option<&Path>) -> Option<PathBuf> {
     let name = Path::new(file.path).file_name()?.to_str()?;
     let matches_size =
         |path: &PathBuf| std::fs::metadata(path).is_ok_and(|meta| meta.len() == file.size);
@@ -644,8 +780,7 @@ mod tests {
         Hardware {
             is_mac: true,
             memory_gib,
-            nvidia_name: None,
-            nvidia_memory_gib: 0,
+            gpu: None,
         }
     }
 
@@ -653,8 +788,11 @@ mod tests {
         Hardware {
             is_mac: false,
             memory_gib: 64,
-            nvidia_name: Some(name.to_owned()),
-            nvidia_memory_gib: vram,
+            gpu: Some(Gpu {
+                vendor: GpuVendor::Nvidia,
+                name: name.to_owned(),
+                memory_gib: vram,
+            }),
         }
     }
 
@@ -667,13 +805,134 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_smi_output_parses() {
+    fn display_adapters_parse_and_the_largest_usable_gpu_wins() {
         assert_eq!(
-            parse_nvidia_smi("NVIDIA GeForce RTX 5090, 32760\n"),
-            Some(("NVIDIA GeForce RTX 5090".to_owned(), 31))
+            parse_display_adapters(
+                "Intel(R) UHD Graphics|2147483648\r\nNVIDIA GeForce RTX 3060|12884901888\r\nAMD Radeon RX 7900 XTX|25769803776\r\n"
+            ),
+            Some(Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "AMD Radeon RX 7900 XTX".to_owned(),
+                memory_gib: 24
+            })
         );
-        assert_eq!(parse_nvidia_smi(""), None);
-        assert_eq!(parse_nvidia_smi("no comma"), None);
+        assert_eq!(parse_display_adapters(""), None);
+        assert_eq!(parse_display_adapters("no separator"), None);
+        assert_eq!(parse_display_adapters("NVIDIA GeForce|many"), None);
+        assert_eq!(parse_display_adapters("NVIDIA GeForce|1073741824"), None);
+    }
+
+    #[test]
+    fn a_geforce_is_recognised_without_the_vendor_name() {
+        assert_eq!(
+            parse_display_adapters("GeForce GT|8589934592"),
+            Some(Gpu {
+                vendor: GpuVendor::Nvidia,
+                name: "GeForce GT".to_owned(),
+                memory_gib: 8
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_gpu_query_runs_its_tool_and_tolerates_failure() {
+        assert_eq!(query_gpu(None), None);
+        assert_eq!(
+            query_gpu(Some((
+                "/bin/sh",
+                &["-c", "echo 'NVIDIA GeForce RTX 4090|25769803776'"]
+            ))),
+            Some(Gpu {
+                vendor: GpuVendor::Nvidia,
+                name: "NVIDIA GeForce RTX 4090".to_owned(),
+                memory_gib: 24
+            })
+        );
+        assert_eq!(query_gpu(Some(("/bin/sh", &["-c", "exit 1"]))), None);
+    }
+
+    #[test]
+    fn radeon_gets_the_builds_vulkan_can_run() {
+        let radeon = |memory_gib: u64| Hardware {
+            is_mac: false,
+            memory_gib: 64,
+            gpu: Some(Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "AMD Radeon".to_owned(),
+                memory_gib,
+            }),
+        };
+        assert_eq!(
+            recommended_speech_llm(&radeon(48)),
+            Some("nemotron-3.5-transcribe-q8")
+        );
+        assert_eq!(
+            recommended_speech_llm(&radeon(24)),
+            Some("nemotron-3.5-transcribe-iq4")
+        );
+        assert_eq!(recommended_speech_llm(&radeon(16)), None);
+    }
+
+    #[test]
+    fn the_backend_depends_on_the_gpu_and_the_downloaded_runtime() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/catalog-backend");
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let radeon = Hardware {
+            is_mac: false,
+            memory_gib: 64,
+            gpu: Some(Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "AMD Radeon".to_owned(),
+                memory_gib: 24,
+            }),
+        };
+        assert_eq!(backend_for(&mac(64), &paths), Backend::Default);
+        assert_eq!(backend_for(&radeon, &paths), Backend::Vulkan);
+        assert_eq!(
+            backend_for(&geforce("RTX 4090", 24), &paths),
+            Backend::Vulkan
+        );
+        std::fs::create_dir_all(root.join("data/runtime/geforce/nemo")).unwrap();
+        std::fs::create_dir_all(root.join("data/runtime/geforce/whisper")).unwrap();
+        assert_eq!(backend_for(&geforce("RTX 4090", 24), &paths), Backend::Cuda);
+        assert_eq!(backend_for(&radeon, &paths), Backend::Vulkan);
+    }
+
+    #[test]
+    fn the_device_is_the_gpu_only_when_the_model_fits() {
+        let iq4 = find_entry("nemotron-3.5-transcribe-iq4").unwrap();
+        let big = geforce("RTX 4090", 24);
+        let small = geforce("RTX 3060", 12);
+        assert_eq!(device_for(iq4, &mac(64), Backend::Default), "auto");
+        assert_eq!(device_for(iq4, &big, Backend::Cuda), "cuda");
+        assert_eq!(device_for(iq4, &big, Backend::Vulkan), "vulkan");
+        assert_eq!(device_for(iq4, &small, Backend::Cuda), "cpu");
+        assert_eq!(device_for(iq4, &small, Backend::Vulkan), "cpu");
+        assert_eq!(device_for(iq4, &mac(64), Backend::Vulkan), "cpu");
+    }
+
+    #[test]
+    fn only_a_model_with_a_limit_can_be_too_long() {
+        let unlimited = find_entry("nemotron-3-diarization").unwrap();
+        assert_eq!(too_long(unlimited, 1e9), None);
+        let limited = ModelEntry {
+            max_audio_seconds: Some(600),
+            ..*unlimited
+        };
+        assert_eq!(too_long(&limited, 600.0), None);
+        assert_eq!(
+            too_long(&limited, 601.0),
+            Some(UserError::TooLongForModel {
+                model: "nemotron-3-diarization".to_owned(),
+                limit_minutes: 10
+            })
+        );
     }
 
     #[test]
@@ -718,8 +977,7 @@ mod tests {
         let vm = Hardware {
             is_mac: false,
             memory_gib: 12,
-            nvidia_name: None,
-            nvidia_memory_gib: 0,
+            gpu: None,
         };
         let large = find_entry("nemotron-3.5-transcribe-iq4").unwrap();
         let small = find_entry("nemotron-3-diarization").unwrap();
@@ -763,5 +1021,73 @@ mod tests {
             .map(|file| file.path)
             .collect();
         assert_eq!(bad, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn const_builders_also_work_at_run_time() {
+        let file = nemotron_file("a.gguf", 1, "00");
+        assert_eq!(
+            file.url(),
+            "https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/resolve/dbd06c5cad7a2f33c8e06be2fb3ef814dbd9aa59/a.gguf"
+        );
+        let entry = nemotron("id", "label", &[], 3);
+        assert_eq!(entry.diarize_kind, Some(DiarizeKind::SpeechLlm));
+        assert_eq!(entry.min_memory_gib, 3);
+    }
+
+    #[test]
+    fn direct_files_have_no_repository_and_may_be_archives() {
+        let file = GEFORCE_FILES[0];
+        assert_eq!(file.url(), "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip");
+        assert_eq!(file.hf_repo(), None);
+        assert!(file.is_archive());
+        assert!(!WHISPER_FILES[0].is_archive());
+        assert_eq!(
+            WHISPER_FILES[0].hf_repo(),
+            Some("openai/whisper-large-v3-turbo")
+        );
+    }
+
+    #[test]
+    fn memory_output_must_be_a_number() {
+        assert_eq!(parse_memory_bytes(b" 1024\n").unwrap(), 1024);
+        assert_eq!(
+            parse_memory_bytes(b"lots").unwrap_err().to_string(),
+            "unexpected memory size: lots"
+        );
+    }
+
+    #[test]
+    fn a_geforce_counts_its_larger_memory_for_speaker_models_only() {
+        let hardware = Hardware {
+            is_mac: false,
+            memory_gib: 8,
+            gpu: Some(Gpu {
+                vendor: GpuVendor::Nvidia,
+                name: "RTX 4090".to_owned(),
+                memory_gib: 24,
+            }),
+        };
+        assert_eq!(
+            blocked_reason(
+                find_entry("nemotron-3.5-transcribe-iq4").unwrap(),
+                &hardware
+            ),
+            None
+        );
+        assert_eq!(
+            blocked_reason(
+                find_entry("whisper-large-v3-turbo").unwrap(),
+                &Hardware {
+                    memory_gib: 2,
+                    ..hardware
+                }
+            ),
+            Some(UserError::NeedsMemory {
+                model: "whisper-large-v3-turbo".to_owned(),
+                required: 4,
+                available: 2
+            })
+        );
     }
 }

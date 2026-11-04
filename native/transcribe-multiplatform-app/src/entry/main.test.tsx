@@ -8,17 +8,18 @@ import { mount, reportStartupFailure, start } from "./main.tsx";
 
 const SNAPSHOT: Snapshot = {
   locale: "en",
-  hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+  hardware: { is_mac: true, memory_gib: 16, gpu: null },
+  backend: "default",
   settings: {
     palette: [],
     unassigned: { fill: "#AAAAAA", outline: "#000000" },
     font_family: "Sans",
     font_ratio: 0.05,
     outline_ratio: 0.1,
+    shadow: { enabled: false, strength: 0.5 },
     width_ratio: 0.8,
     placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
     language: "auto",
-    transcribe_model: "a",
     diarize_model: "b",
     face_model: "c",
     model_dirs: [],

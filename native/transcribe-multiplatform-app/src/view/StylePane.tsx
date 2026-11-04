@@ -1,14 +1,18 @@
 // Runs with bun: caption position, size and speaker colours, with a live preview.
-import { Toggle } from "@base-ui/react/toggle";
-import { ToggleGroup } from "@base-ui/react/toggle-group";
 import type { VNode } from "preact";
 import { useState } from "preact/hooks";
+import { Alert } from "@/components/ui/alert.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.tsx";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group.tsx";
 import type { Anchor, Settings, SpeakerColor } from "../backend/types.ts";
 import { format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import { type FrameSize, type PreviewLayout, previewLayout } from "../layout/preview-layout.ts";
 import type { AppStore } from "../state/use-app-store.ts";
-import { ActionButton, AdjustField, buttonClass, SelectField, type SelectOption } from "./controls.tsx";
+import { contrastRatio, meetsAa } from "../styling/contrast.ts";
+import { AdjustField, SelectField, type SelectOption, SwitchField } from "./fields.tsx";
+import { LayeredText } from "./LayeredText.tsx";
 
 export interface StylePaneProps {
   store: AppStore;
@@ -38,28 +42,48 @@ interface FrameChoice {
 
 interface PaletteProps {
   palette: SpeakerColor[];
+  unassigned: SpeakerColor;
   onChange: (palette: SpeakerColor[]) => void;
+  onUnassignedChange: (unassigned: SpeakerColor) => void;
+}
+
+interface ColorSlotProps {
+  color: SpeakerColor;
+  name: string;
+  onChange: (color: SpeakerColor) => void;
 }
 
 const PERCENT: number = 100;
 const OFFSET_LIMIT: number = 50;
 const OFFSET_STEP: number = 0.5;
+const PERCENT_DECIMALS_SCALE: number = 10;
 const PREVIEW_MAX_WIDTH_PX: number = 560;
 const PREVIEW_VERTICAL_WIDTH_PX: number = 200;
-const PREVIEW_STROKE_PER_SIDE: number = 2;
 const DEFAULT_OUTLINE: string = "#FFFFFF";
 const NEW_SLOT_FILL: string = "#FFFFFF";
+const FIRST_SPEAKER: SpeakerColor = { fill: "#FFFFFF", outline: "#000000" };
+const SAMPLE_FONT_PX: number = 22;
+const SAMPLE_SIZE: FrameSize = { width: 64, height: 32 };
+const SAMPLE_OUTLINE_RATIO: number = 0.115;
+const SAMPLE_RIM_RATIO: number = 0.034;
+const LINE_HEIGHT_MIN: number = 1;
+const LINE_HEIGHT_MAX: number = 3;
+const LINE_HEIGHT_STEP: number = 0.001;
+const RIM_PERCENT_MAX: number = 10;
+const RIM_PERCENT_STEP: number = 0.5;
+const HEAD_WIDTH_RATIO: number = 0.75;
+const FACE_WIDTH_RATIO: number = 0.4;
+const COLOR_INPUT_CLASS: string = "size-11 cursor-pointer rounded-md border border-border bg-background p-1";
 const FIRST_COLOURS: string[] = [
-  "#C48CFF",
-  "#7CDC8C",
-  "#6CD4FF",
-  "#FF9E5E",
-  "#FF7FA8",
-  "#F2D64B",
-  "#5EE0C8",
-  "#8FA8FF",
-  "#E08CE0",
-  "#B5E05E",
+  "#005A9C",
+  "#6A1FA8",
+  "#0B672C",
+  "#A3123A",
+  "#8A4500",
+  "#7A1D7A",
+  "#006262",
+  "#3A3AA8",
+  "#5C5C00",
 ];
 const SPEECH_LANGUAGES: ToggleChoice<string>[] = [
   { value: "ja", label: "日本語" },
@@ -88,8 +112,11 @@ const FRAMES: Record<FrameId, FrameChoice> = {
   },
 };
 
-export const defaultPalette = (): SpeakerColor[] =>
-  FIRST_COLOURS.map((fill: string): SpeakerColor => ({ fill, outline: DEFAULT_OUTLINE }));
+/** Speaker 1 is white on a black outline; the others keep a colour on a white outline. */
+export const defaultPalette = (): SpeakerColor[] => [
+  FIRST_SPEAKER,
+  ...FIRST_COLOURS.map((fill: string): SpeakerColor => ({ fill, outline: DEFAULT_OUTLINE })),
+];
 
 const ChoiceGroup = <Value extends string>({
   label,
@@ -99,7 +126,6 @@ const ChoiceGroup = <Value extends string>({
 }: ChoiceGroupProps<Value>): VNode => (
   <ToggleGroup
     aria-label={label}
-    className="my-2 flex flex-wrap gap-2"
     value={[value]}
     onValueChange={(next: string[]): void => {
       // Pressing the active choice empties `next`; one choice always stays selected.
@@ -113,9 +139,9 @@ const ChoiceGroup = <Value extends string>({
   >
     {choices.map(
       ({ value: choiceValue, label: choiceLabel }: ToggleChoice<Value>): VNode => (
-        <Toggle key={choiceValue} value={choiceValue} className={buttonClass(choiceValue === value)}>
+        <ToggleGroupItem key={choiceValue} value={choiceValue}>
           {choiceLabel}
-        </Toggle>
+        </ToggleGroupItem>
       ),
     )}
   </ToggleGroup>
@@ -125,34 +151,48 @@ function CaptionPreview({ settings, frame }: { settings: Settings; frame: FrameC
   const messages: Messages = useMessages();
   const { width, height } = frame.size;
   const layout: PreviewLayout = previewLayout(messages.previewSample, frame.size, settings);
-  const displayWidth: number = width >= height ? PREVIEW_MAX_WIDTH_PX : PREVIEW_VERTICAL_WIDTH_PX;
-  const scale: number = displayWidth / width;
   const color: SpeakerColor | undefined = settings.palette[0];
+  const faceHeight: number = layout.face === null ? 0 : layout.face.bottom - layout.face.top;
   return (
     <>
-      <div
+      {/* Half bright, half dark: an outline has to hold up on both, as it must on real video. */}
+      <svg
         aria-hidden="true"
-        className="relative max-w-full overflow-hidden rounded-md bg-neutral-800"
-        style={{ width: `${displayWidth}px`, aspectRatio: `${width} / ${height}` }}
+        className="mx-auto block max-w-full rounded-lg bg-[linear-gradient(#a9d8ef_50%,#1f2530_50%)]"
+        viewBox={`0 0 ${width} ${height}`}
+        style={{ width: `${width >= height ? PREVIEW_MAX_WIDTH_PX : PREVIEW_VERTICAL_WIDTH_PX}px` }}
       >
-        {layout.usesFace ? (
-          <div className="absolute top-[36%] left-1/2 aspect-[3/4] w-[18%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-neutral-400" />
-        ) : null}
-        <div
-          className="outlined-text absolute -translate-x-1/2 -translate-y-1/2 text-center font-bold whitespace-pre-wrap"
-          style={{
-            left: `${layout.x * scale}px`,
-            top: `${layout.y * scale}px`,
-            fontSize: `${layout.fontPx * scale}px`,
-            lineHeight: 1.25,
-            color: color?.fill,
-            WebkitTextStroke: `${PREVIEW_STROKE_PER_SIDE * layout.outlinePx * scale}px ${color?.outline}`,
-          }}
-        >
-          {layout.lines.join("\n")}
-        </div>
-      </div>
-      <p className="mt-2 text-sm text-muted">
+        {layout.face === null ? null : (
+          <>
+            <ellipse
+              cx={layout.face.centerX}
+              cy={(layout.face.headTop + layout.face.bottom) / 2}
+              rx={faceHeight * HEAD_WIDTH_RATIO}
+              ry={(layout.face.bottom - layout.face.headTop) / 2}
+              fill="#3a3f47"
+            />
+            <ellipse
+              cx={layout.face.centerX}
+              cy={(layout.face.top + layout.face.bottom) / 2}
+              rx={faceHeight * FACE_WIDTH_RATIO}
+              ry={faceHeight / 2}
+              fill="#e8c9b4"
+            />
+          </>
+        )}
+        <LayeredText
+          lines={layout.lines}
+          x={layout.x}
+          y={layout.y}
+          fontPx={layout.fontPx}
+          lineHeightPx={layout.lineHeightPx}
+          color={color ?? FIRST_SPEAKER}
+          outlinePx={layout.outlinePx}
+          rimPx={layout.rimPx}
+          shadow={settings.shadow}
+        />
+      </svg>
+      <p className="text-muted-foreground">
         {format(messages.previewDescription, {
           size: frame.label(messages),
           x: Math.round((layout.x / width) * PERCENT),
@@ -163,86 +203,105 @@ function CaptionPreview({ settings, frame }: { settings: Settings; frame: FrameC
   );
 }
 
-function ColorSlot({
-  color,
-  index,
-  onChange,
-}: {
-  color: SpeakerColor;
-  index: number;
-  onChange: (color: SpeakerColor) => void;
-}): VNode {
+function ColorSlot({ color, name, onChange }: ColorSlotProps): VNode {
   const messages: Messages = useMessages();
-  const number: number = index + 1;
+  const ratio: number = contrastRatio(color.fill, color.outline);
   return (
-    <div className="flex items-center gap-2">
-      <input
-        type="color"
-        className="size-11 cursor-pointer rounded border border-line"
-        aria-label={format(messages.fillColor, { number })}
-        value={color.fill}
-        onInput={({ currentTarget }): void => onChange({ ...color, fill: currentTarget.value.toUpperCase() })}
-      />
-      <input
-        type="color"
-        className="size-11 cursor-pointer rounded border border-line"
-        aria-label={format(messages.outlineColor, { number })}
-        value={color.outline}
-        onInput={({ currentTarget }): void =>
-          onChange({ ...color, outline: currentTarget.value.toUpperCase() })
-        }
-      />
-      <span>{format(messages.speakerName, { number })}</span>
-      <span
-        aria-hidden="true"
-        className="outlined-text rounded bg-neutral-800 px-2 font-bold"
-        style={{ color: color.fill, WebkitTextStroke: `3px ${color.outline}` }}
-      >
-        Aあ
-      </span>
+    <div className="grid gap-1">
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          className={COLOR_INPUT_CLASS}
+          aria-label={`${name}: ${messages.fillLabel}`}
+          value={color.fill}
+          onInput={({ currentTarget }): void =>
+            onChange({ ...color, fill: currentTarget.value.toUpperCase() })
+          }
+        />
+        <input
+          type="color"
+          className={COLOR_INPUT_CLASS}
+          aria-label={`${name}: ${messages.outlineLabel}`}
+          value={color.outline}
+          onInput={({ currentTarget }): void =>
+            onChange({ ...color, outline: currentTarget.value.toUpperCase() })
+          }
+        />
+        <span className="flex-1">{name}</span>
+        <svg
+          aria-hidden="true"
+          className="shrink-0 rounded-md bg-[linear-gradient(#a9d8ef_50%,#1f2530_50%)]"
+          viewBox={`0 0 ${SAMPLE_SIZE.width} ${SAMPLE_SIZE.height}`}
+          width={SAMPLE_SIZE.width}
+          height={SAMPLE_SIZE.height}
+        >
+          <LayeredText
+            lines={["Aあ"]}
+            x={SAMPLE_SIZE.width / 2}
+            y={SAMPLE_SIZE.height / 2}
+            fontPx={SAMPLE_FONT_PX}
+            lineHeightPx={SAMPLE_FONT_PX}
+            color={color}
+            outlinePx={SAMPLE_FONT_PX * SAMPLE_OUTLINE_RATIO}
+            rimPx={SAMPLE_FONT_PX * SAMPLE_RIM_RATIO}
+            shadow={{ enabled: false, strength: 0 }}
+          />
+        </svg>
+      </div>
+      {meetsAa(ratio) ? null : (
+        <Alert>{format(messages.contrastWarning, { name, ratio: ratio.toFixed(1) })}</Alert>
+      )}
     </div>
   );
 }
 
-function PaletteEditor({ palette, onChange }: PaletteProps): VNode {
+function PaletteEditor({ palette, unassigned, onChange, onUnassignedChange }: PaletteProps): VNode {
   const messages: Messages = useMessages();
   return (
-    <>
-      <h3 className="mt-4 font-semibold">{format(messages.speakersHeading, { count: palette.length })}</h3>
-      <p className="text-sm text-muted">{messages.speakersHint}</p>
-      <div className="my-2 grid gap-2 sm:grid-cols-2">
-        {palette.map(
-          (color: SpeakerColor, index: number): VNode => (
-            <ColorSlot
-              key={String(index)}
-              color={color}
-              index={index}
-              onChange={(next: SpeakerColor): void =>
-                onChange(
-                  palette.map(
-                    (slot: SpeakerColor, position: number): SpeakerColor =>
-                      position === index ? next : slot,
-                  ),
-                )
-              }
-            />
-          ),
-        )}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <ActionButton
-          onClick={(): void => onChange([...palette, { fill: NEW_SLOT_FILL, outline: DEFAULT_OUTLINE }])}
-        >
-          {messages.addSpeaker}
-        </ActionButton>
-        {palette.length > 1 ? (
-          <ActionButton onClick={(): void => onChange(palette.slice(0, -1))}>
-            {messages.removeSpeaker}
-          </ActionButton>
-        ) : null}
-        <ActionButton onClick={(): void => onChange(defaultPalette())}>{messages.resetPalette}</ActionButton>
-      </div>
-    </>
+    <Card>
+      <CardHeader>
+        <CardTitle>{format(messages.speakersHeading, { count: palette.length })}</CardTitle>
+        <CardDescription>{messages.speakersHint}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-1 gap-3">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <ColorSlot color={unassigned} name={messages.unknownSpeaker} onChange={onUnassignedChange} />
+          {palette.map(
+            (color: SpeakerColor, index: number): VNode => (
+              <ColorSlot
+                key={String(index)}
+                color={color}
+                name={format(messages.speakerName, { number: index + 1 })}
+                onChange={(next: SpeakerColor): void =>
+                  onChange(
+                    palette.map(
+                      (slot: SpeakerColor, position: number): SpeakerColor =>
+                        position === index ? next : slot,
+                    ),
+                  )
+                }
+              />
+            ),
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            onClick={(): void => onChange([...palette, { fill: NEW_SLOT_FILL, outline: DEFAULT_OUTLINE }])}
+          >
+            {messages.addSpeaker}
+          </Button>
+          {palette.length > 1 ? (
+            <Button variant="outline" onClick={(): void => onChange(palette.slice(0, -1))}>
+              {messages.removeSpeaker}
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={(): void => onChange(defaultPalette())}>
+            {messages.resetPalette}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -260,92 +319,148 @@ export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNo
     { value: "video_bottom", label: messages.anchorVideoBottom },
   ];
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <section aria-labelledby="position-heading">
-        <h2 id="position-heading" className="font-semibold">
-          {messages.positionHeading}
-        </h2>
-        <ChoiceGroup
-          label={messages.positionLabel}
-          value={placement.anchor}
-          choices={anchors}
-          onChange={(anchor: Anchor): void => place({ anchor })}
-        />
-        <AdjustField
-          label={messages.offsetX}
-          value={placement.offset_x_percent}
-          min={-OFFSET_LIMIT}
-          max={OFFSET_LIMIT}
-          step={OFFSET_STEP}
-          onChange={(offset_x_percent: number): void => place({ offset_x_percent })}
-        />
-        <AdjustField
-          label={messages.offsetY}
-          value={placement.offset_y_percent}
-          min={-OFFSET_LIMIT}
-          max={OFFSET_LIMIT}
-          step={OFFSET_STEP}
-          onChange={(offset_y_percent: number): void => place({ offset_y_percent })}
-        />
-        <SelectField
-          label={messages.faceModel}
-          value={settings.face_model}
-          options={faceOptions}
-          onChange={(face_model: string): void => update({ face_model })}
-        />
-        <SelectField
-          label={messages.speechLanguage}
-          value={settings.language}
-          options={[{ value: "auto", label: messages.languageAuto }, ...SPEECH_LANGUAGES].map(
-            (choice: ToggleChoice<string>): SelectOption => ({ ...choice, disabled: false }),
-          )}
-          onChange={(language: string): void => update({ language })}
-        />
-        <h2 className="mt-6 font-semibold">{messages.sizeHeading}</h2>
-        <p className="text-sm text-muted">{messages.sizeHint}</p>
-        <AdjustField
-          label={messages.fontSize}
-          value={Math.round(settings.font_ratio * PERCENT * 10) / 10}
-          min={2}
-          max={12}
-          step={0.2}
-          onChange={(percent: number): void => update({ font_ratio: percent / PERCENT })}
-        />
-        <AdjustField
-          label={messages.captionWidth}
-          value={Math.round(settings.width_ratio * PERCENT)}
-          min={30}
-          max={100}
-          step={1}
-          onChange={(percent: number): void => update({ width_ratio: percent / PERCENT })}
-        />
-        <AdjustField
-          label={messages.outlineWidth}
-          value={Math.round(settings.outline_ratio * PERCENT)}
-          min={2}
-          max={30}
-          step={1}
-          onChange={(percent: number): void => update({ outline_ratio: percent / PERCENT })}
-        />
-      </section>
-      <section aria-labelledby="preview-heading">
-        <h2 id="preview-heading" className="font-semibold">
-          {messages.previewHeading}
-        </h2>
-        <ChoiceGroup
-          label={messages.previewFrameLabel}
-          value={frameId}
-          choices={Object.values(FRAMES).map(
-            ({ id, label }: FrameChoice): ToggleChoice<FrameId> => ({ value: id, label: label(messages) }),
-          )}
-          onChange={setFrameId}
-        />
-        <CaptionPreview settings={settings} frame={FRAMES[frameId]} />
+    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-1 gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>{messages.positionHeading}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4">
+            <ChoiceGroup
+              label={messages.positionLabel}
+              value={placement.anchor}
+              choices={anchors}
+              onChange={(anchor: Anchor): void => place({ anchor })}
+            />
+            <AdjustField
+              label={messages.offsetX}
+              value={placement.offset_x_percent}
+              min={-OFFSET_LIMIT}
+              max={OFFSET_LIMIT}
+              step={OFFSET_STEP}
+              onChange={(offset_x_percent: number): void => place({ offset_x_percent })}
+            />
+            <AdjustField
+              label={messages.offsetY}
+              value={placement.offset_y_percent}
+              min={-OFFSET_LIMIT}
+              max={OFFSET_LIMIT}
+              step={OFFSET_STEP}
+              onChange={(offset_y_percent: number): void => place({ offset_y_percent })}
+            />
+            <SelectField
+              label={messages.faceModel}
+              value={settings.face_model}
+              options={faceOptions}
+              onChange={(face_model: string): void => update({ face_model })}
+            />
+            <SelectField
+              label={messages.speechLanguage}
+              value={settings.language}
+              options={[{ value: "auto", label: messages.languageAuto }, ...SPEECH_LANGUAGES].map(
+                (choice: ToggleChoice<string>): SelectOption => ({ ...choice, disabled: false }),
+              )}
+              onChange={(language: string): void => update({ language })}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>{messages.sizeHeading}</CardTitle>
+            <CardDescription>{messages.sizeHint}</CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4">
+            <AdjustField
+              label={messages.fontSize}
+              value={
+                Math.round(settings.font_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
+              }
+              min={2}
+              max={12}
+              step={0.2}
+              onChange={(percent: number): void => update({ font_ratio: percent / PERCENT })}
+            />
+            <AdjustField
+              label={messages.captionWidth}
+              value={Math.round(settings.width_ratio * PERCENT)}
+              min={30}
+              max={100}
+              step={1}
+              onChange={(percent: number): void => update({ width_ratio: percent / PERCENT })}
+            />
+            <AdjustField
+              label={messages.outlineWidth}
+              value={Math.round(settings.outline_ratio * PERCENT)}
+              min={2}
+              max={30}
+              step={1}
+              onChange={(percent: number): void => update({ outline_ratio: percent / PERCENT })}
+            />
+            <AdjustField
+              label={messages.captionLineHeight}
+              value={settings.line_height}
+              min={LINE_HEIGHT_MIN}
+              max={LINE_HEIGHT_MAX}
+              step={LINE_HEIGHT_STEP}
+              onChange={(line_height: number): void => update({ line_height })}
+            />
+            <AdjustField
+              label={messages.rimWidth}
+              value={
+                Math.round(settings.rim_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
+              }
+              min={0}
+              max={RIM_PERCENT_MAX}
+              step={RIM_PERCENT_STEP}
+              onChange={(percent: number): void => update({ rim_ratio: percent / PERCENT })}
+            />
+            <SwitchField
+              label={messages.shadowEnabled}
+              checked={settings.shadow.enabled}
+              onChange={(enabled: boolean): void => update({ shadow: { ...settings.shadow, enabled } })}
+            />
+            {settings.shadow.enabled ? (
+              <AdjustField
+                label={messages.shadowStrength}
+                value={Math.round(settings.shadow.strength * PERCENT)}
+                min={0}
+                max={100}
+                step={5}
+                onChange={(percent: number): void =>
+                  update({ shadow: { ...settings.shadow, strength: percent / PERCENT } })
+                }
+              />
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+      <div className="grid min-w-0 grid-cols-1 gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>{messages.previewHeading}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-3">
+            <ChoiceGroup
+              label={messages.previewFrameLabel}
+              value={frameId}
+              choices={Object.values(FRAMES).map(
+                ({ id, label }: FrameChoice): ToggleChoice<FrameId> => ({
+                  value: id,
+                  label: label(messages),
+                }),
+              )}
+              onChange={setFrameId}
+            />
+            <CaptionPreview settings={settings} frame={FRAMES[frameId]} />
+          </CardContent>
+        </Card>
         <PaletteEditor
           palette={settings.palette}
+          unassigned={settings.unassigned}
           onChange={(palette: SpeakerColor[]): void => update({ palette })}
+          onUnassignedChange={(unassigned: SpeakerColor): void => update({ unassigned })}
         />
-      </section>
+      </div>
     </div>
   );
 }

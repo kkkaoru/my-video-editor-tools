@@ -2,15 +2,7 @@
 
 export type Anchor = "face_above" | "face_below" | "video_top" | "video_bottom";
 export type Role = "transcribe" | "diarize" | "face" | "runtime";
-export type Stage =
-  | "prepare"
-  | "convert_model"
-  | "extract_audio"
-  | "transcribe"
-  | "diarize"
-  | "faces"
-  | "export"
-  | "done";
+export type Stage = "convert_model" | "extract_audio" | "transcribe" | "diarize" | "faces" | "export";
 
 export interface SpeakerColor {
   fill: string;
@@ -23,26 +15,43 @@ export interface Placement {
   offset_y_percent: number;
 }
 
+export interface CaptionShadow {
+  enabled: boolean;
+  /** 0 to 1. */
+  strength: number;
+}
+
 export interface Settings {
   palette: SpeakerColor[];
   unassigned: SpeakerColor;
   font_family: string;
   font_ratio: number;
   outline_ratio: number;
+  rim_ratio: number;
+  line_height: number;
+  shadow: CaptionShadow;
   width_ratio: number;
   placement: Placement;
   language: string;
-  transcribe_model: string;
   diarize_model: string;
+  speaker_count: number;
   face_model: string;
   model_dirs: string[];
+}
+
+export type Backend = "default" | "vulkan" | "cuda";
+export type GpuVendor = "nvidia" | "radeon";
+
+export interface Gpu {
+  vendor: GpuVendor;
+  name: string;
+  memory_gib: number;
 }
 
 export interface Hardware {
   is_mac: boolean;
   memory_gib: number;
-  nvidia_name: string | null;
-  nvidia_memory_gib: number;
+  gpu: Gpu | null;
 }
 
 export interface BackendError {
@@ -52,6 +61,7 @@ export interface BackendError {
   role?: string;
   required?: number;
   available?: number;
+  limit_minutes?: number;
 }
 
 export interface ModelStatus {
@@ -69,6 +79,7 @@ export interface ModelStatus {
 export interface Snapshot {
   locale: string;
   hardware: Hardware;
+  backend: Backend;
   settings: Settings;
   models: ModelStatus[];
   models_dir: string;
@@ -77,13 +88,20 @@ export interface Snapshot {
 export interface Progress {
   stage: Stage;
   overall: number;
+  /** Progress inside this stage, 0 to 1; an estimate when `determinate` is false. */
+  stage_fraction: number;
   determinate: boolean;
+  /** The stages this job runs, in order. */
+  plan: Stage[];
+  /** Estimated seconds left for the whole job, from measured speeds; `null` until one is known. */
+  remaining_seconds: number | null;
 }
 
 export interface JobOutcome {
   outputs: string[];
   base: string;
   speaker_count: number;
+  requested_speakers: number;
   cue_count: number;
   faceless: boolean;
 }

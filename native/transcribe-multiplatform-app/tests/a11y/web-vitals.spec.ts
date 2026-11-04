@@ -1,12 +1,15 @@
 // Runs with bun: Core Web Vitals must stay "good" (LCP <= 2.5 s, INP <= 200 ms, CLS <= 0.1) on a slowed-down CPU.
-import { readFile } from "node:fs/promises";
 import { expect, type Page, test } from "@playwright/test";
 import { UI_STATES, type UiState } from "./fixtures.ts";
 
 interface Vitals {
-  LCP: number;
-  CLS: number;
-  INP: number;
+  lcp: number;
+  cls: number;
+  inp: number;
+}
+
+interface EventObserverInit extends PerformanceObserverInit {
+  durationThreshold: number;
 }
 
 const GOOD_LCP_MS: number = 2500;
@@ -14,49 +17,47 @@ const GOOD_INP_MS: number = 200;
 const GOOD_CLS: number = 0.1;
 // Four times slower approximates the slowest supported machines, as Lighthouse's mobile profile does.
 const CPU_SLOWDOWN: number = 4;
-const WEB_VITALS_BUNDLE: string = "node_modules/web-vitals/dist/web-vitals.iife.js";
-const HEAVIEST_STATES: ReadonlySet<string> = new Set([
-  "jobs empty",
-  "job finished",
-  "style face_above landscape",
-  "models idle",
-]);
+const SETTLE_MS: number = 300;
+const MEASURED_STATES: string[] = ["jobs empty", "job finished", "style face_above landscape", "models idle"];
 
-async function collectVitals(page: Page): Promise<void> {
-  await page.addInitScript({ content: await readFile(WEB_VITALS_BUNDLE, "utf8") });
-  await page.addInitScript((): void => {
-    const vitals: Record<string, number> = { LCP: 0, CLS: 0, INP: 0 };
-    const library = Reflect.get(window, "webVitals");
-    const record = ({ name, value }: { name: string; value: number }): void => {
-      vitals[name] = value;
-    };
-    Object.assign(window, { __vitals: vitals });
-    library.onLCP(record, { reportAllChanges: true });
-    library.onCLS(record, { reportAllChanges: true });
-    library.onINP(record, { reportAllChanges: true, durationThreshold: 16 });
-  });
+/** Runs in the page. Sums all shifts and keeps the slowest interaction, both stricter than the field definitions. */
+function observeVitals(): void {
+  const vitals: Vitals = { lcp: 0, cls: 0, inp: 0 };
+  const eventOptions: EventObserverInit = { type: "event", buffered: true, durationThreshold: 16 };
+  Object.assign(window, { __vitals: vitals });
+  new PerformanceObserver((list: PerformanceObserverEntryList): void => {
+    vitals.lcp = list.getEntries().at(-1)?.startTime ?? vitals.lcp;
+  }).observe({ type: "largest-contentful-paint", buffered: true });
+  new PerformanceObserver((list: PerformanceObserverEntryList): void => {
+    list.getEntries().forEach((entry: PerformanceEntry): void => {
+      const value: unknown = Reflect.get(entry, "value");
+      vitals.cls += Reflect.get(entry, "hadRecentInput") === true || typeof value !== "number" ? 0 : value;
+    });
+  }).observe({ type: "layout-shift", buffered: true });
+  new PerformanceObserver((list: PerformanceObserverEntryList): void => {
+    vitals.inp = Math.max(
+      vitals.inp,
+      ...list.getEntries().map(({ duration }: PerformanceEntry): number => duration),
+    );
+  }).observe(eventOptions);
 }
-
-const readVitals = (page: Page): Promise<Vitals> =>
-  page.evaluate((): Vitals => {
-    document.dispatchEvent(new Event("visibilitychange"));
-    return Reflect.get(window, "__vitals");
-  });
 
 async function exercise(page: Page): Promise<void> {
   await page.getByRole("tab").nth(1).click();
-  await page.getByRole("group").nth(0).getByRole("button").nth(0).click();
-  await page.getByRole("spinbutton").nth(0).fill("10");
+  await page.locator('[role="group"][aria-label] button').first().click();
+  await page.getByRole("spinbutton").first().fill("10");
   await page.getByRole("tab").nth(2).click();
   await page.getByRole("tab").nth(0).click();
 }
 
-HEAVIEST_STATES.forEach((name: string): void => {
+MEASURED_STATES.forEach((name: string): void => {
   const state: UiState | undefined = UI_STATES.find((candidate: UiState): boolean => candidate.name === name);
   test(`core web vitals stay good: ${name}`, async ({ page, browserName }): Promise<void> => {
-    test.skip(browserName !== "chromium", "LCP and INP are only exposed by Chromium's performance APIs");
-    expect(state).not.toBe(undefined);
-    await collectVitals(page);
+    test.skip(
+      browserName !== "chromium",
+      "only Chromium exposes LCP and event timing to PerformanceObserver",
+    );
+    await page.addInitScript(observeVitals);
     await page.addInitScript({ path: "tests/a11y/tauri-mock.js" });
     await page.addInitScript((snapshot: UiState["snapshot"] | undefined): void => {
       Object.assign(window, { __FIXTURE_SNAPSHOT__: snapshot });
@@ -66,13 +67,18 @@ HEAVIEST_STATES.forEach((name: string): void => {
     await page.goto("/");
     await page.getByRole("tablist").waitFor();
     await page.evaluate((events: UiState["jobEvents"] | undefined): void => {
-      (events ?? []).map((event) => Reflect.get(window, "__emitTauri")("job", event));
+      (events ?? []).forEach((event): void => {
+        Reflect.get(window, "__emitTauri")("job", event);
+      });
     }, state?.jobEvents);
+    await page.waitForFunction((): boolean => Reflect.get(window, "__vitals").lcp > 0);
     await exercise(page);
-    const { LCP, CLS, INP }: Vitals = await readVitals(page);
-    expect(LCP).toBeGreaterThan(0);
-    expect(LCP).toBeLessThanOrEqual(GOOD_LCP_MS);
-    expect(CLS).toBeLessThanOrEqual(GOOD_CLS);
-    expect(INP).toBeLessThanOrEqual(GOOD_INP_MS);
+    await page.waitForTimeout(SETTLE_MS);
+    const { lcp, cls, inp }: Vitals = await page.evaluate((): Vitals => Reflect.get(window, "__vitals"));
+    console.log(`${name}: LCP ${Math.round(lcp)} ms, INP ${Math.round(inp)} ms, CLS ${cls.toFixed(3)}`);
+    expect(inp).toBeGreaterThan(0);
+    expect(lcp).toBeLessThanOrEqual(GOOD_LCP_MS);
+    expect(cls).toBeLessThanOrEqual(GOOD_CLS);
+    expect(inp).toBeLessThanOrEqual(GOOD_INP_MS);
   });
 });

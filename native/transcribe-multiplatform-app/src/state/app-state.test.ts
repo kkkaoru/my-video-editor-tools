@@ -7,6 +7,7 @@ import {
   applyJobEvent,
   initialState,
   startedDownload,
+  withModels,
   withSettings,
 } from "./app-state.ts";
 
@@ -16,17 +17,18 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
   language: "auto",
-  transcribe_model: "a",
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
-  hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+  hardware: { is_mac: true, memory_gib: 16, gpu: null },
+  backend: "default",
   settings: SETTINGS,
   models: [],
   models_dir: "/models",
@@ -40,17 +42,18 @@ it("starts empty", () => {
   expect(initialState(SNAPSHOT)).toStrictEqual({
     snapshot: {
       locale: "en",
-      hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+      hardware: { is_mac: true, memory_gib: 16, gpu: null },
+      backend: "default",
       settings: {
         palette: [],
         unassigned: { fill: "#AAAAAA", outline: "#000000" },
         font_family: "Sans",
         font_ratio: 0.05,
         outline_ratio: 0.1,
+        shadow: { enabled: false, strength: 0.5 },
         width_ratio: 0.8,
         placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
         language: "auto",
-        transcribe_model: "a",
         diarize_model: "b",
         face_model: "c",
         model_dirs: [],
@@ -68,8 +71,8 @@ it("starts empty", () => {
 it("puts a queued job first and stamps its start", () => {
   const state: AppState = applyJobEvent(queued(), { state: "queued", id: 2, path: "/b.mp4" }, 200);
   expect(state.jobs).toStrictEqual([
-    { id: 2, path: "/b.mp4", state: "queued", startedAt: 200, progress: null, outcome: null, error: null },
-    { id: 1, path: "/a.mp4", state: "queued", startedAt: 100, progress: null, outcome: null, error: null },
+    { id: 2, path: "/b.mp4", state: "queued", startedAt: 200 },
+    { id: 1, path: "/a.mp4", state: "queued", startedAt: 100 },
   ]);
 });
 
@@ -77,19 +80,35 @@ it("records progress on the running job only", () => {
   const two: AppState = applyJobEvent(queued(), { state: "queued", id: 2, path: "/b.mp4" }, 200);
   const state: AppState = applyJobEvent(
     two,
-    { state: "running", id: 1, progress: { stage: "faces", overall: 0.5, determinate: true } },
+    {
+      state: "running",
+      id: 1,
+      progress: {
+        stage: "faces",
+        overall: 0.5,
+        stage_fraction: 0.25,
+        determinate: true,
+        plan: ["faces", "export"],
+        remaining_seconds: 90,
+      },
+    },
     300,
   );
   expect(state.jobs).toStrictEqual([
-    { id: 2, path: "/b.mp4", state: "queued", startedAt: 200, progress: null, outcome: null, error: null },
+    { id: 2, path: "/b.mp4", state: "queued", startedAt: 200 },
     {
       id: 1,
       path: "/a.mp4",
       state: "running",
       startedAt: 100,
-      progress: { stage: "faces", overall: 0.5, determinate: true },
-      outcome: null,
-      error: null,
+      progress: {
+        stage: "faces",
+        overall: 0.5,
+        stage_fraction: 0.25,
+        determinate: true,
+        plan: ["faces", "export"],
+        remaining_seconds: 90,
+      },
     },
   ]);
 });
@@ -110,9 +129,7 @@ it("records the outcome of a finished job", () => {
       path: "/a.mp4",
       state: "finished",
       startedAt: 100,
-      progress: null,
       outcome: { outputs: ["/a.srt"], base: "/a", speaker_count: 2, cue_count: 9, faceless: false },
-      error: null,
     },
   ]);
 });
@@ -125,8 +142,6 @@ it("records the error of a failed job", () => {
       path: "/a.mp4",
       state: "failed",
       startedAt: 100,
-      progress: null,
-      outcome: null,
       error: { code: "internal", detail: "boom" },
     },
   ]);
@@ -134,16 +149,12 @@ it("records the error of a failed job", () => {
 
 it("marks a cancelled job", () => {
   const state: AppState = applyJobEvent(queued(), { state: "cancelled", id: 1 }, 300);
-  expect(state.jobs).toStrictEqual([
-    { id: 1, path: "/a.mp4", state: "cancelled", startedAt: 100, progress: null, outcome: null, error: null },
-  ]);
+  expect(state.jobs).toStrictEqual([{ id: 1, path: "/a.mp4", state: "cancelled", startedAt: 100 }]);
 });
 
 it("drops an event for an unknown job", () => {
   const state: AppState = applyJobEvent(queued(), { state: "cancelled", id: 99 }, 300);
-  expect(state.jobs).toStrictEqual([
-    { id: 1, path: "/a.mp4", state: "queued", startedAt: 100, progress: null, outcome: null, error: null },
-  ]);
+  expect(state.jobs).toStrictEqual([{ id: 1, path: "/a.mp4", state: "queued", startedAt: 100 }]);
 });
 
 it("marks a download as started", () => {
@@ -189,4 +200,12 @@ it("replaces the settings", () => {
   const state: AppState = withSettings(initialState(SNAPSHOT), { ...SETTINGS, language: "ja" });
   expect(state.snapshot.settings.language).toBe("ja");
   expect(state.snapshot.locale).toBe("en");
+});
+
+it("replaces only the models", () => {
+  const failed: AppState = { ...initialState(SNAPSHOT), loadError: { code: "internal" } };
+  const state: AppState = withModels(failed, []);
+  expect(state.snapshot.models).toStrictEqual([]);
+  expect(state.snapshot.settings.language).toBe("auto");
+  expect(state.loadError).toStrictEqual({ code: "internal" });
 });

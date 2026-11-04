@@ -43,7 +43,7 @@ jobs:
           cd src-tauri
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
-          bash ../scripts/check-rust-coverage.sh
+          bash ../scripts/verify/check-rust-coverage.sh
       - name: WCAG AAA in every UI state and Core Web Vitals
         working-directory: ${{ env.APP_DIR }}
         run: |
@@ -70,9 +70,17 @@ jobs:
       - name: Install UI dependencies
         working-directory: ${{ env.APP_DIR }}
         run: bun install --frozen-lockfile
+      - name: Install the Vulkan SDK for the Radeon build of whisper.cpp
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk --no-progress -y
+          $root = (Get-ChildItem C:\VulkanSDK | Select-Object -First 1).FullName
+          "VULKAN_SDK=$root" | Out-File -Append $env:GITHUB_ENV
+          "$root\Bin" | Out-File -Append $env:GITHUB_PATH
       - name: Fetch pinned speech and media tools
         shell: bash
-        run: bash "$APP_DIR/scripts/fetch-runtime.sh" "${{ matrix.platform }}"
+        run: bash "$APP_DIR/scripts/release/fetch-runtime.sh" "${{ matrix.platform }}"
       - name: Build the app
         working-directory: ${{ env.APP_DIR }}
         run: bunx tauri build --bundles ${{ matrix.bundles }}

@@ -1,12 +1,17 @@
 // Runs with bun: download, reuse and remove speech and face models.
+import { DownloadIcon, Trash2Icon, XIcon } from "lucide-preact";
 import type { VNode } from "preact";
+import { Alert } from "@/components/ui/alert.tsx";
+import { Badge } from "@/components/ui/badge.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.tsx";
+import { Progress } from "@/components/ui/progress.tsx";
 import { cancelDownload, deleteModel, pickFolder, saveSettings, startDownload } from "../backend/backend.ts";
 import type { ModelStatus, Role, Settings, Snapshot } from "../backend/types.ts";
 import { errorText, format, type Messages, type ModelNotes } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import { type AppState, type DownloadRow, startedDownload } from "../state/app-state.ts";
 import { type AppStore, reportFailure } from "../state/use-app-store.ts";
-import { ActionButton, ProgressBar } from "./controls.tsx";
 
 export interface ModelsPaneProps {
   store: AppStore;
@@ -22,10 +27,7 @@ interface ModelRowProps {
 
 const GIB: number = 2 ** 30;
 const MIB: number = 2 ** 20;
-const SELECTION_KEYS: ReadonlyMap<Role, "transcribe_model" | "diarize_model"> = new Map([
-  ["transcribe", "transcribe_model"],
-  ["diarize", "diarize_model"],
-]);
+const ROLE_ORDER: Role[] = ["transcribe", "diarize", "face", "runtime"];
 
 export const formatBytes = (bytes: number): string =>
   bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.ceil(bytes / MIB)} MB`;
@@ -37,6 +39,9 @@ const hasNote = (notes: ModelNotes, id: string): id is keyof ModelNotes => id in
 
 const noteFor = (notes: ModelNotes, id: string): string => (hasNote(notes, id) ? notes[id] : "");
 
+const canDownload = (model: ModelStatus): boolean =>
+  model.download_bytes > 0 && model.found_at === null && model.blocked === null;
+
 function SelectButton({
   model,
   store,
@@ -47,19 +52,19 @@ function SelectButton({
   snapshot: Snapshot;
 }): VNode | null {
   const messages: Messages = useMessages();
-  const key: "transcribe_model" | "diarize_model" | undefined = SELECTION_KEYS.get(model.role);
-  if (key === undefined || model.found_at === null || model.blocked !== null) {
+  if (model.role !== "diarize" || model.found_at === null || model.blocked !== null) {
     return null;
   }
   const { settings } = snapshot;
-  const selected: boolean = settings[key] === model.id;
+  const selected: boolean = settings.diarize_model === model.id;
   return (
-    <ActionButton
-      pressed={selected}
-      onClick={(): void => store.updateSettings({ ...settings, [key]: model.id })}
+    <Button
+      variant={selected ? "default" : "outline"}
+      aria-pressed={selected}
+      onClick={(): void => store.updateSettings({ ...settings, diarize_model: model.id })}
     >
       {format(selected ? messages.inUseModel : messages.useModel, { name: model.label })}
-    </ActionButton>
+    </Button>
   );
 }
 
@@ -69,15 +74,15 @@ function DownloadButtons({ model, store, snapshot, download }: ModelRowProps): V
   const fail = (error: unknown): void => reportFailure(store.setState, error);
   if (download?.running === true) {
     return (
-      <ActionButton onClick={(): void => void cancelDownload(model.id).catch(fail)}>
+      <Button variant="outline" onClick={(): void => void cancelDownload(model.id).catch(fail)}>
+        <XIcon aria-hidden="true" />
         {format(messages.downloadCancel, { name })}
-      </ActionButton>
+      </Button>
     );
   }
-  if (model.download_bytes > 0 && model.found_at === null && model.blocked === null) {
+  if (canDownload(model)) {
     return (
-      <ActionButton
-        primary
+      <Button
         onClick={(): void => {
           store.setState(
             (state: AppState): AppState => startedDownload(state, model.id, model.download_bytes),
@@ -85,14 +90,19 @@ function DownloadButtons({ model, store, snapshot, download }: ModelRowProps): V
           startDownload(model.id).catch(fail);
         }}
       >
+        <DownloadIcon aria-hidden="true" />
         {format(messages.download, { name, size: formatBytes(model.download_bytes) })}
-      </ActionButton>
+      </Button>
     );
   }
   return isOwnCopy(model, snapshot) ? (
-    <ActionButton onClick={(): void => void deleteModel(model.id).then(store.applySnapshot).catch(fail)}>
+    <Button
+      variant="outline"
+      onClick={(): void => void deleteModel(model.id).then(store.applySnapshot).catch(fail)}
+    >
+      <Trash2Icon aria-hidden="true" />
       {format(messages.deleteModel, { name })}
-    </ActionButton>
+    </Button>
   ) : null;
 }
 
@@ -108,23 +118,21 @@ function DownloadState({
     return null;
   }
   if (download.error !== null) {
-    return (
-      <p role="alert" className="break-all text-error">
-        {errorText(messages, download.error, model.label)}
-      </p>
-    );
+    return <Alert>{errorText(messages, download.error, model.label)}</Alert>;
   }
   const text: string = format(messages.downloadProgress, {
     done: formatBytes(download.doneBytes),
     total: formatBytes(download.totalBytes),
   });
   return (
-    <div>
-      <p className="text-sm text-muted">{text}</p>
-      <ProgressBar
-        label={format(messages.downloadProgressLabel, { name: model.label })}
-        fraction={download.totalBytes > 0 ? download.doneBytes / download.totalBytes : null}
-        valueText={text}
+    <div className="grid grid-cols-1 gap-1">
+      <p className="text-muted-foreground tabular-nums">{text}</p>
+      <Progress
+        value={download.totalBytes > 0 ? download.doneBytes / download.totalBytes : null}
+        min={0}
+        max={1}
+        aria-label={format(messages.downloadProgressLabel, { name: model.label })}
+        getAriaValueText={(): string => text}
       />
     </div>
   );
@@ -133,33 +141,27 @@ function DownloadState({
 function ModelRow({ model, store, snapshot, download }: ModelRowProps): VNode {
   const messages: Messages = useMessages();
   return (
-    <li className="rounded-lg border border-line bg-panel p-3">
+    <li className="grid gap-2 border-t border-border pt-3 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-semibold">{model.label}</h3>
-        {model.recommended ? (
-          <span className="rounded border border-accent px-2 text-sm text-ink">
-            {messages.badgeRecommended}
-          </span>
-        ) : null}
-        {model.found_at === null ? null : (
-          <span className="rounded border border-ok px-2 text-sm text-ok">{messages.badgePresent}</span>
-        )}
+        <h3 className="font-medium">{model.label}</h3>
+        {model.recommended ? <Badge variant="default">{messages.badgeRecommended}</Badge> : null}
+        {model.found_at === null ? null : <Badge variant="success">{messages.badgePresent}</Badge>}
       </div>
-      <p className="text-sm text-muted">{noteFor(messages.modelNotes, model.id)}</p>
+      <p className="text-muted-foreground">{noteFor(messages.modelNotes, model.id)}</p>
       {model.blocked === null ? null : (
-        <p className="text-sm text-error">{errorText(messages, model.blocked, model.label)}</p>
+        <p className="text-destructive">{errorText(messages, model.blocked, model.label)}</p>
       )}
       {model.found_at === null ? null : (
-        <p className="text-sm break-all text-muted">
+        <p className="break-all text-muted-foreground">
           {format(messages.locationLabel, { path: model.found_at })}
         </p>
       )}
       {model.found_at === null && model.source_url !== "" ? (
-        <p className="text-sm break-all text-muted">
+        <p className="break-all text-muted-foreground">
           {format(messages.sourceLabel, { url: model.source_url })}
         </p>
       ) : null}
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2">
         <SelectButton model={model} store={store} snapshot={snapshot} />
         <DownloadButtons model={model} store={store} snapshot={snapshot} download={download} />
       </div>
@@ -175,8 +177,6 @@ async function addFolder({ applySnapshot }: AppStore, settings: Settings): Promi
   }
 }
 
-const ROLE_ORDER: Role[] = ["transcribe", "diarize", "face", "runtime"];
-
 const roleHeading = (messages: Messages, role: Role): string =>
   (
     ({
@@ -190,50 +190,57 @@ const roleHeading = (messages: Messages, role: Role): string =>
 export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
   const messages: Messages = useMessages();
   const visible: ModelStatus[] = snapshot.models.filter(({ hidden }: ModelStatus): boolean => !hidden);
+  const fail = (error: unknown): void => reportFailure(store.setState, error);
   return (
-    <>
-      <h2 className="font-semibold">{messages.modelsHeading}</h2>
-      <p className="text-sm text-muted">{messages.modelsHint}</p>
-      <div className="my-2">
-        <ActionButton
-          onClick={(): void =>
-            void addFolder(store, snapshot.settings).catch((error: unknown): void =>
-              reportFailure(store.setState, error),
-            )
-          }
-        >
-          {messages.addModelFolder}
-        </ActionButton>
-      </div>
-      {snapshot.settings.model_dirs.length === 0 ? null : (
-        <p className="text-sm break-all text-muted">
-          {messages.modelFolders}: {snapshot.settings.model_dirs.join(" / ")}
-        </p>
-      )}
+    <div className="grid grid-cols-1 gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>{messages.modelsHeading}</CardTitle>
+          <CardDescription>{messages.modelsHint}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-2">
+          <Button
+            className="w-fit"
+            variant="outline"
+            onClick={(): void => void addFolder(store, snapshot.settings).catch(fail)}
+          >
+            {messages.addModelFolder}
+          </Button>
+          {snapshot.settings.model_dirs.length === 0 ? null : (
+            <p className="break-all text-muted-foreground">
+              {messages.modelFolders}: {snapshot.settings.model_dirs.join(" / ")}
+            </p>
+          )}
+        </CardContent>
+      </Card>
       {ROLE_ORDER.filter((role: Role): boolean =>
         visible.some((model: ModelStatus): boolean => model.role === role),
       ).map(
         (role: Role): VNode => (
-          <section key={role} aria-label={roleHeading(messages, role)} className="mt-4">
-            <h2 className="font-semibold">{roleHeading(messages, role)}</h2>
-            <ul className="mt-1 grid gap-2">
-              {visible
-                .filter((model: ModelStatus): boolean => model.role === role)
-                .map(
-                  (model: ModelStatus): VNode => (
-                    <ModelRow
-                      key={model.id}
-                      model={model}
-                      store={store}
-                      snapshot={snapshot}
-                      download={store.state.downloads.get(model.id)}
-                    />
-                  ),
-                )}
-            </ul>
-          </section>
+          <Card key={role}>
+            <CardHeader>
+              <CardTitle>{roleHeading(messages, role)}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="grid grid-cols-1 gap-3">
+                {visible
+                  .filter((model: ModelStatus): boolean => model.role === role)
+                  .map(
+                    (model: ModelStatus): VNode => (
+                      <ModelRow
+                        key={model.id}
+                        model={model}
+                        store={store}
+                        snapshot={snapshot}
+                        download={store.state.downloads.get(model.id)}
+                      />
+                    ),
+                  )}
+              </ul>
+            </CardContent>
+          </Card>
         ),
       )}
-    </>
+    </div>
   );
 }

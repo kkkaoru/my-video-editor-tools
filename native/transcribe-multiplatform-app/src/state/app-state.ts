@@ -5,22 +5,42 @@ import type {
   JobEvent,
   JobOutcome,
   JobQueuedEvent,
+  ModelStatus,
   Progress,
   Settings,
   Snapshot,
 } from "../backend/types.ts";
 
-export type JobState = "queued" | "running" | "finished" | "failed" | "cancelled";
-
-export interface JobRow {
+interface JobBase {
   id: number;
   path: string;
-  state: JobState;
   startedAt: number;
-  progress: Progress | null;
-  outcome: JobOutcome | null;
-  error: BackendError | null;
 }
+
+export interface QueuedJobRow extends JobBase {
+  state: "queued";
+}
+
+export interface RunningJobRow extends JobBase {
+  state: "running";
+  progress: Progress;
+}
+
+export interface FinishedJobRow extends JobBase {
+  state: "finished";
+  outcome: JobOutcome;
+}
+
+export interface FailedJobRow extends JobBase {
+  state: "failed";
+  error: BackendError;
+}
+
+export interface CancelledJobRow extends JobBase {
+  state: "cancelled";
+}
+
+export type JobRow = QueuedJobRow | RunningJobRow | FinishedJobRow | FailedJobRow | CancelledJobRow;
 
 export interface DownloadRow {
   running: boolean;
@@ -50,21 +70,18 @@ const newJob = (id: number, path: string, startedAt: number): JobRow => ({
   path,
   state: "queued",
   startedAt,
-  progress: null,
-  outcome: null,
-  error: null,
 });
 
-const withEvent = (job: JobRow, event: Exclude<JobEvent, JobQueuedEvent>): JobRow => {
+const withEvent = ({ id, path, startedAt }: JobRow, event: Exclude<JobEvent, JobQueuedEvent>): JobRow => {
   switch (event.state) {
     case "running":
-      return { ...job, state: "running", progress: event.progress };
+      return { id, path, startedAt, state: "running", progress: event.progress };
     case "finished":
-      return { ...job, state: "finished", outcome: event.outcome };
+      return { id, path, startedAt, state: "finished", outcome: event.outcome };
     case "failed":
-      return { ...job, state: "failed", error: event.error };
+      return { id, path, startedAt, state: "failed", error: event.error };
     case "cancelled":
-      return { ...job, state: "cancelled" };
+      return { id, path, startedAt, state: "cancelled" };
   }
 };
 
@@ -114,4 +131,9 @@ export const applyDownloadEvent = (state: AppState, event: DownloadEvent): AppSt
 export const withSettings = (state: AppState, settings: Settings): AppState => ({
   ...state,
   snapshot: { ...state.snapshot, settings },
+});
+
+export const withModels = (state: AppState, models: ModelStatus[]): AppState => ({
+  ...state,
+  snapshot: { ...state.snapshot, models },
 });

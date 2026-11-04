@@ -1,10 +1,12 @@
 //! Drives the bundled tools: ffmpeg/ffprobe for media, whisper.cpp for words, nemo-speech for speakers.
 
 use crate::captions::{SpeakerTurn, Word};
-use crate::catalog::{DiarizeKind, ModelEntry};
+use crate::catalog::{Backend, DiarizeKind, ModelEntry};
 use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::paths::AppPaths;
-use crate::process::{background_command, run_capture, run_with_progress, CancelToken};
+use crate::process::{
+    background_command, run_capture, run_with_progress, run_with_ticks, CancelToken,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::OsStr;
@@ -25,6 +27,8 @@ pub struct Tools {
     pub ffprobe: PathBuf,
     pub whisper: PathBuf,
     pub nemo: PathBuf,
+    /// The build `nemo` and `whisper` actually came from.
+    pub backend: Backend,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -57,26 +61,37 @@ fn find_tool(root: &Path, file_name: &str, depth: usize) -> Option<PathBuf> {
 }
 
 impl Tools {
-    /// Bundled tools, with the downloaded CUDA builds taking over when `use_cuda` is set.
-    pub fn locate(paths: &AppPaths, use_cuda: bool) -> AppResult<Self> {
+    /// The build for `backend`, or the bundled default where that build is not installed.
+    pub fn locate(paths: &AppPaths, backend: Backend) -> AppResult<Self> {
         let bundled = paths.bundled_runtime_dir();
-        let geforce = paths.downloaded_runtime_dir().join("geforce");
-        let resolve = |folder: &str, tool: &str| -> AppResult<PathBuf> {
-            let file_name = exe_name(tool);
-            let accelerated = use_cuda
-                .then(|| find_tool(&geforce.join(folder), &file_name, TOOL_SEARCH_DEPTH))
-                .flatten();
-            accelerated
-                .or_else(|| find_tool(&bundled.join(folder), &file_name, TOOL_SEARCH_DEPTH))
-                .ok_or_else(|| {
-                    AppError::Invalid(format!("{tool} is missing from {}", bundled.display()))
-                })
+        let accelerated_root = |folder: &str| match backend {
+            Backend::Cuda => Some(paths.downloaded_runtime_dir().join("geforce").join(folder)),
+            Backend::Vulkan => Some(bundled.join(format!("{folder}-vulkan"))),
+            Backend::Default => None,
         };
+        let accelerated = |folder: &str, tool: &str| {
+            accelerated_root(folder)
+                .and_then(|root| find_tool(&root, &exe_name(tool), TOOL_SEARCH_DEPTH))
+        };
+        let plain = |folder: &str, tool: &str| {
+            find_tool(&bundled.join(folder), &exe_name(tool), TOOL_SEARCH_DEPTH).ok_or_else(|| {
+                AppError::Invalid(format!("{tool} is missing from {}", bundled.display()))
+            })
+        };
+        let (nemo, whisper) = (
+            accelerated("nemo", "nemo-speech"),
+            accelerated("whisper", "whisper-cli"),
+        );
         Ok(Self {
-            ffmpeg: resolve("ffmpeg", "ffmpeg")?,
-            ffprobe: resolve("ffmpeg", "ffprobe")?,
-            whisper: resolve("whisper", "whisper-cli")?,
-            nemo: resolve("nemo", "nemo-speech")?,
+            backend: if nemo.is_some() {
+                backend
+            } else {
+                Backend::Default
+            },
+            ffmpeg: plain("ffmpeg", "ffmpeg")?,
+            ffprobe: plain("ffmpeg", "ffprobe")?,
+            whisper: whisper.map_or_else(|| plain("whisper", "whisper-cli"), Ok)?,
+            nemo: nemo.map_or_else(|| plain("nemo", "nemo-speech"), Ok)?,
         })
     }
 }
@@ -366,6 +381,23 @@ pub struct DiarizeModel<'a> {
     pub entry: &'a ModelEntry,
     pub main_file: &'a Path,
     pub encoder: Option<&'a Path>,
+    /// `--device`: the GPU when the model fits, else the CPU.
+    pub device: &'a str,
+    /// How many people speak, 0 when unknown.
+    pub speaker_count: u32,
+    /// A lower speaker activation threshold, for a retry when too few voices were found.
+    pub onset: Option<f64>,
+}
+
+/// The prompt guide's speaker instruction, naming exactly the tags for the people known to be speaking.
+fn speaker_instruction(speaker_count: u32) -> Option<String> {
+    (speaker_count >= 2).then(|| {
+        let tags: Vec<String> = (0..speaker_count).map(|index| format!("<spk:{index}>")).collect();
+        format!(
+            "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Put speaker tags {} on the transcription.",
+            tags.join(" ")
+        )
+    })
 }
 
 fn diarize_command(
@@ -387,6 +419,9 @@ fn diarize_command(
                 .arg("--model")
                 .arg(model.main_file)
                 .args(["--format", "json", "--force"]);
+            if let Some(onset) = model.onset {
+                command.arg("--onset").arg(onset.to_string());
+            }
         }
         DiarizeKind::SpeechLlm => {
             command
@@ -398,13 +433,19 @@ fn diarize_command(
             if language != AUTO_LANGUAGE {
                 command.args(["--language", language]);
             }
+            if let Some(instruction) = speaker_instruction(model.speaker_count) {
+                command.arg("--instruction").arg(instruction);
+            }
             if let Some(encoder) = model.encoder {
                 command.arg("--salm-encoder").arg(encoder);
             }
             command.args(model.entry.extra_args.iter().map(OsStr::new));
         }
     }
-    command.arg("--output").arg(out);
+    command
+        .args(["--device", model.device])
+        .arg("--output")
+        .arg(out);
     Ok(command)
 }
 
@@ -416,10 +457,11 @@ pub fn diarize(
     language: &str,
     work: &Path,
     cancel: &CancelToken,
+    on_tick: &mut dyn FnMut(),
 ) -> AppResult<Vec<SpeakerTurn>> {
     let out = work.join("speakers.json");
     let command = diarize_command(tools, model, wav, language, &out)?;
-    run_with_progress(command, "nemo-speech", cancel, |_| {})?;
+    run_with_ticks(command, "nemo-speech", cancel, on_tick)?;
     let bytes = std::fs::read(&out).map_err(io_context("read speaker output"))?;
     match model.entry.diarize_kind {
         Some(DiarizeKind::SpeechLlm) => parse_speech_llm(&bytes),
@@ -580,5 +622,285 @@ mod tests {
             parse_probe(json).unwrap_err().to_string(),
             "the file has no video stream"
         );
+    }
+
+    #[test]
+    fn a_video_without_a_size_or_duration_is_refused() {
+        let no_size = br#"{"format":{"duration":"1"},"streams":[{"codec_type":"video"},{"codec_type":"audio"}]}"#;
+        assert_eq!(
+            parse_probe(no_size).unwrap_err().to_string(),
+            "the video size could not be read"
+        );
+        let no_duration = br#"{"format":{},"streams":[{"codec_type":"video","width":2,"height":2},{"codec_type":"audio"}]}"#;
+        assert_eq!(
+            parse_probe(no_duration).unwrap_err().to_string(),
+            "the video duration could not be read"
+        );
+    }
+
+    #[test]
+    fn a_rotate_tag_also_swaps_the_size() {
+        let json = br#"{"format":{"duration":"1"},"streams":[
+            {"codec_type":"video","width":4,"height":2,"r_frame_rate":"25/1","tags":{"rotate":"90"}},
+            {"codec_type":"audio"}]}"#;
+        assert_eq!(
+            parse_probe(json).unwrap(),
+            VideoInfo {
+                width: 2,
+                height: 4,
+                duration: 1.0,
+                fps_num: 25,
+                fps_den: 1
+            }
+        );
+    }
+
+    #[test]
+    fn broken_tool_json_is_refused() {
+        assert_eq!(
+            parse_probe(b"{").unwrap_err().to_string(),
+            "ffprobe output: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            parse_probe(b"{}").unwrap_err().to_string(),
+            "ffprobe found no streams"
+        );
+        assert_eq!(
+            parse_whisper_json(b"{").unwrap_err().to_string(),
+            "whisper JSON: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            parse_diarization(b"{").unwrap_err().to_string(),
+            "diarization JSON: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            parse_speech_llm(b"{").unwrap_err().to_string(),
+            "speech-LLM JSON: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            parse_speech_llm(b"{}").unwrap_err().to_string(),
+            "speech-LLM JSON has no words"
+        );
+    }
+
+    fn args_of(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_sortformer_model_is_driven_by_the_diarize_command() {
+        let tools = Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "w".into(),
+            nemo: "n".into(),
+            backend: Backend::Default,
+        };
+        let model = DiarizeModel {
+            entry: crate::catalog::find_entry("nemotron-3-diarization").unwrap(),
+            main_file: Path::new("m.gguf"),
+            encoder: None,
+            device: "cpu",
+            speaker_count: 0,
+            onset: None,
+        };
+        let command = diarize_command(
+            &tools,
+            &model,
+            Path::new("a.wav"),
+            "ja",
+            Path::new("o.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            args_of(&command),
+            vec![
+                "diarize", "a.wav", "--model", "m.gguf", "--format", "json", "--force", "--device",
+                "cpu", "--output", "o.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_speech_llm_gets_its_language_encoder_and_extra_arguments() {
+        let tools = Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "w".into(),
+            nemo: "n".into(),
+            backend: Backend::Default,
+        };
+        let model = DiarizeModel {
+            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2m").unwrap(),
+            main_file: Path::new("m.gguf"),
+            encoder: Some(Path::new("e.gguf")),
+            device: "cpu",
+            speaker_count: 0,
+            onset: None,
+        };
+        let command = diarize_command(
+            &tools,
+            &model,
+            Path::new("a.wav"),
+            "ja",
+            Path::new("o.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            args_of(&command),
+            vec![
+                "transcribe",
+                "a.wav",
+                "--model",
+                "m.gguf",
+                "--format",
+                "json",
+                "--diarize",
+                "--force",
+                "--language",
+                "ja",
+                "--salm-encoder",
+                "e.gguf",
+                "--asr.salm.max_sequences",
+                "2",
+                "--asr.salm.n_ctx_per_sequence",
+                "8192",
+                "--asr.salm.max_context",
+                "8192",
+                "--asr.salm.mtp_draft",
+                "0",
+                "--asr.salm.n_batch",
+                "512",
+                "--asr.salm.encoder_max_batch",
+                "2",
+                "--device",
+                "cpu",
+                "--output",
+                "o.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_automatic_language_is_left_to_the_model() {
+        let tools = Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "w".into(),
+            nemo: "n".into(),
+            backend: Backend::Default,
+        };
+        let model = DiarizeModel {
+            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+            main_file: Path::new("m.gguf"),
+            encoder: None,
+            device: "cpu",
+            speaker_count: 0,
+            onset: None,
+        };
+        let command = diarize_command(
+            &tools,
+            &model,
+            Path::new("a.wav"),
+            "auto",
+            Path::new("o.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            args_of(&command),
+            vec![
+                "transcribe",
+                "a.wav",
+                "--model",
+                "m.gguf",
+                "--format",
+                "json",
+                "--diarize",
+                "--force",
+                "--device",
+                "cpu",
+                "--output",
+                "o.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_retry_lowers_the_sortformer_onset() {
+        let tools = Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "w".into(),
+            nemo: "n".into(),
+            backend: Backend::Default,
+        };
+        let model = DiarizeModel {
+            entry: crate::catalog::find_entry("nemotron-3-diarization").unwrap(),
+            main_file: Path::new("m.gguf"),
+            encoder: None,
+            device: "auto",
+            speaker_count: 3,
+            onset: Some(0.3),
+        };
+        let command = diarize_command(
+            &tools,
+            &model,
+            Path::new("a.wav"),
+            "ja",
+            Path::new("o.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            args_of(&command),
+            vec![
+                "diarize", "a.wav", "--model", "m.gguf", "--format", "json", "--force", "--onset",
+                "0.3", "--device", "auto", "--output", "o.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_known_speaker_count_names_exactly_those_tags() {
+        let tools = Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "w".into(),
+            nemo: "n".into(),
+            backend: Backend::Default,
+        };
+        let model = DiarizeModel {
+            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+            main_file: Path::new("m.gguf"),
+            encoder: None,
+            device: "auto",
+            speaker_count: 2,
+            onset: None,
+        };
+        let command = diarize_command(
+            &tools,
+            &model,
+            Path::new("a.wav"),
+            "auto",
+            Path::new("o.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            args_of(&command),
+            vec![
+                "transcribe", "a.wav", "--model", "m.gguf", "--format", "json", "--diarize", "--force",
+                "--instruction",
+                "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Put speaker tags <spk:0> <spk:1> on the transcription.",
+                "--device", "auto", "--output", "o.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_or_single_speaker_count_needs_no_instruction() {
+        assert_eq!(speaker_instruction(0), None);
+        assert_eq!(speaker_instruction(1), None);
     }
 }

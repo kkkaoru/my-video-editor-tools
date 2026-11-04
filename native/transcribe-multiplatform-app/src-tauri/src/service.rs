@@ -1,11 +1,12 @@
 //! Application behaviour behind the UI commands: settings, the job queue and downloads.
 //! Nothing here knows about Tauri; events leave through a callback.
 
-use crate::catalog::{self, Hardware, ModelEntry, ModelStatus};
+use crate::catalog::{self, Backend, Hardware, ModelEntry, ModelStatus};
 use crate::download::{self, DownloadProgress};
 use crate::error::{io_context, AppError, AppResult};
+use crate::eta::Progress;
 use crate::paths::AppPaths;
-use crate::pipeline::{self, JobOutcome, Progress};
+use crate::pipeline::{self, JobOutcome};
 use crate::process::CancelToken;
 use crate::settings::Settings;
 use serde::Serialize;
@@ -56,6 +57,8 @@ pub type EventSink = Arc<dyn Fn(AppEvent) + Send + Sync>;
 pub struct Snapshot {
     pub locale: String,
     pub hardware: Hardware,
+    /// The speech-tool build jobs use on this machine now.
+    pub backend: Backend,
     pub settings: Settings,
     pub models: Vec<ModelStatus>,
     pub models_dir: PathBuf,
@@ -221,6 +224,7 @@ impl Service {
         Ok(Snapshot {
             locale: self.locale.clone(),
             hardware: self.shared.hardware.clone(),
+            backend: catalog::backend_for(&self.shared.hardware, &self.shared.paths),
             settings,
             models,
             models_dir: self.shared.paths.models_dir(),
@@ -317,8 +321,7 @@ mod tests {
         let hardware = Hardware {
             is_mac: true,
             memory_gib: 16,
-            nvidia_name: None,
-            nvidia_memory_gib: 0,
+            gpu: None,
         };
         let (sender, receiver) = mpsc::channel();
         let sender = Mutex::new(sender);
@@ -391,16 +394,14 @@ mod tests {
             next_job_event(&events),
             JobEvent::Queued { id: 2, .. }
         ));
-        assert!(matches!(
-            next_job_event(&events),
-            JobEvent::Running { id: 1, .. }
-        ));
-        let JobEvent::Failed { id, error } = next_job_event(&events) else {
-            panic!("job should fail")
-        };
-        assert_eq!(id, 1);
-        assert_eq!(error["code"], "no_model_for_role");
-        assert_eq!(error["role"], "diarize");
+        assert_eq!(
+            serde_json::to_value(next_job_event(&events)).unwrap(),
+            serde_json::json!({
+                "state": "failed",
+                "id": 1,
+                "error": { "code": "no_model_for_role", "role": "diarize" }
+            })
+        );
     }
 
     #[test]
@@ -416,10 +417,10 @@ mod tests {
             next_job_event(&events),
             JobEvent::Queued { id: 1, .. }
         ));
-        let JobEvent::Failed { error, .. } = next_job_event(&events) else {
-            panic!("job should fail")
-        };
-        assert_eq!(error["code"], "internal");
+        assert_eq!(
+            serde_json::to_value(next_job_event(&events)).unwrap()["error"]["code"],
+            "internal"
+        );
     }
 
     #[test]
@@ -439,6 +440,7 @@ mod tests {
             outputs: Vec::new(),
             base: PathBuf::from("b"),
             speaker_count: 2,
+            requested_speakers: 0,
             cue_count: 3,
             faceless: false,
         };
@@ -469,12 +471,10 @@ mod tests {
         let cancel = CancelToken::default();
         cancel.cancel();
         run_download(entry, &service.shared, &cancel);
-        let AppEvent::Download(DownloadEvent::Failed { id, .. }) =
-            events.recv_timeout(WAIT).unwrap()
-        else {
-            panic!("download should fail")
-        };
-        assert_eq!(id, "whisper-large-v3-turbo");
+        assert!(matches!(
+            events.recv_timeout(WAIT).unwrap(),
+            AppEvent::Download(DownloadEvent::Failed { id, .. }) if id == "whisper-large-v3-turbo"
+        ));
     }
 
     #[test]
@@ -509,10 +509,98 @@ mod tests {
         let (service, events) = started(&scratch("start-download"));
         // The YuNet entry has no files, so this finishes without touching the network.
         service.start_download(catalog::YUNET_ID).unwrap();
-        let AppEvent::Download(DownloadEvent::Finished { id }) = events.recv_timeout(WAIT).unwrap()
-        else {
-            panic!("should finish")
-        };
-        assert_eq!(id, "yunet");
+        assert!(matches!(
+            events.recv_timeout(WAIT).unwrap(),
+            AppEvent::Download(DownloadEvent::Finished { id }) if id == "yunet"
+        ));
+    }
+
+    #[test]
+    fn a_broken_lock_fails_the_job_instead_of_stopping_the_worker() {
+        let (service, events) = started(&scratch("poisoned"));
+        let shared = Arc::clone(&service.shared);
+        let poison = std::thread::spawn(move || {
+            let guard = shared.settings.lock().unwrap();
+            std::panic::panic_any(guard.font_family.clone())
+        });
+        assert!(poison.join().is_err());
+        assert_eq!(
+            service.snapshot().unwrap_err().to_string(),
+            "settings lock poisoned"
+        );
+        assert_eq!(
+            service.add_videos(&[PathBuf::from("/nope.mp4")]).unwrap(),
+            vec![1]
+        );
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 1, .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(next_job_event(&events)).unwrap(),
+            serde_json::json!({
+                "state": "failed",
+                "id": 1,
+                "error": { "code": "internal", "detail": "settings lock poisoned" }
+            })
+        );
+    }
+
+    #[test]
+    fn a_download_reports_its_progress_as_events() {
+        let root = scratch("download-progress");
+        let (service, events) = started(&root);
+        // A file already present at the right size finishes without any request.
+        let entry: &'static ModelEntry = Box::leak(Box::new(ModelEntry {
+            id: "test-model",
+            role: catalog::Role::Diarize,
+            label: "",
+            source_url: "",
+            files: Box::leak(Box::new([catalog::FileSpec {
+                url_kind: catalog::UrlKind::Direct("http://127.0.0.1:9/unused"),
+                path: "m.bin",
+                size: 1,
+                sha256: "00",
+            }])),
+            min_memory_gib: 0,
+            diarize_kind: None,
+            needs_cuda: false,
+            extra_args: &[],
+            max_audio_seconds: None,
+        }));
+        let file = root.join("data/models/test-model/m.bin");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        run_download(entry, &service.shared, &CancelToken::default());
+        assert!(matches!(
+            events.recv_timeout(WAIT).unwrap(),
+            AppEvent::Download(DownloadEvent::Running {
+                done_bytes: 1,
+                total_bytes: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events.recv_timeout(WAIT).unwrap(),
+            AppEvent::Download(DownloadEvent::Finished { id }) if id == "test-model"
+        ));
+    }
+
+    #[test]
+    fn cancelling_known_work_sets_its_token() {
+        let (service, _events) = started(&scratch("cancel-known"));
+        let job = CancelToken::default();
+        service.shared.jobs.lock().unwrap().insert(7, job.clone());
+        let download = CancelToken::default();
+        service
+            .shared
+            .downloads
+            .lock()
+            .unwrap()
+            .insert("m".to_owned(), download.clone());
+        service.cancel_job(7).unwrap();
+        service.cancel_download("m").unwrap();
+        assert!(job.is_cancelled());
+        assert!(download.is_cancelled());
     }
 }

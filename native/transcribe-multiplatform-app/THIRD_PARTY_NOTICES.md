@@ -7,6 +7,7 @@ Bundled in the release builds:
 | [FFmpeg](https://ffmpeg.org/) (LGPL build) | audio extraction, frame sampling | LGPL-2.1-or-later |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | transcription runtime | MIT |
 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | speaker separation runtime | Apache-2.0 |
+| [Vibrato](https://github.com/daac-tools/vibrato) with MeCab IPADIC (`resources/ipadic-*`) | Japanese phrase boundaries for caption breaks | MIT/Apache-2.0; IPADIC license in `resources/ipadic-COPYING` |
 | [YuNet](https://huggingface.co/opencv/face_detection_yunet) | face detection model | MIT |
 | [Whisper tokenizer vocabulary](https://huggingface.co/openai/whisper-large-v3-turbo) | model conversion | MIT |
 

@@ -1,14 +1,20 @@
 // Runs with bun: the text every language must supply, and the formatter that fills it in.
 import type { BackendError, Stage } from "../backend/types.ts";
 
+export interface StepStates {
+  done: string;
+  current: string;
+  pending: string;
+}
+
 export interface ModelNotes {
   "whisper-large-v3-turbo": string;
   "nemotron-3.5-transcribe-iq4": string;
   "nemotron-3.5-transcribe-nvfp4": string;
-  "nemotron-3.5-transcribe-q2m": string;
   "nemotron-3.5-transcribe-q2l": string;
   "nemotron-3.5-transcribe-q8": string;
   "nemotron-3-diarization": string;
+  "nemotron-3.5-transcribe-q2m": string;
   yunet: string;
   "avatar-face-yolo": string;
   "geforce-runtime": string;
@@ -24,6 +30,7 @@ export interface ErrorMessages {
   no_model_for_role: string;
   needs_nvidia: string;
   needs_memory: string;
+  too_long_for_model: string;
   internal: string;
   cancelled: string;
 }
@@ -50,7 +57,16 @@ export interface Messages {
   jobDone: string;
   jobFaceless: string;
   jobNoPercent: string;
-  jobElapsed: string;
+  speakerCount: string;
+  speakerCountAuto: string;
+  speakerCountValue: string;
+  jobFewerSpeakers: string;
+  jobStep: string;
+  jobEstimating: string;
+  jobRemaining: string;
+  jobRemainingUnderMinute: string;
+  stepStates: StepStates;
+  outputPurposes: Record<string, string>;
   jobProgressLabel: string;
   jobOutputs: string;
   stages: Record<Stage, string>;
@@ -70,6 +86,12 @@ export interface Messages {
   fontSize: string;
   captionWidth: string;
   outlineWidth: string;
+  captionLineHeight: string;
+  rimWidth: string;
+  unknownSpeaker: string;
+  contrastWarning: string;
+  shadowEnabled: string;
+  shadowStrength: string;
   previewHeading: string;
   previewFrameLabel: string;
   previewDescription: string;
@@ -80,8 +102,8 @@ export interface Messages {
   speakersHeading: string;
   speakersHint: string;
   speakerName: string;
-  fillColor: string;
-  outlineColor: string;
+  fillLabel: string;
+  outlineLabel: string;
   addSpeaker: string;
   removeSpeaker: string;
   resetPalette: string;
@@ -126,6 +148,7 @@ export const errorText = (messages: Messages, error: BackendError, modelLabel: s
         role: error.role === "diarize" ? messages.roleDiarize : messages.roleTranscribe,
         required: error.required ?? 0,
         available: error.available ?? 0,
+        limit: error.limit_minutes ?? 0,
         detail: error.detail ?? "",
       })
     : (error.detail ?? error.code);

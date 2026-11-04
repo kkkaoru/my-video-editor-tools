@@ -17,9 +17,6 @@ const tokensOf = (css: string): Map<string, string> =>
     ]),
   );
 
-const LIGHT: Map<string, string> = tokensOf(styles.slice(0, styles.indexOf(DARK_MARKER)));
-const DARK: Map<string, string> = tokensOf(styles.slice(styles.indexOf(DARK_MARKER)));
-
 function linear(hex: string, start: number): number {
   const channel: number = Number.parseInt(hex.slice(start, start + 2), 16) / CHANNEL_MAX;
   return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -35,77 +32,124 @@ const contrastOfHex = (first: string, second: string): number =>
 const contrast = (theme: Map<string, string>, foreground: string, background: string): number =>
   contrastOfHex(theme.get(foreground) ?? "", theme.get(background) ?? "");
 
+const LIGHT: Map<string, string> = tokensOf(styles.slice(0, styles.indexOf(DARK_MARKER)));
+const DARK: Map<string, string> = tokensOf(styles.slice(styles.indexOf(DARK_MARKER)));
+
 it("measures contrast the way WCAG defines it", () => {
   expect(contrastOfHex("#000000", "#ffffff")).toBeCloseTo(21);
   expect(contrastOfHex("#ffffff", "#ffffff")).toBe(1);
   expect(contrastOfHex("#777777", "#ffffff")).toBeCloseTo(4.48, 2);
 });
 
-it("reads the nine tokens of each theme from the stylesheet", () => {
+it("reads every colour token of each theme from the stylesheet", () => {
   expect(Array.from(LIGHT.keys())).toStrictEqual([
-    "bg",
-    "panel",
-    "ink",
+    "background",
+    "foreground",
+    "card",
+    "card-foreground",
+    "popover",
+    "popover-foreground",
+    "primary",
+    "primary-hover",
+    "primary-foreground",
     "muted",
-    "line",
+    "muted-foreground",
     "accent",
-    "accent-ink",
-    "error",
-    "ok",
+    "accent-foreground",
+    "destructive",
+    "success",
+    "border",
+    "ring",
+    "page",
   ]);
   expect(Array.from(DARK.keys())).toStrictEqual([
-    "bg",
-    "panel",
-    "ink",
+    "background",
+    "foreground",
+    "card",
+    "card-foreground",
+    "popover",
+    "popover-foreground",
+    "primary",
+    "primary-hover",
+    "primary-foreground",
     "muted",
-    "line",
+    "muted-foreground",
     "accent",
-    "accent-ink",
-    "error",
-    "ok",
+    "accent-foreground",
+    "destructive",
+    "success",
+    "border",
+    "ring",
+    "page",
   ]);
-  expect(LIGHT.get("bg")).toBe("#f4f5f7");
-  expect(DARK.get("bg")).toBe("#15171b");
+  expect(LIGHT.get("background")).toBe("#ffffff");
+  expect(DARK.get("background")).toBe("#0a0a0a");
 });
 
 it("gives light text at least 7:1", () => {
-  expect(contrast(LIGHT, "ink", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "ink", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "muted", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "muted", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "error", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "error", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "ok", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "ok", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "accent", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "accent", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(LIGHT, "accent-ink", "accent")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "foreground", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "foreground", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "foreground", "muted")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "card-foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "popover-foreground", "popover")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "muted-foreground", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "muted-foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "muted-foreground", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "muted-foreground", "muted")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "destructive", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "destructive", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "destructive", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "success", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "success", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "success", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "primary-foreground", "primary")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "primary-foreground", "primary-hover")).toBeGreaterThanOrEqual(7);
+  expect(contrast(LIGHT, "accent-foreground", "accent")).toBeGreaterThanOrEqual(7);
 });
 
-it("gives light lines and the focus ring at least 3:1", () => {
-  expect(contrast(LIGHT, "line", "bg")).toBeGreaterThanOrEqual(3);
-  expect(contrast(LIGHT, "line", "panel")).toBeGreaterThanOrEqual(3);
-  expect(contrast(LIGHT, "ink", "bg")).toBeGreaterThanOrEqual(3);
-  expect(contrast(LIGHT, "ink", "panel")).toBeGreaterThanOrEqual(3);
+it("gives light lines, the focus ring and solid controls at least 3:1", () => {
+  expect(contrast(LIGHT, "border", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "border", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "border", "page")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "ring", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "ring", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "ring", "page")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "primary", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "primary", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(LIGHT, "primary", "page")).toBeGreaterThanOrEqual(3);
 });
 
 it("gives dark text at least 7:1", () => {
-  expect(contrast(DARK, "ink", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "ink", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "muted", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "muted", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "error", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "error", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "ok", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "ok", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "accent", "bg")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "accent", "panel")).toBeGreaterThanOrEqual(7);
-  expect(contrast(DARK, "accent-ink", "accent")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "foreground", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "foreground", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "foreground", "muted")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "card-foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "popover-foreground", "popover")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "muted-foreground", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "muted-foreground", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "muted-foreground", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "muted-foreground", "muted")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "destructive", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "destructive", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "destructive", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "success", "background")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "success", "card")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "success", "page")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "primary-foreground", "primary")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "primary-foreground", "primary-hover")).toBeGreaterThanOrEqual(7);
+  expect(contrast(DARK, "accent-foreground", "accent")).toBeGreaterThanOrEqual(7);
 });
 
-it("gives dark lines and the focus ring at least 3:1", () => {
-  expect(contrast(DARK, "line", "bg")).toBeGreaterThanOrEqual(3);
-  expect(contrast(DARK, "line", "panel")).toBeGreaterThanOrEqual(3);
-  expect(contrast(DARK, "ink", "bg")).toBeGreaterThanOrEqual(3);
-  expect(contrast(DARK, "ink", "panel")).toBeGreaterThanOrEqual(3);
+it("gives dark lines, the focus ring and solid controls at least 3:1", () => {
+  expect(contrast(DARK, "border", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "border", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "border", "page")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "ring", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "ring", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "ring", "page")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "primary", "background")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "primary", "card")).toBeGreaterThanOrEqual(3);
+  expect(contrast(DARK, "primary", "page")).toBeGreaterThanOrEqual(3);
 });

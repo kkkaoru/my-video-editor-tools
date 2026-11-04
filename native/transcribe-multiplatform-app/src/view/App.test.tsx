@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
-import { afterEach, beforeEach, expect, it, type Mock, type MockInstance, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
 import { enMessages } from "../i18n/locale-en.ts";
 import { App, hardwareLabel } from "./App.tsx";
@@ -17,17 +17,18 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
   language: "auto",
-  transcribe_model: "a",
   diarize_model: "b",
   face_model: "here",
   model_dirs: [],
 };
 const SNAPSHOT: Snapshot = {
   locale: "en-US",
-  hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+  hardware: { is_mac: true, memory_gib: 16, gpu: null },
+  backend: "default",
   settings: SETTINGS,
   models: [
     {
@@ -90,27 +91,68 @@ afterEach(() => {
 });
 
 it("names the Apple GPU on a Mac", () => {
-  expect(hardwareLabel(SNAPSHOT.hardware, enMessages)).toBe("Apple GPU (Metal) / memory 16 GB");
+  expect(hardwareLabel(SNAPSHOT, enMessages)).toBe("Apple GPU (Metal) / memory 16 GB");
 });
 
 it("names the CPU elsewhere", () => {
-  expect(hardwareLabel({ ...SNAPSHOT.hardware, is_mac: false }, enMessages)).toBe("CPU only / memory 16 GB");
+  expect(
+    hardwareLabel({ backend: "default", hardware: { is_mac: false, memory_gib: 8, gpu: null } }, enMessages),
+  ).toBe("CPU only / memory 8 GB");
 });
 
-it("names an NVIDIA GPU with its memory", () => {
+it("names a GPU with its memory and no runtime by default", () => {
   expect(
     hardwareLabel(
-      { ...SNAPSHOT.hardware, is_mac: false, nvidia_name: "RTX 4090", nvidia_memory_gib: 24 },
+      {
+        backend: "default",
+        hardware: {
+          is_mac: false,
+          memory_gib: 8,
+          gpu: { vendor: "nvidia", name: "RTX 4090", memory_gib: 24 },
+        },
+      },
       enMessages,
     ),
-  ).toBe("RTX 4090 (24 GB) / memory 16 GB");
+  ).toBe("RTX 4090 (24 GB) / memory 8 GB");
+});
+
+it("names the CUDA runtime", () => {
+  expect(
+    hardwareLabel(
+      {
+        backend: "cuda",
+        hardware: {
+          is_mac: false,
+          memory_gib: 8,
+          gpu: { vendor: "nvidia", name: "RTX 4090", memory_gib: 24 },
+        },
+      },
+      enMessages,
+    ),
+  ).toBe("RTX 4090 (24 GB, CUDA) / memory 8 GB");
+});
+
+it("names the Vulkan runtime", () => {
+  expect(
+    hardwareLabel(
+      {
+        backend: "vulkan",
+        hardware: {
+          is_mac: false,
+          memory_gib: 8,
+          gpu: { vendor: "radeon", name: "RX 7900", memory_gib: 16 },
+        },
+      },
+      enMessages,
+    ),
+  ).toBe("RX 7900 (16 GB, Vulkan) / memory 8 GB");
 });
 
 it("sets the document language and title before showing the app", () => {
   render(<App initial={{ ...SNAPSHOT, locale: "ja-JP" }} />);
   expect(document.documentElement.lang).toBe("ja");
-  expect(document.title).toBe(screen.getByRole("heading", { level: 1 }).textContent);
-  expect(screen.getByRole("tab", { selected: true }).getAttribute("aria-selected")).toBe("true");
+  expect(document.title).toBe("Transcribe for Resolve");
+  expect(screen.getByRole("tab", { selected: true }).textContent).toBe("文字起こし");
 });
 
 it("opens on the jobs tab with the hardware in the header", () => {
@@ -142,6 +184,13 @@ it("shows the models on the models tab", async () => {
   expect(screen.getByRole("heading", { name: "Face here" }).tagName).toBe("H3");
 });
 
+it("shows job progress from the backend", () => {
+  render(<App initial={SNAPSHOT} />);
+  act((): void => emitJob({ state: "queued", id: 1, path: "/talk.mp4" }));
+  expect(screen.getByRole("heading", { name: "talk.mp4" }).tagName).toBe("H2");
+  expect(screen.getByText("Waiting in line").getAttribute("role")).toBe("status");
+});
+
 it("shows a background failure in the banner", async () => {
   render(<App initial={{ ...SNAPSHOT, models: [] }} />);
   vi.mocked(invoke).mockRejectedValue(new Error("refused"));
@@ -149,21 +198,4 @@ it("shows a background failure in the banner", async () => {
   await waitFor((): void => {
     expect(screen.getByText("Something went wrong: Error: refused").getAttribute("role")).toBe("alert");
   });
-});
-
-it("ticks the elapsed time of a running job and stops ticking when closed", () => {
-  vi.useFakeTimers({ now: 1_000_000 });
-  const view: { unmount: () => void } = render(<App initial={SNAPSHOT} />);
-  act((): void => emitJob({ state: "queued", id: 1, path: "/talk.mp4" }));
-  act((): void =>
-    emitJob({ state: "running", id: 1, progress: { stage: "export", overall: 0.5, determinate: true } }),
-  );
-  act((): void => {
-    vi.advanceTimersByTime(61_000);
-  });
-  expect(screen.getByText("50% / 1 min 1 s elapsed").tagName).toBe("P");
-  view.unmount();
-  const readClock: MockInstance<typeof Date.now> = vi.spyOn(Date, "now");
-  vi.advanceTimersByTime(5000);
-  expect(readClock).toHaveBeenCalledTimes(0);
 });

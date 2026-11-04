@@ -14,10 +14,10 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
   language: "auto",
-  transcribe_model: "yunet-other",
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
@@ -35,7 +35,8 @@ const MODEL: ModelStatus = {
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
-  hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+  hardware: { is_mac: true, memory_gib: 16, gpu: null },
+  backend: "default",
   settings: SETTINGS,
   models: [MODEL],
   models_dir: "/models",
@@ -99,7 +100,7 @@ it("groups visible models under their role, in a fixed order", () => {
 
 it("skips a role with no visible model", () => {
   render(<ModelsPane store={storeWith(SNAPSHOT, new Map())} snapshot={SNAPSHOT} />);
-  expect(screen.queryByRole("region", { name: "runtime" })).toBe(null);
+  expect(screen.queryByRole("heading", { name: "runtime" })).toBe(null);
 });
 
 it("explains a model from its note, and shows nothing for an unknown model", () => {
@@ -139,10 +140,26 @@ it("explains a blocked model and offers no action", () => {
   ).toStrictEqual(["Add a folder with existing models"]);
 });
 
-it("selects a present model", () => {
-  const store: AppStore = showModel({ ...MODEL, found_at: "/shared/whisper" }, null);
+it("selects a present diarizer", () => {
+  const store: AppStore = showModel({ ...MODEL, id: "d", role: "diarize", found_at: "/shared/d" }, null);
   fireEvent.click(screen.getByRole("button", { name: "Use Whisper" }));
-  expect(vi.mocked(store.updateSettings).mock.calls[0]?.[0].transcribe_model).toBe("whisper-large-v3-turbo");
+  expect(screen.getByRole("button", { name: "Use Whisper" }).getAttribute("aria-pressed")).toBe("false");
+  expect(vi.mocked(store.updateSettings).mock.calls[0]?.[0].diarize_model).toBe("d");
+});
+
+it("offers no choice of transcription model", () => {
+  showModel({ ...MODEL, found_at: "/shared/whisper" }, null);
+  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
+});
+
+it("offers no choice of a blocked diarizer", () => {
+  showModel({ ...MODEL, role: "diarize", found_at: "/shared/d", blocked: { code: "needs_nvidia" } }, null);
+  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
+});
+
+it("offers no choice of a missing diarizer", () => {
+  showModel({ ...MODEL, role: "diarize" }, null);
+  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
 });
 
 it("marks the model in use", () => {
@@ -275,7 +292,25 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
     expect(vi.mocked(store.applySnapshot)).toHaveBeenCalledTimes(1);
   });
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([
-    ["save_settings", { settings: { ...SETTINGS, model_dirs: ["/x", "/extra"] } }],
+    [
+      "save_settings",
+      {
+        settings: {
+          palette: [],
+          unassigned: { fill: "#AAAAAA", outline: "#000000" },
+          font_family: "Sans",
+          font_ratio: 0.05,
+          outline_ratio: 0.1,
+          shadow: { enabled: false, strength: 0.5 },
+          width_ratio: 0.8,
+          placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+          language: "auto",
+          diarize_model: "b",
+          face_model: "c",
+          model_dirs: ["/x", "/extra"],
+        },
+      },
+    ],
   ]);
 });
 

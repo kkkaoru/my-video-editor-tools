@@ -60,3 +60,9 @@ it("shows the detail of an unknown code", () => {
 it("shows an unknown code when it has no detail", () => {
   expect(errorText(enMessages, { code: "new_code" }, "")).toBe("new_code");
 });
+
+it("states the recording limit when it is known", () => {
+  expect(errorText(enMessages, { code: "too_long_for_model", limit_minutes: 7 }, "Big")).toBe(
+    "Big takes recordings up to 7 minutes. This video is longer. Choose Nemotron 3 Diarization in Models.",
+  );
+});

@@ -101,13 +101,24 @@ fn configure<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         .invoke_handler(handler())
 }
 
+fn launch<R: Runtime>(
+    builder: Builder<R>,
+    context: tauri::Context<R>,
+    paths: AppPaths,
+) -> AppResult<()> {
+    configure(builder)
+        .setup(move |app| manage_service(app.handle(), paths).map_err(Into::into))
+        .run(context)
+        .map_err(|error| crate::error::AppError::Invalid(format!("window runtime: {error}")))
+}
+
 /// Starts the desktop app.
 pub fn run() -> AppResult<()> {
-    let paths = AppPaths::detect()?;
-    configure(Builder::default())
-        .setup(move |app| manage_service(app.handle(), paths).map_err(Into::into))
-        .run(tauri::generate_context!())
-        .map_err(|error| crate::error::AppError::Invalid(format!("window runtime: {error}")))
+    launch(
+        Builder::default(),
+        tauri::generate_context!(),
+        AppPaths::detect()?,
+    )
 }
 
 #[cfg(test)]
@@ -237,6 +248,65 @@ mod tests {
         );
         assert!(
             call(&window, "delete_model", json!({ "id": "yunet" })).unwrap()["models"].is_array()
+        );
+    }
+
+    #[test]
+    fn launching_manages_the_service_before_the_loop_runs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test/shell-launch");
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let managed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = std::sync::Arc::clone(&managed);
+        // Closing the only window on Ready is what ends the mock event loop.
+        let closer = tauri::plugin::Builder::<tauri::test::MockRuntime, ()>::new("closer")
+            .on_event(move |app, event| {
+                if matches!(event, tauri::RunEvent::Ready) {
+                    seen.store(
+                        app.try_state::<Service>().is_some(),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    // `on_event` holds the plugin lock that creating a window needs.
+                    let handle = app.clone();
+                    std::thread::spawn(move || {
+                        let window = WebviewWindowBuilder::new(&handle, "main", Default::default())
+                            .build()
+                            .unwrap();
+                        window.destroy().unwrap();
+                    });
+                }
+            })
+            .build();
+        launch(
+            mock_builder().plugin(closer),
+            mock_context(noop_assets()),
+            paths,
+        )
+        .unwrap();
+        assert!(managed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_stops_the_service_from_starting() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test/shell-bad-settings");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data/settings.json"), b"{").unwrap();
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let app = configure(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        assert_eq!(
+            manage_service(app.handle(), paths).unwrap_err().to_string(),
+            "settings file: EOF while parsing an object at line 1 column 1"
         );
     }
 }

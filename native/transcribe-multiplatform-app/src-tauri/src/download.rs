@@ -1,6 +1,6 @@
 //! Resumable, hash-verified downloads of catalogued files.
 
-use crate::catalog::{FileSpec, ModelEntry, Role, GEFORCE_RUNTIME_ID};
+use crate::catalog::{locate_file, FileSpec, ModelEntry, Role, GEFORCE_RUNTIME_ID};
 use crate::error::{io_context, AppError, AppResult};
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
@@ -204,9 +204,12 @@ pub fn download_entry(
 ) -> AppResult<()> {
     let entry_bytes: u64 = entry.files.iter().map(|file| file.size).sum();
     let mut earlier_bytes = 0;
+    let own_models = [paths.models_dir()];
     for file in entry.files {
         let destination = destination_for(entry, file, paths);
-        let complete = std::fs::metadata(&destination).is_ok_and(|meta| meta.len() == file.size);
+        // Variants share files such as the 1.6 GB encoder: one copy anywhere is enough.
+        let complete = !file.is_archive() && locate_file(file, &own_models, None).is_some()
+            || std::fs::metadata(&destination).is_ok_and(|meta| meta.len() == file.size);
         if !complete {
             download_file(
                 file,
@@ -235,6 +238,91 @@ pub fn download_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::UrlKind;
+    use crate::error::AppError;
+    use std::io::Cursor;
+    use std::net::TcpListener;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    const HELLO: &[u8] = b"hello world";
+    const HELLO_SHA256: &str = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+    /// Nothing listens here: a test using it proves no request was needed.
+    const NO_SERVER: &str = "http://127.0.0.1:9/unused";
+
+    fn scratch(name: &str) -> AppPaths {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("download-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        }
+    }
+
+    fn file_spec(url: String, path: &'static str, size: u64, sha256: &'static str) -> FileSpec {
+        FileSpec {
+            url_kind: UrlKind::Direct(Box::leak(url.into_boxed_str())),
+            path,
+            size,
+            sha256,
+        }
+    }
+
+    fn entry_of(files: Vec<FileSpec>) -> &'static ModelEntry {
+        Box::leak(Box::new(ModelEntry {
+            id: "test-model",
+            role: Role::Diarize,
+            label: "",
+            source_url: "",
+            files: Box::leak(files.into_boxed_slice()),
+            min_memory_gib: 0,
+            diarize_kind: None,
+            needs_cuda: false,
+            extra_args: &[],
+            max_audio_seconds: None,
+        }))
+    }
+
+    /// Answers one request: from the asked offset with 206, or the whole body with 200.
+    fn serve(body: &'static [u8], honour_range: bool, pause: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let text = String::from_utf8(request).unwrap().to_lowercase();
+            let offset: usize = text
+                .lines()
+                .find_map(|line| line.strip_prefix("range: bytes="))
+                .and_then(|range| range.trim_end_matches('-').parse().ok())
+                .unwrap_or(0);
+            let (status, rest) = if honour_range {
+                ("206 Partial Content", &body[offset..])
+            } else {
+                ("200 OK", body)
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                rest.len()
+            );
+            let middle = rest.len() / 2;
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&rest[..middle]);
+            let _ = stream.flush();
+            std::thread::sleep(pause);
+            let _ = stream.write_all(&rest[middle..]);
+        });
+        url
+    }
 
     #[test]
     fn hex_is_lowercase_and_padded() {
@@ -265,6 +353,295 @@ mod tests {
         assert_eq!(
             destination_for(runtime, &runtime.files[0], &paths),
             PathBuf::from("/d/runtime/geforce/nemo/nemo-speech-cuda.zip")
+        );
+    }
+
+    #[test]
+    fn a_fresh_download_is_published_and_reports_completion() {
+        let paths = scratch("fresh");
+        let url = serve(HELLO, true, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "a/m.bin", 11, HELLO_SHA256)]);
+        let mut seen = Vec::new();
+        download_entry(entry, &paths, &CancelToken::default(), &mut |progress| {
+            seen.push(progress)
+        })
+        .unwrap();
+        let destination = paths.models_dir().join("test-model/a/m.bin");
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"hello world".to_vec()
+        );
+        assert!(!partial_path(&destination).exists());
+        assert_eq!(
+            seen,
+            vec![DownloadProgress {
+                done_bytes: 11,
+                total_bytes: 11
+            }]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_download_resumes_from_its_partial_file() {
+        let paths = scratch("resume");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(partial_path(&destination), b"hello ").unwrap();
+        let url = serve(HELLO, true, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_server_ignoring_the_range_restarts_the_file() {
+        let paths = scratch("restart");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(partial_path(&destination), b"junk").unwrap();
+        let url = serve(HELLO, false, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_hash_mismatch_deletes_the_partial_file() {
+        let paths = scratch("mismatch");
+        let url = serve(HELLO, true, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, "00")]);
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "download failed: m.bin: SHA-256 mismatch (b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9)"
+        );
+        let destination = paths.models_dir().join("test-model/m.bin");
+        assert!(!destination.exists());
+        assert!(!partial_path(&destination).exists());
+    }
+
+    #[test]
+    fn a_partial_file_that_is_already_whole_is_published_without_a_request() {
+        let paths = scratch("whole-part");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(partial_path(&destination), HELLO).unwrap();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "m.bin",
+            11,
+            HELLO_SHA256,
+        )]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_complete_file_is_kept_without_a_request() {
+        let paths = scratch("complete");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&destination, b"keep").unwrap();
+        let entry = entry_of(vec![file_spec(NO_SERVER.to_owned(), "m.bin", 4, "00")]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"keep".to_vec());
+    }
+
+    #[test]
+    fn cancelling_keeps_the_partial_file_for_later() {
+        let paths = scratch("cancel");
+        let url = serve(HELLO, true, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        assert!(matches!(result, Err(AppError::Cancelled)));
+        let destination = paths.models_dir().join("test-model/m.bin");
+        assert!(!destination.exists());
+        assert!(partial_path(&destination).exists());
+    }
+
+    #[test]
+    fn an_unreachable_server_names_the_url() {
+        let paths = scratch("unreachable");
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "m.bin",
+            11,
+            HELLO_SHA256,
+        )]);
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("download failed: http://127.0.0.1:9/unused: "),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_slow_transfer_reports_progress_across_the_whole_entry() {
+        let paths = scratch("slow");
+        let slow = serve(HELLO, true, Duration::from_millis(300));
+        let entry = entry_of(vec![
+            file_spec(slow, "a.bin", 11, HELLO_SHA256),
+            file_spec(
+                serve(HELLO, true, Duration::ZERO),
+                "b.bin",
+                11,
+                HELLO_SHA256,
+            ),
+        ]);
+        let mut seen = Vec::new();
+        download_entry(entry, &paths, &CancelToken::default(), &mut |progress| {
+            seen.push((progress.done_bytes, progress.total_bytes))
+        })
+        .unwrap();
+        // Earlier entries depend on timing; the file boundaries do not.
+        assert_eq!(seen[seen.len() - 2..], [(11, 22), (22, 22)]);
+    }
+
+    #[test]
+    fn an_archive_unpacks_beside_itself() {
+        let paths = scratch("zip");
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("sub/a.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"first").unwrap();
+        writer
+            .start_file("b.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"second").unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let destination = paths.models_dir().join("test-model/tool.zip");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&destination, &archive).unwrap();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "tool.zip",
+            archive.len() as u64,
+            "00",
+        )]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        let folder = paths.models_dir().join("test-model");
+        assert_eq!(
+            std::fs::read_to_string(folder.join("sub/a.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.join("b.txt")).unwrap(),
+            "second"
+        );
+    }
+
+    #[test]
+    fn folders_inside_an_archive_are_created() {
+        let paths = scratch("zip-folder");
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .add_directory("empty/", SimpleFileOptions::default())
+            .unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let zip_path = paths.data.join("tool.zip");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(&zip_path, archive).unwrap();
+        unpack_archive(&zip_path, &paths.data.join("out")).unwrap();
+        assert!(paths.data.join("out/empty").is_dir());
+    }
+
+    #[test]
+    fn an_archive_member_cannot_escape_the_folder() {
+        let paths = scratch("zip-escape");
+        let zip_path = paths.data.join("tool.zip");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("../evil.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"evil").unwrap();
+        std::fs::write(&zip_path, writer.finish().unwrap().into_inner()).unwrap();
+        let error = unpack_archive(&zip_path, &paths.data.join("out"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "download failed: archive member escapes: ../evil.txt"
+        );
+        assert!(!paths.data.join("evil.txt").exists());
+    }
+
+    #[test]
+    fn a_broken_archive_is_refused() {
+        let paths = scratch("zip-broken");
+        let zip_path = paths.data.join("tool.zip");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(&zip_path, b"not a zip").unwrap();
+        let error = unpack_archive(&zip_path, &paths.data.join("out"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("download failed: archive: "), "{error}");
+        let missing = unpack_archive(&paths.data.join("absent.zip"), &paths.data)
+            .unwrap_err()
+            .to_string();
+        assert!(missing.starts_with("open archive: "), "{missing}");
+    }
+
+    #[test]
+    fn a_file_another_entry_already_downloaded_is_not_fetched_again() {
+        let paths = scratch("shared");
+        let shared = paths.models_dir().join("other-model/m.bin");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, b"keep").unwrap();
+        let entry = entry_of(vec![file_spec(NO_SERVER.to_owned(), "m.bin", 4, "00")]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert!(!paths.models_dir().join("test-model/m.bin").exists());
+    }
+
+    #[test]
+    fn a_shared_copy_of_the_wrong_size_does_not_count() {
+        let paths = scratch("shared-wrong-size");
+        let shared = paths.models_dir().join("other-model/m.bin");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, b"short").unwrap();
+        let url = serve(HELLO, true, Duration::ZERO);
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn an_archive_elsewhere_does_not_replace_its_own_download() {
+        let paths = scratch("shared-archive");
+        let shared = paths.models_dir().join("other-model/tool.zip");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, b"12345678901").unwrap();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "tool.zip",
+            11,
+            HELLO_SHA256,
+        )]);
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("download failed: http://127.0.0.1:9/unused: "),
+            "{error}"
         );
     }
 }

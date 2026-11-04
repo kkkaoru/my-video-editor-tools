@@ -36,6 +36,8 @@ const BASE_VOCAB: usize = 50257;
 /// Shapes the file holds in a different axis order than the openai checkpoint.
 const MLX_CONV_WEIGHTS: [&str; 2] = ["encoder.conv1.weight", "encoder.conv2.weight"];
 const MLX_CONV_KERNEL: usize = 3;
+/// The limit the safetensors format itself sets; Whisper's headers are far smaller.
+const MAX_HEADER_BYTES: u64 = 100 << 20;
 const HF_RENAMES: [(&str, &str); 19] = [
     ("model.encoder.layer_norm", "encoder.ln_post"),
     ("model.decoder.layer_norm", "decoder.ln"),
@@ -155,19 +157,14 @@ fn sinusoids() -> Vec<f32> {
 
 /// Reverses GPT-2's printable-byte mapping to get each token's raw bytes.
 fn gpt2_byte_decoder() -> HashMap<char, u8> {
-    let printable = (0x21..=0x7E).chain(0xA1..=0xAC).chain(0xAE..=0xFF);
-    let mut decoder: HashMap<char, u8> = printable
-        .map(|b: u32| (char::from_u32(b).unwrap_or('\0'), b as u8))
-        .collect();
+    let printable = (0x21u8..=0x7E).chain(0xA1..=0xAC).chain(0xAE..=0xFF);
+    let mut decoder: HashMap<char, u8> = printable.map(|byte| (char::from(byte), byte)).collect();
     let mut next = 256u32;
-    for byte in 0u32..=255 {
-        let Some(key) = char::from_u32(byte) else {
-            continue;
-        };
-        if decoder.contains_key(&key) {
+    for byte in 0u8..=255 {
+        if decoder.contains_key(&char::from(byte)) {
             continue;
         }
-        decoder.insert(char::from_u32(next).unwrap_or('\0'), byte as u8);
+        decoder.insert(char::from_u32(next).unwrap_or('\0'), byte);
         next += 1;
     }
     decoder
@@ -195,12 +192,15 @@ fn read_header(reader: &mut BufReader<File>) -> AppResult<(Value, u64)> {
         .read_exact(&mut length)
         .map_err(io_context("read safetensors header"))?;
     let header_bytes = u64::from_le_bytes(length);
-    // `take` instead of a sized buffer: a corrupt length must not allocate; a short read fails to parse.
-    let mut header = Vec::new();
+    // A corrupt length must not turn into a huge allocation.
+    if header_bytes > MAX_HEADER_BYTES {
+        return Err(AppError::Invalid(format!(
+            "safetensors header is too large: {header_bytes} bytes"
+        )));
+    }
+    let mut header = vec![0u8; header_bytes as usize];
     reader
-        .by_ref()
-        .take(header_bytes)
-        .read_to_end(&mut header)
+        .read_exact(&mut header)
         .map_err(io_context("read safetensors header"))?;
     let value = serde_json::from_slice(&header)
         .map_err(|error| AppError::Invalid(format!("safetensors header: {error}")))?;
@@ -524,5 +524,293 @@ mod tests {
         assert_eq!(table.len(), 1500 * 1280);
         assert_eq!(table[0], 0.0);
         assert_eq!(table[640], 1.0);
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("ggml-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn safetensors(path: &Path, header: &str, data: &[u8]) {
+        let mut file = (header.len() as u64).to_le_bytes().to_vec();
+        file.extend_from_slice(header.as_bytes());
+        file.extend_from_slice(data);
+        std::fs::write(path, file).unwrap();
+    }
+
+    /// The bytes from the start of the named tensor's record, `after` bytes past its name.
+    fn record<'a>(file: &'a [u8], name: &str, before: usize, after: usize) -> &'a [u8] {
+        let at = file
+            .windows(name.len())
+            .position(|window| window == name.as_bytes())
+            .unwrap();
+        &file[at - before..at + name.len() + after]
+    }
+
+    #[test]
+    fn an_openai_checkpoint_converts_with_its_own_positional_table() {
+        let root = scratch("openai");
+        let source = root.join("model.safetensors");
+        safetensors(
+            &source,
+            r#"{"__metadata__":{"format":"pt"},
+                "encoder.conv1.weight":{"dtype":"F16","shape":[1,2,3],"data_offsets":[0,12]},
+                "encoder.conv1.bias":{"dtype":"F16","shape":[2],"data_offsets":[12,16]},
+                "encoder.positional_embedding":{"dtype":"F16","shape":[1,1],"data_offsets":[16,18]},
+                "proj_out.weight":{"dtype":"F16","shape":[1],"data_offsets":[18,20]}}"#,
+            &[
+                1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 0, 0x3C, 0, 0xC0, 0, 0x3C, 9, 9,
+            ],
+        );
+        let output = root.join("ggml.bin");
+        let mut seen = Vec::new();
+        convert(&source, &output, |fraction| seen.push(fraction)).unwrap();
+        assert_eq!(seen, vec![1.0 / 3.0, 2.0 / 3.0, 1.0]);
+        assert!(!root.join("ggml.converting").exists());
+        let file = std::fs::read(&output).unwrap();
+        assert_eq!(
+            file[..16],
+            [0x6c, 0x6d, 0x67, 0x67, 0x9a, 0xca, 0, 0, 0xdc, 0x05, 0, 0, 0, 0x05, 0, 0]
+        );
+        assert_eq!(
+            record(&file, "encoder.conv1.weight", 24, 12),
+            b"\x03\0\0\0\x14\0\0\0\x01\0\0\0\x03\0\0\0\x02\0\0\0\x01\0\0\0encoder.conv1.weight\x01\0\x02\0\x03\0\x04\0\x05\0\x06\0"
+        );
+        assert_eq!(
+            record(&file, "encoder.conv1.bias", 20, 8),
+            b"\x02\0\0\0\x12\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0encoder.conv1.bias\0\0\x80\x3f\0\0\0\xc0"
+        );
+        assert_eq!(
+            record(&file, "encoder.positional_embedding", 20, 4),
+            b"\x02\0\0\0\x1c\0\0\0\0\0\0\0\x01\0\0\0\x01\0\0\0encoder.positional_embedding\0\0\x80\x3f"
+        );
+        assert!(!file.windows(8).any(|window| window == b"proj_out"));
+    }
+
+    #[test]
+    fn an_mlx_checkpoint_swaps_conv_axes_and_gains_a_positional_table() {
+        let root = scratch("mlx");
+        let source = root.join("weights.safetensors");
+        safetensors(
+            &source,
+            r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1,3,2],"data_offsets":[0,12]}}"#,
+            &[1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0],
+        );
+        let output = root.join("ggml.bin");
+        convert(&source, &output, |_| {}).unwrap();
+        let file = std::fs::read(&output).unwrap();
+        assert_eq!(
+            record(&file, "encoder.conv1.weight", 24, 12),
+            b"\x03\0\0\0\x14\0\0\0\x01\0\0\0\x03\0\0\0\x02\0\0\0\x01\0\0\0encoder.conv1.weight\x01\0\x03\0\x05\0\x02\0\x04\0\x06\0"
+        );
+        assert_eq!(
+            record(&file, "encoder.positional_embedding", 20, 0),
+            b"\x02\0\0\0\x1c\0\0\0\0\0\0\0\0\x05\0\0\xdc\x05\0\0encoder.positional_embedding"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_without_conv1_is_not_whisper() {
+        let root = scratch("no-conv");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.ln_post.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#,
+            &[0, 0],
+        );
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "not a Whisper checkpoint: encoder.conv1.weight is missing"
+        );
+    }
+
+    #[test]
+    fn only_half_float_weights_convert() {
+        let root = scratch("dtype");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.conv1.weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+            &[0, 0, 0, 0],
+        );
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "encoder.conv1.weight: expected F16 weights, got \"F32\""
+        );
+    }
+
+    #[test]
+    fn a_header_that_is_not_json_is_refused() {
+        let root = scratch("broken");
+        safetensors(&root.join("in.safetensors"), "{", &[]);
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "safetensors header: EOF while parsing an object at line 1 column 1"
+        );
+    }
+
+    #[test]
+    fn a_header_that_is_not_an_object_is_refused() {
+        let root = scratch("array");
+        safetensors(&root.join("in.safetensors"), "[]", &[]);
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "safetensors header is not an object");
+    }
+
+    #[test]
+    fn a_tensor_without_offsets_or_shape_is_refused() {
+        let root = scratch("no-offset");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1]}}"#,
+            &[],
+        );
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "encoder.conv1.weight: missing data offset");
+        let root = scratch("no-shape");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.conv1.weight":{"dtype":"F16","data_offsets":[0,2]}}"#,
+            &[],
+        );
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "encoder.conv1.weight: missing shape");
+    }
+
+    #[test]
+    fn a_corrupt_header_length_fails_instead_of_allocating() {
+        let root = scratch("huge-length");
+        let source = root.join("in.safetensors");
+        std::fs::write(&source, u64::MAX.to_le_bytes()).unwrap();
+        assert_eq!(
+            convert(&source, &root.join("out.bin"), |_| {})
+                .unwrap_err()
+                .to_string(),
+            "safetensors header is too large: 18446744073709551615 bytes"
+        );
+    }
+
+    #[test]
+    fn a_header_cut_short_is_refused() {
+        let root = scratch("cut-short");
+        let source = root.join("in.safetensors");
+        let mut file = 10u64.to_le_bytes().to_vec();
+        file.extend_from_slice(b"{}");
+        std::fs::write(&source, file).unwrap();
+        assert_eq!(
+            convert(&source, &root.join("out.bin"), |_| {})
+                .unwrap_err()
+                .to_string(),
+            "read safetensors header: failed to fill whole buffer"
+        );
+    }
+
+    #[test]
+    fn a_file_shorter_than_the_length_field_is_refused() {
+        let root = scratch("short");
+        let source = root.join("in.safetensors");
+        std::fs::write(&source, b"abc").unwrap();
+        assert_eq!(
+            convert(&source, &root.join("out.bin"), |_| {})
+                .unwrap_err()
+                .to_string(),
+            "read safetensors header: failed to fill whole buffer"
+        );
+    }
+
+    #[test]
+    fn a_conv_weight_with_too_few_dimensions_does_not_panic() {
+        let root = scratch("flat-conv");
+        let source = root.join("in.safetensors");
+        safetensors(
+            &source,
+            r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]},
+                "encoder.conv1.bias":{"dtype":"F16","shape":[],"data_offsets":[2,4]},
+                "encoder.positional_embedding":{"dtype":"F16","shape":[1,1],"data_offsets":[4,6]}}"#,
+            &[0, 0x3C, 0, 0x3C, 0, 0x3C],
+        );
+        assert!(convert(&source, &root.join("out.bin"), |_| {}).is_ok());
+    }
+
+    #[test]
+    fn truncated_tensor_data_is_an_error() {
+        let root = scratch("truncated");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1,4],"data_offsets":[0,8]},
+                    "encoder.positional_embedding":{"dtype":"F16","shape":[1,1],"data_offsets":[8,10]}}"#,
+            &[0, 0],
+        );
+        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "copy tensor: failed to fill whole buffer");
+    }
+
+    #[test]
+    fn a_missing_source_or_output_folder_names_the_path() {
+        let root = scratch("paths");
+        let error = convert(&root.join("absent"), &root.join("out.bin"), |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("open "), "{error}");
+        safetensors(
+            &root.join("in.safetensors"),
+            r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#,
+            &[0, 0],
+        );
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("no/such/out.bin"),
+            |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.starts_with("create "), "{error}");
+    }
+
+    #[test]
+    fn leftover_decoder_prefixes_are_stripped() {
+        assert_eq!(ggml_name("model.decoder.other").unwrap(), "decoder.other");
+    }
+
+    #[test]
+    fn rare_half_floats_decode() {
+        assert_eq!(f16_to_f32(0x8001), -(2f32.powi(-24)));
+        assert!(f16_to_f32(0x7E00).is_nan());
+        assert_eq!(f16_to_f32(0xFC00), f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn the_mel_scale_is_linear_then_logarithmic() {
+        assert_eq!(hz_to_mel(200.0), 3.0);
+        assert_eq!(mel_to_hz(3.0), 200.0);
+        assert_eq!(hz_to_mel(1000.0), 15.0);
+        assert_eq!(mel_to_hz(15.0), 1000.0);
+    }
+
+    #[test]
+    fn the_byte_decoder_covers_every_byte_once() {
+        let decoder = gpt2_byte_decoder();
+        assert_eq!(decoder.len(), 256);
+        assert_eq!(decoder[&'!'], 0x21);
+        assert_eq!(decoder[&'\u{100}'], 0);
     }
 }

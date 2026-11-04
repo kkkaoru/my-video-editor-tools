@@ -1,6 +1,7 @@
 // Runs with bun: drives every UI state through WCAG AAA checks in real browser engines.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
+import { languageFor } from "../../src/i18n/language.ts";
 import {
   COLOR_SCHEMES,
   INTERACTION_LOCALES,
@@ -38,6 +39,8 @@ const MINIMUM_LINE_HEIGHT_RATIO: number = 1.5;
 const INTERACTIVE_SELECTOR: string =
   'button, [role="tab"], [role="slider"], [role="option"], [role="combobox"], input:not([type="hidden"]), select, a[href]';
 const TAB_LIMIT: number = 120;
+/** Base UI gives this hidden focus-trap edge role="button" only under WebKit, on purpose, for VoiceOver's cursor. */
+const LIBRARY_FOCUS_GUARD: string = "[data-base-ui-focus-guard]";
 
 async function showState(page: Page, state: UiState, locale: string): Promise<void> {
   await page.addInitScript({ path: "tests/a11y/tauri-mock.js" });
@@ -52,30 +55,39 @@ async function showState(page: Page, state: UiState, locale: string): Promise<vo
   await page.evaluate(
     ({ jobEvents, downloadEvents }: Pick<UiState, "jobEvents" | "downloadEvents">): void => {
       const emit = Reflect.get(window, "__emitTauri");
-      jobEvents.map((event) => emit("job", event));
-      downloadEvents.map((event) => emit("download", event));
+      jobEvents.forEach((event): void => {
+        emit("job", event);
+      });
+      downloadEvents.forEach((event): void => {
+        emit("download", event);
+      });
     },
     { jobEvents: state.jobEvents, downloadEvents: state.downloadEvents },
   );
   await page.getByRole("tab").nth(["jobs", "style", "models"].indexOf(state.tab)).click();
-  await applySteps(page, state);
+  await applySteps(page, state, locale);
   await page.mouse.move(0, 0);
 }
 
-async function chooseToggle(page: Page, group: number, index: number): Promise<void> {
-  await page.getByRole("group").nth(group).getByRole("button").nth(index).click();
+async function chooseToggle(page: Page, groupName: string, index: number): Promise<void> {
+  await page.getByRole("group", { name: groupName, exact: true }).getByRole("button").nth(index).click();
 }
 
-async function applySteps(page: Page, state: UiState): Promise<void> {
+async function applySteps(page: Page, state: UiState, locale: string): Promise<void> {
+  const { messages } = languageFor(locale);
   if (state.anchor !== null) {
     await chooseToggle(
       page,
-      0,
+      messages.positionLabel,
       ["face_above", "face_below", "video_top", "video_bottom"].indexOf(state.anchor),
     );
   }
   if (state.frame !== null) {
-    await chooseToggle(page, 1, ["landscape", "vertical", "uhd"].indexOf(state.frame));
+    await chooseToggle(
+      page,
+      messages.previewFrameLabel,
+      ["landscape", "vertical", "uhd"].indexOf(state.frame),
+    );
   }
   await Promise.all(state.steps.map((step: string) => applyStep(page, step)));
 }
@@ -197,18 +209,54 @@ async function hoverViolations(page: Page): Promise<string[]> {
   return found.flat();
 }
 
-COLOR_SCHEMES.map((colorScheme: "light" | "dark"): void => {
-  LOCALES.map((locale: string): void => {
-    UI_STATES.map((state: UiState): void => {
+const contrastUndecided = (incomplete: { id: string; nodes: { html: string }[] }[]): string[] =>
+  incomplete
+    .filter(({ id }: { id: string }): boolean => id === "color-contrast-enhanced")
+    .flatMap(({ nodes }: { nodes: { html: string }[] }): string[] =>
+      nodes.map(({ html }: { html: string }): string => html.slice(0, 160)),
+    );
+
+test("the sweep detects a low-contrast text, a small target and a missing focus ring", async ({
+  page,
+}): Promise<void> => {
+  const state: UiState | undefined = UI_STATES.find(({ name }: UiState): boolean => name === "jobs empty");
+  if (state === undefined) {
+    throw new Error("the jobs empty state is missing");
+  }
+  await showState(page, state, "en");
+  await page.evaluate((): void => {
+    const host: Element | null = document.querySelector("main");
+    const faint: HTMLElement = document.createElement("p");
+    faint.textContent = "Barely readable";
+    faint.style.color = "#767676";
+    faint.style.background = "#ffffff";
+    const tiny: HTMLElement = document.createElement("button");
+    tiny.textContent = "x";
+    tiny.style.cssText = "width:20px;height:20px;padding:0;min-width:0;min-height:0;outline:none !important";
+    host?.append(faint, tiny);
+    tiny.focus();
+  });
+  const axe = await new AxeBuilder({ page }).exclude(LIBRARY_FOCUS_GUARD).withTags(WCAG_TAGS).analyze();
+  expect(
+    axe.violations.map(({ id }) => id).filter((id: string): boolean => id === "color-contrast-enhanced"),
+  ).toStrictEqual(["color-contrast-enhanced"]);
+  expect((await smallTargets(page)).length).toBe(1);
+  expect((await focusReport(page)).outlineWidth).toBe(0);
+});
+
+COLOR_SCHEMES.forEach((colorScheme: "light" | "dark"): void => {
+  LOCALES.forEach((locale: string): void => {
+    UI_STATES.forEach((state: UiState): void => {
       test(`${state.name} / ${locale} / ${colorScheme}`, async ({ page }): Promise<void> => {
         await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
         await showState(page, state, locale);
-        const axe = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+        const axe = await new AxeBuilder({ page }).exclude(LIBRARY_FOCUS_GUARD).withTags(WCAG_TAGS).analyze();
         expect(
           axe.violations.map(
             ({ id, nodes }) => `${id}: ${nodes.map((node) => node.html.slice(0, 160)).join(" | ")}`,
           ),
         ).toStrictEqual([]);
+        expect(contrastUndecided(axe.incomplete)).toStrictEqual([]);
         expect(await smallTargets(page)).toStrictEqual([]);
         expect(await unreadableText(page)).toStrictEqual([]);
         expect(await page.evaluate((): number => document.getAnimations().length)).toBe(0);

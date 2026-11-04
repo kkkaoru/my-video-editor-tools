@@ -1,6 +1,6 @@
 // Runs with bun: locale resolution, and every translation matching the English shape and placeholders.
 import { expect, it } from "vitest";
-import { ALL_LANGUAGE_MESSAGES, LANGUAGES, languageFor } from "./language.ts";
+import { ALL_LANGUAGE_MESSAGES, languageFor } from "./language.ts";
 import { enMessages } from "./locale-en.ts";
 import type { Messages } from "./messages.ts";
 
@@ -66,7 +66,7 @@ it("falls back to English for an unknown language", () => {
 });
 
 it("uses the matching messages", () => {
-  expect(languageFor("ko").messages.appName).toBe(LANGUAGES.get("ko")?.messages.appName);
+  expect(languageFor("ko").messages.tabModels).toBe("모델");
   expect(languageFor("en").messages.tabModels).toBe("Models");
 });
 

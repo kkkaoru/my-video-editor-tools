@@ -5,19 +5,23 @@ pub mod catalog;
 pub mod download;
 pub mod engines;
 pub mod error;
+pub mod eta;
 pub mod export;
 pub mod face;
+pub mod morphology;
 pub mod paths;
 pub mod pipeline;
 pub mod process;
 pub mod service;
 pub mod settings;
 pub mod shell;
+pub mod speakers;
 pub mod whisper_ggml;
 
 use error::AppResult;
+use eta::Progress;
 use paths::AppPaths;
-use pipeline::{JobOutcome, Progress};
+use pipeline::JobOutcome;
 use process::CancelToken;
 use settings::Settings;
 use std::ffi::OsString;
@@ -57,5 +61,43 @@ pub fn entry(args: &[OsString], window: impl FnOnce() -> AppResult<()>) -> AppRe
     match args {
         [flag, video] if flag == HEADLESS_FLAG => print_outcome(&run_headless(Path::new(video))?),
         _ => window(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn no_arguments_open_the_window() {
+        let opened = Cell::new(false);
+        let result = entry(&[], || {
+            opened.set(true);
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(opened.get());
+    }
+
+    #[test]
+    fn the_flag_without_a_video_also_opens_the_window() {
+        let opened = Cell::new(false);
+        let result = entry(&[OsString::from("--headless")], || {
+            opened.set(true);
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(opened.get());
+    }
+
+    #[test]
+    fn a_window_failure_is_returned() {
+        let error = entry(&[], || {
+            Err(error::AppError::Invalid("no display".to_owned()))
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "no display");
     }
 }

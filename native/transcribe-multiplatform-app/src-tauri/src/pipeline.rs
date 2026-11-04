@@ -1,57 +1,37 @@
 //! One dropped video to finished subtitle files, with staged progress.
 
-use crate::captions::{assign_speakers, build_cues, metrics_for};
-use crate::catalog::{self, Hardware, ModelEntry};
-use crate::engines::{self, DiarizeModel, Tools};
+use crate::captions::{assign_speakers, build_cues, metrics_for, SpeakerTurn};
+use crate::catalog::{self, Backend, DiarizeKind, Hardware, ModelEntry};
+use crate::engines::{self, DiarizeModel, Tools, VideoInfo};
 use crate::error::{io_context, AppError, AppResult, UserError};
+use crate::eta::{
+    convert_step, export_step, PlannedStage, Progress, RateInputs, Stage, StageRates, Tracker,
+};
 use crate::export::{unused_base, write_outputs, Transcript};
 use crate::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
+use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
 use crate::settings::{Anchor, Settings};
+use crate::speakers::{limit_speakers, speaker_total};
 use crate::whisper_ggml;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Stage {
-    Prepare,
-    ConvertModel,
-    ExtractAudio,
-    Transcribe,
-    Diarize,
-    Faces,
-    Export,
-    Done,
-}
+/// Sortformer's activation threshold for the retry: below its default, so quieter voices count.
+const RETRY_ONSET: f64 = 0.3;
 
-/// Rough share of the bar per stage. Transcription and speakers dominate on every machine.
-const STAGE_SPANS: [(Stage, f64, f64); 7] = [
-    (Stage::Prepare, 0.0, 0.01),
-    (Stage::ConvertModel, 0.01, 0.05),
-    (Stage::ExtractAudio, 0.05, 0.08),
-    (Stage::Transcribe, 0.08, 0.60),
-    (Stage::Diarize, 0.60, 0.90),
-    (Stage::Faces, 0.90, 0.98),
-    (Stage::Export, 0.98, 1.0),
-];
-
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Progress {
-    pub stage: Stage,
-    /// Whole job, 0 to 1.
-    pub overall: f64,
-    /// `false` while a tool reports no percentage: the UI shows motion and elapsed time.
-    pub determinate: bool,
-}
+/// Reports a step's own progress; `None` when the tool gives no percentage.
+type Report<'a> = &'a mut dyn FnMut(Stage, Option<f64>);
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct JobOutcome {
     pub outputs: Vec<PathBuf>,
     pub base: PathBuf,
     pub speaker_count: u32,
+    /// What the user asked for, 0 when left automatic; more than `speaker_count` means some were not found.
+    pub requested_speakers: u32,
     pub cue_count: usize,
     pub faceless: bool,
 }
@@ -63,22 +43,6 @@ impl Drop for WorkDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-fn overall(stage: Stage, fraction: f64) -> f64 {
-    let (low, high) = STAGE_SPANS
-        .iter()
-        .find(|(name, _, _)| *name == stage)
-        .map_or((1.0, 1.0), |span| (span.1, span.2));
-    low + (high - low) * fraction.clamp(0.0, 1.0)
-}
-
-fn report(stage: Stage, fraction: f64, sink: &mut dyn FnMut(Progress)) {
-    sink(Progress {
-        stage,
-        overall: overall(stage, fraction),
-        determinate: true,
-    });
 }
 
 fn selected_entry(
@@ -94,11 +58,7 @@ fn selected_entry(
         .ok_or_else(|| AppError::Invalid(format!("unknown {role} model {chosen}")))
 }
 
-fn whisper_model(
-    paths: &AppPaths,
-    settings: &Settings,
-    sink: &mut dyn FnMut(Progress),
-) -> AppResult<PathBuf> {
+fn whisper_model(paths: &AppPaths, settings: &Settings, report: Report<'_>) -> AppResult<PathBuf> {
     if let Some(ready) = catalog::locate_whisper_ggml(paths, &settings.model_dirs) {
         return Ok(ready);
     }
@@ -111,7 +71,7 @@ fn whisper_model(
     std::fs::create_dir_all(&folder).map_err(io_context("create model folder"))?;
     let output = folder.join(catalog::WHISPER_GGML_NAME);
     whisper_ggml::convert(&source, &output, |fraction| {
-        report(Stage::ConvertModel, fraction, sink)
+        report(Stage::ConvertModel, Some(fraction));
     })?;
     Ok(output)
 }
@@ -125,9 +85,9 @@ fn locate_faces(
     paths: &AppPaths,
     settings: &Settings,
     video: &Path,
-    info: &engines::VideoInfo,
+    info: &VideoInfo,
     cancel: &CancelToken,
-    sink: &mut dyn FnMut(Progress),
+    report: Report<'_>,
 ) -> AppResult<Vec<FaceSample>> {
     let entry = catalog::find_entry(&settings.face_model)
         .ok_or_else(|| AppError::Invalid(format!("unknown face model {}", settings.face_model)))?;
@@ -143,7 +103,7 @@ fn locate_faces(
     };
     let detector = FaceDetector::load(&model, kind)?;
     scan_faces(tools, &detector, video, info, cancel, &mut |fraction| {
-        report(Stage::Faces, fraction, sink)
+        report(Stage::Faces, Some(fraction));
     })
 }
 
@@ -165,7 +125,128 @@ fn job_folder(paths: &AppPaths) -> AppResult<WorkDir> {
     Ok(WorkDir(folder))
 }
 
-/// Runs the whole job. Models that are missing or too large fail before any long work starts.
+/// The steps this job will run, with their expected times.
+fn plan_job(
+    rates: &StageRates,
+    inputs: RateInputs,
+    settings: &Settings,
+    diarize_id: Option<&str>,
+    (duration, needs_conversion): (f64, bool),
+) -> Vec<PlannedStage> {
+    let convert = needs_conversion.then(convert_step);
+    let faces = wants_faces(settings).then(|| {
+        let key = format!("faces/{}", settings.face_model);
+        rates.scaled(Stage::Faces, &key, inputs, duration)
+    });
+    let diarize = diarize_id
+        .map(|id| rates.scaled(Stage::Diarize, &format!("diarize/{id}"), inputs, duration));
+    convert
+        .into_iter()
+        .chain([
+            rates.scaled(Stage::ExtractAudio, "extract_audio", inputs, duration),
+            rates.scaled(Stage::Transcribe, "transcribe", inputs, duration),
+        ])
+        .chain(diarize)
+        .chain(faces)
+        .chain([export_step()])
+        .collect()
+}
+
+struct PreparedSpeakerModel {
+    entry: &'static ModelEntry,
+    main_file: PathBuf,
+    encoder: Option<PathBuf>,
+}
+
+/// What one run of the speaker model needs beyond the model itself.
+struct SpeakerRun<'a> {
+    tools: &'a Tools,
+    hardware: &'a Hardware,
+    wav: &'a Path,
+    settings: &'a Settings,
+    work: &'a Path,
+    cancel: &'a CancelToken,
+}
+
+fn prepare_speaker_model(
+    paths: &AppPaths,
+    settings: &Settings,
+    hardware: &Hardware,
+) -> AppResult<PreparedSpeakerModel> {
+    let rows = catalog::statuses(hardware, paths, &settings.model_dirs);
+    let entry = selected_entry(
+        &settings.diarize_model,
+        catalog::default_diarize_model(hardware, &rows),
+        "diarize",
+    )?;
+    check_fits(entry, hardware)?;
+    let main_file = catalog::locate(entry, paths, &settings.model_dirs).ok_or_else(|| {
+        UserError::ModelMissing {
+            model: entry.id.to_owned(),
+        }
+    })?;
+    Ok(PreparedSpeakerModel {
+        entry,
+        main_file,
+        encoder: catalog::speech_llm_encoder(&settings.model_dirs, paths),
+    })
+}
+
+fn run_speaker_model(
+    prepared: &PreparedSpeakerModel,
+    run: &SpeakerRun<'_>,
+    onset: Option<f64>,
+    on_tick: &mut dyn FnMut(),
+) -> AppResult<Vec<SpeakerTurn>> {
+    let model = DiarizeModel {
+        entry: prepared.entry,
+        main_file: &prepared.main_file,
+        encoder: prepared.encoder.as_deref(),
+        device: catalog::device_for(prepared.entry, run.hardware, run.tools.backend),
+        speaker_count: run.settings.speaker_count,
+        onset,
+    };
+    engines::diarize(
+        run.tools,
+        &model,
+        run.wav,
+        &run.settings.language,
+        run.work,
+        run.cancel,
+        on_tick,
+    )
+}
+
+/// With a known count, a run that finds too few voices is repeated once with a lower activation
+/// threshold; extra voices are then merged. Whatever is still missing is reported, never invented.
+fn separate_speakers(
+    prepared: &PreparedSpeakerModel,
+    run: &SpeakerRun<'_>,
+    on_tick: &mut dyn FnMut(),
+) -> AppResult<Vec<SpeakerTurn>> {
+    let wanted = run.settings.speaker_count;
+    let first = run_speaker_model(prepared, run, None, on_tick)?;
+    let can_retry = prepared.entry.diarize_kind == Some(DiarizeKind::Sortformer);
+    let turns = if can_retry && speaker_total(&first) < wanted {
+        run_speaker_model(prepared, run, Some(RETRY_ONSET), on_tick)?
+    } else {
+        first
+    };
+    Ok(limit_speakers(&turns, wanted))
+}
+
+fn needs_cuda_runtime(entry: &ModelEntry, tools: &Tools) -> AppResult<()> {
+    if entry.needs_cuda && tools.backend != Backend::Cuda {
+        return Err(UserError::ModelMissing {
+            model: catalog::GEFORCE_RUNTIME_ID.to_owned(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Runs the whole job. Models that are missing or too large, or a video too long for the model, fail
+/// before any long work starts.
 pub fn run_job(
     video: &Path,
     paths: &AppPaths,
@@ -175,39 +256,58 @@ pub fn run_job(
     sink: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     settings.validate()?;
-    report(Stage::Prepare, 0.0, sink);
-    let rows = catalog::statuses(hardware, paths, &settings.model_dirs);
-    let diarize_entry = selected_entry(
-        &settings.diarize_model,
-        catalog::default_diarize_model(hardware, &rows),
-        "diarize",
-    )?;
-    check_fits(diarize_entry, hardware)?;
-    let main_file =
-        catalog::locate(diarize_entry, paths, &settings.model_dirs).ok_or_else(|| {
-            UserError::ModelMissing {
-                model: diarize_entry.id.to_owned(),
-            }
-        })?;
-    let encoder = catalog::speech_llm_encoder(&settings.model_dirs, paths);
-    let use_cuda = hardware.nvidia_name.is_some()
-        && catalog::find_entry(catalog::GEFORCE_RUNTIME_ID)
-            .is_some_and(|entry| catalog::locate(entry, paths, &[]).is_some());
-    let tools = Tools::locate(paths, use_cuda)?;
+    // One known speaker needs no separation at all: no model, no memory, no time.
+    let speaker_model = if settings.speaker_count == 1 {
+        None
+    } else {
+        Some(prepare_speaker_model(paths, settings, hardware)?)
+    };
+    let tools = Tools::locate(paths, catalog::backend_for(hardware, paths))?;
+    if let Some(prepared) = &speaker_model {
+        needs_cuda_runtime(prepared.entry, &tools)?;
+    }
     let info = engines::probe(&tools, video)?;
-    let whisper = whisper_model(paths, settings, sink)?;
+    if let Some(error) = speaker_model
+        .as_ref()
+        .and_then(|prepared| catalog::too_long(prepared.entry, info.duration))
+    {
+        return Err(error.into());
+    }
+    let inputs = RateInputs {
+        accelerated: hardware.is_mac || tools.backend != Backend::Default,
+        speech_llm: speaker_model
+            .as_ref()
+            .is_some_and(|prepared| prepared.entry.max_audio_seconds.is_some()),
+    };
+    let rates = StageRates::load(&paths.stage_rates_file());
+    let needs_conversion = catalog::locate_whisper_ggml(paths, &settings.model_dirs).is_none();
+    let plan = plan_job(
+        &rates,
+        inputs,
+        settings,
+        speaker_model.as_ref().map(|prepared| prepared.entry.id),
+        (info.duration, needs_conversion),
+    );
+    let mut tracker = Tracker::new(plan, rates, info.duration);
+    let mut report =
+        |stage: Stage, fraction: Option<f64>| sink(tracker.update(stage, fraction, Instant::now()));
+    let whisper = whisper_model(paths, settings, &mut report)?;
     cancel.check()?;
 
     let work = job_folder(paths)?;
     let wav = work.0.join("audio.wav");
+    report(Stage::ExtractAudio, Some(0.0));
     engines::extract_audio(
         &tools,
         video,
         &wav,
         info.duration,
         cancel,
-        &mut |fraction| report(Stage::ExtractAudio, fraction, sink),
+        &mut |fraction| {
+            report(Stage::ExtractAudio, Some(fraction));
+        },
     )?;
+    report(Stage::Transcribe, Some(0.0));
     let mut words = engines::transcribe(
         &tools,
         &whisper,
@@ -215,33 +315,42 @@ pub fn run_job(
         &settings.language,
         &work.0,
         cancel,
-        &mut |fraction| {
-            report(Stage::Transcribe, fraction, sink);
-        },
+        &mut |fraction| report(Stage::Transcribe, Some(fraction)),
     )?;
     if words.is_empty() {
         return Err(UserError::NoWords.into());
     }
-    sink(Progress {
-        stage: Stage::Diarize,
-        overall: overall(Stage::Diarize, 0.0),
-        determinate: false,
-    });
-    let model = DiarizeModel {
-        entry: diarize_entry,
-        main_file: &main_file,
-        encoder: encoder.as_deref(),
+    let turns = match &speaker_model {
+        Some(prepared) => {
+            report(Stage::Diarize, None);
+            separate_speakers(
+                prepared,
+                &SpeakerRun {
+                    tools: &tools,
+                    hardware,
+                    wav: &wav,
+                    settings,
+                    work: &work.0,
+                    cancel,
+                },
+                &mut || report(Stage::Diarize, None),
+            )?
+        }
+        None => Vec::new(),
     };
-    let turns = engines::diarize(&tools, &model, &wav, &settings.language, &work.0, cancel)?;
-    assign_speakers(&mut words, &turns);
-    // Faces are always scanned when wanted now; a later re-layout can reuse them.
+    if speaker_model.is_some() {
+        assign_speakers(&mut words, &turns);
+    } else {
+        words.iter_mut().for_each(|word| word.speaker = Some(1));
+    }
     let faces = if wants_faces(settings) {
-        locate_faces(&tools, paths, settings, video, &info, cancel, sink)?
+        report(Stage::Faces, Some(0.0));
+        locate_faces(&tools, paths, settings, video, &info, cancel, &mut report)?
     } else {
         Vec::new()
     };
-    report(Stage::Export, 0.0, sink);
-    let (cues, faceless) = build_cues(&words, &faces, &info, settings);
+    report(Stage::Export, Some(0.0));
+    let (cues, faceless) = build_cues(&words, &faces, &info, settings, &Segmenter::for_app(paths))?;
     let transcript = Transcript::new(
         video.to_path_buf(),
         info,
@@ -252,11 +361,13 @@ pub fn run_job(
     );
     let base = unused_base(video);
     let outputs = write_outputs(&base, &transcript, settings)?;
-    report(Stage::Done, 1.0, sink);
+    report(Stage::Export, Some(1.0));
+    tracker.finish(Instant::now())?;
     Ok(JobOutcome {
         outputs,
         base,
         speaker_count: transcript.speaker_count,
+        requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),
         faceless,
     })
@@ -272,8 +383,25 @@ pub fn relayout(
 ) -> AppResult<JobOutcome> {
     settings.validate()?;
     let mut transcript = Transcript::load(transcript_file)?;
-    if wants_faces(settings) && transcript.faces.is_empty() {
-        let tools = Tools::locate(paths, false)?;
+    let needs_faces = wants_faces(settings) && transcript.faces.is_empty();
+    let rates = StageRates::load(&paths.stage_rates_file());
+    let inputs = RateInputs {
+        accelerated: false,
+        speech_llm: false,
+    };
+    let duration = transcript.info.duration;
+    let faces_key = format!("faces/{}", settings.face_model);
+    let plan: Vec<PlannedStage> = needs_faces
+        .then(|| rates.scaled(Stage::Faces, &faces_key, inputs, duration))
+        .into_iter()
+        .chain([export_step()])
+        .collect();
+    let mut tracker = Tracker::new(plan, rates, duration);
+    let mut report =
+        |stage: Stage, fraction: Option<f64>| sink(tracker.update(stage, fraction, Instant::now()));
+    if needs_faces {
+        let tools = Tools::locate(paths, Backend::Default)?;
+        report(Stage::Faces, Some(0.0));
         transcript.faces = locate_faces(
             &tools,
             paths,
@@ -281,26 +409,29 @@ pub fn relayout(
             &transcript.source,
             &transcript.info,
             cancel,
-            sink,
+            &mut report,
         )?;
     }
-    report(Stage::Export, 0.0, sink);
+    report(Stage::Export, Some(0.0));
     let (cues, faceless) = build_cues(
         &transcript.words,
         &transcript.faces,
         &transcript.info,
         settings,
-    );
+        &Segmenter::for_app(paths),
+    )?;
     transcript.metrics = metrics_for(&transcript.info, settings);
     transcript.cues = cues;
     let name = transcript_file.to_string_lossy();
     let base = PathBuf::from(name.strip_suffix(".transcript.json").unwrap_or(&name));
     let outputs = write_outputs(&base, &transcript, settings)?;
-    report(Stage::Done, 1.0, sink);
+    report(Stage::Export, Some(1.0));
+    tracker.finish(Instant::now())?;
     Ok(JobOutcome {
         outputs,
         base,
         speaker_count: transcript.speaker_count,
+        requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),
         faceless,
     })
@@ -309,20 +440,6 @@ pub fn relayout(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stages_cover_the_bar_in_order() {
-        assert_eq!(overall(Stage::Prepare, 0.0), 0.0);
-        assert_eq!(overall(Stage::Transcribe, 0.5), 0.34);
-        assert_eq!(overall(Stage::Export, 1.0), 1.0);
-        assert_eq!(overall(Stage::Done, 0.0), 1.0);
-    }
-
-    #[test]
-    fn fractions_outside_the_range_are_clamped() {
-        assert_eq!(overall(Stage::Faces, 9.0), 0.98);
-        assert_eq!(overall(Stage::Faces, -1.0), 0.9);
-    }
 
     #[test]
     fn no_installed_model_names_the_role() {

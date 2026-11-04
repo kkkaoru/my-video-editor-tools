@@ -17,6 +17,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ruzstd = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -25,11 +26,27 @@ thiserror = "2"
 tract-onnx = "0.22"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+unicode-segmentation = "1"
 ureq = "3"
+vibrato = { version = "0.5", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+
+# Debug builds exist only to run tests: full debug info would cost gigabytes per rebuild.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Tests load the real IPADIC dictionary; an unoptimized decode would take far too long.
+[profile.dev.package.ruzstd]
+opt-level = 3
+
+[profile.dev.package.vibrato]
+opt-level = 3
 
 [profile.release]
 codegen-units = 4

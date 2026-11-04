@@ -25,30 +25,30 @@ export interface UiState {
 }
 
 const STAGES: Record<Stage, true> = {
-  prepare: true,
   convert_model: true,
   extract_audio: true,
   transcribe: true,
   diarize: true,
   faces: true,
   export: true,
-  done: true,
 };
+const ALL_STAGES: Stage[] = ["convert_model", "extract_audio", "transcribe", "diarize", "faces", "export"];
+const REMAINING_SECONDS: (number | null)[] = [null, 30, 900];
 const ANCHORS: string[] = ["face_above", "face_below", "video_top", "video_bottom"];
 const FRAMES: string[] = ["landscape", "vertical", "uhd"];
 const LONG_PATH: string =
   "/Volumes/素材/とても長いフォルダ名/2026-11-04 配信の切り抜き 第12回 ゲスト回/recording.mp4";
 const FIRST_FILL: string[] = [
-  "#C48CFF",
-  "#7CDC8C",
-  "#6CD4FF",
-  "#FF9E5E",
-  "#FF7FA8",
-  "#F2D64B",
-  "#5EE0C8",
-  "#8FA8FF",
-  "#E08CE0",
-  "#B5E05E",
+  "#FFFFFF",
+  "#005A9C",
+  "#6A1FA8",
+  "#0B672C",
+  "#A3123A",
+  "#8A4500",
+  "#7A1D7A",
+  "#006262",
+  "#3A3AA8",
+  "#5C5C00",
 ];
 
 const model = (
@@ -94,20 +94,27 @@ const ALL_MODELS: ModelStatus[] = [
 
 const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
   locale: "en",
-  hardware: { is_mac: true, memory_gib: 48, nvidia_name: null, nvidia_memory_gib: 0 },
+  backend: "default",
+  hardware: { is_mac: true, memory_gib: 48, gpu: null },
   models: ALL_MODELS,
   models_dir: "/data/models",
   settings: {
-    palette: FIRST_FILL.map((fill: string) => ({ fill, outline: "#FFFFFF" })),
-    unassigned: { fill: "#C8C8C8", outline: "#FFFFFF" },
+    palette: FIRST_FILL.map((fill: string, index: number) => ({
+      fill,
+      outline: index === 0 ? "#000000" : "#FFFFFF",
+    })),
+    unassigned: { fill: "#595959", outline: "#FFFFFF" },
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
-    outline_ratio: 0.11,
+    outline_ratio: 0.115,
+    rim_ratio: 0.034,
+    line_height: 1.448,
+    shadow: { enabled: true, strength: 0.8 },
     width_ratio: 0.9,
     placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
     language: "auto",
-    transcribe_model: "",
     diarize_model: "nemotron-3-diarization",
+    speaker_count: 0,
     face_model: "yunet",
     model_dirs: ["/user/models"],
   },
@@ -142,15 +149,32 @@ const errorsByCode = (): BackendError[] =>
 
 const stageStates = (): UiState[] =>
   Object.keys(STAGES).flatMap((key: string): UiState[] => {
-    const stage: Stage = key === "prepare" ? "prepare" : narrowStage(key);
-    return [true, false].map(
-      (determinate: boolean): UiState =>
-        state(`job running ${stage} ${determinate ? "with percent" : "without percent"}`, "jobs", {
-          jobEvents: [
-            queued(1),
-            { state: "running", id: 1, progress: { stage, overall: 0.42, determinate } },
-          ],
-        }),
+    const stage: Stage = narrowStage(key);
+    return [true, false].flatMap((determinate: boolean): UiState[] =>
+      REMAINING_SECONDS.map(
+        (remaining: number | null): UiState =>
+          state(
+            `job running ${stage} ${determinate ? "with percent" : "without percent"} remaining ${remaining}`,
+            "jobs",
+            {
+              jobEvents: [
+                queued(1),
+                {
+                  state: "running",
+                  id: 1,
+                  progress: {
+                    stage,
+                    overall: 0.42,
+                    stage_fraction: 0.5,
+                    determinate,
+                    plan: ALL_STAGES,
+                    remaining_seconds: remaining,
+                  },
+                },
+              ],
+            },
+          ),
+      ),
     );
   });
 
@@ -187,11 +211,37 @@ export const UI_STATES: UiState[] = [
           outputs: [`${LONG_PATH}.ttml`, `${LONG_PATH}.srt`],
           base: LONG_PATH,
           speaker_count: 3,
+          requested_speakers: 0,
           cue_count: 120,
           faceless: false,
         },
       },
     ],
+  }),
+  state("job finished with fewer speakers than requested", "jobs", {
+    jobEvents: [
+      queued(1),
+      {
+        state: "finished",
+        id: 1,
+        outcome: {
+          outputs: [`${LONG_PATH}.ttml`],
+          base: LONG_PATH,
+          speaker_count: 2,
+          requested_speakers: 4,
+          cue_count: 20,
+          faceless: false,
+        },
+      },
+    ],
+  }),
+  state("jobs with one speaker and no speaker model", "jobs", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, speaker_count: 1 },
+      models: ALL_MODELS.map(
+        (row: ModelStatus): ModelStatus => (row.role === "diarize" ? { ...row, found_at: null } : row),
+      ),
+    }),
   }),
   state("job finished without faces", "jobs", {
     jobEvents: [
@@ -203,9 +253,20 @@ export const UI_STATES: UiState[] = [
           outputs: [`${LONG_PATH}.ttml`],
           base: LONG_PATH,
           speaker_count: 1,
+          requested_speakers: 0,
           cue_count: 2,
           faceless: true,
         },
+      },
+    ],
+  }),
+  state("job failed too long", "jobs", {
+    jobEvents: [
+      queued(1),
+      {
+        state: "failed",
+        id: 1,
+        error: { code: "too_long_for_model", model: "nemotron-3.5-transcribe-iq4", limit_minutes: 60 },
       },
     ],
   }),
@@ -219,6 +280,20 @@ export const UI_STATES: UiState[] = [
   ...ANCHORS.flatMap((anchor: string): UiState[] =>
     FRAMES.map((frame: string): UiState => state(`style ${anchor} ${frame}`, "style", { anchor, frame })),
   ),
+  state("style without shadow", "style", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, shadow: { enabled: false, strength: 0.5 } },
+    }),
+  }),
+  state("style with low contrast colours", "style", {
+    snapshot: snapshot({
+      settings: {
+        ...snapshot({}).settings,
+        palette: [{ fill: "#C48CFF", outline: "#FFFFFF" }, ...snapshot({}).settings.palette.slice(1)],
+        unassigned: { fill: "#C8C8C8", outline: "#FFFFFF" },
+      },
+    }),
+  }),
   state("style face select open", "style", { steps: ["open-face-select"] }),
   state("style language select open", "style", { steps: ["open-language-select"] }),
   state("models idle", "models", {}),
@@ -227,14 +302,22 @@ export const UI_STATES: UiState[] = [
       hardware: {
         is_mac: false,
         memory_gib: 64,
-        nvidia_name: "NVIDIA GeForce RTX 5090",
-        nvidia_memory_gib: 32,
+        gpu: { vendor: "nvidia", name: "NVIDIA GeForce RTX 5090", memory_gib: 32 },
+      },
+    }),
+  }),
+  state("models on radeon", "models", {
+    snapshot: snapshot({
+      hardware: {
+        is_mac: false,
+        memory_gib: 32,
+        gpu: { vendor: "radeon", name: "AMD Radeon RX 7900 XTX", memory_gib: 24 },
       },
     }),
   }),
   state("models on cpu only", "models", {
     snapshot: snapshot({
-      hardware: { is_mac: false, memory_gib: 12, nvidia_name: null, nvidia_memory_gib: 0 },
+      hardware: { is_mac: false, memory_gib: 12, gpu: null },
     }),
   }),
   state("model downloading", "models", {

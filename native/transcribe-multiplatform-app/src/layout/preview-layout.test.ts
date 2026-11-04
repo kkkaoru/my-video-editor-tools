@@ -9,10 +9,10 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY },
   language: "auto",
-  transcribe_model: "a",
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
@@ -48,6 +48,43 @@ it("never lets a line be shorter than one character", () => {
 
 it("wraps text at the character count", () => {
   expect(wrapText("abcde", 2)).toStrictEqual(["ab", "cd", "e"]);
+});
+
+it("shares an orphaned last line evenly between the last two lines", () => {
+  expect(wrapText("話者ごとに色が変わる袋文字の字幕です", 17)).toStrictEqual([
+    "話者ごとに色が変わ",
+    "る袋文字の字幕です",
+  ]);
+});
+
+it("keeps the Japanese sample in two even lines on a vertical frame", () => {
+  expect(
+    previewLayout(
+      "話者ごとに色が変わる袋文字の字幕です",
+      { width: 1080, height: 1920 },
+      settingsWith("video_top", 0, 0),
+    ).lines,
+  ).toStrictEqual(["話者ごとに色が変わ", "る袋文字の字幕です"]);
+});
+
+it("leaves earlier lines alone when rebalancing, like captions.rs", () => {
+  expect(wrapText("話者ごとに色が変わる袋文字の字幕です", 7)).toStrictEqual([
+    "話者ごとに色が",
+    "変わる袋文字",
+    "の字幕です",
+  ]);
+});
+
+it("rebalances a last line of exactly four characters", () => {
+  expect(wrapText("abcdefghijklmn", 10)).toStrictEqual(["abcdefg", "hijklmn"]);
+});
+
+it("keeps a last line of five characters", () => {
+  expect(wrapText("abcdefghijklmno", 10)).toStrictEqual(["abcdefghij", "klmno"]);
+});
+
+it("never rebalances a single short line", () => {
+  expect(wrapText("abc", 10)).toStrictEqual(["abc"]);
 });
 
 it("wraps empty text to no lines", () => {

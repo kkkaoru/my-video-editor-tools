@@ -3,7 +3,7 @@ import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/te
 
 const PREVIEW_PORT: number = 4173;
 const PREVIEW_URL: string = `http://127.0.0.1:${PREVIEW_PORT}`;
-const WORKERS: number = 6;
+const WORKERS: number = 4;
 
 const config: PlaywrightTestConfig = defineConfig({
   testDir: ".",

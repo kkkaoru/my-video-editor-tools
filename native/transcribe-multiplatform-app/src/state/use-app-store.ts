@@ -9,7 +9,14 @@ import {
   saveSettings,
 } from "../backend/backend.ts";
 import type { BackendError, Settings, Snapshot } from "../backend/types.ts";
-import { type AppState, applyDownloadEvent, applyJobEvent, initialState, withSettings } from "./app-state.ts";
+import {
+  type AppState,
+  applyDownloadEvent,
+  applyJobEvent,
+  initialState,
+  withModels,
+  withSettings,
+} from "./app-state.ts";
 
 export interface AppStore {
   state: AppState;
@@ -46,20 +53,20 @@ export function useAppStore(initial: Snapshot): AppStore {
     addVideos(onlyVideos(paths)).catch((error: unknown): void => reportFailure(setState, error));
   }, []);
 
-  const updateSettings = useCallback(
-    (settings: Settings): void => {
-      setState((current: AppState): AppState => withSettings(current, settings));
-      if (saveTimer.current !== null) {
-        clearTimeout(saveTimer.current);
-      }
-      saveTimer.current = setTimeout((): void => {
-        saveSettings(settings)
-          .then(applySnapshot)
-          .catch((error: unknown): void => reportFailure(setState, error));
-      }, SAVE_DELAY_MS);
-    },
-    [applySnapshot],
-  );
+  const updateSettings = useCallback((settings: Settings): void => {
+    setState((current: AppState): AppState => withSettings(current, settings));
+    if (saveTimer.current !== null) {
+      clearTimeout(saveTimer.current);
+    }
+    saveTimer.current = setTimeout((): void => {
+      saveSettings(settings)
+        // Only the models: newer settings may have been edited while this save was in flight.
+        .then(({ models }: Snapshot): void =>
+          setState((current: AppState): AppState => withModels(current, models)),
+        )
+        .catch((error: unknown): void => reportFailure(setState, error));
+    }, SAVE_DELAY_MS);
+  }, []);
 
   useEffect((): (() => void) => {
     const report = (error: unknown): void => reportFailure(setState, error);
@@ -69,7 +76,10 @@ export function useAppStore(initial: Snapshot): AppStore {
       ),
       onDownloadEvent((event): void => {
         setState((current: AppState): AppState => applyDownloadEvent(current, event));
-        fetchSnapshot().then(applySnapshot).catch(report);
+        // Progress events arrive four times a second; rescanning the model folders is only for the end.
+        if (event.state !== "running") {
+          fetchSnapshot().then(applySnapshot).catch(report);
+        }
       }),
       onFileDrop({
         onHover: (hovering: boolean): void =>

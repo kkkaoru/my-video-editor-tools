@@ -28,6 +28,8 @@
     },
   };
   window.__emitTauri = (event, payload) => {
-    (listeners.get(event) ?? []).forEach((id) => callbacks.get(id)?.({ event, id: 0, payload }));
+    (listeners.get(event) ?? []).forEach((id) => {
+      callbacks.get(id)?.({ event, id: 0, payload });
+    });
   };
 })();

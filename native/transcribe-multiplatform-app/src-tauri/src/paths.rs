@@ -52,6 +52,11 @@ impl AppPaths {
     }
 
     #[must_use]
+    pub fn stage_rates_file(&self) -> PathBuf {
+        self.data.join("stage-rates.json")
+    }
+
+    #[must_use]
     pub fn models_dir(&self) -> PathBuf {
         self.data.join("models")
     }
@@ -152,5 +157,110 @@ mod tests {
             paths.yunet_model(),
             PathBuf::from("/r/resources/face_detection_yunet_2023mar.onnx")
         );
+    }
+
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|pair| pair.0 == name)
+                .map(|pair| OsString::from(pair.1))
+        }
+    }
+
+    #[test]
+    fn overrides_win_over_the_defaults() {
+        let env = lookup(&[
+            ("TRANSCRIBE_DATA_DIR", "/data"),
+            ("TRANSCRIBE_RESOURCE_DIR", "/res"),
+            ("HF_HUB_CACHE", "/hub"),
+            ("HF_HOME", "/hf"),
+            ("HOME", "/home"),
+        ]);
+        let paths = AppPaths::resolve(Path::new("/opt/t/app"), env).unwrap();
+        assert_eq!(paths.data, PathBuf::from("/data"));
+        assert_eq!(paths.resources, PathBuf::from("/res"));
+        assert_eq!(paths.hf_hub, Some(PathBuf::from("/hub")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn defaults_hang_off_home_and_the_executable() {
+        let paths =
+            AppPaths::resolve(Path::new("/opt/t/app"), lookup(&[("HOME", "/home/u")])).unwrap();
+        assert_eq!(
+            paths.data,
+            PathBuf::from("/home/u/Library/Application Support/net.teadea.transcribe")
+        );
+        assert_eq!(paths.resources, PathBuf::from("/opt/t"));
+        assert_eq!(
+            paths.hf_hub,
+            Some(PathBuf::from("/home/u/.cache/huggingface/hub"))
+        );
+    }
+
+    #[test]
+    fn hf_home_is_used_when_no_cache_is_named() {
+        let paths = AppPaths::resolve(
+            Path::new("/opt/t/app"),
+            lookup(&[("TRANSCRIBE_DATA_DIR", "/data"), ("HF_HOME", "/hf")]),
+        )
+        .unwrap();
+        assert_eq!(paths.hf_hub, Some(PathBuf::from("/hf/hub")));
+    }
+
+    #[test]
+    fn no_home_means_no_cache_but_an_explicit_data_folder_still_works() {
+        let paths = AppPaths::resolve(
+            Path::new("/opt/t/app"),
+            lookup(&[("TRANSCRIBE_DATA_DIR", "/data")]),
+        )
+        .unwrap();
+        assert_eq!(paths.hf_hub, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_home_and_no_data_folder_is_an_error() {
+        let error = AppPaths::resolve(Path::new("/opt/t/app"), lookup(&[]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "HOME is not set");
+    }
+
+    #[test]
+    fn an_executable_without_a_folder_is_an_error() {
+        let error = AppPaths::resolve(Path::new("/"), lookup(&[]))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "executable has no parent");
+    }
+
+    #[test]
+    fn this_process_resolves_its_paths() {
+        assert!(AppPaths::detect().is_ok());
+    }
+
+    #[test]
+    fn atomic_writes_create_the_folder_and_leave_no_partial_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/paths-atomic");
+        let _ = std::fs::remove_dir_all(&root);
+        let file = root.join("a/b.txt");
+        write_atomic(&file, b"one").unwrap();
+        write_atomic(&file, b"two").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"two".to_vec());
+        assert!(!root.join("a/b.txt.partial").exists());
+    }
+
+    #[test]
+    fn an_atomic_write_under_a_file_fails_with_the_step() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/paths-under-file");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("file"), b"x").unwrap();
+        let error = write_atomic(&root.join("file/b.txt"), b"one")
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("create "), "{error}");
     }
 }

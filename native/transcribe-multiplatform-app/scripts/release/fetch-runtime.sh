@@ -3,7 +3,7 @@
 # Usage: fetch-runtime.sh macos|windows   (run from any directory; needs curl, tar/unzip, cmake on macOS)
 set -euo pipefail
 os="${1:?usage: fetch-runtime.sh macos|windows}"
-app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runtime="$app_dir/src-tauri/runtime"
 work="${RUNTIME_WORK_DIR:-$app_dir/src-tauri/target-runtime}"
 NEMO_VERSION=0.3.0
@@ -60,12 +60,30 @@ mac_ffmpeg() {
   cp "$work/ffmpeg-src/ffmpeg" "$work/ffmpeg-src/ffprobe" "$runtime/ffmpeg/"
 }
 
+# whisper.cpp publishes no Vulkan binary. Needs the Vulkan SDK (VULKAN_SDK) at build time only.
+windows_whisper_vulkan() {
+  rm -rf "$work/whisper-src" "$work/whisper-vulkan-build"
+  git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$work/whisper-src"
+  cmake -S "$work/whisper-src" -B "$work/whisper-vulkan-build" -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >/dev/null
+  cmake --build "$work/whisper-vulkan-build" --config Release --target whisper-cli -j 8 >/dev/null
+  rm -rf "$runtime/whisper-vulkan" && mkdir -p "$runtime/whisper-vulkan"
+  cp "$work/whisper-vulkan-build/bin/Release/whisper-cli.exe" "$runtime/whisper-vulkan/"
+}
+
 windows_all() {
+  # Radeon and CUDA-less GeForce run these Vulkan builds; they need the GPU driver's vulkan-1.dll, so CPU builds stay too.
+  fetch "$(nemo_url windows-x86_64-vulkan.zip)" 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce "$work/nemo-vulkan.zip"
+  rm -rf "$runtime/nemo-vulkan" && mkdir -p "$runtime/nemo-vulkan" && unzip -q -o "$work/nemo-vulkan.zip" -d "$runtime/nemo-vulkan"
+  find "$runtime/nemo-vulkan" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
+  windows_whisper_vulkan
   fetch "$(nemo_url windows-x86_64-cpu.zip)" 4ed9740e361e4653f56c3dce7d1e81883a1c8b831c1bd7d01567fff1130b5b05 "$work/nemo.zip"
   rm -rf "$runtime/nemo" && mkdir -p "$runtime/nemo" && unzip -q -o "$work/nemo.zip" -d "$runtime/nemo"
   find "$runtime/nemo" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
   fetch "https://github.com/ggml-org/whisper.cpp/releases/download/$WHISPER_BIN_TAG/whisper-bin-x64.zip" 6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb "$work/whisper.zip"
   rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper" && unzip -q -o "$work/whisper.zip" -d "$runtime/whisper"
+  find "$runtime/whisper" -name '*.exe' ! -name whisper-cli.exe -delete
+  # whisper.cpp's archive omits the VC++ runtime, which clean Windows installs do not have; nemo-speech ships it.
+  find "$runtime/nemo" \( -name 'vcruntime140*.dll' -o -name 'msvcp140*.dll' -o -name 'vcomp140.dll' \) -exec cp {} "$runtime/whisper/Release/" \;
   fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
   rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg" && unzip -q -o "$work/ffmpeg.zip" -d "$work/ffmpeg"
   find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} "$runtime/ffmpeg/" \;

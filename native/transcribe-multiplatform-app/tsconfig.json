@@ -19,11 +19,12 @@
     "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo",
     "types": ["vite/client", "node"],
     "paths": {
+      "@/*": ["./src/*"],
       "react": ["./node_modules/preact/compat"],
       "react-dom": ["./node_modules/preact/compat"],
       "react/jsx-runtime": ["./node_modules/preact/jsx-runtime"]
     }
   },
-  "include": ["src", "tests", "*.ts"],
+  "include": ["src", "tests", "scripts", "*.ts"],
   "exclude": ["**/node_modules", "dist"]
 }

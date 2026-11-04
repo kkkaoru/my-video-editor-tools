@@ -431,4 +431,67 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].width, 8.0);
     }
+
+    #[test]
+    fn empty_boxes_have_zero_iou() {
+        assert_eq!(
+            iou(
+                &detection(0.0, 0.0, 0.0, 1.0),
+                &detection(0.0, 0.0, 0.0, 1.0)
+            ),
+            0.0
+        );
+    }
+
+    #[test]
+    fn each_model_reads_its_own_channel_order_and_scale() {
+        assert_eq!(input_layout(FaceModelKind::Yunet), ([2, 1, 0], 1.0));
+        assert_eq!(
+            input_layout(FaceModelKind::AvatarYolo),
+            ([0, 1, 2], 1.0 / 255.0)
+        );
+    }
+
+    #[test]
+    fn yolo_outputs_are_read_by_their_shape() {
+        let values = [100.0, 100.0, 20.0, 20.0, 0.9];
+        assert_eq!(
+            decode_outputs(FaceModelKind::AvatarYolo, &[(&[1, 5, 1], &values)]).unwrap(),
+            vec![Detection {
+                x: 90.0,
+                y: 90.0,
+                width: 20.0,
+                height: 20.0,
+                score: 0.9
+            }]
+        );
+    }
+
+    #[test]
+    fn unexpected_outputs_are_errors() {
+        assert_eq!(
+            decode_outputs(FaceModelKind::AvatarYolo, &[])
+                .unwrap_err()
+                .to_string(),
+            "face model failed: model has no outputs"
+        );
+        assert_eq!(
+            decode_outputs(FaceModelKind::AvatarYolo, &[(&[1, 5], &[])])
+                .unwrap_err()
+                .to_string(),
+            "face model failed: unexpected YOLO shape [1, 5]"
+        );
+        assert_eq!(
+            decode_outputs(FaceModelKind::Yunet, &[])
+                .unwrap_err()
+                .to_string(),
+            "face model failed: expected 12 outputs, got 0"
+        );
+    }
+
+    #[test]
+    fn a_yolo_output_without_class_channels_finds_nothing() {
+        let values = [100.0, 100.0, 20.0, 20.0, 0.9];
+        assert_eq!(decode_yolo(&values, 4, 1), Vec::<Detection>::new());
+    }
 }

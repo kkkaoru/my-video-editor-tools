@@ -30,10 +30,10 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
   language: "auto",
-  transcribe_model: "a",
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
@@ -56,7 +56,27 @@ it("fetches the snapshot", async () => {
 
 it("saves the settings", async () => {
   await saveSettings(SETTINGS);
-  expect(vi.mocked(invoke)).toHaveBeenCalledWith("save_settings", { settings: SETTINGS });
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([
+    [
+      "save_settings",
+      {
+        settings: {
+          palette: [],
+          unassigned: { fill: "#AAAAAA", outline: "#000000" },
+          font_family: "Sans",
+          font_ratio: 0.05,
+          outline_ratio: 0.1,
+          shadow: { enabled: false, strength: 0.5 },
+          width_ratio: 0.8,
+          placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+          language: "auto",
+          diarize_model: "b",
+          face_model: "c",
+          model_dirs: [],
+        },
+      },
+    ],
+  ]);
 });
 
 it("adds videos by path", async () => {
@@ -92,10 +112,11 @@ it("deletes a model", async () => {
 });
 
 it("hands job event payloads to the handler", async () => {
-  const stop: () => void = vi.fn();
+  const stop: Mock<() => void> = vi.fn();
   vi.mocked(listen).mockResolvedValue(stop);
   const received: JobEvent[] = [];
-  expect(await onJobEvent((event: JobEvent): number => received.push(event))).toBe(stop);
+  (await onJobEvent((event: JobEvent): number => received.push(event)))();
+  expect(stop).toHaveBeenCalledTimes(1);
   vi.mocked(listen).mock.calls[0]?.[1]({ event: "job", id: 1, payload: { state: "cancelled", id: 3 } });
   expect(vi.mocked(listen).mock.calls[0]?.[0]).toBe("job");
   expect(received).toStrictEqual([{ state: "cancelled", id: 3 }]);

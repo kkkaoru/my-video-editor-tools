@@ -6,7 +6,7 @@ use crate::engines::VideoInfo;
 use crate::error::{AppError, AppResult};
 use crate::face::FaceSample;
 use crate::paths::write_atomic;
-use crate::settings::{Settings, SpeakerColor};
+use crate::settings::{CaptionShadow, Settings, SpeakerColor};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,9 +17,42 @@ const MILLIS_PER_MINUTE: u64 = 60_000;
 const MILLIS_PER_SECOND: u64 = 1000;
 const BASIC_TITLE_UID: &str =
     ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti";
-/// Basic Title's position parameter key, in pixels from the frame centre.
-const TITLE_POSITION_KEY: &str = "9999/999166631/999166633/1/100/101";
+/// Verified in Resolve 21.1.2: it ignores Basic Title's Position parameter, reads `adjust-transform`
+/// in percent of the frame height, and treats a positive `strokeWidth` as outline-only, so a filled
+/// outline is negative, in percent of the font size, centred on the glyph edge.
+const PERCENT: f64 = 100.0;
+const STROKE_SIDES: f64 = 2.0;
 const FCPXML_VERSION: &str = "1.10";
+/// Style 20's shadow straight down, relative to the font size; the UI preview uses the same values.
+const SHADOW_OFFSET_EM: f64 = 16.0 / 88.0;
+const SHADOW_BLUR_EM: f64 = 8.0 / 88.0;
+/// FCPXML's shadow direction in degrees for straight down.
+const SHADOW_ANGLE_DOWN: u32 = 270;
+const BLACK: &str = "#000000";
+/// `lineSpacing` in FCPXML is added to the title's own line height.
+const FCP_NATURAL_LINE_HEIGHT: f64 = 1.2;
+const BYTE_MAX: f64 = 255.0;
+
+/// One stacked title of a caption.
+struct TitleLayer {
+    fill: String,
+    /// Colour and width per side in pixels.
+    stroke: Option<(String, f64)>,
+}
+
+/// What every layer of one caption shares.
+struct CueMarkup<'a> {
+    label: &'a str,
+    offset: &'a str,
+    duration: &'a str,
+    x: f64,
+    y: f64,
+    text: &'a str,
+    font: &'a str,
+    size: f64,
+    line_height: f64,
+    metrics: &'a Metrics,
+}
 
 /// Everything needed to lay captions out again without running the models.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -110,7 +143,8 @@ pub fn render_srt(cues: &[Cue], settings: &Settings) -> String {
     let mut out = String::new();
     for (index, cue) in cues.iter().enumerate() {
         let color = settings.color_for(cue.speaker);
-        let text = escape_xml(&cue.lines.join("\n"));
+        // SRT is plain text: XML escapes would show up literally in Resolve.
+        let text = cue.lines.join("\n");
         let _ = write!(
             out,
             "{}\n{} --> {}\n<font color=\"{}\">{text}</font>\n\n",
@@ -123,9 +157,23 @@ pub fn render_srt(cues: &[Cue], settings: &Settings) -> String {
     out
 }
 
-fn ttml_span(line: &str, color: &SpeakerColor, outline_px: f64) -> String {
+/// TTML2 `tts:textShadow`, or nothing when shadows are off.
+fn ttml_shadow(metrics: &Metrics, settings: &Settings) -> String {
+    let CaptionShadow { enabled, strength } = settings.shadow;
+    if !enabled {
+        return String::new();
+    }
+    let offset = metrics.font_px * SHADOW_OFFSET_EM;
     format!(
-        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline} {outline_px:.1}px 0px\">{text}</span>",
+        " tts:textShadow=\"0px {offset:.1}px {blur:.1}px rgba(0,0,0,{alpha})\"",
+        blur = metrics.font_px * SHADOW_BLUR_EM,
+        alpha = (strength * BYTE_MAX).round() as u8,
+    )
+}
+
+fn ttml_span(line: &str, color: &SpeakerColor, outline_px: f64, shadow: &str) -> String {
+    format!(
+        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline} {outline_px:.1}px 0px\"{shadow}>{text}</span>",
         fill = color.fill,
         outline = color.outline,
         text = escape_xml(line),
@@ -147,6 +195,7 @@ pub fn render_ttml(
     let mut regions = String::new();
     let mut body = String::new();
     let region_height = metrics.font_px * 3.0;
+    let shadow = ttml_shadow(metrics, settings);
     for (index, cue) in cues.iter().enumerate() {
         let width = metrics.max_line_px + 2.0 * metrics.outline_px;
         let left = (cue.x - width / 2.0).clamp(0.0, (f64::from(info.width) - width).max(0.0));
@@ -164,7 +213,7 @@ pub fn render_ttml(
         let spans: Vec<String> = cue
             .lines
             .iter()
-            .map(|line| ttml_span(line, color, metrics.outline_px))
+            .map(|line| ttml_span(line, color, metrics.outline_px, &shadow))
             .collect();
         let _ = writeln!(
             body,
@@ -180,7 +229,7 @@ pub fn render_ttml(
             "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\" ",
             "xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\" ttp:timeBase=\"media\" xml:lang=\"{lang}\" tts:extent=\"{width}px {height}px\">\n",
             "  <head>\n    <layout>\n{regions}    </layout>\n  </head>\n",
-            "  <body tts:fontFamily=\"{font}\" tts:fontSize=\"{size}px\" tts:fontWeight=\"bold\">\n    <div>\n{body}    </div>\n  </body>\n",
+            "  <body tts:fontFamily=\"{font}\" tts:fontSize=\"{size}px\" tts:lineHeight=\"{line_height:.1}px\" tts:fontWeight=\"bold\">\n    <div>\n{body}    </div>\n  </body>\n",
             "</tt>\n",
         ),
         lang = settings.language,
@@ -189,6 +238,7 @@ pub fn render_ttml(
         regions = regions,
         font = settings.font_family,
         size = metrics.font_px,
+        line_height = metrics.font_px * settings.line_height,
         body = body,
     )
 }
@@ -198,6 +248,34 @@ fn fcp_time(seconds: f64, info: &VideoInfo) -> String {
     let frames =
         (seconds.max(0.0) * f64::from(info.fps_num) / f64::from(info.fps_den)).round() as u64;
     format!("{}/{}s", frames * u64::from(info.fps_den), info.fps_num)
+}
+
+fn frame_at(seconds: f64, info: &VideoInfo) -> u64 {
+    (seconds.max(0.0) * f64::from(info.fps_num) / f64::from(info.fps_den)).round() as u64
+}
+
+fn fcp_frames(frames: u64, info: &VideoInfo) -> String {
+    format!("{}/{}s", frames * u64::from(info.fps_den), info.fps_num)
+}
+
+/// Offset and duration on the frame grid: ends are rounded the same way as starts, so a title can
+/// never run into the next one, and it always lasts at least one frame.
+fn fcp_span(start: f64, end: f64, info: &VideoInfo) -> (String, String) {
+    let first = frame_at(start, info);
+    let frames = frame_at(end, info).saturating_sub(first).max(1);
+    (fcp_frames(first, info), fcp_frames(frames, info))
+}
+
+fn fcp_shadow(metrics: &Metrics, settings: &Settings) -> String {
+    let CaptionShadow { enabled, strength } = settings.shadow;
+    if !enabled {
+        return String::new();
+    }
+    format!(
+        " shadowColor=\"0 0 0 {strength:.2}\" shadowOffset=\"{offset:.1} {SHADOW_ANGLE_DOWN}\" shadowBlurRadius=\"{blur:.1}\"",
+        offset = metrics.font_px * SHADOW_OFFSET_EM,
+        blur = metrics.font_px * SHADOW_BLUR_EM,
+    )
 }
 
 /// RGB in the 0-1 floats FCPXML text styles use.
@@ -233,6 +311,90 @@ fn file_url(path: &Path) -> String {
     }
 }
 
+/// Bottom to top, as the repository's captions are drawn: black rim, outline band, then the fill with
+/// no stroke at all, so one glyph's outline can never paint over its neighbour's fill.
+fn title_layers(color: &SpeakerColor, metrics: &Metrics, settings: &Settings) -> Vec<TitleLayer> {
+    let band = metrics.outline_px;
+    let rim = settings.rim_ratio * metrics.font_px;
+    let needs_rim = rim > 0.0 && !color.outline.eq_ignore_ascii_case(BLACK);
+    let rim_layer = needs_rim.then(|| TitleLayer {
+        fill: BLACK.to_owned(),
+        stroke: Some((BLACK.to_owned(), band + rim)),
+    });
+    rim_layer
+        .into_iter()
+        .chain([
+            TitleLayer {
+                fill: color.outline.clone(),
+                stroke: Some((color.outline.clone(), band)),
+            },
+            TitleLayer {
+                fill: color.fill.clone(),
+                stroke: None,
+            },
+        ])
+        .collect()
+}
+
+/// A negative `strokeWidth` is percent of the font size for the stroke centred on the glyph edge.
+fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics) -> String {
+    layer
+        .stroke
+        .as_ref()
+        .map_or_else(String::new, |(color, per_side)| {
+            format!(
+                " strokeColor=\"{}\" strokeWidth=\"-{:.1}\"",
+                fcp_color(color),
+                per_side * STROKE_SIDES / metrics.font_px * PERCENT
+            )
+        })
+}
+
+fn fcp_layer(
+    id: &str,
+    lane: usize,
+    layer: &TitleLayer,
+    shadow: &str,
+    cue_markup: &CueMarkup<'_>,
+) -> String {
+    let CueMarkup {
+        label,
+        offset,
+        duration,
+        x,
+        y,
+        text,
+        font,
+        size,
+        line_height,
+        metrics,
+    } = cue_markup;
+    format!(
+        concat!(
+            "            <title ref=\"r2\" lane=\"{lane}\" name=\"{label}\" offset=\"{offset}\" start=\"0s\" duration=\"{duration}\">\n",
+            "              <adjust-transform position=\"{x:.3} {y:.3}\"/>\n",
+            "              <text><text-style ref=\"{id}\">{text}</text-style></text>\n",
+            "              <text-style-def id=\"{id}\"><text-style font=\"{font}\" fontSize=\"{size}\" fontFace=\"Bold\" lineSpacing=\"{spacing:.1}\" ",
+            "fontColor=\"{fill}\"{stroke} alignment=\"center\"{shadow}/></text-style-def>\n",
+            "            </title>\n",
+        ),
+        lane = lane,
+        id = id,
+        label = label,
+        offset = offset,
+        duration = duration,
+        x = x,
+        y = y,
+        text = text,
+        font = font,
+        size = size,
+        spacing = *size * (*line_height - FCP_NATURAL_LINE_HEIGHT),
+        fill = fcp_color(&layer.fill),
+        stroke = fcp_stroke(layer, metrics),
+        shadow = shadow,
+    )
+}
+
 fn fcp_title(
     index: usize,
     cue: &Cue,
@@ -240,34 +402,42 @@ fn fcp_title(
     metrics: &Metrics,
     settings: &Settings,
 ) -> String {
-    let color = settings.color_for(cue.speaker);
-    let x = cue.x - f64::from(info.width) / 2.0;
-    let y = f64::from(info.height) / 2.0 - cue.y;
+    let frame_height = f64::from(info.height);
+    let (offset, duration) = fcp_span(cue.start, cue.end, info);
     let text = escape_xml(&cue.lines.join("\n"));
     let label = escape_xml(cue.lines.first().map_or("", String::as_str));
-    format!(
-        concat!(
-            "            <title ref=\"r2\" lane=\"1\" name=\"{label}\" offset=\"{offset}\" start=\"0s\" duration=\"{duration}\">\n",
-            "              <param name=\"Position\" key=\"{key}\" value=\"{x:.1} {y:.1}\"/>\n",
-            "              <text><text-style ref=\"ts{index}\">{text}</text-style></text>\n",
-            "              <text-style-def id=\"ts{index}\"><text-style font=\"{font}\" fontSize=\"{size}\" fontFace=\"Bold\" ",
-            "fontColor=\"{fill}\" strokeColor=\"{stroke}\" strokeWidth=\"{width:.1}\" alignment=\"center\"/></text-style-def>\n",
-            "            </title>\n",
-        ),
-        label = label,
-        offset = fcp_time(cue.start, info),
-        duration = fcp_time((cue.end - cue.start).max(0.0), info),
-        key = TITLE_POSITION_KEY,
-        x = x,
-        y = y,
-        index = index,
-        text = text,
-        font = settings.font_family,
-        size = metrics.font_px,
-        fill = fcp_color(&color.fill),
-        stroke = fcp_color(&color.outline),
-        width = metrics.outline_px,
-    )
+    let markup = CueMarkup {
+        label: &label,
+        offset: &offset,
+        duration: &duration,
+        x: (cue.x - f64::from(info.width) / 2.0) / frame_height * PERCENT,
+        y: (frame_height / 2.0 - cue.y) / frame_height * PERCENT,
+        text: &text,
+        font: &settings.font_family,
+        size: metrics.font_px,
+        line_height: settings.line_height,
+        metrics,
+    };
+    let shadow = fcp_shadow(metrics, settings);
+    title_layers(settings.color_for(cue.speaker), metrics, settings)
+        .iter()
+        .enumerate()
+        .map(|(layer_index, layer)| {
+            // Only the bottom layer casts the shadow; a shadow per layer would darken the band.
+            let layer_shadow = if layer_index == 0 {
+                shadow.as_str()
+            } else {
+                ""
+            };
+            fcp_layer(
+                &format!("ts{index}-{layer_index}"),
+                layer_index + 1,
+                layer,
+                layer_shadow,
+                &markup,
+            )
+        })
+        .collect()
 }
 
 /// A timeline with the video and one title per cue, which carries colour, outline and position.
@@ -406,7 +576,7 @@ mod tests {
         let out = render_srt(&[cue(Some(2), "A&B")], &Settings::default());
         assert_eq!(
             out,
-            "1\n00:00:01,500 --> 00:00:03,250\n<font color=\"#7CDC8C\">A&amp;B</font>\n\n"
+            "1\n00:00:01,500 --> 00:00:03,250\n<font color=\"#005A9C\">A&B</font>\n\n"
         );
     }
 
@@ -426,7 +596,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "<span tts:color=\"#C48CFF\" tts:textOutline=\"#FFFFFF 6.0px 0px\">はい</span>"
+                "<span tts:color=\"#FFFFFF\" tts:textOutline=\"#000000 6.0px 0px\" tts:textShadow=\"0px 9.5px 4.7px rgba(0,0,0,204)\">はい</span>"
             ),
             "{out}"
         );
@@ -446,7 +616,7 @@ mod tests {
     #[test]
     fn unassigned_speech_uses_the_grey_colour() {
         let out = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &Settings::default());
-        assert!(out.contains("tts:color=\"#C8C8C8\""), "{out}");
+        assert!(out.contains("tts:color=\"#595959\""), "{out}");
     }
 
     #[test]
@@ -480,13 +650,16 @@ mod tests {
             vec![cue(Some(1), "はい")],
         );
         let out = render_fcpxml(&transcript, &Settings::default());
-        assert!(out.contains("value=\"0.0 -440.0\""), "{out}");
         assert!(
-            out.contains("fontColor=\"0.7686 0.5490 1.0000 1\""),
+            out.contains("<adjust-transform position=\"0.000 -40.741\"/>"),
             "{out}"
         );
         assert!(
-            out.contains("strokeColor=\"1.0000 1.0000 1.0000 1\""),
+            out.contains("fontColor=\"1.0000 1.0000 1.0000 1\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-23.1\""),
             "{out}"
         );
         assert!(out.contains("src=\"file:///v/a.mp4\""), "{out}");
@@ -517,5 +690,137 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(transcript.speaker_count, 3);
+    }
+
+    #[test]
+    fn every_markup_character_is_escaped() {
+        assert_eq!(
+            escape_xml("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
+    }
+
+    #[test]
+    fn captions_without_a_shadow_have_no_shadow_attributes() {
+        let settings = Settings {
+            shadow: crate::settings::CaptionShadow {
+                enabled: false,
+                strength: 0.5,
+            },
+            ..Settings::default()
+        };
+        let ttml = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &settings);
+        assert!(!ttml.contains("textShadow"), "{ttml}");
+        let transcript = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            Vec::new(),
+            Vec::new(),
+            vec![cue(None, "x")],
+        );
+        let fcpxml = render_fcpxml(&transcript, &settings);
+        assert!(!fcpxml.contains("shadowColor"), "{fcpxml}");
+    }
+
+    #[test]
+    fn fcpxml_titles_carry_the_shadow() {
+        let transcript = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            Vec::new(),
+            Vec::new(),
+            vec![cue(None, "x")],
+        );
+        let out = render_fcpxml(&transcript, &Settings::default());
+        assert!(
+            out.contains(
+                "shadowColor=\"0 0 0 0.80\" shadowOffset=\"9.5 270\" shadowBlurRadius=\"4.7\""
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_title_lasts_at_least_one_frame() {
+        assert_eq!(
+            fcp_span(1.0, 1.0, &INFO),
+            ("30030/30000s".to_owned(), "1001/30000s".to_owned())
+        );
+        assert_eq!(
+            fcp_span(2.0, 1.0, &INFO),
+            ("60060/30000s".to_owned(), "1001/30000s".to_owned())
+        );
+    }
+
+    #[test]
+    fn titles_side_by_side_share_a_frame_boundary_without_overlap() {
+        assert_eq!(
+            fcp_span(1.0, 2.0, &INFO),
+            ("30030/30000s".to_owned(), "30030/30000s".to_owned())
+        );
+        assert_eq!(
+            fcp_span(2.0, 3.0, &INFO),
+            ("60060/30000s".to_owned(), "30030/30000s".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_white_band_stacks_rim_band_and_fill_titles() {
+        let settings = Settings::default();
+        let out = fcp_title(0, &cue(Some(2), "A&B"), &INFO, &METRICS, &settings);
+        assert_eq!(
+            out,
+            concat!(
+                "            <title ref=\"r2\" lane=\"1\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
+                "              <adjust-transform position=\"0.000 -40.741\"/>\n",
+                "              <text><text-style ref=\"ts0-0\">A&amp;B</text-style></text>\n",
+                "              <text-style-def id=\"ts0-0\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.0000 0.0000 1\" strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-29.9\" alignment=\"center\" shadowColor=\"0 0 0 0.80\" shadowOffset=\"9.5 270\" shadowBlurRadius=\"4.7\"/></text-style-def>\n",
+                "            </title>\n",
+                "            <title ref=\"r2\" lane=\"2\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
+                "              <adjust-transform position=\"0.000 -40.741\"/>\n",
+                "              <text><text-style ref=\"ts0-1\">A&amp;B</text-style></text>\n",
+                "              <text-style-def id=\"ts0-1\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"1.0000 1.0000 1.0000 1\" strokeColor=\"1.0000 1.0000 1.0000 1\" strokeWidth=\"-23.1\" alignment=\"center\"/></text-style-def>\n",
+                "            </title>\n",
+                "            <title ref=\"r2\" lane=\"3\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
+                "              <adjust-transform position=\"0.000 -40.741\"/>\n",
+                "              <text><text-style ref=\"ts0-2\">A&amp;B</text-style></text>\n",
+                "              <text-style-def id=\"ts0-2\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.3529 0.6118 1\" alignment=\"center\"/></text-style-def>\n",
+                "            </title>\n",
+            )
+        );
+    }
+
+    #[test]
+    fn a_black_outline_or_no_rim_needs_no_rim_title() {
+        let settings = Settings::default();
+        assert_eq!(
+            title_layers(&settings.palette[0], &METRICS, &settings).len(),
+            2
+        );
+        let no_rim = Settings {
+            rim_ratio: 0.0,
+            ..Settings::default()
+        };
+        assert_eq!(title_layers(&no_rim.palette[1], &METRICS, &no_rim).len(), 2);
+    }
+
+    #[test]
+    fn ttml_sets_a_line_pitch_that_keeps_outlines_apart() {
+        let out = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &Settings::default());
+        assert!(out.contains("tts:lineHeight=\"75.3px\""), "{out}");
+    }
+
+    #[test]
+    fn the_line_pitch_setting_reaches_both_formats() {
+        let settings = Settings {
+            line_height: 2.0,
+            ..Settings::default()
+        };
+        let ttml = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &settings);
+        assert!(ttml.contains("tts:lineHeight=\"104.0px\""), "{ttml}");
+        let title = fcp_title(0, &cue(None, "x"), &INFO, &METRICS, &settings);
+        assert!(title.contains("lineSpacing=\"41.6\""), "{title}");
     }
 }

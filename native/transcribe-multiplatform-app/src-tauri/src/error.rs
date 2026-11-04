@@ -21,6 +21,8 @@ pub enum UserError {
     NoModelForRole { role: String },
     #[error("model {model} needs an NVIDIA GPU")]
     NeedsNvidia { model: String },
+    #[error("model {model} takes recordings up to {limit_minutes} minutes")]
+    TooLongForModel { model: String, limit_minutes: u64 },
     #[error("model {model} needs {required} GiB of memory, this machine has {available} GiB")]
     NeedsMemory {
         model: String,

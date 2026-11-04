@@ -1,4 +1,5 @@
 // Runs with bun: Vite build and Vitest configuration for the Preact UI.
+import { fileURLToPath } from "node:url";
 import preact from "@preact/preset-vite";
 import tailwindcss from "@tailwindcss/vite";
 import type { UserConfig } from "vite";
@@ -10,6 +11,7 @@ const config: UserConfig = defineConfig({
   plugins: [preact({ prefreshEnabled: false }), tailwindcss()],
   resolve: {
     alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",

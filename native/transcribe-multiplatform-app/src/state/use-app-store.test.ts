@@ -21,17 +21,18 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
+  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
   placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
   language: "auto",
-  transcribe_model: "a",
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
-  hardware: { is_mac: true, memory_gib: 16, nvidia_name: null, nvidia_memory_gib: 0 },
+  hardware: { is_mac: true, memory_gib: 16, gpu: null },
+  backend: "default",
   settings: SETTINGS,
   models: [],
   models_dir: "/models",
@@ -149,21 +150,65 @@ it("shows new settings at once and saves only the last of a burst", async () => 
     await vi.advanceTimersByTimeAsync(250);
   });
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([
-    ["save_settings", { settings: { ...SETTINGS, language: "ko" } }],
+    [
+      "save_settings",
+      {
+        settings: {
+          palette: [],
+          unassigned: { fill: "#AAAAAA", outline: "#000000" },
+          font_family: "Sans",
+          font_ratio: 0.05,
+          outline_ratio: 0.1,
+          shadow: { enabled: false, strength: 0.5 },
+          width_ratio: 0.8,
+          placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+          language: "ko",
+          diarize_model: "b",
+          face_model: "c",
+          model_dirs: [],
+        },
+      },
+    ],
   ]);
 });
 
-it("applies the snapshot a save returns and clears an old failure", async () => {
+it("takes only the models from a save, so newer settings and an old failure stay", async () => {
   vi.useFakeTimers();
   const view: HookView = mounted();
   act((): void => view.result.current.setState((state) => ({ ...state, loadError: { code: "internal" } })));
-  vi.mocked(invoke).mockResolvedValue({ ...SNAPSHOT, locale: "de" });
-  act((): void => view.result.current.updateSettings(SETTINGS));
+  vi.mocked(invoke).mockResolvedValue({
+    ...SNAPSHOT,
+    locale: "de",
+    settings: { ...SETTINGS, language: "stale" },
+    models: [
+      {
+        id: "m",
+        role: "face",
+        label: "M",
+        source_url: "",
+        download_bytes: 0,
+        found_at: null,
+        blocked: null,
+        recommended: false,
+        hidden: false,
+      },
+    ],
+  });
+  act((): void => view.result.current.updateSettings({ ...SETTINGS, language: "ja" }));
   await act(async (): Promise<void> => {
     await vi.advanceTimersByTimeAsync(250);
   });
-  expect(view.result.current.state.snapshot.locale).toBe("de");
-  expect(view.result.current.state.loadError).toBe(null);
+  expect(view.result.current.state.snapshot.models.map(({ id }): string => id)).toStrictEqual(["m"]);
+  expect(view.result.current.state.snapshot.settings.language).toBe("ja");
+  expect(view.result.current.state.snapshot.locale).toBe("en");
+  expect(view.result.current.state.loadError).toStrictEqual({ code: "internal" });
+});
+
+it("does not rescan the models for download progress", () => {
+  const view: HookView = mounted();
+  act((): void => emitBackend("download", { state: "running", id: "m", done_bytes: 1, total_bytes: 2 }));
+  expect(view.result.current.state.downloads.get("m")?.doneBytes).toBe(1);
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
 });
 
 it("reports a failed save", async () => {

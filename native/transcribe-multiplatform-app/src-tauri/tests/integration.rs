@@ -6,13 +6,14 @@ use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use transcribe_app::catalog::{self, Hardware};
+use transcribe_app::catalog::{self, Backend, Gpu, GpuVendor, Hardware};
 use transcribe_app::engines::{self, DiarizeModel, Tools, VideoInfo};
 use transcribe_app::error::AppError;
+use transcribe_app::eta::{Progress, Stage};
 use transcribe_app::export::{self, Transcript};
 use transcribe_app::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use transcribe_app::paths::AppPaths;
-use transcribe_app::pipeline::{self, Progress, Stage};
+use transcribe_app::pipeline;
 use transcribe_app::process::CancelToken;
 use transcribe_app::settings::{Anchor, Placement, Settings};
 
@@ -63,6 +64,7 @@ EOF
 "#;
 const NEMO: &str = r#"
 command="$1"
+sleep 0.15
 while [ $# -gt 0 ]; do
   if [ "$1" = "--output" ]; then out="$2"; fi
   shift
@@ -106,7 +108,19 @@ fn with_tools(root: &Path) -> AppPaths {
     write_tool(&runtime.join("ffmpeg/ffprobe"), FFPROBE);
     write_tool(&runtime.join("whisper/whisper-cli"), WHISPER);
     write_tool(&runtime.join("nemo/bin/nemo-speech"), NEMO);
+    install_ipadic(&paths);
     paths
+}
+
+/// A hard link: the 8 MB dictionary is shared by every job test instead of copied per test.
+fn install_ipadic(paths: &AppPaths) {
+    let installed = paths.resources.join("resources/ipadic-mecab-2_7_0.dic.zst");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::hard_link(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/ipadic-mecab-2_7_0.dic.zst"),
+        installed,
+    )
+    .unwrap();
 }
 
 /// As `with_tools`, plus a ready ggml file and the small diarization model.
@@ -127,15 +141,14 @@ fn install_yunet(paths: &AppPaths) {
 }
 
 fn tools_in(paths: &AppPaths) -> Tools {
-    Tools::locate(paths, false).unwrap()
+    Tools::locate(paths, Backend::Default).unwrap()
 }
 
 fn mac() -> Hardware {
     Hardware {
         is_mac: true,
         memory_gib: 64,
-        nvidia_name: None,
-        nvidia_memory_gib: 0,
+        gpu: None,
     }
 }
 
@@ -148,19 +161,6 @@ fn face_anchored() -> Settings {
         },
         ..Settings::default()
     }
-}
-
-fn job_error(video: &Path, paths: &AppPaths, settings: &Settings, hardware: &Hardware) -> String {
-    pipeline::run_job(
-        video,
-        paths,
-        settings,
-        hardware,
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap_err()
-    .to_string()
 }
 
 fn names(paths: &[PathBuf]) -> Vec<String> {
@@ -220,12 +220,10 @@ fn a_job_with_the_default_model_writes_every_format() {
     assert_eq!(
         stages,
         vec![
-            Stage::Prepare,
             Stage::ExtractAudio,
             Stage::Transcribe,
             Stage::Diarize,
-            Stage::Export,
-            Stage::Done
+            Stage::Export
         ]
     );
     assert_eq!(
@@ -242,7 +240,7 @@ fn a_job_with_the_default_model_writes_every_format() {
     assert!(!outcome.faceless);
     assert_eq!(
         fs::read_to_string(root.join("clip.srt")).unwrap(),
-        "1\n00:00:00,100 --> 00:00:00,900\n<font color=\"#C48CFF\">はい</font>\n\n2\n00:00:01,000 --> 00:00:01,800\n<font color=\"#7CDC8C\">どうも</font>\n\n"
+        "1\n00:00:00,100 --> 00:00:00,933\n<font color=\"#FFFFFF\">はい</font>\n\n2\n00:00:01,000 --> 00:00:01,933\n<font color=\"#005A9C\">どうも</font>\n\n"
     );
     assert_eq!(fs::read_dir(paths.jobs_dir()).unwrap().count(), 0);
 }
@@ -325,7 +323,7 @@ fn a_job_converts_the_whisper_checkpoint_once() {
     )
     .unwrap();
     stages.dedup();
-    assert_eq!(stages[1], Stage::ConvertModel);
+    assert_eq!(stages[0], Stage::ConvertModel);
     let ggml = fs::read(paths.data.join(GGML_FILE)).unwrap();
     assert_eq!(ggml[..4], [0x6c, 0x6d, 0x67, 0x67]);
     fs::remove_dir_all(&root).unwrap();
@@ -344,15 +342,22 @@ fn a_job_uses_the_downloaded_cuda_tools_on_a_geforce() {
     let hardware = Hardware {
         is_mac: false,
         memory_gib: 64,
-        nvidia_name: Some("NVIDIA GeForce RTX 4090".to_owned()),
-        nvidia_memory_gib: 24,
+        gpu: Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4090".to_owned(),
+            memory_gib: 24,
+        }),
     };
-    let error = job_error(
+    let error = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
         &Settings::default(),
         &hardware,
-    );
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
     assert_eq!(error, "nemo-speech failed: exit status: 7\ncuda build ran");
 }
 
@@ -384,7 +389,16 @@ fn a_job_refuses_invalid_settings_before_anything_else() {
     };
     let paths = with_tools(&root);
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "the speaker palette needs at least one colour"
     );
 }
@@ -394,7 +408,16 @@ fn a_job_without_any_speaker_model_names_the_role() {
     let root = scratch("job-no-model");
     let paths = with_tools(&root);
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &Settings::default(), &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "no model is installed for diarize"
     );
 }
@@ -408,7 +431,16 @@ fn a_job_with_an_unknown_speaker_model_fails() {
         ..Settings::default()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "unknown diarize model nope"
     );
 }
@@ -426,7 +458,16 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
         ..mac()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &hardware),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &hardware,
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "model nemotron-3.5-transcribe-q8 needs 48 GiB of memory, this machine has 12 GiB"
     );
 }
@@ -440,7 +481,16 @@ fn a_job_refuses_a_chosen_model_that_is_not_installed() {
         ..Settings::default()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "model nemotron-3-diarization is not installed"
     );
 }
@@ -454,7 +504,16 @@ fn a_job_without_bundled_tools_says_which_is_missing() {
         hf_hub: None,
     };
     sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
-    let error = job_error(&root.join("clip.mp4"), &paths, &Settings::default(), &mac());
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.starts_with("ffmpeg is missing from "), "{error}");
 }
 
@@ -467,7 +526,16 @@ fn a_job_on_a_file_without_video_reports_the_user_error() {
         r#"echo '{"format":{"duration":"1"},"streams":[{"codec_type":"audio"}]}'"#,
     );
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &Settings::default(), &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "the file has no video stream"
     );
 }
@@ -478,7 +546,16 @@ fn a_job_without_a_whisper_model_names_it() {
     let paths = with_tools(&root);
     sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &Settings::default(), &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "model whisper-large-v3-turbo is not installed"
     );
 }
@@ -498,7 +575,16 @@ echo '{"transcription":[]}' > "$out.json"
 "#,
     );
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &Settings::default(), &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "no words were detected in the audio"
     );
     assert_eq!(fs::read_dir(paths.jobs_dir()).unwrap().count(), 0);
@@ -555,7 +641,16 @@ fn a_job_with_an_unknown_face_model_fails_after_speech() {
         ..face_anchored()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "unknown face model nope"
     );
 }
@@ -569,7 +664,16 @@ fn a_job_with_a_face_model_that_is_not_installed_names_it() {
         ..face_anchored()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "model avatar-face-yolo is not installed"
     );
 }
@@ -588,7 +692,16 @@ fn a_job_loads_the_avatar_model_by_kind() {
         ..face_anchored()
     };
     assert_eq!(
-        job_error(&root.join("clip.mp4"), &paths, &settings, &mac()),
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &settings,
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
         "face model failed: unexpected YOLO shape [1, 3, 640, 640]"
     );
 }
@@ -618,7 +731,7 @@ fn relayout_rewrites_the_earlier_files_in_place() {
         &mut |progress: Progress| stages.push(progress.stage),
     )
     .unwrap();
-    assert_eq!(stages, vec![Stage::Export, Stage::Done]);
+    assert_eq!(stages, vec![Stage::Export, Stage::Export]);
     assert_eq!(outcome.base.file_name().unwrap(), "clip");
     assert_eq!(outcome.cue_count, 2);
     assert_eq!(
@@ -691,7 +804,7 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
 fn tools_are_found_below_their_folder() {
     let root = scratch("tools");
     let paths = with_tools(&root);
-    let tools = Tools::locate(&paths, false).unwrap();
+    let tools = Tools::locate(&paths, Backend::Default).unwrap();
     assert!(tools.ffmpeg.ends_with("resources/runtime/ffmpeg/ffmpeg"));
     assert!(tools.ffprobe.ends_with("resources/runtime/ffmpeg/ffprobe"));
     assert!(tools
@@ -712,15 +825,15 @@ fn downloaded_cuda_tools_override_the_bundled_ones_only_when_asked() {
             .join("geforce/nemo/release/nemo-speech"),
         "",
     );
-    assert!(Tools::locate(&paths, true)
+    assert!(Tools::locate(&paths, Backend::Cuda)
         .unwrap()
         .nemo
         .ends_with("data/runtime/geforce/nemo/release/nemo-speech"));
-    assert!(Tools::locate(&paths, true)
+    assert!(Tools::locate(&paths, Backend::Cuda)
         .unwrap()
         .whisper
         .ends_with("resources/runtime/whisper/whisper-cli"));
-    assert!(Tools::locate(&paths, false)
+    assert!(Tools::locate(&paths, Backend::Default)
         .unwrap()
         .nemo
         .ends_with("resources/runtime/nemo/bin/nemo-speech"));
@@ -733,7 +846,9 @@ fn a_tool_buried_too_deep_is_not_found() {
     let runtime = paths.bundled_runtime_dir();
     fs::remove_dir_all(runtime.join("nemo")).unwrap();
     write_tool(&runtime.join("nemo/a/b/c/d/nemo-speech"), "");
-    let error = Tools::locate(&paths, false).unwrap_err().to_string();
+    let error = Tools::locate(&paths, Backend::Default)
+        .unwrap_err()
+        .to_string();
     assert!(error.starts_with("nemo-speech is missing from "), "{error}");
 }
 
@@ -832,6 +947,9 @@ fn a_diarizer_that_writes_nothing_is_an_error() {
         entry: catalog::find_entry("nemotron-3-diarization").unwrap(),
         main_file: Path::new("m.gguf"),
         encoder: None,
+        device: "auto",
+        speaker_count: 0,
+        onset: None,
     };
     let error = engines::diarize(
         &tools_in(&paths),
@@ -840,6 +958,7 @@ fn a_diarizer_that_writes_nothing_is_an_error() {
         "auto",
         &root,
         &CancelToken::default(),
+        &mut || {},
     )
     .unwrap_err()
     .to_string();
@@ -854,6 +973,9 @@ fn only_diarization_models_can_diarize() {
         entry: catalog::find_entry("yunet").unwrap(),
         main_file: Path::new("m.gguf"),
         encoder: None,
+        device: "auto",
+        speaker_count: 0,
+        onset: None,
     };
     let error = engines::diarize(
         &tools_in(&paths),
@@ -862,6 +984,7 @@ fn only_diarization_models_can_diarize() {
         "auto",
         &root,
         &CancelToken::default(),
+        &mut || {},
     )
     .unwrap_err()
     .to_string();
@@ -974,7 +1097,10 @@ fn files_are_found_by_name_and_size_in_any_root() {
     let extra = root.join("user");
     let wrong_size = extra.join("a/Nemotron-3-Diarization.q8_0.gguf");
     sparse(&wrong_size, 5);
-    assert_eq!(catalog::locate(entry, &paths, &[extra.clone()]), None);
+    assert_eq!(
+        catalog::locate(entry, &paths, std::slice::from_ref(&extra)),
+        None
+    );
     File::options()
         .write(true)
         .open(&wrong_size)
@@ -1268,11 +1394,12 @@ fn the_cli_runs_a_whole_job_and_prints_the_outcome() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
     let first: Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(first["stage"], "prepare");
+    assert_eq!(first["stage"], "extract_audio");
     let last: Value = serde_json::from_str(lines[lines.len() - 1]).unwrap();
     assert_eq!(last["speaker_count"], 2);
     assert_eq!(last["cue_count"], 2);
     assert_eq!(last["faceless"], false);
+    assert_eq!(last["requested_speakers"], 0);
 }
 
 #[test]
@@ -1297,34 +1424,6 @@ fn the_cli_refuses_a_broken_settings_file() {
 }
 
 #[test]
-fn the_cli_sees_a_geforce_through_nvidia_smi() {
-    let root = scratch("cli-nvidia");
-    let paths = ready(&root);
-    write_tool(
-        &paths
-            .downloaded_runtime_dir()
-            .join("geforce/nemo/nemo-speech"),
-        "echo 'cuda build ran' >&2; exit 7",
-    );
-    fs::create_dir_all(paths.downloaded_runtime_dir().join("geforce/whisper")).unwrap();
-    write_tool(
-        &root.join("bin/nvidia-smi"),
-        "echo 'NVIDIA GeForce RTX 4090, 24564'",
-    );
-    let output = headless(&root, &root.join("clip.mp4"))
-        .env(
-            "PATH",
-            format!("{}:/usr/bin:/bin", root.join("bin").display()),
-        )
-        .output()
-        .unwrap();
-    assert_eq!(
-        stderr(&output),
-        "nemo-speech failed: exit status: 7\ncuda build ran"
-    );
-}
-
-#[test]
 fn the_cli_needs_a_home_when_no_data_folder_is_set() {
     let root = scratch("cli-no-home");
     let output = headless(&root, &root.join("clip.mp4"))
@@ -1341,7 +1440,7 @@ fn the_cli_defaults_to_the_folder_under_home() {
     let root = scratch("cli-home");
     let settings = root.join("Library/Application Support/net.teadea.transcribe/settings.json");
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    fs::write(&settings, b"[]").unwrap();
+    fs::write(&settings, br#"{"language":""}"#).unwrap();
     let output = headless(&root, &root.join("clip.mp4"))
         .env_remove("TRANSCRIBE_DATA_DIR")
         .env_remove("TRANSCRIBE_RESOURCE_DIR")
@@ -1351,6 +1450,467 @@ fn the_cli_defaults_to_the_folder_under_home() {
         .unwrap();
     assert_eq!(
         stderr(&output),
-        "settings file: invalid length 0, expected struct Settings with 12 elements at line 1 column 2"
+        "language must be a code such as ja, got \"\""
     );
+}
+
+#[test]
+fn a_job_reports_a_checkpoint_that_cannot_convert() {
+    let root = scratch("job-bad-checkpoint");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    sparse(
+        &paths
+            .data
+            .join("models/whisper-large-v3-turbo/model.safetensors"),
+        WHISPER_SOURCE_BYTES,
+    );
+    assert_eq!(
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
+        "safetensors header: EOF while parsing a value at line 1 column 0"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_job_reports_a_failing_audio_tool() {
+    let root = scratch("job-bad-ffmpeg");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        "echo 'bad input' >&2; exit 1",
+    );
+    assert_eq!(
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings::default(),
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .to_string(),
+        "ffmpeg failed: exit status: 1\nbad input"
+    );
+}
+
+#[test]
+fn relayout_reports_a_face_scan_that_cannot_start() {
+    let root = scratch("relayout-no-face-model");
+    let paths = ready(&root);
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let error = pipeline::relayout(
+        &root.join("clip.transcript.json"),
+        &paths,
+        &face_anchored(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "model yunet is not installed");
+}
+
+fn radeon() -> Hardware {
+    Hardware {
+        is_mac: false,
+        memory_gib: 64,
+        gpu: Some(Gpu {
+            vendor: GpuVendor::Radeon,
+            name: "AMD Radeon RX 7900 XTX".to_owned(),
+            memory_gib: 24,
+        }),
+    }
+}
+
+#[test]
+fn progress_carries_the_plan_and_reaches_the_end() {
+    let root = scratch("job-progress");
+    let paths = ready(&root);
+    let mut seen: Vec<Progress> = Vec::new();
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |progress: Progress| seen.push(progress),
+    )
+    .unwrap();
+    assert_eq!(
+        seen[0].plan,
+        vec![
+            Stage::ExtractAudio,
+            Stage::Transcribe,
+            Stage::Diarize,
+            Stage::Export
+        ]
+    );
+    assert!(seen.iter().any(|progress| !progress.determinate));
+    let last = seen.last().unwrap();
+    assert_eq!(last.overall, 1.0);
+    assert_eq!(last.stage_fraction, 1.0);
+    assert!(paths.stage_rates_file().exists());
+}
+
+#[test]
+fn a_silent_speaker_model_still_moves_the_estimate() {
+    let root = scratch("job-ticks");
+    let paths = ready(&root);
+    let mut diarize_updates = 0;
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |progress: Progress| {
+            if progress.stage == Stage::Diarize {
+                diarize_updates += 1;
+            }
+        },
+    )
+    .unwrap();
+    assert!(diarize_updates >= 2, "{diarize_updates}");
+}
+
+#[test]
+fn a_radeon_job_runs_the_vulkan_build_on_its_gpu() {
+    let root = scratch("job-vulkan");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo-vulkan/nemo-speech"),
+        "echo \"$*\" | grep -o -- '--device [a-z]*' >&2; exit 7",
+    );
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &radeon(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "nemo-speech failed: exit status: 7\n--device vulkan");
+}
+
+#[test]
+fn the_vulkan_build_is_used_only_where_it_is_installed() {
+    let root = scratch("tools-vulkan");
+    let paths = with_tools(&root);
+    let fallback = Tools::locate(&paths, Backend::Vulkan).unwrap();
+    assert_eq!(fallback.backend, Backend::Default);
+    assert!(fallback
+        .nemo
+        .ends_with("resources/runtime/nemo/bin/nemo-speech"));
+    let runtime = paths.bundled_runtime_dir();
+    write_tool(&runtime.join("nemo-vulkan/nemo-speech"), "");
+    write_tool(&runtime.join("whisper-vulkan/whisper-cli"), "");
+    let tools = Tools::locate(&paths, Backend::Vulkan).unwrap();
+    assert_eq!(tools.backend, Backend::Vulkan);
+    assert!(tools
+        .nemo
+        .ends_with("resources/runtime/nemo-vulkan/nemo-speech"));
+    assert!(tools
+        .whisper
+        .ends_with("resources/runtime/whisper-vulkan/whisper-cli"));
+}
+
+#[test]
+fn a_cuda_only_model_asks_for_the_runtime_on_vulkan() {
+    let root = scratch("job-needs-cuda");
+    let paths = with_tools(&root);
+    sparse(
+        &root.join("data/models/q2m/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_M.gguf"),
+        13_572_208_800,
+    );
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo-vulkan/nemo-speech"),
+        "",
+    );
+    let settings = Settings {
+        diarize_model: "nemotron-3.5-transcribe-q2m".to_owned(),
+        ..Settings::default()
+    };
+    let hardware = Hardware {
+        is_mac: false,
+        memory_gib: 64,
+        gpu: Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4080".to_owned(),
+            memory_gib: 16,
+        }),
+    };
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &hardware,
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "model geforce-runtime is not installed");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_video_too_long_for_the_model_fails_before_any_long_work() {
+    let root = scratch("job-too-long");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffprobe"),
+        r#"echo '{"format":{"duration":"3601"},"streams":[{"codec_type":"video","width":2,"height":2},{"codec_type":"audio"}]}'"#,
+    );
+    let settings = Settings {
+        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
+        ..Settings::default()
+    };
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "model nemotron-3.5-transcribe-q2l takes recordings up to 60 minutes"
+    );
+    assert!(!paths.jobs_dir().exists());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn one_known_speaker_skips_separation_entirely() {
+    let root = scratch("job-one-speaker");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        "echo 'nemo must not run' >&2; exit 9",
+    );
+    let settings = Settings {
+        speaker_count: 1,
+        ..Settings::default()
+    };
+    let mut plan: Vec<Stage> = Vec::new();
+    let mut stages: Vec<Stage> = Vec::new();
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |progress: Progress| {
+            plan.clone_from(&progress.plan);
+            stages.push(progress.stage);
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan,
+        vec![Stage::ExtractAudio, Stage::Transcribe, Stage::Export]
+    );
+    assert!(!stages.contains(&Stage::Diarize));
+    assert_eq!(outcome.speaker_count, 1);
+    assert_eq!(outcome.requested_speakers, 1);
+}
+
+/// Logs each call beside the job, then writes `$1` voices without `--onset` and `$2` with it.
+fn counting_nemo(root: &Path, plain: &str, with_onset: &str) -> String {
+    format!(
+        r#"
+echo "$*" >> "{log}"
+case "$*" in
+  *--onset*) body='{with_onset}' ;;
+  *) body='{plain}' ;;
+esac
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--output" ]; then out="$2"; fi
+  shift
+done
+echo "$body" > "$out"
+"#,
+        log = root.join("nemo-calls.log").display(),
+    )
+}
+
+const ONE_VOICE: &str = r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#;
+const TWO_VOICES: &str =
+    r#"{"segments":[{"start":0.0,"end":0.95,"speaker":1},{"start":0.95,"end":2.0,"speaker":2}]}"#;
+
+#[test]
+fn too_few_voices_are_retried_once_with_a_lower_onset() {
+    let root = scratch("job-retry");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &counting_nemo(&root, ONE_VOICE, TWO_VOICES),
+    );
+    let settings = Settings {
+        speaker_count: 2,
+        ..Settings::default()
+    };
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.speaker_count, 2);
+    assert_eq!(outcome.requested_speakers, 2);
+    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
+    assert_eq!(log.lines().count(), 2);
+    assert!(log
+        .lines()
+        .next()
+        .is_some_and(|call| !call.contains("--onset")));
+    assert!(log
+        .lines()
+        .nth(1)
+        .is_some_and(|call| call.contains("--onset 0.3")));
+}
+
+#[test]
+fn voices_still_missing_after_the_retry_are_reported_not_invented() {
+    let root = scratch("job-retry-short");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &counting_nemo(&root, ONE_VOICE, ONE_VOICE),
+    );
+    let settings = Settings {
+        speaker_count: 3,
+        ..Settings::default()
+    };
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.speaker_count, 1);
+    assert_eq!(outcome.requested_speakers, 3);
+    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
+    assert_eq!(log.lines().count(), 2);
+}
+
+#[test]
+fn enough_voices_need_no_retry() {
+    let root = scratch("job-no-retry");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &counting_nemo(&root, TWO_VOICES, ONE_VOICE),
+    );
+    let settings = Settings {
+        speaker_count: 2,
+        ..Settings::default()
+    };
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.speaker_count, 2);
+    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
+    assert_eq!(log.lines().count(), 1);
+}
+
+#[test]
+fn a_speech_llm_is_not_retried() {
+    let root = scratch("job-llm-no-retry");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    let one_word = r#"{"words":[{"word":"a","start":0.0,"end":2.0,"speaker":1}]}"#;
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &counting_nemo(&root, one_word, one_word),
+    );
+    let settings = Settings {
+        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
+        speaker_count: 2,
+        ..Settings::default()
+    };
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
+    assert_eq!(log.lines().count(), 1);
+    assert!(log.contains("--instruction"));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn relayout_reports_the_requested_speaker_count() {
+    let root = scratch("relayout-requested");
+    let paths = ready(&root);
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings::default(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let outcome = pipeline::relayout(
+        &root.join("clip.transcript.json"),
+        &paths,
+        &Settings {
+            speaker_count: 2,
+            ..Settings::default()
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.requested_speakers, 2);
+    assert_eq!(outcome.speaker_count, 2);
 }
