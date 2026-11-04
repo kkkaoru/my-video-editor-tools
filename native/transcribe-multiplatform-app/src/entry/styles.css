@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/* Every text colour pair reaches 7:1 (WCAG 1.4.6) and every line 3:1; src/entry/contrast.test.ts proves it. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --ink: #111318;
+  --muted: #3f4550;
+  --line: #5b6270;
+  --accent: #0b4f85;
+  --accent-ink: #ffffff;
+  --error: #8c1a12;
+  --ok: #0f5a34;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b;
+    --panel: #1f2228;
+    --ink: #f2f4f7;
+    --muted: #c4c9d3;
+    --line: #8a91a0;
+    --accent: #8ccbff;
+    --accent-ink: #06121c;
+    --error: #ffb4ab;
+    --ok: #8ee4b5;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--bg);
+  --color-panel: var(--panel);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-error: var(--error);
+  --color-ok: var(--ok);
+}
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+  line-height: 1.5;
+}
+
+/* 1.4.8: lines stay readable; 65ch keeps Latin under 80 characters and CJK under 40. */
+p,
+li {
+  max-width: 65ch;
+  line-height: 1.5;
+}
+
+/* 2.4.13: a 2px ring with 3:1 against everything it can sit on, in every state. */
+:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* The sample shows the speaker's real colours; it is decoration, named by the text beside it. */
+.outlined-text {
+  paint-order: stroke fill;
+}

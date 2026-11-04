@@ -1,0 +1,9 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/runtime/
+dist/
+coverage/
+src-tauri/target-test/
+src-tauri/target-runtime/
+src-tauri/target-coverage.json

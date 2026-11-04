@@ -34,6 +34,11 @@ check_path() {
         native/apple-pro-apps/Sources/AudioClockProbe/*.swift|native/apple-pro-apps/Sources/AudioEncodingCapabilities/*.swift|native/apple-pro-apps/Sources/FontIdentityProbe/*.swift|native/apple-pro-apps/Sources/CaptionAlphaRender/*.swift) ;;
         native/apple-pro-apps/Tests/AudioClockProbeTests/*.swift|native/apple-pro-apps/Tests/AudioEncodingCapabilitiesTests/*.swift|native/apple-pro-apps/Tests/FontIdentityProbeTests/*.swift) ;;
         tests/conftest.py) ;;
+        native/transcribe-multiplatform-app/.gitignore|native/transcribe-multiplatform-app/README.md|native/transcribe-multiplatform-app/THIRD_PARTY_NOTICES.md|native/transcribe-multiplatform-app/package.json|native/transcribe-multiplatform-app/bun.lock|native/transcribe-multiplatform-app/biome.json|native/transcribe-multiplatform-app/tsconfig.json|native/transcribe-multiplatform-app/vite.config.ts|native/transcribe-multiplatform-app/index.html) ;;
+        native/transcribe-multiplatform-app/scripts/*.sh|native/transcribe-multiplatform-app/src/*/*.ts|native/transcribe-multiplatform-app/src/*/*.tsx|native/transcribe-multiplatform-app/src/entry/styles.css|native/transcribe-multiplatform-app/tests/a11y/*.ts|native/transcribe-multiplatform-app/tests/a11y/tauri-mock.js) ;;
+        native/transcribe-multiplatform-app/src-tauri/Cargo.toml|native/transcribe-multiplatform-app/src-tauri/Cargo.lock|native/transcribe-multiplatform-app/src-tauri/build.rs|native/transcribe-multiplatform-app/src-tauri/tauri.conf.json|native/transcribe-multiplatform-app/src-tauri/capabilities/default.json) ;;
+        native/transcribe-multiplatform-app/src-tauri/src/*.rs|native/transcribe-multiplatform-app/src-tauri/tests/*.rs|native/transcribe-multiplatform-app/src-tauri/examples/*.rs) ;;
+        native/transcribe-multiplatform-app/src-tauri/resources/whisper-vocab.json|native/transcribe-multiplatform-app/src-tauri/resources/face_detection_yunet_2023mar.onnx|native/transcribe-multiplatform-app/src-tauri/icons/*.png|native/transcribe-multiplatform-app/src-tauri/icons/*.ico|native/transcribe-multiplatform-app/src-tauri/icons/*.icns) ;;
         '') ;;
         *) printf 'Unapproved public path: %s\n' "$1" >&2; return 1 ;;
     esac
