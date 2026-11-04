@@ -112,3 +112,4 @@ dist/
 # Local agent tooling state, not project source.
 /.serena/
 /skills-lock.json
+/tmp/
