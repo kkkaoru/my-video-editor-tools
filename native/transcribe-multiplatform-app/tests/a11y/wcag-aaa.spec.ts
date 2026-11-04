@@ -102,7 +102,10 @@ async function applyStep(page: Page, step: string): Promise<void> {
     );
     return;
   }
+  // Kept-mounted panels stay in the DOM; only the open one may be exposed to assistive technology.
+  await expect(page.getByRole("tabpanel")).toHaveCount(1);
   await page
+    .getByRole("tabpanel")
     .getByRole("combobox")
     .nth(step === "open-face-select" ? 0 : 1)
     .click();
@@ -265,9 +268,10 @@ COLOR_SCHEMES.forEach((colorScheme: "light" | "dark"): void => {
           expect(await hoverViolations(page)).toStrictEqual([]);
         }
         await page.setViewportSize(NARROW_VIEWPORT);
-        expect(
-          await page.evaluate((): boolean => document.documentElement.scrollWidth <= window.innerWidth),
-        ).toBe(true);
+        // An open popup is repositioned just after the resize.
+        await expect
+          .poll(() => page.evaluate((): boolean => document.documentElement.scrollWidth <= window.innerWidth))
+          .toBe(true);
       });
     });
   });

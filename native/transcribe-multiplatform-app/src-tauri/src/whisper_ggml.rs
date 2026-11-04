@@ -342,8 +342,10 @@ fn copy_tensor(
         return out.write_all(&raw).map_err(io_context(context));
     }
     let floats: Vec<u8> = raw
-        .chunks_exact(2)
-        .flat_map(|pair| f16_to_f32(u16::from_le_bytes([pair[0], pair[1]])).to_le_bytes())
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|pair| f16_to_f32(u16::from_le_bytes(*pair)).to_le_bytes())
         .collect();
     out.write_all(&floats).map_err(io_context(context))
 }
