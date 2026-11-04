@@ -1,5 +1,6 @@
 # Secrets and credentials (never commit)
 secrets.json
+.dev.vars
 credentials.txt
 deploy.env
 .debug-cookies

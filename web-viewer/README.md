@@ -293,6 +293,15 @@ Macにダウンロードしたモデルで動かします。WorkerにはAIの接
 - ページは、ブラウザが HLS を標準で再生できて、`hls/index.json` に載っている動画だけ `/hls/.../master.m3u8` を使います。それ以外とダウンロードは今までどおり MP4 です。
 - iPhone の Safari は MP4 を 64KiB ずつ順番に読むため、回線の往復時間で速度が頭打ちになり、15Mbps の配信MP4では止まりました（2026-11-04 実測）。HLS は数MB単位で読み、回線に合わせて画質を切り替えます。
 
+## ローカルでの動作確認（`cf dev`）
+
+- `.dev.vars`（Git管理外、0600）にテスト用の値を置きます: `X_CLIENT_ID`、`SESSION_SECRET`、`X_ADMIN_USERNAMES`、
+  `DEBUG_TOKEN`（32文字以上）、`DEBUG_TOKEN_EXPIRES`（UNIX秒）。本番の値は使いません。
+- 確認用のデータを `npx cf r2 objects put <key> --bucket-name transcript-viewer-media --file <path> --local --persist-to .wrangler/state`
+  でローカルR2に入れます（`catalog.json`、`data/<id>.json`、`media/<movie>.mp4`）。
+- `npx cf dev` で `http://localhost:8787` が起動します。`/login` を開いて `POST /auth/debug` でデバッグセッションを発行します。
+  `cf dev` は `--local` と `--persist-to` を受け付けず、状態は常に `.wrangler/state` に置かれます。
+
 ## Git管理しないもの（`.gitignore`）
 
 `secrets.json`、`credentials.txt`、`deploy.env`、`sync.config.json`、`.debug-cookies`
