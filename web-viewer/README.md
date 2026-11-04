@@ -284,6 +284,15 @@ Macにダウンロードしたモデルで動かします。WorkerにはAIの接
 - 値は `secrets.json` の `DEBUG_TOKEN`（32文字以上）と `DEBUG_TOKEN_EXPIRES`（UNIX秒）。
 - 無効化は `secrets.json` から2項目を消して `bun run deploy`。
 
+## HLS（スマホ向けの画質自動切り替え）
+
+- `bun run hls <カタログの動画ID>` で、その動画の配信MP4から HLS を作ります。3段階（540p 0.8Mbps / 720p 1.8Mbps / 1080p 3.5Mbps、x264、6秒区切り、2秒ごとのキーフレーム）で、各段階は1つのfMP4にまとめ、バイト範囲で区切ります。
+  作った HLS は R2 の `hls/<動画名>/` にアップロードし、サイズを照合してから `hls/index.json` を更新します。
+- 作業ファイルは `/Volumes/m.2-ssd/movie/replay-work/web-hls/` に作り、成功しても失敗しても消します（R2が唯一の置き場所です）。空き容量が足りないときは開始しません。
+- 配信MP4と元動画には手を加えません（バックアップを兼ねます）。HLS は追加するだけです。
+- ページは、ブラウザが HLS を標準で再生できて、`hls/index.json` に載っている動画だけ `/hls/.../master.m3u8` を使います。それ以外とダウンロードは今までどおり MP4 です。
+- iPhone の Safari は MP4 を 64KiB ずつ順番に読むため、回線の往復時間で速度が頭打ちになり、15Mbps の配信MP4では止まりました（2026-11-04 実測）。HLS は数MB単位で読み、回線に合わせて画質を切り替えます。
+
 ## Git管理しないもの（`.gitignore`）
 
 `secrets.json`、`credentials.txt`、`deploy.env`、`sync.config.json`、`.debug-cookies`

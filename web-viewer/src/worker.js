@@ -111,6 +111,14 @@ export default {
     if (originalMatch) {
       return serveMedia(request, url, env, `media-original/${originalMatch[1]}`);
     }
+    // HLS ladders (src/hls.ts): hls/index.json names the movies that have one; the page plays
+    // them where the browser plays HLS natively and keeps the MP4 everywhere else.
+    if (url.pathname === "/api/hls.json") return r2Json(request, env, "hls/index.json");
+    const hlsMatch = url.pathname.match(/^\/hls\/([A-Za-z0-9_-][A-Za-z0-9._-]*)\/([A-Za-z0-9_-]+\.(m3u8|m4s))$/);
+    if (hlsMatch) {
+      const key = `hls/${hlsMatch[1]}/${hlsMatch[2]}`;
+      return hlsMatch[3] === "m4s" ? serveMedia(request, url, env, key) : servePlaylist(env, key);
+    }
     return env.ASSETS.fetch(request);
   },
 
@@ -543,6 +551,20 @@ async function r2Json(request, env, key) {
   const obj = await env.MEDIA.get(key);
   if (!obj) return new Response("Not found", { status: 404 });
   return new Response(obj.body, { headers: { ...headers, ETag: obj.httpEtag } });
+}
+
+// A ladder never changes once published (a new encode would be a new upload), so an hour of
+// browser caching is safe; it stays private like every other route.
+async function servePlaylist(env, key) {
+  const obj = await env.MEDIA.get(key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Cache-Control": "private, max-age=3600",
+      ETag: obj.httpEtag,
+    },
+  });
 }
 
 // R2 honors HTTP range reads; without this a <video> element cannot seek.

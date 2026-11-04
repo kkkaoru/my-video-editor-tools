@@ -1081,6 +1081,68 @@ it("falls back to a direct R2 read when the object changed since head() or cachi
   warn.mockRestore();
 });
 
+it("serves HLS playlists, byte-range segments and the ladder index behind the session", async () => {
+  const stored = new Map<string, string>([
+    ["hls/index.json", '{"version":1,"movies":["a-review"]}'],
+    ["hls/a-review/master.m3u8", "#EXTM3U"],
+    ["hls/a-review/stream_0.m4s", "0123456789"],
+  ]);
+  const object = (key: string) => {
+    const body = stored.get(key);
+    return body === undefined
+      ? null
+      : {
+          size: body.length,
+          etag: "h",
+          httpEtag: '"h"',
+          body,
+          arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+        };
+  };
+  const MEDIA = {
+    head: async (key: string) => object(key),
+    get: async (key: string, options?: { range?: { offset: number; length: number } }) => {
+      const found = object(key);
+      const range = options?.range;
+      return found === null || range === undefined
+        ? found
+        : { ...found, body: found.body.slice(range.offset, range.offset + range.length) };
+    },
+  };
+  const env = { ...environment, MEDIA };
+  const fresh = await sessionCookie({
+    uid: "1",
+    u: "tester",
+    exp: Math.floor(Date.now() / 1000) + 600,
+  });
+  const get = async (path: string, headers: Record<string, string> = {}) => {
+    const response = await worker.fetch(
+      new Request(`https://example.test${path}`, { headers: { Cookie: fresh, ...headers } }),
+      env,
+    );
+    return [response.status, response.headers.get("Content-Type"), await response.text()];
+  };
+  const anonymous = await worker.fetch(
+    new Request("https://example.test/hls/a-review/master.m3u8"),
+    env,
+  );
+  expect([
+    await get("/api/hls.json"),
+    await get("/hls/a-review/master.m3u8"),
+    await get("/hls/a-review/stream_0.m4s", { Range: "bytes=2-4" }),
+    await get("/hls/b-review/master.m3u8"),
+    await get("/hls/.hidden/master.m3u8"),
+    anonymous.status,
+  ]).toStrictEqual([
+    [200, "application/json; charset=utf-8", '{"version":1,"movies":["a-review"]}'],
+    [200, "application/vnd.apple.mpegurl", "#EXTM3U"],
+    [206, "video/mp4", "234"],
+    [404, "text/plain;charset=UTF-8", "Not found"],
+    [200, "text/plain;charset=UTF-8", "INDEX:/hls/.hidden/master.m3u8"],
+    401,
+  ]);
+});
+
 it("reads bounded ranges over 1 MiB (HLS segments) straight from R2, without a chunk", async () => {
   const cache = memoryCache();
   vi.stubGlobal("caches", { default: cache });

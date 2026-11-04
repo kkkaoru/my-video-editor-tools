@@ -30,7 +30,7 @@ function parseJsonArray(output: string): unknown {
   return JSON.parse(output.slice(start, end + 1));
 }
 
-async function listPrefix(
+export async function listPrefix(
   request: ListRequest & { prefix: string },
 ): Promise<Record<string, number>> {
   const result = await request.runner.run({

@@ -24,6 +24,8 @@ window.__playtime = import(window.__api + "/playtime.js");
 window.__resume = import(window.__api + "/resume.js").catch(error => { console.warn(`resume: loading the module failed: ${error}`); return null; });
 // Live captions from a delivery's caption plan (captions.js); without it the movie plays as is.
 window.__captions = import(window.__api + "/captions.js").catch(error => { console.warn(`captions: loading the module failed: ${error}`); return null; });
+// Movies with an HLS ladder (bun run hls); unreadable (a share link, no ladders) means none.
+window.__hls = fetch(window.__api + "/api/hls.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : {}).then(i => new Set(i.movies || []), () => new Set());
 window.__channels = fetch(window.__api + "/api/channels.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : {}).then(c => c.channels || {}, () => ({}));
 </script>
 <style>
@@ -323,7 +325,14 @@ window.__resume.then(resume => {
 function loadMovie(video, v, kind) {
   state.savePosition?.();
   video.dataset.resumeKey = state.resume ? state.resume.resumeKey(v.id, kind) : "";
-  video.src = mediaSrc(v, kind);
+  video.src = playSrc(video, v, kind);
+}
+// The edited movie streams as HLS where the browser plays it natively (Safari: adaptive bitrate,
+// large segment reads instead of 64 KiB ranges); the MP4 stays for everything else and downloads.
+function playSrc(video, v, kind) {
+  const stem = kind === "edited" && v.movie ? v.movie.replace(/\.mp4$/i, "") : "";
+  return stem && state.hls?.has(stem) && video.canPlayType("application/vnd.apple.mpegurl")
+    ? `${API}/hls/${stem}/master.m3u8` : mediaSrc(v, kind);
 }
 // Every time label (H:MM:SS.mmm) comes from playtime.js, loaded before route() first renders.
 const fmt = s => state.playtime.formatTime(s);
@@ -411,7 +420,8 @@ function loadList() {
 async function select(v, seekTo = 0) {
   // A recording not edited yet has only its original movie.
   state.current = v; state.source = v.movie ? "edited" : "original"; syncSourceButtons(); loadList();
-  const [data] = await Promise.all([getData(v.id), window.__resume]);
+  const [data, , hls] = await Promise.all([getData(v.id), window.__resume, window.__hls]);
+  state.hls = hls;
   if (state.current !== v) return;
   state.utterances = utterancesFrom(data.cues); state.speakers = data.speakers || {};
   $("#empty").hidden = true; $("#player").hidden = false;
