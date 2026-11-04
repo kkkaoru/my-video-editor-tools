@@ -25,6 +25,8 @@ const DOMINANT_MARGIN: f64 = 0.2;
 /// Timing noise: a word just outside a turn belongs to the nearest speaker within this gap.
 const SILENT_WORD_REACH_SECONDS: f64 = 1.0;
 const CUE_BREAK_PAUSE_SECONDS: f64 = 0.7;
+/// Whisper's timing can open this much of a hole inside one word.
+const SPLIT_WORD_REACH_SECONDS: f64 = 1.5;
 /// `caption_display_hold`: Netflix minimum and maximum event duration, and its reading rates.
 const MAX_CUE_SECONDS: f64 = 7.0;
 const MIN_DISPLAY: f64 = 5.0 / 6.0;
@@ -108,6 +110,7 @@ const SHORT_PAGE_COST: f64 = 2.0;
 const FLASH_COST: f64 = 30.0;
 const FAST_PAGE_COST: f64 = 3.0;
 const FORCED_PAGE_COST: f64 = 1000.0;
+const OVERLONG_PAGE_COST: f64 = 100.0;
 /// Full-width characters of imbalance a line break accepts per unit of break cost.
 const LINE_BREAK_EMS_PER_COST: f64 = 4.0;
 
@@ -554,15 +557,6 @@ fn ends_sentence(word: &Word) -> bool {
     word.text.trim_end().ends_with(SENTENCE_ENDS)
 }
 
-/// Speech continuing the word before it: a small kana or long mark never opens a page.
-fn leans_on_previous(word: &Word) -> bool {
-    word.text
-        .trim_start()
-        .chars()
-        .next()
-        .is_some_and(|c| DEPENDENT_KANA.contains(c))
-}
-
 /// Hard breaks only: speaker change, a real pause, and a sentence end once the page can be read.
 fn starts_new_group(group: &[Word], next: &Word) -> bool {
     let (Some(first), Some(last)) = (group.first(), group.last()) else {
@@ -571,9 +565,6 @@ fn starts_new_group(group: &[Word], next: &Word) -> bool {
     let gap = next.start - last.end;
     if last.speaker != next.speaker {
         return true;
-    }
-    if leans_on_previous(next) && gap <= SILENT_WORD_REACH_SECONDS {
-        return false;
     }
     (gap > CUE_BREAK_PAUSE_SECONDS || ends_sentence(last))
         && next.start - first.start >= SHORTEST_GROUP_SECONDS
@@ -637,6 +628,29 @@ fn class_cost(class: BreakClass) -> f64 {
         BreakClass::Argument => ARGUMENT_BREAK_COST,
         BreakClass::Ambiguous => ATOMIC_BREAK_COST,
     }
+}
+
+/// Whether a timing gap fell before something that cannot stand alone (っ|て, 雨|です).
+fn splits_a_word(left: &[Word], right: &[Word], segmenter: &Segmenter) -> AppResult<bool> {
+    let (Some(last), Some(first)) = (left.last(), right.first()) else {
+        return Ok(false);
+    };
+    if last.speaker != first.speaker || first.start - last.end > SPLIT_WORD_REACH_SECONDS {
+        return Ok(false);
+    }
+    let head: String = right.iter().map(|word| word.text.as_str()).collect();
+    segmenter.leans_on_previous(head.trim_start())
+}
+
+fn rejoin_split_words(groups: Vec<Vec<Word>>, segmenter: &Segmenter) -> AppResult<Vec<Vec<Word>>> {
+    let mut joined: Vec<Vec<Word>> = Vec::with_capacity(groups.len());
+    for group in groups {
+        match joined.last_mut() {
+            Some(previous) if splits_a_word(previous, &group, segmenter)? => previous.extend(group),
+            _ => joined.push(group),
+        }
+    }
+    Ok(joined)
 }
 
 fn is_line_start_prohibited(c: char) -> bool {
@@ -860,27 +874,35 @@ impl<'a> Run<'a> {
             .map(|phrase| (phrase.offset, self.phrase_cost(phrase)))
             .collect();
         breaks.insert(0, 0.0);
+        // Time may split at words only; a token Whisper stretched past the limit is cut at display.
         let levels = [
-            (&self.boundaries.atomic, ATOMIC_BREAK_COST),
-            (&self.boundaries.morphemes, MORPHEME_BREAK_COST),
-            (&self.boundaries.overflow, OVERFLOW_BREAK_COST),
-            (&self.graphemes, CHARACTER_BREAK_COST),
+            (&self.boundaries.atomic, ATOMIC_BREAK_COST, true),
+            (&self.boundaries.morphemes, MORPHEME_BREAK_COST, true),
+            (&self.boundaries.overflow, OVERFLOW_BREAK_COST, false),
+            (&self.graphemes, CHARACTER_BREAK_COST, false),
         ];
-        for (points, cost) in levels {
+        for (points, cost, timed) in levels {
             let offsets: Vec<usize> = breaks.keys().copied().collect();
             let tight: Vec<&[usize]> = offsets
                 .windows(2)
-                .filter(|span| !self.fits(span[0], span[1]))
+                .filter(|span| {
+                    if timed {
+                        !self.fits(span[0], span[1])
+                    } else {
+                        self.lay_out(span[0], span[1]).is_none()
+                    }
+                })
                 .collect();
-            let added = points
+            let added: Vec<usize> = points
                 .iter()
-                .filter(|point| self.may_break_line(**point))
+                .copied()
+                .filter(|point| self.may_break_line(*point))
                 .filter(|point| {
                     tight
                         .iter()
-                        .any(|span| span[0] < **point && **point < span[1])
-                });
-            let added: Vec<usize> = added.copied().collect();
+                        .any(|span| span[0] < *point && *point < span[1])
+                })
+                .collect();
             breaks.extend(added.into_iter().map(|point| (point, cost)));
         }
         breaks.into_iter().collect()
@@ -892,11 +914,10 @@ impl<'a> Run<'a> {
         if count == 0 {
             return 0.0;
         }
-        if !self.within_budget(start, end) {
-            return FORCED_PAGE_COST;
-        }
+        // Longer is worse even when forced, so nothing else joins a page that cannot fit.
+        let shown_ems = self.width(start, end) / self.metrics.font_px;
         let Some(layout) = self.lay_out(start, end) else {
-            return FORCED_PAGE_COST;
+            return FORCED_PAGE_COST + shown_ems;
         };
         let seconds = self.speech_seconds(start, end);
         // How much a page holds follows the speech: the same time holds more when it is fast.
@@ -916,11 +937,15 @@ impl<'a> Run<'a> {
         } else {
             0.0
         };
+        let overrun = if self.within_budget(start, end) {
+            0.0
+        } else {
+            OVERLONG_PAGE_COST
+        };
         // In full-width character widths, so a narrow Latin letter counts for what it is.
-        let shown_ems = self.width(start, end) / self.metrics.font_px;
         let rate = shown_ems / seconds.max(SHORTEST_SPAN_SECONDS);
         let fast = (rate / FAST_READING_CPS - 1.0).max(0.0) * FAST_PAGE_COST;
-        PAGE_COST + fill * fill + tiny + flash + fast + layout.penalty
+        PAGE_COST + fill * fill + tiny + flash + fast + overrun + layout.penalty
     }
 
     /// The cheapest way to reach `breaks[index]`, as `(cost, previous break)`.
@@ -995,7 +1020,8 @@ fn required_seconds(characters: usize, start: f64, end: f64) -> f64 {
 
 /// A cue's end: readable, never stale, never delaying the next cue (`caption_display_hold.held_end`).
 fn held_end(page: &Page, following: f64, rate: f64) -> f64 {
-    let (start, end) = (page.start, page.end);
+    let start = page.start;
+    let end = page.end.min(start + MAX_CUE_SECONDS);
     let characters: usize = page
         .lines
         .iter()
@@ -1285,7 +1311,10 @@ pub fn build_cues(
     let wants_face = matches!(placement.anchor, Anchor::FaceAbove | Anchor::FaceBelow);
     let mut placer = FacePlacer::new(faces, info, &metrics, settings);
     let rate = f64::from(info.fps_num) / f64::from(info.fps_den);
-    let groups = merge_strays(group_words(&display_words(words, info.duration)));
+    let groups = rejoin_split_words(
+        merge_strays(group_words(&display_words(words, info.duration))),
+        segmenter,
+    )?;
     let mut pages: Vec<Page> = Vec::new();
     for (index, group) in groups.iter().enumerate() {
         let following_gap = following_silence(group, groups.get(index + 1));
@@ -2570,11 +2599,11 @@ mod tests {
     }
 
     #[test]
-    fn a_single_phrase_cannot_outlast_the_longest_cue() {
+    fn a_word_stretched_past_the_longest_cue_stays_whole_and_is_cut_at_display() {
         let words = [
-            spoken(0.0, 6.0, "サン", 1),
-            spoken(6.0, 12.0, "フラン", 1),
-            spoken(12.0, 18.0, "シスコ", 1),
+            spoken(0.0, 6.0, "おい", 1),
+            spoken(6.0, 12.0, "しい", 1),
+            spoken(12.0, 14.0, "すごいこれ", 1),
         ];
         let (cues, _) = build_cues(
             &words,
@@ -2586,14 +2615,56 @@ mod tests {
         .unwrap();
         assert_eq!(
             cues.iter()
-                .map(|cue| (cue.start, cue.lines.join("")))
+                .map(|cue| (cue.start, cue.end, cue.lines.join("")))
                 .collect::<Vec<_>>(),
             vec![
-                (0.0, "サン".to_owned()),
-                (6.0, "フラン".to_owned()),
-                (12.0, "シスコ".to_owned())
+                (0.0, 7.0, "おいしい".to_owned()),
+                (12.0, 14.5, "すごいこれ".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn a_gap_before_a_dependent_word_never_splits_it() {
+        let words = [
+            spoken(0.0, 1.0, "今日は雨", 1),
+            spoken(2.0, 3.0, "ですね", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].lines, vec!["今日は雨ですね"]);
+    }
+
+    #[test]
+    fn a_gap_between_words_stays_a_break() {
+        let words = [
+            spoken(0.0, 1.0, "公園に行く", 1),
+            spoken(2.0, 3.0, "今日は暑い", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues.len(), 2);
+    }
+
+    #[test]
+    fn no_rejoin_across_speakers_or_a_long_silence() {
+        let left = [spoken(0.0, 1.0, "いいね", 1)];
+        assert!(!splits_a_word(&left, &[spoken(1.5, 2.0, "え", 2)], test_segmenter()).unwrap());
+        assert!(!splits_a_word(&left, &[spoken(9.0, 9.5, "え", 1)], test_segmenter()).unwrap());
+        assert!(!splits_a_word(&[], &left, test_segmenter()).unwrap());
     }
 
     #[test]

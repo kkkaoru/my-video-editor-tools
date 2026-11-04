@@ -498,6 +498,18 @@ impl Segmenter {
             .collect())
     }
 
+    /// Whether `text` opens with something that cannot stand alone; text without Japanese never does.
+    pub(crate) fn leans_on_previous(&self, text: &str) -> AppResult<bool> {
+        if !is_japanese(text) {
+            return Ok(false);
+        }
+        Ok(self.morphemes(text)?.first().is_some_and(|item| {
+            DEPENDENT_PARTS.contains(&item.part(0))
+                || matches!(item.part(1), "接尾" | "非自立")
+                || item.surface.chars().next().is_some_and(is_dependent_kana)
+        }))
+    }
+
     /// Whether a hiragana word opens with something that reads as a particle by itself.
     fn opens_with_particle(&self, item: &Morpheme) -> AppResult<bool> {
         let chars: Vec<char> = item.surface.chars().collect();
@@ -874,5 +886,13 @@ mod tests {
         };
         assert_eq!(spaced_break_class(&[space], &item), BreakClass::Clause);
         assert_eq!(spaced_break_class(&[], &item), BreakClass::Plain);
+    }
+
+    #[test]
+    fn dependent_openings_lean_on_the_word_before() {
+        assert!(test_segmenter().leans_on_previous("ってなる").unwrap());
+        assert!(test_segmenter().leans_on_previous("ですね").unwrap());
+        assert!(!test_segmenter().leans_on_previous("そうです").unwrap());
+        assert!(!test_segmenter().leans_on_previous("hello").unwrap());
     }
 }
