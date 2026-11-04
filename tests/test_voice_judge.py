@@ -263,3 +263,22 @@ def test_a_changed_rate_or_no_window_is_refused(tmp_path: Path) -> None:
         judge.judged(source, other, [])
     with pytest.raises(ReplayError, match="No window"):
         judge.judged(source, source, judge.same_windows(RATE, RATE))
+
+
+def test_tempo_windows_judge_unity_slots_when_none_is_stretched() -> None:
+    size = round(judge.WINDOW_SECONDS * RATE)
+    cuts = [
+        {
+            "source_start_sample": 100,
+            "source_end_sample": 100 + size + 20,
+            "output_start_sample": 0,
+            "output_end_sample": size + 20,
+        },
+        {
+            "source_start_sample": 900_000,
+            "source_end_sample": 900_010,
+            "output_start_sample": size + 20,
+            "output_end_sample": size + 30,
+        },
+    ]
+    assert judge.tempo_windows(cuts, RATE) == [judge.Window(10, 110.0, 1.0)]

@@ -343,15 +343,19 @@ def tempo_windows(
     cuts: Sequence[Mapping[str, object]], rate: int, count: int = WINDOWS
 ) -> list[Window]:
     """Up to ``count`` windows inside the stretched cut slots (the ones a tempo stage changes),
-    longest slots first, each slot's mapping exact at the window start."""
+    longest slots first, each slot's mapping exact at the window start. A recording whose audio
+    clock matches its video has no stretched slot long enough (youtube-1GUiocLmiFw: 438 unity
+    slots), so its unity slots are judged: they must come out as the input."""
     size = round(WINDOW_SECONDS * rate)
     origin = int(str(cuts[0]["output_start_sample"])) if cuts else 0
     slots = []
     for cut in cuts:
         source = int(str(cut["source_end_sample"])) - int(str(cut["source_start_sample"]))
         output = int(str(cut["output_end_sample"])) - int(str(cut["output_start_sample"]))
-        if output >= size and source != output:
+        if output >= size:
             slots.append((output, cut, source / output))
+    stretched = [slot for slot in slots if slot[2] != 1]
+    slots = stretched or slots
     slots.sort(key=lambda slot: -slot[0])
     windows = []
     for output, cut, ratio in slots[:count]:
