@@ -735,3 +735,33 @@ def test_v2_unassigned_titles_may_overlap() -> None:
 def test_a_version_1_plan_cannot_carry_speakers() -> None:
     with pytest.raises(ReplayError, match="version 1 or 2"):
         caption_plan.validate({**fixture(), "speakers": v2_speakers()})
+
+
+def split_fixture(gap: int) -> dict[str, object]:
+    """The fixture with its second title revealed in two titles ``gap`` frames apart."""
+    plan = fixture()
+    titles = caption_plan.rows(plan["titles"], "titles")
+    second, cut = titles[1], 80 + gap
+    onsets = [int(str(frame)) for frame in caption_plan.rows_of(second["graphemeFrames"])]
+    titles[1:2] = [
+        {**second, "text": "なんかミスっ", "endFrame": 80, "graphemeFrames": onsets[:6]},
+        {**second, "startFrame": cut, "graphemeFrames": [max(f, cut) for f in onsets]},
+    ]
+    return caption_plan.validate({**plan, "titles": titles})
+
+
+def test_chain_failure_accepts_a_chain_split_into_growing_titles() -> None:
+    # 11/03 (2026-11-04): cue frames rounded one apart split one chain into two titles.
+    chains = [("ふぅ", 14, 30), ("なんかミスっ\nてないかなぁ", 40, 120),
+              ("来てくれてありがとう\nございます", 120, 157)]  # fmt: skip
+    assert caption_plan.chain_failure(split_fixture(1), chains) is None
+
+
+@pytest.mark.parametrize(
+    ("gap", "text"), [(2, "なんかミスっ\nてないかなぁ"), (1, "なんかミスっ\nてないかもね")]
+)
+def test_chain_failure_refuses_titles_that_do_not_grow_into_the_chain(gap: int, text: str) -> None:
+    chains = [("ふぅ", 14, 30), (text, 40, 120), ("来てくれてありがとう\nございます", 120, 157)]
+    assert caption_plan.chain_failure(split_fixture(gap), chains) == (
+        f"no title shows the caption {text!r} at frame 40"
+    )

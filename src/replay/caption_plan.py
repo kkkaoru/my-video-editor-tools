@@ -475,22 +475,57 @@ def chain_title(
     return found
 
 
+def growing_titles(
+    titles: list[dict[str, object]], start: int, text: str, last: int | None
+) -> list[int]:
+    """Consecutive titles that reveal one chain in steps, or []: the first starts within
+    ``CHAIN_TOLERANCE`` of the chain and leads its text, each next one starts within the
+    tolerance of the previous end and grows its text, and the last one's text the chain leads.
+
+    A cue's end and the next cue's start can round to frames one apart: the chain stays one
+    (``pipeline_completion.chains``) while the plan splits it at that frame (7703929227460037428).
+    """
+    whole = flat(text)
+    for index in range(last or 0, len(titles)):
+        begin = int(str(titles[index]["startFrame"]))
+        if begin - CHAIN_TOLERANCE > start:
+            break
+        shown = flat(str(titles[index]["text"]))
+        if abs(begin - start) > CHAIN_TOLERANCE or not whole.startswith(shown):
+            continue
+        run = [index]
+        while not shown.startswith(whole) and run[-1] + 1 < len(titles):
+            previous, following = titles[run[-1]], titles[run[-1] + 1]
+            grown = flat(str(following["text"]))
+            gap = int(str(following["startFrame"])) - int(str(previous["endFrame"]))
+            if not 0 <= gap <= CHAIN_TOLERANCE or not (
+                grown.startswith(shown) and whole.startswith(grown[: len(whole)])
+            ):
+                break
+            run.append(run[-1] + 1)
+            shown = grown
+        if len(run) > 1 and shown.startswith(whole):
+            return run
+    return []
+
+
 def chain_failure(plan: dict[str, object], chains: Sequence[tuple[str, int, int]]) -> str | None:
     """Why the plan does not show the displayed caption chains the SRT was written from, or None.
 
     Every chain (``pipeline_completion.displayed``: final text and frames) must be shown, in
-    order, by one title whose text it leads (a title may show several chains that grow it), and
-    every title must show at least one chain.
+    order, by one title whose text it leads (a title may show several chains that grow it) or
+    by consecutive titles that grow into it, and every title must show at least one chain.
     """
     titles = rows(validate(plan)["titles"], "titles")
     shown: set[int] = set()
     last: int | None = None
     for text, start, _ in chains:
         index = chain_title(titles, start, text, last)
-        if index is None:
+        run = [index] if index is not None else growing_titles(titles, start, text, last)
+        if not run:
             return f"no title shows the caption {text!r} at frame {start}"
-        shown.add(index)
-        last = index
+        shown.update(run)
+        last = run[-1]
     if len(shown) != len(titles):
         return f"{len(titles) - len(shown)} titles show no displayed caption"
     return None
