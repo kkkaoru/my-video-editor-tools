@@ -22,11 +22,15 @@ pub struct DownloadProgress {
 
 /// Hashes what an interrupted run already saved so the final digest covers the whole file.
 fn hash_existing(path: &Path, hasher: &mut Sha256) -> AppResult<u64> {
-    let Ok(mut file) = File::open(path) else { return Ok(0) };
+    let Ok(mut file) = File::open(path) else {
+        return Ok(0);
+    };
     let mut buffer = vec![0u8; CHUNK_BYTES];
     let mut total = 0u64;
     loop {
-        let count = file.read(&mut buffer).map_err(io_context("read partial download"))?;
+        let count = file
+            .read(&mut buffer)
+            .map_err(io_context("read partial download"))?;
         if count == 0 {
             return Ok(total);
         }
@@ -61,12 +65,19 @@ fn stream_to_file(
     progress: &mut dyn FnMut(DownloadProgress),
 ) -> AppResult<()> {
     let mut have = hash_existing(transfer.partial, hasher)?;
+    // An interrupted run may have saved everything; asking for more would only get a 416.
+    if have >= transfer.size {
+        return Ok(());
+    }
     let response = ureq::get(transfer.url)
         .header("Range", &format!("bytes={have}-"))
         .call()
         .map_err(|error| AppError::Download(format!("{}: {error}", transfer.url)))?;
     let mut file = if response.status().as_u16() == STATUS_PARTIAL {
-        OpenOptions::new().append(true).create(true).open(transfer.partial)
+        OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(transfer.partial)
     } else {
         // The server ignored the range: restart from zero.
         hasher.reset();
@@ -80,39 +91,59 @@ fn stream_to_file(
     let mut last_report = Instant::now();
     loop {
         cancel.check()?;
-        let count = reader.read(&mut buffer).map_err(|error| AppError::Download(error.to_string()))?;
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| AppError::Download(error.to_string()))?;
         if count == 0 {
             return Ok(());
         }
-        file.write_all(&buffer[..count]).map_err(io_context("write download"))?;
+        file.write_all(&buffer[..count])
+            .map_err(io_context("write download"))?;
         hasher.update(&buffer[..count]);
         have += count as u64;
         if last_report.elapsed() >= PROGRESS_INTERVAL {
             last_report = Instant::now();
-            progress(DownloadProgress { done_bytes: transfer.earlier_bytes + have.min(transfer.size), total_bytes: transfer.entry_bytes });
+            progress(DownloadProgress {
+                done_bytes: transfer.earlier_bytes + have.min(transfer.size),
+                total_bytes: transfer.entry_bytes,
+            });
         }
     }
 }
 
 /// Publishes the file only when its size and SHA-256 match the pinned values.
-fn verify_and_publish(partial: &Path, destination: &Path, file: &FileSpec, hasher: Sha256) -> AppResult<()> {
+fn verify_and_publish(
+    partial: &Path,
+    destination: &Path,
+    file: &FileSpec,
+    hasher: Sha256,
+) -> AppResult<()> {
     let digest = hex(&hasher.finalize());
     if digest != file.sha256 {
         std::fs::remove_file(partial).map_err(io_context("remove corrupt download"))?;
-        return Err(AppError::Download(format!("{}: SHA-256 mismatch ({digest})", file.path)));
+        return Err(AppError::Download(format!(
+            "{}: SHA-256 mismatch ({digest})",
+            file.path
+        )));
     }
     std::fs::rename(partial, destination).map_err(io_context("publish download"))
 }
 
 fn unpack_archive(archive: &Path, folder: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(io_context("open archive"))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|error| AppError::Download(format!("archive: {error}")))?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|error| AppError::Download(format!("archive: {error}")))?;
     std::fs::create_dir_all(folder).map_err(io_context("create runtime folder"))?;
     for index in 0..zip.len() {
-        let mut member = zip.by_index(index).map_err(|error| AppError::Download(format!("archive: {error}")))?;
+        let mut member = zip
+            .by_index(index)
+            .map_err(|error| AppError::Download(format!("archive: {error}")))?;
         // enclosed_name rejects absolute paths and `..`, so a bad archive cannot escape the folder.
         let Some(relative) = member.enclosed_name() else {
-            return Err(AppError::Download(format!("archive member escapes: {}", member.name())));
+            return Err(AppError::Download(format!(
+                "archive member escapes: {}",
+                member.name()
+            )));
         };
         let target = folder.join(relative);
         if member.is_dir() {
@@ -130,7 +161,10 @@ fn unpack_archive(archive: &Path, folder: &Path) -> AppResult<()> {
 
 fn destination_for(entry: &ModelEntry, file: &FileSpec, paths: &AppPaths) -> PathBuf {
     if entry.role == Role::Runtime && entry.id == GEFORCE_RUNTIME_ID {
-        return paths.downloaded_runtime_dir().join("geforce").join(file.path);
+        return paths
+            .downloaded_runtime_dir()
+            .join("geforce")
+            .join(file.path);
     }
     paths.models_dir().join(entry.id).join(file.path)
 }
@@ -143,12 +177,20 @@ fn download_file(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(DownloadProgress),
 ) -> AppResult<()> {
-    let parent = destination.parent().ok_or_else(|| AppError::Invalid("download path has no parent".into()))?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| AppError::Invalid("download path has no parent".into()))?;
     std::fs::create_dir_all(parent).map_err(io_context(format!("create {}", parent.display())))?;
     let partial = partial_path(destination);
     let url = transfer_file.url();
     let mut hasher = Sha256::new();
-    let transfer = Transfer { url: &url, partial: &partial, size: transfer_file.size, earlier_bytes, entry_bytes };
+    let transfer = Transfer {
+        url: &url,
+        partial: &partial,
+        size: transfer_file.size,
+        earlier_bytes,
+        entry_bytes,
+    };
     stream_to_file(&transfer, &mut hasher, cancel, progress)?;
     verify_and_publish(&partial, destination, transfer_file, hasher)
 }
@@ -166,14 +208,26 @@ pub fn download_entry(
         let destination = destination_for(entry, file, paths);
         let complete = std::fs::metadata(&destination).is_ok_and(|meta| meta.len() == file.size);
         if !complete {
-            download_file(file, &destination, earlier_bytes, entry_bytes, cancel, progress)?;
+            download_file(
+                file,
+                &destination,
+                earlier_bytes,
+                entry_bytes,
+                cancel,
+                progress,
+            )?;
         }
         if file.is_archive() {
-            let folder = destination.parent().ok_or_else(|| AppError::Invalid("archive has no parent".into()))?;
+            let folder = destination
+                .parent()
+                .ok_or_else(|| AppError::Invalid("archive has no parent".into()))?;
             unpack_archive(&destination, folder)?;
         }
         earlier_bytes += file.size;
-        progress(DownloadProgress { done_bytes: earlier_bytes, total_bytes: entry_bytes });
+        progress(DownloadProgress {
+            done_bytes: earlier_bytes,
+            total_bytes: entry_bytes,
+        });
     }
     Ok(())
 }
@@ -189,12 +243,19 @@ mod tests {
 
     #[test]
     fn partial_files_sit_beside_the_destination() {
-        assert_eq!(partial_path(Path::new("/m/a.gguf")), PathBuf::from("/m/a.gguf.part"));
+        assert_eq!(
+            partial_path(Path::new("/m/a.gguf")),
+            PathBuf::from("/m/a.gguf.part")
+        );
     }
 
     #[test]
     fn models_and_runtimes_have_separate_homes() {
-        let paths = AppPaths { data: PathBuf::from("/d"), resources: PathBuf::from("/r") };
+        let paths = AppPaths {
+            data: PathBuf::from("/d"),
+            resources: PathBuf::from("/r"),
+            hf_hub: None,
+        };
         let model = crate::catalog::find_entry("nemotron-3-diarization").unwrap();
         let runtime = crate::catalog::find_entry("geforce-runtime").unwrap();
         assert_eq!(

@@ -15,7 +15,8 @@ const FORMAT_VERSION: u32 = 1;
 const MILLIS_PER_HOUR: u64 = 3_600_000;
 const MILLIS_PER_MINUTE: u64 = 60_000;
 const MILLIS_PER_SECOND: u64 = 1000;
-const BASIC_TITLE_UID: &str = ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti";
+const BASIC_TITLE_UID: &str =
+    ".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti";
 /// Basic Title's position parameter key, in pixels from the frame centre.
 const TITLE_POSITION_KEY: &str = "9999/999166631/999166633/1/100/101";
 const FCPXML_VERSION: &str = "1.10";
@@ -35,14 +36,36 @@ pub struct Transcript {
 
 impl Transcript {
     #[must_use]
-    pub fn new(source: PathBuf, info: VideoInfo, metrics: Metrics, words: Vec<Word>, faces: Vec<FaceSample>, cues: Vec<Cue>) -> Self {
-        let speaker_count = words.iter().filter_map(|word| word.speaker).max().unwrap_or(0);
-        Self { format_version: FORMAT_VERSION, source, info, metrics, speaker_count, words, faces, cues }
+    pub fn new(
+        source: PathBuf,
+        info: VideoInfo,
+        metrics: Metrics,
+        words: Vec<Word>,
+        faces: Vec<FaceSample>,
+        cues: Vec<Cue>,
+    ) -> Self {
+        let speaker_count = words
+            .iter()
+            .filter_map(|word| word.speaker)
+            .max()
+            .unwrap_or(0);
+        Self {
+            format_version: FORMAT_VERSION,
+            source,
+            info,
+            metrics,
+            speaker_count,
+            words,
+            faces,
+            cues,
+        }
     }
 
     pub fn load(path: &Path) -> AppResult<Self> {
-        let bytes = std::fs::read(path).map_err(crate::error::io_context(format!("read {}", path.display())))?;
-        serde_json::from_slice(&bytes).map_err(|error| AppError::Invalid(format!("transcript file: {error}")))
+        let bytes = std::fs::read(path)
+            .map_err(crate::error::io_context(format!("read {}", path.display())))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| AppError::Invalid(format!("transcript file: {error}")))
     }
 }
 
@@ -115,14 +138,20 @@ fn percent(value: f64, frame: u32) -> f64 {
 
 /// TTML2 with per-span fill and `tts:textOutline`, positioned by one region per cue.
 #[must_use]
-pub fn render_ttml(cues: &[Cue], info: &VideoInfo, metrics: &Metrics, settings: &Settings) -> String {
+pub fn render_ttml(
+    cues: &[Cue],
+    info: &VideoInfo,
+    metrics: &Metrics,
+    settings: &Settings,
+) -> String {
     let mut regions = String::new();
     let mut body = String::new();
     let region_height = metrics.font_px * 3.0;
     for (index, cue) in cues.iter().enumerate() {
         let width = metrics.max_line_px + 2.0 * metrics.outline_px;
         let left = (cue.x - width / 2.0).clamp(0.0, (f64::from(info.width) - width).max(0.0));
-        let top = (cue.y - region_height / 2.0).clamp(0.0, (f64::from(info.height) - region_height).max(0.0));
+        let top = (cue.y - region_height / 2.0)
+            .clamp(0.0, (f64::from(info.height) - region_height).max(0.0));
         let _ = writeln!(
             regions,
             "      <region xml:id=\"r{index}\" tts:origin=\"{:.3}% {:.3}%\" tts:extent=\"{:.3}% {:.3}%\" tts:displayAlign=\"center\" tts:textAlign=\"center\"/>",
@@ -132,7 +161,11 @@ pub fn render_ttml(cues: &[Cue], info: &VideoInfo, metrics: &Metrics, settings: 
             percent(region_height, info.height),
         );
         let color = settings.color_for(cue.speaker);
-        let spans: Vec<String> = cue.lines.iter().map(|line| ttml_span(line, color, metrics.outline_px)).collect();
+        let spans: Vec<String> = cue
+            .lines
+            .iter()
+            .map(|line| ttml_span(line, color, metrics.outline_px))
+            .collect();
         let _ = writeln!(
             body,
             "      <p region=\"r{index}\" begin=\"{}\" end=\"{}\">{}</p>",
@@ -162,16 +195,24 @@ pub fn render_ttml(cues: &[Cue], info: &VideoInfo, metrics: &Metrics, settings: 
 
 /// `n/den s` snapped to the frame grid, as FCPXML requires.
 fn fcp_time(seconds: f64, info: &VideoInfo) -> String {
-    let frames = (seconds.max(0.0) * f64::from(info.fps_num) / f64::from(info.fps_den)).round() as u64;
+    let frames =
+        (seconds.max(0.0) * f64::from(info.fps_num) / f64::from(info.fps_den)).round() as u64;
     format!("{}/{}s", frames * u64::from(info.fps_den), info.fps_num)
 }
 
 /// RGB in the 0-1 floats FCPXML text styles use.
 fn fcp_color(hex: &str) -> String {
     let channel = |range: std::ops::Range<usize>| {
-        hex.get(range).and_then(|digits| u8::from_str_radix(digits, 16).ok()).map_or(0.0, |value| f64::from(value) / 255.0)
+        hex.get(range)
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok())
+            .map_or(0.0, |value| f64::from(value) / 255.0)
     };
-    format!("{:.4} {:.4} {:.4} 1", channel(1..3), channel(3..5), channel(5..7))
+    format!(
+        "{:.4} {:.4} {:.4} 1",
+        channel(1..3),
+        channel(3..5),
+        channel(5..7)
+    )
 }
 
 fn file_url(path: &Path) -> String {
@@ -179,7 +220,9 @@ fn file_url(path: &Path) -> String {
     let encoded: String = text
         .bytes()
         .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => char::from(byte).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                char::from(byte).to_string()
+            }
             _ => format!("%{byte:02X}"),
         })
         .collect();
@@ -190,7 +233,13 @@ fn file_url(path: &Path) -> String {
     }
 }
 
-fn fcp_title(index: usize, cue: &Cue, info: &VideoInfo, metrics: &Metrics, settings: &Settings) -> String {
+fn fcp_title(
+    index: usize,
+    cue: &Cue,
+    info: &VideoInfo,
+    metrics: &Metrics,
+    settings: &Settings,
+) -> String {
     let color = settings.color_for(cue.speaker);
     let x = cue.x - f64::from(info.width) / 2.0;
     let y = f64::from(info.height) / 2.0 - cue.y;
@@ -225,7 +274,12 @@ fn fcp_title(index: usize, cue: &Cue, info: &VideoInfo, metrics: &Metrics, setti
 #[must_use]
 pub fn render_fcpxml(transcript: &Transcript, settings: &Settings) -> String {
     let info = &transcript.info;
-    let name = escape_xml(&transcript.source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()));
+    let name = escape_xml(
+        &transcript
+            .source
+            .file_stem()
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+    );
     let duration = fcp_time(info.duration, info);
     let titles: String = transcript
         .cues
@@ -269,7 +323,11 @@ const OUTPUT_EXTENSIONS: [&str; 4] = [".ttml", ".srt", ".fcpxml", ".transcript.j
 #[must_use]
 pub fn unused_base(video: &Path) -> PathBuf {
     let stem = video.with_extension("");
-    let taken = |base: &Path| OUTPUT_EXTENSIONS.iter().any(|extension| sibling(base, extension).exists());
+    let taken = |base: &Path| {
+        OUTPUT_EXTENSIONS
+            .iter()
+            .any(|extension| sibling(base, extension).exists())
+    };
     if !taken(&stem) {
         return stem;
     }
@@ -284,10 +342,24 @@ pub fn unused_base(video: &Path) -> PathBuf {
 }
 
 /// Writes all formats next to `base`; each file is replaced atomically.
-pub fn write_outputs(base: &Path, transcript: &Transcript, settings: &Settings) -> AppResult<Vec<PathBuf>> {
-    let json = serde_json::to_vec_pretty(transcript).map_err(|error| AppError::Invalid(error.to_string()))?;
+pub fn write_outputs(
+    base: &Path,
+    transcript: &Transcript,
+    settings: &Settings,
+) -> AppResult<Vec<PathBuf>> {
+    let json = serde_json::to_vec_pretty(transcript)
+        .map_err(|error| AppError::Invalid(error.to_string()))?;
     let outputs = [
-        (".ttml", render_ttml(&transcript.cues, &transcript.info, &transcript.metrics, settings).into_bytes()),
+        (
+            ".ttml",
+            render_ttml(
+                &transcript.cues,
+                &transcript.info,
+                &transcript.metrics,
+                settings,
+            )
+            .into_bytes(),
+        ),
         (".srt", render_srt(&transcript.cues, settings).into_bytes()),
         (".fcpxml", render_fcpxml(transcript, settings).into_bytes()),
         (".transcript.json", json),
@@ -305,17 +377,37 @@ pub fn write_outputs(base: &Path, transcript: &Transcript, settings: &Settings) 
 mod tests {
     use super::*;
 
-    const INFO: VideoInfo = VideoInfo { width: 1920, height: 1080, duration: 10.0, fps_num: 30000, fps_den: 1001 };
-    const METRICS: Metrics = Metrics { font_px: 52.0, outline_px: 6.0, max_line_px: 1716.0 };
+    const INFO: VideoInfo = VideoInfo {
+        width: 1920,
+        height: 1080,
+        duration: 10.0,
+        fps_num: 30000,
+        fps_den: 1001,
+    };
+    const METRICS: Metrics = Metrics {
+        font_px: 52.0,
+        outline_px: 6.0,
+        max_line_px: 1716.0,
+    };
 
     fn cue(speaker: Option<u32>, text: &str) -> Cue {
-        Cue { start: 1.5, end: 3.25, speaker, lines: vec![text.to_owned()], x: 960.0, y: 980.0 }
+        Cue {
+            start: 1.5,
+            end: 3.25,
+            speaker,
+            lines: vec![text.to_owned()],
+            x: 960.0,
+            y: 980.0,
+        }
     }
 
     #[test]
     fn srt_has_clocks_and_speaker_colour() {
         let out = render_srt(&[cue(Some(2), "A&B")], &Settings::default());
-        assert_eq!(out, "1\n00:00:01,500 --> 00:00:03,250\n<font color=\"#7CDC8C\">A&amp;B</font>\n\n");
+        assert_eq!(
+            out,
+            "1\n00:00:01,500 --> 00:00:03,250\n<font color=\"#7CDC8C\">A&amp;B</font>\n\n"
+        );
     }
 
     #[test]
@@ -326,9 +418,22 @@ mod tests {
 
     #[test]
     fn ttml_spans_carry_fill_and_outline() {
-        let out = render_ttml(&[cue(Some(1), "はい")], &INFO, &METRICS, &Settings::default());
-        assert!(out.contains("<span tts:color=\"#C48CFF\" tts:textOutline=\"#FFFFFF 6.0px 0px\">はい</span>"), "{out}");
-        assert!(out.contains("<p region=\"r0\" begin=\"00:00:01.500\" end=\"00:00:03.250\">"), "{out}");
+        let out = render_ttml(
+            &[cue(Some(1), "はい")],
+            &INFO,
+            &METRICS,
+            &Settings::default(),
+        );
+        assert!(
+            out.contains(
+                "<span tts:color=\"#C48CFF\" tts:textOutline=\"#FFFFFF 6.0px 0px\">はい</span>"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("<p region=\"r0\" begin=\"00:00:01.500\" end=\"00:00:03.250\">"),
+            "{out}"
+        );
         assert!(out.contains("tts:extent=\"1920px 1080px\""), "{out}");
     }
 
@@ -357,27 +462,60 @@ mod tests {
 
     #[test]
     fn file_urls_are_percent_encoded() {
-        assert_eq!(file_url(Path::new("/a b/動.mp4")), "file:///a%20b/%E5%8B%95.mp4");
+        assert_eq!(
+            file_url(Path::new("/a b/動.mp4")),
+            "file:///a%20b/%E5%8B%95.mp4"
+        );
         assert_eq!(file_url(Path::new("C:\\v\\a.mp4")), "file:///C:/v/a.mp4");
     }
 
     #[test]
     fn fcpxml_titles_carry_colour_outline_and_position() {
-        let transcript = Transcript::new(PathBuf::from("/v/a.mp4"), INFO, METRICS, Vec::new(), Vec::new(), vec![cue(Some(1), "はい")]);
+        let transcript = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            Vec::new(),
+            Vec::new(),
+            vec![cue(Some(1), "はい")],
+        );
         let out = render_fcpxml(&transcript, &Settings::default());
         assert!(out.contains("value=\"0.0 -440.0\""), "{out}");
-        assert!(out.contains("fontColor=\"0.7686 0.5490 1.0000 1\""), "{out}");
-        assert!(out.contains("strokeColor=\"1.0000 1.0000 1.0000 1\""), "{out}");
+        assert!(
+            out.contains("fontColor=\"0.7686 0.5490 1.0000 1\""),
+            "{out}"
+        );
+        assert!(
+            out.contains("strokeColor=\"1.0000 1.0000 1.0000 1\""),
+            "{out}"
+        );
         assert!(out.contains("src=\"file:///v/a.mp4\""), "{out}");
     }
 
     #[test]
     fn speaker_count_comes_from_the_words() {
         let words = vec![
-            Word { start: 0.0, end: 1.0, text: "a".to_owned(), speaker: Some(3) },
-            Word { start: 1.0, end: 2.0, text: "b".to_owned(), speaker: None },
+            Word {
+                start: 0.0,
+                end: 1.0,
+                text: "a".to_owned(),
+                speaker: Some(3),
+            },
+            Word {
+                start: 1.0,
+                end: 2.0,
+                text: "b".to_owned(),
+                speaker: None,
+            },
         ];
-        let transcript = Transcript::new(PathBuf::from("/v/a.mp4"), INFO, METRICS, words, Vec::new(), Vec::new());
+        let transcript = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            words,
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(transcript.speaker_count, 3);
     }
 }

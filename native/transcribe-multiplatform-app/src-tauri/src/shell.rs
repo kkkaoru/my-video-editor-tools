@@ -80,23 +80,32 @@ fn event_sink<R: Runtime>(app: tauri::AppHandle<R>) -> EventSink {
 
 fn start_service<R: Runtime>(app: &tauri::AppHandle<R>, paths: AppPaths) -> AppResult<Service> {
     let settings = Settings::load(&paths.settings_file())?;
-    Ok(Service::start(paths, catalog::detect_hardware()?, settings, sys_locale::get_locale(), event_sink(app.clone())))
+    Ok(Service::start(
+        paths,
+        catalog::detect_hardware()?,
+        settings,
+        sys_locale::get_locale(),
+        event_sink(app.clone()),
+    ))
+}
+
+fn manage_service<R: Runtime>(app: &tauri::AppHandle<R>, paths: AppPaths) -> AppResult<()> {
+    app.manage(start_service(app, paths)?);
+    Ok(())
 }
 
 /// Everything except the real window runtime, so the mock runtime can exercise it.
-fn configure<R: Runtime>(builder: Builder<R>, paths: AppPaths) -> Builder<R> {
+fn configure<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     builder
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |app| {
-            app.manage(start_service(app.handle(), paths)?);
-            Ok(())
-        })
         .invoke_handler(handler())
 }
 
 /// Starts the desktop app.
 pub fn run() -> AppResult<()> {
-    configure(Builder::default(), AppPaths::detect()?)
+    let paths = AppPaths::detect()?;
+    configure(Builder::default())
+        .setup(move |app| manage_service(app.handle(), paths).map_err(Into::into))
         .run(tauri::generate_context!())
         .map_err(|error| crate::error::AppError::Invalid(format!("window runtime: {error}")))
 }
@@ -110,16 +119,36 @@ mod tests {
     use tauri::webview::InvokeRequest;
     use tauri::{Listener, WebviewWindow, WebviewWindowBuilder};
 
-    fn app_window(name: &str) -> (tauri::App<tauri::test::MockRuntime>, WebviewWindow<tauri::test::MockRuntime>) {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test").join(format!("shell-{name}"));
+    fn app_window(
+        name: &str,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        WebviewWindow<tauri::test::MockRuntime>,
+    ) {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("shell-{name}"));
         let _ = std::fs::remove_dir_all(&root);
-        let paths = AppPaths { data: root.join("data"), resources: root.join("resources") };
-        let app = configure(mock_builder(), paths).build(mock_context(noop_assets())).unwrap();
-        let window = WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let app = configure(mock_builder())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        manage_service(app.handle(), paths).unwrap();
+        let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
         (app, window)
     }
 
-    fn call(window: &WebviewWindow<tauri::test::MockRuntime>, command: &str, body: Value) -> Result<Value, Value> {
+    fn call(
+        window: &WebviewWindow<tauri::test::MockRuntime>,
+        command: &str,
+        body: Value,
+    ) -> Result<Value, Value> {
         let request = InvokeRequest {
             cmd: command.to_owned(),
             callback: CallbackFn(0),
@@ -136,7 +165,10 @@ mod tests {
     fn snapshot_reaches_the_ui_with_a_locale_and_ten_colours() {
         let (_app, window) = app_window("snapshot");
         let snapshot = call(&window, "snapshot", json!({})).unwrap();
-        assert_eq!(snapshot["settings"]["palette"].as_array().unwrap().len(), 10);
+        assert_eq!(
+            snapshot["settings"]["palette"].as_array().unwrap().len(),
+            10
+        );
         assert!(snapshot["locale"].is_string());
     }
 
@@ -156,10 +188,26 @@ mod tests {
         app.listen(JOB_EVENT, move |event| {
             let _ = sender.send(event.payload().to_owned());
         });
-        assert_eq!(call(&window, "add_videos", json!({ "paths": ["/nope.mp4"] })).unwrap(), json!([1]));
-        assert_eq!(call(&window, "relayout_transcript", json!({ "path": "/nope.transcript.json" })).unwrap(), json!(2));
-        assert_eq!(call(&window, "cancel_job", json!({ "id": 2 })).unwrap(), Value::Null);
-        let first = receiver.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        assert_eq!(
+            call(&window, "add_videos", json!({ "paths": ["/nope.mp4"] })).unwrap(),
+            json!([1])
+        );
+        assert_eq!(
+            call(
+                &window,
+                "relayout_transcript",
+                json!({ "path": "/nope.transcript.json" })
+            )
+            .unwrap(),
+            json!(2)
+        );
+        assert_eq!(
+            call(&window, "cancel_job", json!({ "id": 2 })).unwrap(),
+            Value::Null
+        );
+        let first = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
         assert!(first.starts_with(r#"{"state":"queued""#), "{first}");
     }
 
@@ -171,11 +219,24 @@ mod tests {
             let _ = sender.send(event.payload().to_owned());
         });
         let error = call(&window, "start_download", json!({ "id": "nope" })).unwrap_err();
-        assert_eq!(error, json!({ "code": "internal", "detail": "unknown model nope" }));
-        assert_eq!(call(&window, "start_download", json!({ "id": "yunet" })).unwrap(), Value::Null);
-        let finished = receiver.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        assert_eq!(
+            error,
+            json!({ "code": "internal", "detail": "unknown model nope" })
+        );
+        assert_eq!(
+            call(&window, "start_download", json!({ "id": "yunet" })).unwrap(),
+            Value::Null
+        );
+        let finished = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
         assert_eq!(finished, r#"{"state":"finished","id":"yunet"}"#);
-        assert_eq!(call(&window, "cancel_download", json!({ "id": "yunet" })).unwrap(), Value::Null);
-        assert!(call(&window, "delete_model", json!({ "id": "yunet" })).unwrap()["models"].is_array());
+        assert_eq!(
+            call(&window, "cancel_download", json!({ "id": "yunet" })).unwrap(),
+            Value::Null
+        );
+        assert!(
+            call(&window, "delete_model", json!({ "id": "yunet" })).unwrap()["models"].is_array()
+        );
     }
 }

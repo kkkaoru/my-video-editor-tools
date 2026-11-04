@@ -66,30 +66,53 @@ impl Drop for WorkDir {
 }
 
 fn overall(stage: Stage, fraction: f64) -> f64 {
-    let (low, high) = STAGE_SPANS.iter().find(|(name, _, _)| *name == stage).map_or((1.0, 1.0), |span| (span.1, span.2));
+    let (low, high) = STAGE_SPANS
+        .iter()
+        .find(|(name, _, _)| *name == stage)
+        .map_or((1.0, 1.0), |span| (span.1, span.2));
     low + (high - low) * fraction.clamp(0.0, 1.0)
 }
 
 fn report(stage: Stage, fraction: f64, sink: &mut dyn FnMut(Progress)) {
-    sink(Progress { stage, overall: overall(stage, fraction), determinate: true });
+    sink(Progress {
+        stage,
+        overall: overall(stage, fraction),
+        determinate: true,
+    });
 }
 
-fn selected_entry(id: &str, fallback: Option<&'static str>, role: &str) -> AppResult<&'static ModelEntry> {
+fn selected_entry(
+    id: &str,
+    fallback: Option<&'static str>,
+    role: &str,
+) -> AppResult<&'static ModelEntry> {
     let chosen = if id.is_empty() { fallback } else { Some(id) };
-    let chosen = chosen.ok_or_else(|| UserError::NoModelForRole { role: role.to_owned() })?;
-    catalog::find_entry(chosen).ok_or_else(|| AppError::Invalid(format!("unknown {role} model {chosen}")))
+    let chosen = chosen.ok_or_else(|| UserError::NoModelForRole {
+        role: role.to_owned(),
+    })?;
+    catalog::find_entry(chosen)
+        .ok_or_else(|| AppError::Invalid(format!("unknown {role} model {chosen}")))
 }
 
-fn whisper_model(paths: &AppPaths, settings: &Settings, sink: &mut dyn FnMut(Progress)) -> AppResult<PathBuf> {
+fn whisper_model(
+    paths: &AppPaths,
+    settings: &Settings,
+    sink: &mut dyn FnMut(Progress),
+) -> AppResult<PathBuf> {
     if let Some(ready) = catalog::locate_whisper_ggml(paths, &settings.model_dirs) {
         return Ok(ready);
     }
-    let source = catalog::locate_whisper_source(paths, &settings.model_dirs)
-        .ok_or_else(|| UserError::ModelMissing { model: catalog::WHISPER_ID.to_owned() })?;
+    let source = catalog::locate_whisper_source(paths, &settings.model_dirs).ok_or_else(|| {
+        UserError::ModelMissing {
+            model: catalog::WHISPER_ID.to_owned(),
+        }
+    })?;
     let folder = paths.models_dir().join(catalog::WHISPER_ID);
     std::fs::create_dir_all(&folder).map_err(io_context("create model folder"))?;
     let output = folder.join(catalog::WHISPER_GGML_NAME);
-    whisper_ggml::convert(&source, &output, |fraction| report(Stage::ConvertModel, fraction, sink))?;
+    whisper_ggml::convert(&source, &output, |fraction| {
+        report(Stage::ConvertModel, fraction, sink)
+    })?;
     Ok(output)
 }
 
@@ -108,20 +131,36 @@ fn locate_faces(
 ) -> AppResult<Vec<FaceSample>> {
     let entry = catalog::find_entry(&settings.face_model)
         .ok_or_else(|| AppError::Invalid(format!("unknown face model {}", settings.face_model)))?;
-    let model = catalog::locate(entry, paths, &settings.model_dirs)
-        .ok_or_else(|| UserError::ModelMissing { model: entry.id.to_owned() })?;
-    let kind = if entry.id == catalog::AVATAR_YOLO_ID { FaceModelKind::AvatarYolo } else { FaceModelKind::Yunet };
+    let model = catalog::locate(entry, paths, &settings.model_dirs).ok_or_else(|| {
+        UserError::ModelMissing {
+            model: entry.id.to_owned(),
+        }
+    })?;
+    let kind = if entry.id == catalog::AVATAR_YOLO_ID {
+        FaceModelKind::AvatarYolo
+    } else {
+        FaceModelKind::Yunet
+    };
     let detector = FaceDetector::load(&model, kind)?;
-    scan_faces(tools, &detector, video, info, cancel, &mut |fraction| report(Stage::Faces, fraction, sink))
+    scan_faces(tools, &detector, video, info, cancel, &mut |fraction| {
+        report(Stage::Faces, fraction, sink)
+    })
 }
 
 fn wants_faces(settings: &Settings) -> bool {
-    matches!(settings.placement.anchor, Anchor::FaceAbove | Anchor::FaceBelow)
+    matches!(
+        settings.placement.anchor,
+        Anchor::FaceAbove | Anchor::FaceBelow
+    )
 }
 
 fn job_folder(paths: &AppPaths) -> AppResult<WorkDir> {
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
-    let folder = paths.jobs_dir().join(format!("{}-{stamp}", std::process::id()));
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let folder = paths
+        .jobs_dir()
+        .join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&folder).map_err(io_context("create job folder"))?;
     Ok(WorkDir(folder))
 }
@@ -138,12 +177,22 @@ pub fn run_job(
     settings.validate()?;
     report(Stage::Prepare, 0.0, sink);
     let rows = catalog::statuses(hardware, paths, &settings.model_dirs);
-    let diarize_entry = selected_entry(&settings.diarize_model, catalog::default_diarize_model(hardware, &rows), "diarize")?;
+    let diarize_entry = selected_entry(
+        &settings.diarize_model,
+        catalog::default_diarize_model(hardware, &rows),
+        "diarize",
+    )?;
     check_fits(diarize_entry, hardware)?;
-    let main_file = catalog::locate(diarize_entry, paths, &settings.model_dirs)
-        .ok_or_else(|| UserError::ModelMissing { model: diarize_entry.id.to_owned() })?;
+    let main_file =
+        catalog::locate(diarize_entry, paths, &settings.model_dirs).ok_or_else(|| {
+            UserError::ModelMissing {
+                model: diarize_entry.id.to_owned(),
+            }
+        })?;
     let encoder = catalog::speech_llm_encoder(&settings.model_dirs, paths);
-    let use_cuda = hardware.nvidia_name.is_some() && catalog::find_entry(catalog::GEFORCE_RUNTIME_ID).is_some_and(|entry| catalog::locate(entry, paths, &[]).is_some());
+    let use_cuda = hardware.nvidia_name.is_some()
+        && catalog::find_entry(catalog::GEFORCE_RUNTIME_ID)
+            .is_some_and(|entry| catalog::locate(entry, paths, &[]).is_some());
     let tools = Tools::locate(paths, use_cuda)?;
     let info = engines::probe(&tools, video)?;
     let whisper = whisper_model(paths, settings, sink)?;
@@ -151,15 +200,38 @@ pub fn run_job(
 
     let work = job_folder(paths)?;
     let wav = work.0.join("audio.wav");
-    engines::extract_audio(&tools, video, &wav, info.duration, cancel, &mut |fraction| report(Stage::ExtractAudio, fraction, sink))?;
-    let mut words = engines::transcribe(&tools, &whisper, &wav, &settings.language, &work.0, cancel, &mut |fraction| {
-        report(Stage::Transcribe, fraction, sink);
-    })?;
+    engines::extract_audio(
+        &tools,
+        video,
+        &wav,
+        info.duration,
+        cancel,
+        &mut |fraction| report(Stage::ExtractAudio, fraction, sink),
+    )?;
+    let mut words = engines::transcribe(
+        &tools,
+        &whisper,
+        &wav,
+        &settings.language,
+        &work.0,
+        cancel,
+        &mut |fraction| {
+            report(Stage::Transcribe, fraction, sink);
+        },
+    )?;
     if words.is_empty() {
         return Err(UserError::NoWords.into());
     }
-    sink(Progress { stage: Stage::Diarize, overall: overall(Stage::Diarize, 0.0), determinate: false });
-    let model = DiarizeModel { entry: diarize_entry, main_file: &main_file, encoder: encoder.as_deref() };
+    sink(Progress {
+        stage: Stage::Diarize,
+        overall: overall(Stage::Diarize, 0.0),
+        determinate: false,
+    });
+    let model = DiarizeModel {
+        entry: diarize_entry,
+        main_file: &main_file,
+        encoder: encoder.as_deref(),
+    };
     let turns = engines::diarize(&tools, &model, &wav, &settings.language, &work.0, cancel)?;
     assign_speakers(&mut words, &turns);
     // Faces are always scanned when wanted now; a later re-layout can reuse them.
@@ -170,11 +242,24 @@ pub fn run_job(
     };
     report(Stage::Export, 0.0, sink);
     let (cues, faceless) = build_cues(&words, &faces, &info, settings);
-    let transcript = Transcript::new(video.to_path_buf(), info, metrics_for(&info, settings), words, faces, cues);
+    let transcript = Transcript::new(
+        video.to_path_buf(),
+        info,
+        metrics_for(&info, settings),
+        words,
+        faces,
+        cues,
+    );
     let base = unused_base(video);
     let outputs = write_outputs(&base, &transcript, settings)?;
     report(Stage::Done, 1.0, sink);
-    Ok(JobOutcome { outputs, base, speaker_count: transcript.speaker_count, cue_count: transcript.cues.len(), faceless })
+    Ok(JobOutcome {
+        outputs,
+        base,
+        speaker_count: transcript.speaker_count,
+        cue_count: transcript.cues.len(),
+        faceless,
+    })
 }
 
 /// Lays out an earlier transcript again with new colours or position, without the speech models.
@@ -189,17 +274,36 @@ pub fn relayout(
     let mut transcript = Transcript::load(transcript_file)?;
     if wants_faces(settings) && transcript.faces.is_empty() {
         let tools = Tools::locate(paths, false)?;
-        transcript.faces = locate_faces(&tools, paths, settings, &transcript.source, &transcript.info, cancel, sink)?;
+        transcript.faces = locate_faces(
+            &tools,
+            paths,
+            settings,
+            &transcript.source,
+            &transcript.info,
+            cancel,
+            sink,
+        )?;
     }
     report(Stage::Export, 0.0, sink);
-    let (cues, faceless) = build_cues(&transcript.words, &transcript.faces, &transcript.info, settings);
+    let (cues, faceless) = build_cues(
+        &transcript.words,
+        &transcript.faces,
+        &transcript.info,
+        settings,
+    );
     transcript.metrics = metrics_for(&transcript.info, settings);
     transcript.cues = cues;
     let name = transcript_file.to_string_lossy();
     let base = PathBuf::from(name.strip_suffix(".transcript.json").unwrap_or(&name));
     let outputs = write_outputs(&base, &transcript, settings)?;
     report(Stage::Done, 1.0, sink);
-    Ok(JobOutcome { outputs, base, speaker_count: transcript.speaker_count, cue_count: transcript.cues.len(), faceless })
+    Ok(JobOutcome {
+        outputs,
+        base,
+        speaker_count: transcript.speaker_count,
+        cue_count: transcript.cues.len(),
+        faceless,
+    })
 }
 
 #[cfg(test)]
@@ -228,7 +332,9 @@ mod tests {
 
     #[test]
     fn an_unknown_model_is_an_error() {
-        let error = selected_entry("nope", None, "diarize").unwrap_err().to_string();
+        let error = selected_entry("nope", None, "diarize")
+            .unwrap_err()
+            .to_string();
         assert_eq!(error, "unknown diarize model nope");
     }
 

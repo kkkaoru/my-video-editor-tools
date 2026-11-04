@@ -86,9 +86,17 @@ pub fn run_with_progress(
     cancel: &CancelToken,
     mut on_line: impl FnMut(&str),
 ) -> AppResult<()> {
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(io_context(format!("start {tool}")))?;
-    let stderr = child.stderr.take().ok_or_else(|| AppError::Invalid("stderr was not captured".into()))?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(io_context(format!("start {tool}")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Invalid("stderr was not captured".into()))?;
     let (sender, receiver) = mpsc::channel();
     let reader = std::thread::spawn(move || pump_lines(stderr, &sender));
     let mut tail: VecDeque<String> = VecDeque::with_capacity(ERROR_TAIL_LINES);
@@ -103,7 +111,9 @@ pub fn run_with_progress(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break child.wait().map_err(io_context(format!("wait for {tool}")))?;
+                break child
+                    .wait()
+                    .map_err(io_context(format!("wait for {tool}")))?;
             }
         }
         if cancel.is_cancelled() {
@@ -117,16 +127,25 @@ pub fn run_with_progress(
         return Ok(());
     }
     let detail = Vec::from(tail).join("\n");
-    Err(AppError::Tool { tool: tool.to_owned(), detail: format!("{status}\n{detail}") })
+    Err(AppError::Tool {
+        tool: tool.to_owned(),
+        detail: format!("{status}\n{detail}"),
+    })
 }
 
 /// Runs and returns stdout; for short queries such as ffprobe.
 pub fn run_capture(mut command: Command, tool: &str) -> AppResult<Vec<u8>> {
-    let output = command.stdin(Stdio::null()).output().map_err(io_context(format!("start {tool}")))?;
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(io_context(format!("start {tool}")))?;
     if output.status.success() {
         return Ok(output.stdout);
     }
-    Err(AppError::Tool { tool: tool.to_owned(), detail: String::from_utf8_lossy(&output.stderr).into_owned() })
+    Err(AppError::Tool {
+        tool: tool.to_owned(),
+        detail: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -138,7 +157,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         pump_lines(&b"a=1\rb=2\n\nc=3"[..], &sender);
         drop(sender);
-        assert_eq!(receiver.iter().collect::<Vec<_>>(), vec!["a=1", "b=2", "c=3"]);
+        assert_eq!(
+            receiver.iter().collect::<Vec<_>>(),
+            vec!["a=1", "b=2", "c=3"]
+        );
     }
 
     #[test]
@@ -161,7 +183,9 @@ mod tests {
     fn a_failing_tool_reports_its_stderr() {
         let mut command = background_command(Path::new("/bin/sh"));
         command.args(["-c", "echo first >&2; echo second >&2; exit 3"]);
-        let error = run_with_progress(command, "fake", &CancelToken::default(), |_| {}).unwrap_err().to_string();
+        let error = run_with_progress(command, "fake", &CancelToken::default(), |_| {})
+            .unwrap_err()
+            .to_string();
         assert!(error.starts_with("fake failed: "), "{error}");
         assert!(error.ends_with("first\nsecond"), "{error}");
     }
@@ -172,7 +196,10 @@ mod tests {
         let mut command = background_command(Path::new("/bin/sh"));
         command.args(["-c", "echo one >&2; echo two >&2"]);
         let mut seen = Vec::new();
-        run_with_progress(command, "fake", &CancelToken::default(), |line| seen.push(line.to_owned())).unwrap();
+        run_with_progress(command, "fake", &CancelToken::default(), |line| {
+            seen.push(line.to_owned())
+        })
+        .unwrap();
         assert_eq!(seen, vec!["one", "two"]);
     }
 

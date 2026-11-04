@@ -49,7 +49,11 @@ fn find_tool(root: &Path, file_name: &str, depth: usize) -> Option<PathBuf> {
         return None;
     }
     let entries = std::fs::read_dir(root).ok()?;
-    entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).find_map(|path| find_tool(&path, file_name, depth - 1))
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .find_map(|path| find_tool(&path, file_name, depth - 1))
 }
 
 impl Tools {
@@ -59,10 +63,14 @@ impl Tools {
         let geforce = paths.downloaded_runtime_dir().join("geforce");
         let resolve = |folder: &str, tool: &str| -> AppResult<PathBuf> {
             let file_name = exe_name(tool);
-            let accelerated = use_cuda.then(|| find_tool(&geforce.join(folder), &file_name, TOOL_SEARCH_DEPTH)).flatten();
+            let accelerated = use_cuda
+                .then(|| find_tool(&geforce.join(folder), &file_name, TOOL_SEARCH_DEPTH))
+                .flatten();
             accelerated
                 .or_else(|| find_tool(&bundled.join(folder), &file_name, TOOL_SEARCH_DEPTH))
-                .ok_or_else(|| AppError::Invalid(format!("{tool} is missing from {}", bundled.display())))
+                .ok_or_else(|| {
+                    AppError::Invalid(format!("{tool} is missing from {}", bundled.display()))
+                })
         };
         Ok(Self {
             ffmpeg: resolve("ffmpeg", "ffmpeg")?,
@@ -83,39 +91,75 @@ fn rotation_degrees(stream: &Value) -> i64 {
     stream["side_data_list"]
         .as_array()
         .and_then(|list| list.iter().find_map(|item| item["rotation"].as_f64()))
-        .or_else(|| stream["tags"]["rotate"].as_str().and_then(|text| text.parse().ok()))
+        .or_else(|| {
+            stream["tags"]["rotate"]
+                .as_str()
+                .and_then(|text| text.parse().ok())
+        })
         .map_or(0, |degrees: f64| degrees.round() as i64)
 }
 
 /// Reads display size (rotation applied) and timing from ffprobe's JSON.
 pub fn parse_probe(json: &[u8]) -> AppResult<VideoInfo> {
-    let value: Value = serde_json::from_slice(json).map_err(|error| AppError::Invalid(format!("ffprobe output: {error}")))?;
-    let streams = value["streams"].as_array().ok_or_else(|| AppError::Invalid("ffprobe found no streams".into()))?;
+    let value: Value = serde_json::from_slice(json)
+        .map_err(|error| AppError::Invalid(format!("ffprobe output: {error}")))?;
+    let streams = value["streams"]
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("ffprobe found no streams".into()))?;
     let video = streams
         .iter()
-        .find(|stream| stream["codec_type"] == "video" && stream["disposition"]["attached_pic"] != 1)
+        .find(|stream| {
+            stream["codec_type"] == "video" && stream["disposition"]["attached_pic"] != 1
+        })
         .ok_or(UserError::NoVideoStream)?;
     if !streams.iter().any(|stream| stream["codec_type"] == "audio") {
         return Err(UserError::NoAudioStream.into());
     }
-    let dimension = |name: &str| video[name].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value > 0);
+    let dimension = |name: &str| {
+        video[name]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+    };
     let (Some(width), Some(height)) = (dimension("width"), dimension("height")) else {
         return Err(UserError::UnreadableSize.into());
     };
-    let (width, height) = if rotation_degrees(video) % (2 * QUARTER_TURN_DEGREES) == 0 { (width, height) } else { (height, width) };
+    let (width, height) = if rotation_degrees(video) % (2 * QUARTER_TURN_DEGREES) == 0 {
+        (width, height)
+    } else {
+        (height, width)
+    };
     let duration = value["format"]["duration"]
         .as_str()
         .and_then(|text| text.parse::<f64>().ok())
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
         .ok_or(UserError::UnreadableDuration)?;
-    let rate = video["avg_frame_rate"].as_str().and_then(parse_rate).or_else(|| video["r_frame_rate"].as_str().and_then(parse_rate));
+    let rate = video["avg_frame_rate"]
+        .as_str()
+        .and_then(parse_rate)
+        .or_else(|| video["r_frame_rate"].as_str().and_then(parse_rate));
     let (fps_num, fps_den) = rate.unwrap_or(FALLBACK_FPS);
-    Ok(VideoInfo { width, height, duration, fps_num, fps_den })
+    Ok(VideoInfo {
+        width,
+        height,
+        duration,
+        fps_num,
+        fps_den,
+    })
 }
 
 pub fn probe(tools: &Tools, video: &Path) -> AppResult<VideoInfo> {
     let mut command = background_command(&tools.ffprobe);
-    command.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"]).arg(video);
+    command
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+        ])
+        .arg(video);
     parse_probe(&run_capture(command, "ffprobe")?)
 }
 
@@ -124,7 +168,11 @@ fn parse_ffmpeg_time(line: &str) -> Option<f64> {
     let start = line.find("time=")? + "time=".len();
     let clock = line[start..].split_whitespace().next()?;
     let mut fields = clock.split(':').map(str::parse::<f64>);
-    let (hours, minutes, seconds) = (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
+    let (hours, minutes, seconds) = (
+        fields.next()?.ok()?,
+        fields.next()?.ok()?,
+        fields.next()?.ok()?,
+    );
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
@@ -138,7 +186,11 @@ pub fn extract_audio(
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<()> {
     let mut command = background_command(&tools.ffmpeg);
-    command.args(["-hide_banner", "-i"]).arg(video).args(AUDIO_ARGS).arg(wav);
+    command
+        .args(["-hide_banner", "-i"])
+        .arg(video)
+        .args(AUDIO_ARGS)
+        .arg(wav);
     run_with_progress(command, "ffmpeg", cancel, |line| {
         if let Some(seconds) = parse_ffmpeg_time(line) {
             progress((seconds / duration).clamp(0.0, 1.0));
@@ -159,7 +211,9 @@ fn latin1_string(bytes: &[u8]) -> String {
 }
 
 fn latin1_bytes(text: &str) -> Vec<u8> {
-    text.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect()
+    text.chars()
+        .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
+        .collect()
 }
 
 struct TokenMerger {
@@ -194,10 +248,19 @@ fn is_control_token(text: &[u8]) -> bool {
 pub fn parse_whisper_json(bytes: &[u8]) -> AppResult<Vec<Word>> {
     let value: Value = serde_json::from_str(&latin1_string(bytes))
         .map_err(|error| AppError::Invalid(format!("whisper JSON: {error}")))?;
-    let segments = value["transcription"].as_array().ok_or_else(|| AppError::Invalid("whisper JSON has no transcription".into()))?;
-    let mut merger = TokenMerger { bytes: Vec::new(), start_ms: 0.0 };
+    let segments = value["transcription"]
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("whisper JSON has no transcription".into()))?;
+    let mut merger = TokenMerger {
+        bytes: Vec::new(),
+        start_ms: 0.0,
+    };
     let mut words = Vec::new();
-    for token in segments.iter().filter_map(|segment| segment["tokens"].as_array()).flatten() {
+    for token in segments
+        .iter()
+        .filter_map(|segment| segment["tokens"].as_array())
+        .flatten()
+    {
         let text = latin1_bytes(token["text"].as_str().unwrap_or(""));
         if text.is_empty() || is_control_token(&text) {
             continue;
@@ -220,31 +283,52 @@ pub fn transcribe(
 ) -> AppResult<Vec<Word>> {
     let base = work.join("asr");
     let mut command = background_command(&tools.whisper);
-    command.arg("-m").arg(model).arg("-f").arg(wav).args(["-l", language, "-ojf", "-pp", "-of"]).arg(&base);
+    command
+        .arg("-m")
+        .arg(model)
+        .arg("-f")
+        .arg(wav)
+        .args(["-l", language, "-ojf", "-pp", "-of"])
+        .arg(&base);
     run_with_progress(command, "whisper-cli", cancel, |line| {
         if let Some(fraction) = parse_whisper_progress(line) {
             progress(fraction);
         }
     })?;
-    let json = std::fs::read(base.with_extension("json")).map_err(io_context("read whisper output"))?;
+    let json =
+        std::fs::read(base.with_extension("json")).map_err(io_context("read whisper output"))?;
     parse_whisper_json(&json)
 }
 
 fn speaker_number(value: &Value) -> Option<u32> {
-    value.as_u64().and_then(|number| u32::try_from(number).ok()).filter(|number| *number > 0)
+    value
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| *number > 0)
 }
 
 /// `nemo-speech diarize --format json`: `{"segments":[{"start","end","speaker"}]}`.
 pub fn parse_diarization(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| AppError::Invalid(format!("diarization JSON: {error}")))?;
-    let segments = value["segments"].as_array().ok_or_else(|| AppError::Invalid("diarization JSON has no segments".into()))?;
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| AppError::Invalid(format!("diarization JSON: {error}")))?;
+    let segments = value["segments"]
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("diarization JSON has no segments".into()))?;
     segments
         .iter()
         .map(|segment| {
             let (start, end) = (segment["start"].as_f64(), segment["end"].as_f64());
             match (start, end, speaker_number(&segment["speaker"])) {
-                (Some(start), Some(end), Some(speaker)) if start >= 0.0 && end > start => Ok(SpeakerTurn { start, end, speaker }),
-                _ => Err(AppError::Invalid(format!("bad diarization segment: {segment}"))),
+                (Some(start), Some(end), Some(speaker)) if start >= 0.0 && end > start => {
+                    Ok(SpeakerTurn {
+                        start,
+                        end,
+                        speaker,
+                    })
+                }
+                _ => Err(AppError::Invalid(format!(
+                    "bad diarization segment: {segment}"
+                ))),
             }
         })
         .collect()
@@ -252,13 +336,20 @@ pub fn parse_diarization(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
 
 fn word_to_turn(word: &Value) -> Option<SpeakerTurn> {
     let (start, end) = (word["start"].as_f64()?, word["end"].as_f64()?);
-    Some(SpeakerTurn { start, end: end.max(start), speaker: speaker_number(&word["speaker"])? })
+    Some(SpeakerTurn {
+        start,
+        end: end.max(start),
+        speaker: speaker_number(&word["speaker"])?,
+    })
 }
 
 /// `nemo-speech transcribe --diarize --format json`: per-word speakers, merged into turns.
 pub fn parse_speech_llm(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| AppError::Invalid(format!("speech-LLM JSON: {error}")))?;
-    let words = value["words"].as_array().ok_or_else(|| AppError::Invalid("speech-LLM JSON has no words".into()))?;
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| AppError::Invalid(format!("speech-LLM JSON: {error}")))?;
+    let words = value["words"]
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("speech-LLM JSON has no words".into()))?;
     let mut turns: Vec<SpeakerTurn> = Vec::new();
     for turn in words.iter().filter_map(word_to_turn) {
         match turns.last_mut() {
@@ -277,15 +368,33 @@ pub struct DiarizeModel<'a> {
     pub encoder: Option<&'a Path>,
 }
 
-fn diarize_command(tools: &Tools, model: &DiarizeModel<'_>, wav: &Path, language: &str, out: &Path) -> AppResult<std::process::Command> {
-    let kind = model.entry.diarize_kind.ok_or_else(|| AppError::Invalid(format!("{} is not a diarization model", model.entry.id)))?;
+fn diarize_command(
+    tools: &Tools,
+    model: &DiarizeModel<'_>,
+    wav: &Path,
+    language: &str,
+    out: &Path,
+) -> AppResult<std::process::Command> {
+    let kind = model.entry.diarize_kind.ok_or_else(|| {
+        AppError::Invalid(format!("{} is not a diarization model", model.entry.id))
+    })?;
     let mut command = background_command(&tools.nemo);
     match kind {
         DiarizeKind::Sortformer => {
-            command.arg("diarize").arg(wav).arg("--model").arg(model.main_file).args(["--format", "json", "--force"]);
+            command
+                .arg("diarize")
+                .arg(wav)
+                .arg("--model")
+                .arg(model.main_file)
+                .args(["--format", "json", "--force"]);
         }
         DiarizeKind::SpeechLlm => {
-            command.arg("transcribe").arg(wav).arg("--model").arg(model.main_file).args(["--format", "json", "--diarize", "--force"]);
+            command
+                .arg("transcribe")
+                .arg(wav)
+                .arg("--model")
+                .arg(model.main_file)
+                .args(["--format", "json", "--diarize", "--force"]);
             if language != AUTO_LANGUAGE {
                 command.args(["--language", language]);
             }
@@ -324,14 +433,20 @@ mod tests {
 
     #[test]
     fn ffmpeg_status_lines_parse() {
-        assert_eq!(parse_ffmpeg_time("size=  10kB time=00:01:02.50 bitrate=1kbits/s"), Some(62.5));
+        assert_eq!(
+            parse_ffmpeg_time("size=  10kB time=00:01:02.50 bitrate=1kbits/s"),
+            Some(62.5)
+        );
         assert_eq!(parse_ffmpeg_time("Press [q] to stop"), None);
         assert_eq!(parse_ffmpeg_time("size=N/A time=N/A bitrate=N/A"), None);
     }
 
     #[test]
     fn whisper_progress_lines_parse() {
-        assert_eq!(parse_whisper_progress("whisper_print_progress_callback: progress =  45%"), Some(0.45));
+        assert_eq!(
+            parse_whisper_progress("whisper_print_progress_callback: progress =  45%"),
+            Some(0.45)
+        );
         assert_eq!(parse_whisper_progress("whisper_full: other line"), None);
     }
 
@@ -354,16 +469,30 @@ mod tests {
 
     #[test]
     fn whisper_json_without_transcription_is_an_error() {
-        assert_eq!(parse_whisper_json(b"{}").unwrap_err().to_string(), "whisper JSON has no transcription");
+        assert_eq!(
+            parse_whisper_json(b"{}").unwrap_err().to_string(),
+            "whisper JSON has no transcription"
+        );
     }
 
     #[test]
     fn diarization_segments_parse_and_reject_bad_times() {
         let turns = parse_diarization(br#"{"segments":[{"start":0.0,"end":4.2,"speaker":1},{"start":4.4,"end":8.3,"speaker":2}]}"#).unwrap();
-        assert_eq!(turns, vec![
-            SpeakerTurn { start: 0.0, end: 4.2, speaker: 1 },
-            SpeakerTurn { start: 4.4, end: 8.3, speaker: 2 },
-        ]);
+        assert_eq!(
+            turns,
+            vec![
+                SpeakerTurn {
+                    start: 0.0,
+                    end: 4.2,
+                    speaker: 1
+                },
+                SpeakerTurn {
+                    start: 4.4,
+                    end: 8.3,
+                    speaker: 2
+                },
+            ]
+        );
         assert!(parse_diarization(br#"{"segments":[{"start":5,"end":4,"speaker":1}]}"#).is_err());
         assert!(parse_diarization(br#"{"nothing":[]}"#).is_err());
     }
@@ -376,10 +505,21 @@ mod tests {
             {"word":"c","start":1.2,"end":1.5,"speaker":2},
             {"word":"d","start":1.6,"end":1.7}
         ]}"#;
-        assert_eq!(parse_speech_llm(json).unwrap(), vec![
-            SpeakerTurn { start: 0.0, end: 1.0, speaker: 1 },
-            SpeakerTurn { start: 1.2, end: 1.5, speaker: 2 },
-        ]);
+        assert_eq!(
+            parse_speech_llm(json).unwrap(),
+            vec![
+                SpeakerTurn {
+                    start: 0.0,
+                    end: 1.0,
+                    speaker: 1
+                },
+                SpeakerTurn {
+                    start: 1.2,
+                    end: 1.5,
+                    speaker: 2
+                },
+            ]
+        );
     }
 
     #[test]
@@ -387,7 +527,16 @@ mod tests {
         let json = br#"{"format":{"duration":"12.5"},"streams":[
             {"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30000/1001"},
             {"codec_type":"audio"}]}"#;
-        assert_eq!(parse_probe(json).unwrap(), VideoInfo { width: 1920, height: 1080, duration: 12.5, fps_num: 30000, fps_den: 1001 });
+        assert_eq!(
+            parse_probe(json).unwrap(),
+            VideoInfo {
+                width: 1920,
+                height: 1080,
+                duration: 12.5,
+                fps_num: 30000,
+                fps_den: 1001
+            }
+        );
     }
 
     #[test]
@@ -411,9 +560,15 @@ mod tests {
     #[test]
     fn files_without_video_or_audio_are_refused() {
         let audio_only = br#"{"format":{"duration":"1"},"streams":[{"codec_type":"audio"}]}"#;
-        assert_eq!(parse_probe(audio_only).unwrap_err().to_string(), "the file has no video stream");
+        assert_eq!(
+            parse_probe(audio_only).unwrap_err().to_string(),
+            "the file has no video stream"
+        );
         let silent = br#"{"format":{"duration":"1"},"streams":[{"codec_type":"video","width":2,"height":2}]}"#;
-        assert_eq!(parse_probe(silent).unwrap_err().to_string(), "the file has no audio stream");
+        assert_eq!(
+            parse_probe(silent).unwrap_err().to_string(),
+            "the file has no audio stream"
+        );
     }
 
     #[test]
@@ -421,6 +576,9 @@ mod tests {
         let json = br#"{"format":{"duration":"1"},"streams":[
             {"codec_type":"video","width":2,"height":2,"disposition":{"attached_pic":1}},
             {"codec_type":"audio"}]}"#;
-        assert_eq!(parse_probe(json).unwrap_err().to_string(), "the file has no video stream");
+        assert_eq!(
+            parse_probe(json).unwrap_err().to_string(),
+            "the file has no video stream"
+        );
     }
 }

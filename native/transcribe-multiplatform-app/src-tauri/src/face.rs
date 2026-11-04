@@ -60,7 +60,10 @@ pub struct FaceDetector {
 }
 
 fn tract_error(error: impl std::fmt::Display) -> AppError {
-    AppError::Tool { tool: "face model".to_owned(), detail: error.to_string() }
+    AppError::Tool {
+        tool: "face model".to_owned(),
+        detail: error.to_string(),
+    }
 }
 
 fn iou(a: &Detection, b: &Detection) -> f32 {
@@ -109,7 +112,13 @@ fn decode_yunet(outputs: &[&[f32]]) -> Vec<Detection> {
             let center_y = (row as f32 + values[1]) * stride;
             let width = values[2].exp() * stride;
             let height = values[3].exp() * stride;
-            detections.push(Detection { x: center_x - width / 2.0, y: center_y - height / 2.0, width, height, score });
+            detections.push(Detection {
+                x: center_x - width / 2.0,
+                y: center_y - height / 2.0,
+                width,
+                height,
+                score,
+            });
         }
     }
     non_max_suppression(detections)
@@ -145,7 +154,10 @@ fn by_area(left: &&Detection, right: &&Detection) -> std::cmp::Ordering {
 fn letterbox_scale(info: &VideoInfo) -> (f64, f64, f64) {
     let (width, height) = (f64::from(info.width), f64::from(info.height));
     let scale = width.max(height) / INPUT_SIZE as f64;
-    let (pad_x, pad_y) = ((width.max(height) - width) / 2.0, (width.max(height) - height) / 2.0);
+    let (pad_x, pad_y) = (
+        (width.max(height) - width) / 2.0,
+        (width.max(height) - height) / 2.0,
+    );
     (scale, pad_x, pad_y)
 }
 
@@ -161,11 +173,48 @@ fn main_face(detections: &[Detection], time: f64, info: &VideoInfo) -> Option<Fa
     })
 }
 
+/// Channel order and scale: YuNet was trained on OpenCV BGR 0-255, YOLO on RGB 0-1.
+fn input_layout(kind: FaceModelKind) -> ([usize; RGB_CHANNELS], f32) {
+    match kind {
+        FaceModelKind::Yunet => ([BGR_BLUE_INDEX, 1, BGR_RED_INDEX], 1.0),
+        FaceModelKind::AvatarYolo => ([0, 1, 2], 1.0 / 255.0),
+    }
+}
+
+/// Decodes the network's outputs, given as shape and values per output.
+fn decode_outputs(
+    kind: FaceModelKind,
+    outputs: &[(&[usize], &[f32])],
+) -> AppResult<Vec<Detection>> {
+    match kind {
+        FaceModelKind::Yunet => {
+            if outputs.len() != YUNET_OUTPUTS {
+                return Err(tract_error(format!(
+                    "expected {YUNET_OUTPUTS} outputs, got {}",
+                    outputs.len()
+                )));
+            }
+            let slices: Vec<&[f32]> = outputs.iter().map(|output| output.1).collect();
+            Ok(decode_yunet(&slices))
+        }
+        FaceModelKind::AvatarYolo => match outputs.first() {
+            None => Err(tract_error("model has no outputs")),
+            Some((&[_, channels, count], values)) => Ok(decode_yolo(values, channels, count)),
+            Some((shape, _)) => Err(tract_error(format!("unexpected YOLO shape {shape:?}"))),
+        },
+    }
+}
+
 impl FaceDetector {
     pub fn load(path: &Path, kind: FaceModelKind) -> AppResult<Self> {
         let model = tract_onnx::onnx()
             .model_for_path(path)
-            .and_then(|model| model.with_input_fact(0, f32::fact([1, RGB_CHANNELS, INPUT_SIZE, INPUT_SIZE]).into()))
+            .and_then(|model| {
+                model.with_input_fact(
+                    0,
+                    f32::fact([1, RGB_CHANNELS, INPUT_SIZE, INPUT_SIZE]).into(),
+                )
+            })
             .and_then(|model| model.into_optimized())
             .and_then(|model| model.into_runnable())
             .map_err(tract_error)?;
@@ -174,33 +223,21 @@ impl FaceDetector {
 
     /// Runs on one packed RGB square of `INPUT_SIZE`.
     fn detect(&self, rgb: &[u8]) -> AppResult<Vec<Detection>> {
-        // YuNet was trained on OpenCV BGR 0-255; YOLO on RGB 0-1.
-        let (order, scale) = match self.kind {
-            FaceModelKind::Yunet => ([BGR_BLUE_INDEX, 1, BGR_RED_INDEX], 1.0),
-            FaceModelKind::AvatarYolo => ([0, 1, 2], 1.0 / 255.0),
-        };
-        let input = tract_ndarray::Array4::from_shape_fn((1, RGB_CHANNELS, INPUT_SIZE, INPUT_SIZE), |(_, channel, row, column)| {
-            f32::from(rgb[(row * INPUT_SIZE + column) * RGB_CHANNELS + order[channel]]) * scale
-        });
+        let (order, scale) = input_layout(self.kind);
+        let input = tract_ndarray::Array4::from_shape_fn(
+            (1, RGB_CHANNELS, INPUT_SIZE, INPUT_SIZE),
+            |(_, channel, row, column)| {
+                f32::from(rgb[(row * INPUT_SIZE + column) * RGB_CHANNELS + order[channel]]) * scale
+            },
+        );
         let tensor: Tensor = input.into();
         let outputs = self.model.run(tvec!(tensor.into())).map_err(tract_error)?;
-        match self.kind {
-            FaceModelKind::Yunet => {
-                if outputs.len() != YUNET_OUTPUTS {
-                    return Err(tract_error(format!("expected {YUNET_OUTPUTS} outputs, got {}", outputs.len())));
-                }
-                let slices: Vec<&[f32]> = outputs.iter().map(|output| output.as_slice::<f32>()).collect::<TractResult<_>>().map_err(tract_error)?;
-                Ok(decode_yunet(&slices))
-            }
-            FaceModelKind::AvatarYolo => {
-                let output = outputs.first().ok_or_else(|| tract_error("model has no outputs"))?;
-                let shape = output.shape();
-                if shape.len() != 3 {
-                    return Err(tract_error(format!("unexpected YOLO shape {shape:?}")));
-                }
-                Ok(decode_yolo(output.as_slice::<f32>().map_err(tract_error)?, shape[1], shape[2]))
-            }
-        }
+        let views: Vec<(&[usize], &[f32])> = outputs
+            .iter()
+            .map(|output| Ok((output.shape(), output.as_slice::<f32>()?)))
+            .collect::<TractResult<_>>()
+            .map_err(tract_error)?;
+        decode_outputs(self.kind, &views)
     }
 }
 
@@ -222,14 +259,33 @@ pub fn scan_faces(
     let mut command = background_command(&tools.ffmpeg);
     // Keyframes alone keep long videos fast; the fps filter still gives true timestamps.
     command
-        .args(["-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", "-i"])
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-skip_frame",
+            "nokey",
+            "-i",
+        ])
         .arg(video)
-        .args(["-an", "-vf", &frame_filter(), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        .args([
+            "-an",
+            "-vf",
+            &frame_filter(),
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "rawvideo",
+            "-",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = command.spawn().map_err(io_context("start ffmpeg"))?;
-    let mut stdout = child.stdout.take().ok_or_else(|| AppError::Invalid("stdout was not captured".into()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Invalid("stdout was not captured".into()))?;
     let mut frame = vec![0u8; INPUT_SIZE * INPUT_SIZE * RGB_CHANNELS];
     let mut samples = Vec::new();
     let mut time = 0.0;
@@ -258,29 +314,68 @@ pub fn scan_faces(
 mod tests {
     use super::*;
 
-    const LANDSCAPE: VideoInfo = VideoInfo { width: 1280, height: 720, duration: 1.0, fps_num: 30, fps_den: 1 };
+    const LANDSCAPE: VideoInfo = VideoInfo {
+        width: 1280,
+        height: 720,
+        duration: 1.0,
+        fps_num: 30,
+        fps_den: 1,
+    };
 
     fn detection(x: f32, y: f32, width: f32, score: f32) -> Detection {
-        Detection { x, y, width, height: width, score }
+        Detection {
+            x,
+            y,
+            width,
+            height: width,
+            score,
+        }
     }
 
     #[test]
     fn overlapping_boxes_keep_the_best_score() {
-        let kept = non_max_suppression(vec![detection(0.0, 0.0, 10.0, 0.7), detection(1.0, 1.0, 10.0, 0.9), detection(100.0, 100.0, 10.0, 0.8)]);
-        assert_eq!(kept, vec![detection(1.0, 1.0, 10.0, 0.9), detection(100.0, 100.0, 10.0, 0.8)]);
+        let kept = non_max_suppression(vec![
+            detection(0.0, 0.0, 10.0, 0.7),
+            detection(1.0, 1.0, 10.0, 0.9),
+            detection(100.0, 100.0, 10.0, 0.8),
+        ]);
+        assert_eq!(
+            kept,
+            vec![
+                detection(1.0, 1.0, 10.0, 0.9),
+                detection(100.0, 100.0, 10.0, 0.8)
+            ]
+        );
     }
 
     #[test]
     fn disjoint_boxes_have_zero_iou() {
-        assert_eq!(iou(&detection(0.0, 0.0, 1.0, 1.0), &detection(5.0, 5.0, 1.0, 1.0)), 0.0);
+        assert_eq!(
+            iou(
+                &detection(0.0, 0.0, 1.0, 1.0),
+                &detection(5.0, 5.0, 1.0, 1.0)
+            ),
+            0.0
+        );
     }
 
     #[test]
     fn the_largest_face_maps_back_through_the_letterbox() {
-        let detections = [detection(0.0, 140.0, 10.0, 0.9), detection(320.0, 240.0, 64.0, 0.8)];
+        let detections = [
+            detection(0.0, 140.0, 10.0, 0.9),
+            detection(320.0, 240.0, 64.0, 0.8),
+        ];
         let face = main_face(&detections, 3.0, &LANDSCAPE).unwrap();
         // 1280/640 = 2x; the 720p frame sits 140 input px (280 video px) below the square's top.
-        assert_eq!(face, FaceSample { time: 3.0, top: 200.0, bottom: 328.0, center_x: 704.0 });
+        assert_eq!(
+            face,
+            FaceSample {
+                time: 3.0,
+                top: 200.0,
+                bottom: 328.0,
+                center_x: 704.0
+            }
+        );
     }
 
     #[test]
@@ -299,7 +394,16 @@ mod tests {
             0.9, 0.1, // avatar_face
             0.0, 0.9, // source_caption
         ];
-        assert_eq!(decode_yolo(&values, 6, 2), vec![Detection { x: 90.0, y: 90.0, width: 20.0, height: 20.0, score: 0.9 }]);
+        assert_eq!(
+            decode_yolo(&values, 6, 2),
+            vec![Detection {
+                x: 90.0,
+                y: 90.0,
+                width: 20.0,
+                height: 20.0,
+                score: 0.9
+            }]
+        );
     }
 
     #[test]
@@ -320,7 +424,9 @@ mod tests {
         let empty32 = vec![0.0f32; size(32)];
         let boxes16 = vec![0.0f32; size(16) * 4];
         let boxes32 = vec![0.0f32; size(32) * 4];
-        let outputs: Vec<&[f32]> = vec![&cls8, &empty16, &empty32, &obj8, &empty16, &empty32, &boxes8, &boxes16, &boxes32];
+        let outputs: Vec<&[f32]> = vec![
+            &cls8, &empty16, &empty32, &obj8, &empty16, &empty32, &boxes8, &boxes16, &boxes32,
+        ];
         let found = decode_yunet(&outputs);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].width, 8.0);

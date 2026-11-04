@@ -22,7 +22,11 @@ pub enum UserError {
     #[error("model {model} needs an NVIDIA GPU")]
     NeedsNvidia { model: String },
     #[error("model {model} needs {required} GiB of memory, this machine has {available} GiB")]
-    NeedsMemory { model: String, required: u64, available: u64 },
+    NeedsMemory {
+        model: String,
+        required: u64,
+        available: u64,
+    },
 }
 
 /// Every failure the app reports; messages reach the UI, so they name the failed step.
@@ -59,7 +63,11 @@ impl Serialize for AppError {
         if let Self::User(error) = self {
             return error.serialize(serializer);
         }
-        let code = if matches!(self, Self::Cancelled) { "cancelled" } else { "internal" };
+        let code = if matches!(self, Self::Cancelled) {
+            "cancelled"
+        } else {
+            "internal"
+        };
         let mut object = serializer.serialize_struct("AppError", 2)?;
         object.serialize_field("code", code)?;
         object.serialize_field("detail", &self.to_string())?;
@@ -79,19 +87,38 @@ mod tests {
 
     #[test]
     fn cancelled_serializes_with_its_code() {
-        assert_eq!(serde_json::to_string(&AppError::Cancelled).unwrap(), r#"{"code":"cancelled","detail":"cancelled"}"#);
+        assert_eq!(
+            serde_json::to_string(&AppError::Cancelled).unwrap(),
+            r#"{"code":"cancelled","detail":"cancelled"}"#
+        );
     }
 
     #[test]
     fn user_errors_serialize_as_translatable_codes() {
-        let error = AppError::from(UserError::NeedsMemory { model: "m".to_owned(), required: 24, available: 12 });
-        assert_eq!(serde_json::to_string(&error).unwrap(), r#"{"code":"needs_memory","model":"m","required":24,"available":12}"#);
-        assert_eq!(error.to_string(), "model m needs 24 GiB of memory, this machine has 12 GiB");
+        let error = AppError::from(UserError::NeedsMemory {
+            model: "m".to_owned(),
+            required: 24,
+            available: 12,
+        });
+        assert_eq!(
+            serde_json::to_string(&error).unwrap(),
+            r#"{"code":"needs_memory","model":"m","required":24,"available":12}"#
+        );
+        assert_eq!(
+            error.to_string(),
+            "model m needs 24 GiB of memory, this machine has 12 GiB"
+        );
     }
 
     #[test]
     fn other_errors_serialize_as_internal_detail() {
-        let error = AppError::Tool { tool: "ffmpeg".to_owned(), detail: "boom".to_owned() };
-        assert_eq!(serde_json::to_string(&error).unwrap(), r#"{"code":"internal","detail":"ffmpeg failed: boom"}"#);
+        let error = AppError::Tool {
+            tool: "ffmpeg".to_owned(),
+            detail: "boom".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&error).unwrap(),
+            r#"{"code":"internal","detail":"ffmpeg failed: boom"}"#
+        );
     }
 }

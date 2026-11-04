@@ -1,0 +1,128 @@
+// Runs with bun: the preview geometry matches what the caption files will contain.
+import { expect, it } from "vitest";
+import type { Anchor, Settings } from "../backend/types.ts";
+import { metricsFor, type PreviewLayout, previewLayout, wrapText } from "./preview-layout.ts";
+
+const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Settings => ({
+  palette: [],
+  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  font_family: "Sans",
+  font_ratio: 0.05,
+  outline_ratio: 0.1,
+  width_ratio: 0.8,
+  placement: { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY },
+  language: "auto",
+  transcribe_model: "a",
+  diarize_model: "b",
+  face_model: "c",
+  model_dirs: [],
+});
+
+it("derives the metrics from the short edge and the width", () => {
+  const metrics: ReturnType<typeof metricsFor> = metricsFor(
+    { width: 1920, height: 1080 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect(metrics.fontPx).toBe(54);
+  expect(metrics.outlinePx).toBeCloseTo(5.4);
+  expect(metrics.maxLinePx).toBeCloseTo(1525.2);
+});
+
+it("keeps the metrics at their minimums on a tiny frame", () => {
+  expect(metricsFor({ width: 4, height: 4 }, settingsWith("video_top", 0, 0))).toStrictEqual({
+    fontPx: 1,
+    outlinePx: 1,
+    maxLinePx: 1.2000000000000002,
+  });
+});
+
+it("never lets a line be shorter than one character", () => {
+  expect(
+    metricsFor({ width: 100, height: 100 }, { ...settingsWith("video_top", 0, 0), width_ratio: 0.01 }),
+  ).toStrictEqual({
+    fontPx: 5,
+    outlinePx: 1,
+    maxLinePx: 5,
+  });
+});
+
+it("wraps text at the character count", () => {
+  expect(wrapText("abcde", 2)).toStrictEqual(["ab", "cd", "e"]);
+});
+
+it("wraps empty text to no lines", () => {
+  expect(wrapText("", 2)).toStrictEqual([]);
+});
+
+it("places the block at the bottom of the video", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1920, height: 1080 },
+    settingsWith("video_bottom", 0, 0),
+  );
+  expect(layout.lines).toStrictEqual(["abcd"]);
+  expect(layout.x).toBe(960);
+  expect(layout.y).toBeCloseTo(986.85);
+  expect(layout.usesFace).toBe(false);
+});
+
+it("places the block at the top of the video", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1920, height: 1080 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect(layout.y).toBeCloseTo(93.15);
+  expect(layout.usesFace).toBe(false);
+});
+
+it("places the block above the face", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1920, height: 1080 },
+    settingsWith("face_above", 0, 0),
+  );
+  expect(layout.y).toBeCloseTo(173.61);
+  expect(layout.usesFace).toBe(true);
+});
+
+it("places the block below the face", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1920, height: 1080 },
+    settingsWith("face_below", 0, 0),
+  );
+  expect(layout.y).toBeCloseTo(603.99);
+  expect(layout.usesFace).toBe(true);
+});
+
+it("applies the percentage offsets", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1000, height: 1000 },
+    settingsWith("video_top", 10, 20),
+  );
+  expect(layout.x).toBe(600);
+  expect(layout.y).toBeCloseTo(286.25);
+});
+
+it("keeps the block inside the frame when the offset pushes it out", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcd",
+    { width: 1000, height: 1000 },
+    settingsWith("video_bottom", -50, 50),
+  );
+  expect(layout.x).toBe(105);
+  expect(layout.y).toBeCloseTo(963.75);
+});
+
+it("centres a block wider than the frame", () => {
+  const layout: PreviewLayout = previewLayout(
+    "abcdefgh",
+    { width: 100, height: 100 },
+    { ...settingsWith("video_top", 40, 0), font_ratio: 1, width_ratio: 0.1 },
+  );
+  expect(layout.lines).toStrictEqual(["a", "b", "c", "d", "e", "f", "g", "h"]);
+  expect(layout.x).toBe(50);
+  expect(layout.y).toBe(50);
+});

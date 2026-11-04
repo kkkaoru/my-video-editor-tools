@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 const DEFAULT_WHITE: &str = "#FFFFFF";
 /// The first three continue the repository's speaker lane colours (purple, green, light blue).
 const DEFAULT_FILLS: [&str; 10] = [
-    "#C48CFF", "#7CDC8C", "#6CD4FF", "#FF9E5E", "#FF7FA8", "#F2D64B", "#5EE0C8", "#8FA8FF", "#E08CE0", "#B5E05E",
+    "#C48CFF", "#7CDC8C", "#6CD4FF", "#FF9E5E", "#FF7FA8", "#F2D64B", "#5EE0C8", "#8FA8FF",
+    "#E08CE0", "#B5E05E",
 ];
 /// Speaker-less words stay grey instead of borrowing someone's identity.
 const UNASSIGNED_FILL: &str = "#C8C8C8";
@@ -70,14 +71,24 @@ impl Default for Settings {
         Self {
             palette: DEFAULT_FILLS
                 .iter()
-                .map(|fill| SpeakerColor { fill: (*fill).to_owned(), outline: DEFAULT_WHITE.to_owned() })
+                .map(|fill| SpeakerColor {
+                    fill: (*fill).to_owned(),
+                    outline: DEFAULT_WHITE.to_owned(),
+                })
                 .collect(),
-            unassigned: SpeakerColor { fill: UNASSIGNED_FILL.to_owned(), outline: DEFAULT_WHITE.to_owned() },
+            unassigned: SpeakerColor {
+                fill: UNASSIGNED_FILL.to_owned(),
+                outline: DEFAULT_WHITE.to_owned(),
+            },
             font_family: FONT_FAMILY.to_owned(),
             font_ratio: DEFAULT_FONT_RATIO,
             outline_ratio: DEFAULT_OUTLINE_RATIO,
             width_ratio: DEFAULT_WIDTH_RATIO,
-            placement: Placement { anchor: Anchor::VideoBottom, offset_x_percent: 0.0, offset_y_percent: 0.0 },
+            placement: Placement {
+                anchor: Anchor::VideoBottom,
+                offset_x_percent: 0.0,
+                offset_y_percent: 0.0,
+            },
             language: DEFAULT_LANGUAGE.to_owned(),
             transcribe_model: String::new(),
             diarize_model: String::new(),
@@ -96,34 +107,57 @@ fn validate_color(color: &SpeakerColor) -> AppResult<()> {
     if is_hex_color(&color.fill) && is_hex_color(&color.outline) {
         return Ok(());
     }
-    Err(AppError::Invalid(format!("colours must be #RRGGBB: {} / {}", color.fill, color.outline)))
+    Err(AppError::Invalid(format!(
+        "colours must be #RRGGBB: {} / {}",
+        color.fill, color.outline
+    )))
 }
 
 fn validate_ratio(name: &str, value: f64, low: f64, high: f64) -> AppResult<()> {
     if value.is_finite() && (low..=high).contains(&value) {
         return Ok(());
     }
-    Err(AppError::Invalid(format!("{name} must be between {low} and {high}, got {value}")))
+    Err(AppError::Invalid(format!(
+        "{name} must be between {low} and {high}, got {value}"
+    )))
 }
 
 impl Settings {
     /// Rejects values that would produce broken subtitle files; the UI and JSON both pass here.
     pub fn validate(&self) -> AppResult<()> {
         if self.palette.is_empty() {
-            return Err(AppError::Invalid("the speaker palette needs at least one colour".into()));
+            return Err(AppError::Invalid(
+                "the speaker palette needs at least one colour".into(),
+            ));
         }
         self.palette.iter().try_for_each(validate_color)?;
         validate_color(&self.unassigned)?;
         validate_ratio("font_ratio", self.font_ratio, 0.01, 0.3)?;
         validate_ratio("outline_ratio", self.outline_ratio, 0.01, 0.5)?;
         validate_ratio("width_ratio", self.width_ratio, 0.2, 1.0)?;
-        validate_ratio("offset_x_percent", self.placement.offset_x_percent, -MAX_OFFSET_PERCENT, MAX_OFFSET_PERCENT)?;
-        validate_ratio("offset_y_percent", self.placement.offset_y_percent, -MAX_OFFSET_PERCENT, MAX_OFFSET_PERCENT)?;
+        validate_ratio(
+            "offset_x_percent",
+            self.placement.offset_x_percent,
+            -MAX_OFFSET_PERCENT,
+            MAX_OFFSET_PERCENT,
+        )?;
+        validate_ratio(
+            "offset_y_percent",
+            self.placement.offset_y_percent,
+            -MAX_OFFSET_PERCENT,
+            MAX_OFFSET_PERCENT,
+        )?;
         if self.font_family.trim().is_empty() || self.font_family.contains(['"', '<', '&']) {
-            return Err(AppError::Invalid("font family is empty or has markup characters".into()));
+            return Err(AppError::Invalid(
+                "font family is empty or has markup characters".into(),
+            ));
         }
-        if self.language.is_empty() || !self.language.bytes().all(|byte| byte.is_ascii_alphabetic()) {
-            return Err(AppError::Invalid(format!("language must be a code such as ja, got {:?}", self.language)));
+        if self.language.is_empty() || !self.language.bytes().all(|byte| byte.is_ascii_alphabetic())
+        {
+            return Err(AppError::Invalid(format!(
+                "language must be a code such as ja, got {:?}",
+                self.language
+            )));
         }
         Ok(())
     }
@@ -131,7 +165,9 @@ impl Settings {
     /// The colour for a 1-based speaker; extra speakers reuse slots instead of failing a finished run.
     #[must_use]
     pub fn color_for(&self, speaker: Option<u32>) -> &SpeakerColor {
-        let Some(number) = speaker.filter(|number| *number > 0) else { return &self.unassigned };
+        let Some(number) = speaker.filter(|number| *number > 0) else {
+            return &self.unassigned;
+        };
         let slot = (number as usize - 1) % self.palette.len();
         &self.palette[slot]
     }
@@ -141,15 +177,16 @@ impl Settings {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(path).map_err(io_context("read settings"))?;
-        let settings: Self =
-            serde_json::from_str(&text).map_err(|error| AppError::Invalid(format!("settings file: {error}")))?;
+        let settings: Self = serde_json::from_str(&text)
+            .map_err(|error| AppError::Invalid(format!("settings file: {error}")))?;
         settings.validate()?;
         Ok(settings)
     }
 
     pub fn save(&self, path: &Path) -> AppResult<()> {
         self.validate()?;
-        let text = serde_json::to_string_pretty(self).map_err(|error| AppError::Invalid(error.to_string()))?;
+        let text = serde_json::to_string_pretty(self)
+            .map_err(|error| AppError::Invalid(error.to_string()))?;
         crate::paths::write_atomic(path, text.as_bytes())
     }
 }
@@ -181,36 +218,63 @@ mod tests {
     fn bad_colours_are_rejected() {
         let mut settings = Settings::default();
         settings.palette[0].fill = "red".to_owned();
-        assert_eq!(settings.validate().unwrap_err().to_string(), "colours must be #RRGGBB: red / #FFFFFF");
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "colours must be #RRGGBB: red / #FFFFFF"
+        );
     }
 
     #[test]
     fn empty_palette_is_rejected() {
-        let settings = Settings { palette: Vec::new(), ..Settings::default() };
-        assert_eq!(settings.validate().unwrap_err().to_string(), "the speaker palette needs at least one colour");
+        let settings = Settings {
+            palette: Vec::new(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "the speaker palette needs at least one colour"
+        );
     }
 
     #[test]
     fn out_of_range_offset_is_rejected() {
         let mut settings = Settings::default();
         settings.placement.offset_x_percent = 51.0;
-        assert_eq!(settings.validate().unwrap_err().to_string(), "offset_x_percent must be between -50 and 50, got 51");
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "offset_x_percent must be between -50 and 50, got 51"
+        );
     }
 
     #[test]
     fn markup_in_font_family_is_rejected() {
-        let settings = Settings { font_family: "A<B".to_owned(), ..Settings::default() };
-        assert_eq!(settings.validate().unwrap_err().to_string(), "font family is empty or has markup characters");
+        let settings = Settings {
+            font_family: "A<B".to_owned(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "font family is empty or has markup characters"
+        );
     }
 
     #[test]
     fn language_must_be_a_code() {
-        let settings = Settings { language: "j a".to_owned(), ..Settings::default() };
-        assert_eq!(settings.validate().unwrap_err().to_string(), "language must be a code such as ja, got \"j a\"");
+        let settings = Settings {
+            language: "j a".to_owned(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "language must be a code such as ja, got \"j a\""
+        );
     }
 
     #[test]
     fn anchor_serializes_in_snake_case() {
-        assert_eq!(serde_json::to_string(&Anchor::FaceAbove).unwrap(), "\"face_above\"");
+        assert_eq!(
+            serde_json::to_string(&Anchor::FaceAbove).unwrap(),
+            "\"face_above\""
+        );
     }
 }

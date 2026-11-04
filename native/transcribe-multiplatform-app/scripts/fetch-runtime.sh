@@ -16,10 +16,19 @@ FFMPEG_WIN_ZIP=ffmpeg-n8.1.3-34-ga35157abb9-win64-lgpl-8.1.zip
 FFMPEG_WIN_SHA256=c966229f0b033a1cf93b3fb139a804358a4ec27a53b8a6213fe08301868a7668
 mkdir -p "$runtime" "$work"
 
+# Git Bash on Windows has sha256sum but not shasum.
+verify() { # sha256 file
+  if command -v sha256sum >/dev/null; then
+    echo "$1  $2" | sha256sum -c - >/dev/null
+  else
+    echo "$1  $2" | shasum -a 256 -c - >/dev/null
+  fi
+}
+
 fetch() { # url sha256 output
-  if [ ! -f "$3" ] || ! echo "$2  $3" | shasum -a 256 -c - >/dev/null 2>&1; then
+  if [ ! -f "$3" ] || ! verify "$2" "$3" 2>/dev/null; then
     curl -fsSL --retry 3 -o "$3" "$1"
-    echo "$2  $3" | shasum -a 256 -c -
+    verify "$2" "$3"
   fi
 }
 

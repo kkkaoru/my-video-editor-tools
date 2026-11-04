@@ -35,11 +35,18 @@ const VOCAB_JSON: &str = include_str!("../resources/whisper-vocab.json");
 const BASE_VOCAB: usize = 50257;
 /// Shapes the file holds in a different axis order than the openai checkpoint.
 const MLX_CONV_WEIGHTS: [&str; 2] = ["encoder.conv1.weight", "encoder.conv2.weight"];
+const MLX_CONV_KERNEL: usize = 3;
 const HF_RENAMES: [(&str, &str); 19] = [
     ("model.encoder.layer_norm", "encoder.ln_post"),
     ("model.decoder.layer_norm", "decoder.ln"),
-    ("model.encoder.embed_positions.weight", "encoder.positional_embedding"),
-    ("model.decoder.embed_positions.weight", "decoder.positional_embedding"),
+    (
+        "model.encoder.embed_positions.weight",
+        "encoder.positional_embedding",
+    ),
+    (
+        "model.decoder.embed_positions.weight",
+        "decoder.positional_embedding",
+    ),
     ("model.decoder.embed_tokens", "decoder.token_embedding"),
     ("model.encoder.layers", "encoder.blocks"),
     ("model.decoder.layers", "decoder.blocks"),
@@ -139,7 +146,8 @@ fn sinusoids() -> Vec<f32> {
     (0..N_AUDIO_CTX)
         .flat_map(|position| {
             let sines = (0..half).map(move |i| (position as f64 * (-scale * i as f64).exp()).sin());
-            let cosines = (0..half).map(move |i| (position as f64 * (-scale * i as f64).exp()).cos());
+            let cosines =
+                (0..half).map(move |i| (position as f64 * (-scale * i as f64).exp()).cos());
             sines.chain(cosines).map(|value| value as f32)
         })
         .collect()
@@ -148,10 +156,14 @@ fn sinusoids() -> Vec<f32> {
 /// Reverses GPT-2's printable-byte mapping to get each token's raw bytes.
 fn gpt2_byte_decoder() -> HashMap<char, u8> {
     let printable = (0x21..=0x7E).chain(0xA1..=0xAC).chain(0xAE..=0xFF);
-    let mut decoder: HashMap<char, u8> = printable.map(|b: u32| (char::from_u32(b).unwrap_or('\0'), b as u8)).collect();
+    let mut decoder: HashMap<char, u8> = printable
+        .map(|b: u32| (char::from_u32(b).unwrap_or('\0'), b as u8))
+        .collect();
     let mut next = 256u32;
     for byte in 0u32..=255 {
-        let Some(key) = char::from_u32(byte) else { continue };
+        let Some(key) = char::from_u32(byte) else {
+            continue;
+        };
         if decoder.contains_key(&key) {
             continue;
         }
@@ -162,13 +174,16 @@ fn gpt2_byte_decoder() -> HashMap<char, u8> {
 }
 
 fn vocab_bytes() -> AppResult<Vec<Vec<u8>>> {
-    let tokens: HashMap<String, usize> =
-        serde_json::from_str(VOCAB_JSON).map_err(|error| AppError::Invalid(format!("embedded vocab: {error}")))?;
+    let tokens: HashMap<String, usize> = serde_json::from_str(VOCAB_JSON)
+        .map_err(|error| AppError::Invalid(format!("embedded vocab: {error}")))?;
     let decoder = gpt2_byte_decoder();
     let mut ordered = vec![Vec::new(); BASE_VOCAB];
     for (token, id) in tokens {
         if id < BASE_VOCAB {
-            ordered[id] = token.chars().filter_map(|c| decoder.get(&c).copied()).collect();
+            ordered[id] = token
+                .chars()
+                .filter_map(|c| decoder.get(&c).copied())
+                .collect();
         }
     }
     Ok(ordered)
@@ -176,18 +191,31 @@ fn vocab_bytes() -> AppResult<Vec<Vec<u8>>> {
 
 fn read_header(reader: &mut BufReader<File>) -> AppResult<(Value, u64)> {
     let mut length = [0u8; 8];
-    reader.read_exact(&mut length).map_err(io_context("read safetensors header"))?;
+    reader
+        .read_exact(&mut length)
+        .map_err(io_context("read safetensors header"))?;
     let header_bytes = u64::from_le_bytes(length);
-    let mut header = vec![0u8; usize::try_from(header_bytes).map_err(|_| AppError::Invalid("safetensors header too large".into()))?];
-    reader.read_exact(&mut header).map_err(io_context("read safetensors header"))?;
-    let value = serde_json::from_slice(&header).map_err(|error| AppError::Invalid(format!("safetensors header: {error}")))?;
+    // `take` instead of a sized buffer: a corrupt length must not allocate; a short read fails to parse.
+    let mut header = Vec::new();
+    reader
+        .by_ref()
+        .take(header_bytes)
+        .read_to_end(&mut header)
+        .map_err(io_context("read safetensors header"))?;
+    let value = serde_json::from_slice(&header)
+        .map_err(|error| AppError::Invalid(format!("safetensors header: {error}")))?;
     Ok((value, 8 + header_bytes))
 }
 
 fn parse_tensor(name: &str, meta: &Value, data_start: u64) -> AppResult<Option<Tensor>> {
-    let Some(mapped) = ggml_name(name) else { return Ok(None) };
+    let Some(mapped) = ggml_name(name) else {
+        return Ok(None);
+    };
     if meta["dtype"] != "F16" {
-        return Err(AppError::Invalid(format!("{name}: expected F16 weights, got {}", meta["dtype"])));
+        return Err(AppError::Invalid(format!(
+            "{name}: expected F16 weights, got {}",
+            meta["dtype"]
+        )));
     }
     let offset = meta["data_offsets"][0]
         .as_u64()
@@ -198,13 +226,24 @@ fn parse_tensor(name: &str, meta: &Value, data_start: u64) -> AppResult<Option<T
         .iter()
         .filter_map(|d| d.as_u64().and_then(|d| usize::try_from(d).ok()))
         .collect();
-    let swap_conv = (MLX_CONV_WEIGHTS.contains(&mapped.as_str()) && stored[1] == 3)
-        .then(|| (stored[0], stored[1], stored[2]));
+    let swap_conv = match stored[..] {
+        [out, kernel @ MLX_CONV_KERNEL, input] if MLX_CONV_WEIGHTS.contains(&mapped.as_str()) => {
+            Some((out, kernel, input))
+        }
+        _ => None,
+    };
     let shape = match swap_conv {
         Some((out, kernel, input)) => vec![out, input, kernel],
         None => stored,
     };
-    Ok(Some(Tensor { name: mapped, source: Some(TensorSource { offset: data_start + offset, swap_conv }), shape }))
+    Ok(Some(Tensor {
+        name: mapped,
+        source: Some(TensorSource {
+            offset: data_start + offset,
+            swap_conv,
+        }),
+        shape,
+    }))
 }
 
 fn write_i32(out: &mut impl Write, value: i32) -> std::io::Result<()> {
@@ -213,9 +252,22 @@ fn write_i32(out: &mut impl Write, value: i32) -> std::io::Result<()> {
 
 fn write_header(out: &mut impl Write) -> AppResult<()> {
     let n_state = N_STATE as i32;
-    let fields = [N_VOCAB, N_AUDIO_CTX as i32, n_state, N_HEAD, N_AUDIO_LAYER, N_TEXT_CTX, n_state, N_HEAD, N_TEXT_LAYER, N_MELS as i32, FTYPE_F16];
+    let fields = [
+        N_VOCAB,
+        N_AUDIO_CTX as i32,
+        n_state,
+        N_HEAD,
+        N_AUDIO_LAYER,
+        N_TEXT_CTX,
+        n_state,
+        N_HEAD,
+        N_TEXT_LAYER,
+        N_MELS as i32,
+        FTYPE_F16,
+    ];
     let context = "write ggml header";
-    out.write_all(&GGML_MAGIC.to_le_bytes()).map_err(io_context(context))?;
+    out.write_all(&GGML_MAGIC.to_le_bytes())
+        .map_err(io_context(context))?;
     for field in fields {
         write_i32(out, field).map_err(io_context(context))?;
     }
@@ -256,10 +308,9 @@ fn stores_f32(tensor: &Tensor) -> bool {
 fn write_tensor_header(out: &mut impl Write, tensor: &Tensor, ftype: i32) -> std::io::Result<()> {
     // whisper.cpp reshapes conv biases to 2-D: the file must say [1, n].
     let is_conv_bias = tensor.name == "encoder.conv1.bias" || tensor.name == "encoder.conv2.bias";
-    let dims: Vec<usize> = if is_conv_bias {
-        vec![1, tensor.shape[0]]
-    } else {
-        tensor.shape.iter().rev().copied().collect()
+    let dims: Vec<usize> = match tensor.shape[..] {
+        [count] if is_conv_bias => vec![1, count],
+        _ => tensor.shape.iter().rev().copied().collect(),
     };
     write_i32(out, dims.len() as i32)?;
     write_i32(out, tensor.name.len() as i32)?;
@@ -270,10 +321,17 @@ fn write_tensor_header(out: &mut impl Write, tensor: &Tensor, ftype: i32) -> std
     out.write_all(tensor.name.as_bytes())
 }
 
-fn copy_tensor(reader: &mut BufReader<File>, out: &mut impl Write, tensor: &Tensor, source: &TensorSource) -> AppResult<()> {
+fn copy_tensor(
+    reader: &mut BufReader<File>,
+    out: &mut impl Write,
+    tensor: &Tensor,
+    source: &TensorSource,
+) -> AppResult<()> {
     let context = "copy tensor";
     let count: usize = tensor.shape.iter().product();
-    reader.seek(SeekFrom::Start(source.offset)).map_err(io_context(context))?;
+    reader
+        .seek(SeekFrom::Start(source.offset))
+        .map_err(io_context(context))?;
     let as_f32 = stores_f32(tensor);
     let mut raw = vec![0u8; count * 2];
     reader.read_exact(&mut raw).map_err(io_context(context))?;
@@ -300,18 +358,29 @@ fn swap_conv_axes(raw: &[u8], out_channels: usize, kernel: usize, input: usize) 
 }
 
 fn load_tensors(header: &Value, data_start: u64) -> AppResult<Vec<Tensor>> {
-    let entries = header.as_object().ok_or_else(|| AppError::Invalid("safetensors header is not an object".into()))?;
+    let entries = header
+        .as_object()
+        .ok_or_else(|| AppError::Invalid("safetensors header is not an object".into()))?;
     let mut tensors = Vec::new();
     for (name, meta) in entries.iter().filter(|(name, _)| *name != "__metadata__") {
         if let Some(tensor) = parse_tensor(name, meta, data_start)? {
             tensors.push(tensor);
         }
     }
-    if !tensors.iter().any(|t| t.name == "encoder.positional_embedding") {
-        tensors.push(Tensor { name: "encoder.positional_embedding".into(), source: None, shape: vec![N_AUDIO_CTX, N_STATE] });
+    if !tensors
+        .iter()
+        .any(|t| t.name == "encoder.positional_embedding")
+    {
+        tensors.push(Tensor {
+            name: "encoder.positional_embedding".into(),
+            source: None,
+            shape: vec![N_AUDIO_CTX, N_STATE],
+        });
     }
     if !tensors.iter().any(|t| t.name == "encoder.conv1.weight") {
-        return Err(AppError::Invalid("not a Whisper checkpoint: encoder.conv1.weight is missing".into()));
+        return Err(AppError::Invalid(
+            "not a Whisper checkpoint: encoder.conv1.weight is missing".into(),
+        ));
     }
     Ok(tensors)
 }
@@ -323,17 +392,23 @@ pub fn convert(source: &Path, output: &Path, mut progress: impl FnMut(f64)) -> A
     let (header, data_start) = read_header(&mut reader)?;
     let tensors = load_tensors(&header, data_start)?;
     let partial = output.with_extension("converting");
-    let created = File::create(&partial).map_err(io_context(format!("create {}", partial.display())))?;
+    let created =
+        File::create(&partial).map_err(io_context(format!("create {}", partial.display())))?;
     let mut out = BufWriter::with_capacity(COPY_BUFFER_BYTES, created);
     write_header(&mut out)?;
     for (index, tensor) in tensors.iter().enumerate() {
-        let ftype = if stores_f32(tensor) { TENSOR_F32 } else { TENSOR_F16 };
+        let ftype = if stores_f32(tensor) {
+            TENSOR_F32
+        } else {
+            TENSOR_F16
+        };
         write_tensor_header(&mut out, tensor, ftype).map_err(io_context("write tensor header"))?;
         match &tensor.source {
             Some(source) => copy_tensor(&mut reader, &mut out, tensor, source)?,
             None => {
                 let values: Vec<u8> = sinusoids().iter().flat_map(|v| v.to_le_bytes()).collect();
-                out.write_all(&values).map_err(io_context("write positional table"))?;
+                out.write_all(&values)
+                    .map_err(io_context("write positional table"))?;
             }
         }
         progress((index + 1) as f64 / tensors.len() as f64);
@@ -349,22 +424,58 @@ mod tests {
 
     #[test]
     fn hf_names_map_to_openai_names() {
-        assert_eq!(ggml_name("model.encoder.layers.3.self_attn.k_proj.weight").unwrap(), "encoder.blocks.3.attn.key.weight");
-        assert_eq!(ggml_name("model.decoder.layers.1.encoder_attn.out_proj.bias").unwrap(), "decoder.blocks.1.cross_attn.out.bias");
-        assert_eq!(ggml_name("model.decoder.layers.1.encoder_attn_layer_norm.weight").unwrap(), "decoder.blocks.1.cross_attn_ln.weight");
-        assert_eq!(ggml_name("model.decoder.layers.0.fc2.weight").unwrap(), "decoder.blocks.0.mlp.2.weight");
-        assert_eq!(ggml_name("model.encoder.layers.0.final_layer_norm.bias").unwrap(), "encoder.blocks.0.mlp_ln.bias");
-        assert_eq!(ggml_name("model.encoder.layer_norm.weight").unwrap(), "encoder.ln_post.weight");
-        assert_eq!(ggml_name("model.decoder.layer_norm.weight").unwrap(), "decoder.ln.weight");
-        assert_eq!(ggml_name("model.decoder.embed_tokens.weight").unwrap(), "decoder.token_embedding.weight");
-        assert_eq!(ggml_name("model.decoder.embed_positions.weight").unwrap(), "decoder.positional_embedding");
-        assert_eq!(ggml_name("model.encoder.conv1.weight").unwrap(), "encoder.conv1.weight");
+        assert_eq!(
+            ggml_name("model.encoder.layers.3.self_attn.k_proj.weight").unwrap(),
+            "encoder.blocks.3.attn.key.weight"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.layers.1.encoder_attn.out_proj.bias").unwrap(),
+            "decoder.blocks.1.cross_attn.out.bias"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.layers.1.encoder_attn_layer_norm.weight").unwrap(),
+            "decoder.blocks.1.cross_attn_ln.weight"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.layers.0.fc2.weight").unwrap(),
+            "decoder.blocks.0.mlp.2.weight"
+        );
+        assert_eq!(
+            ggml_name("model.encoder.layers.0.final_layer_norm.bias").unwrap(),
+            "encoder.blocks.0.mlp_ln.bias"
+        );
+        assert_eq!(
+            ggml_name("model.encoder.layer_norm.weight").unwrap(),
+            "encoder.ln_post.weight"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.layer_norm.weight").unwrap(),
+            "decoder.ln.weight"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.embed_tokens.weight").unwrap(),
+            "decoder.token_embedding.weight"
+        );
+        assert_eq!(
+            ggml_name("model.decoder.embed_positions.weight").unwrap(),
+            "decoder.positional_embedding"
+        );
+        assert_eq!(
+            ggml_name("model.encoder.conv1.weight").unwrap(),
+            "encoder.conv1.weight"
+        );
     }
 
     #[test]
     fn mlx_names_map_to_openai_names() {
-        assert_eq!(ggml_name("encoder.blocks.0.mlp1.weight").unwrap(), "encoder.blocks.0.mlp.0.weight");
-        assert_eq!(ggml_name("decoder.blocks.2.attn_ln.bias").unwrap(), "decoder.blocks.2.attn_ln.bias");
+        assert_eq!(
+            ggml_name("encoder.blocks.0.mlp1.weight").unwrap(),
+            "encoder.blocks.0.mlp.0.weight"
+        );
+        assert_eq!(
+            ggml_name("decoder.blocks.2.attn_ln.bias").unwrap(),
+            "decoder.blocks.2.attn_ln.bias"
+        );
     }
 
     #[test]
@@ -386,7 +497,10 @@ mod tests {
     fn conv_axes_swap_keeps_elements() {
         // out=1, kernel=2, in=3: stored [[a b c][d e f]] becomes [[a d][b e][c f]].
         let raw = [0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0];
-        assert_eq!(swap_conv_axes(&raw, 1, 2, 3), vec![0, 0, 3, 0, 1, 0, 4, 0, 2, 0, 5, 0]);
+        assert_eq!(
+            swap_conv_axes(&raw, 1, 2, 3),
+            vec![0, 0, 3, 0, 1, 0, 4, 0, 2, 0, 5, 0]
+        );
     }
 
     #[test]

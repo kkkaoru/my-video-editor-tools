@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    transcribe_app::entry(&args).map_or_else(
+    transcribe_app::entry(&args, transcribe_app::shell::run).map_or_else(
         |error| {
             eprintln!("{error}");
             ExitCode::FAILURE

@@ -16,20 +16,22 @@ export interface StylePaneProps {
   faceOptions: SelectOption[];
 }
 
-interface ToggleChoice {
-  value: string;
+interface ToggleChoice<Value extends string> {
+  value: Value;
   label: string;
 }
 
-interface ChoiceGroupProps {
+interface ChoiceGroupProps<Value extends string> {
   label: string;
-  value: string;
-  choices: ToggleChoice[];
-  onChange: (value: string) => void;
+  value: Value;
+  choices: ToggleChoice<Value>[];
+  onChange: (value: Value) => void;
 }
+
+type FrameId = "landscape" | "vertical" | "uhd";
 
 interface FrameChoice {
-  id: string;
+  id: FrameId;
   size: FrameSize;
   label: (messages: Messages) => string;
 }
@@ -59,7 +61,7 @@ const FIRST_COLOURS: string[] = [
   "#E08CE0",
   "#B5E05E",
 ];
-const SPEECH_LANGUAGES: ToggleChoice[] = [
+const SPEECH_LANGUAGES: ToggleChoice<string>[] = [
   { value: "ja", label: "日本語" },
   { value: "en", label: "English" },
   { value: "zh", label: "中文" },
@@ -68,41 +70,49 @@ const SPEECH_LANGUAGES: ToggleChoice[] = [
   { value: "fr", label: "Français" },
   { value: "es", label: "Español" },
 ];
-const LANDSCAPE: FrameChoice = {
-  id: "landscape",
-  size: { width: 1920, height: 1080 },
-  label: ({ previewLandscape }: Messages): string => previewLandscape,
-};
-const FRAMES: FrameChoice[] = [
-  LANDSCAPE,
-  {
+const FRAMES: Record<FrameId, FrameChoice> = {
+  landscape: {
+    id: "landscape",
+    size: { width: 1920, height: 1080 },
+    label: ({ previewLandscape }: Messages): string => previewLandscape,
+  },
+  vertical: {
     id: "vertical",
     size: { width: 1080, height: 1920 },
     label: ({ previewVertical }: Messages): string => previewVertical,
   },
-  { id: "uhd", size: { width: 3840, height: 2160 }, label: ({ previewUhd }: Messages): string => previewUhd },
-];
-const ANCHOR_VALUES: ReadonlySet<string> = new Set(["face_above", "face_below", "video_top", "video_bottom"]);
-
-const isAnchor = (value: string): value is Anchor => ANCHOR_VALUES.has(value);
+  uhd: {
+    id: "uhd",
+    size: { width: 3840, height: 2160 },
+    label: ({ previewUhd }: Messages): string => previewUhd,
+  },
+};
 
 export const defaultPalette = (): SpeakerColor[] =>
   FIRST_COLOURS.map((fill: string): SpeakerColor => ({ fill, outline: DEFAULT_OUTLINE }));
 
-const ChoiceGroup = ({ label, value, choices, onChange }: ChoiceGroupProps): VNode => (
+const ChoiceGroup = <Value extends string>({
+  label,
+  value,
+  choices,
+  onChange,
+}: ChoiceGroupProps<Value>): VNode => (
   <ToggleGroup
     aria-label={label}
     className="my-2 flex flex-wrap gap-2"
     value={[value]}
     onValueChange={(next: string[]): void => {
-      const chosen: string | undefined = next[0];
+      // Pressing the active choice empties `next`; one choice always stays selected.
+      const chosen: ToggleChoice<Value> | undefined = choices.find(
+        ({ value: choiceValue }: ToggleChoice<Value>): boolean => choiceValue === next[0],
+      );
       if (chosen !== undefined) {
-        onChange(chosen);
+        onChange(chosen.value);
       }
     }}
   >
     {choices.map(
-      ({ value: choiceValue, label: choiceLabel }: ToggleChoice): VNode => (
+      ({ value: choiceValue, label: choiceLabel }: ToggleChoice<Value>): VNode => (
         <Toggle key={choiceValue} value={choiceValue} className={buttonClass(choiceValue === value)}>
           {choiceLabel}
         </Toggle>
@@ -238,13 +248,12 @@ function PaletteEditor({ palette, onChange }: PaletteProps): VNode {
 
 export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNode {
   const messages: Messages = useMessages();
-  const [frameId, setFrameId] = useState<string>("landscape");
-  const frame: FrameChoice = FRAMES.find(({ id }: FrameChoice): boolean => id === frameId) ?? LANDSCAPE;
+  const [frameId, setFrameId] = useState<FrameId>("landscape");
   const { placement } = settings;
   const update = (changes: Partial<Settings>): void => store.updateSettings({ ...settings, ...changes });
   const place = (changes: Partial<Settings["placement"]>): void =>
     update({ placement: { ...placement, ...changes } });
-  const anchors: ToggleChoice[] = [
+  const anchors: ToggleChoice<Anchor>[] = [
     { value: "face_above", label: messages.anchorFaceAbove },
     { value: "face_below", label: messages.anchorFaceBelow },
     { value: "video_top", label: messages.anchorVideoTop },
@@ -260,11 +269,7 @@ export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNo
           label={messages.positionLabel}
           value={placement.anchor}
           choices={anchors}
-          onChange={(anchor: string): void => {
-            if (isAnchor(anchor)) {
-              place({ anchor });
-            }
-          }}
+          onChange={(anchor: Anchor): void => place({ anchor })}
         />
         <AdjustField
           label={messages.offsetX}
@@ -292,7 +297,7 @@ export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNo
           label={messages.speechLanguage}
           value={settings.language}
           options={[{ value: "auto", label: messages.languageAuto }, ...SPEECH_LANGUAGES].map(
-            (choice: ToggleChoice): SelectOption => ({ ...choice, disabled: false }),
+            (choice: ToggleChoice<string>): SelectOption => ({ ...choice, disabled: false }),
           )}
           onChange={(language: string): void => update({ language })}
         />
@@ -330,12 +335,12 @@ export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNo
         <ChoiceGroup
           label={messages.previewFrameLabel}
           value={frameId}
-          choices={FRAMES.map(
-            ({ id, label }: FrameChoice): ToggleChoice => ({ value: id, label: label(messages) }),
+          choices={Object.values(FRAMES).map(
+            ({ id, label }: FrameChoice): ToggleChoice<FrameId> => ({ value: id, label: label(messages) }),
           )}
           onChange={setFrameId}
         />
-        <CaptionPreview settings={settings} frame={frame} />
+        <CaptionPreview settings={settings} frame={FRAMES[frameId]} />
         <PaletteEditor
           palette={settings.palette}
           onChange={(palette: SpeakerColor[]): void => update({ palette })}

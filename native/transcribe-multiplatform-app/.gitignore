@@ -1,3 +1,5 @@
+# The repository root ignores *.ts as MPEG-TS media; here it is TypeScript.
+!*.ts
 node_modules/
 src-tauri/target/
 src-tauri/gen/

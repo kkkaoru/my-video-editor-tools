@@ -2,6 +2,7 @@
 import type { VNode } from "preact";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
 import type { Snapshot } from "../backend/types.ts";
+import { languageFor } from "../i18n/language.ts";
 import { errorText, format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import type { JobRow } from "../state/app-state.ts";
@@ -24,9 +25,9 @@ interface JobItemProps {
 const MS_PER_SECOND: number = 1000;
 const SECONDS_PER_MINUTE: number = 60;
 const PERCENT: number = 100;
-const PATH_SEPARATOR: RegExp = /[\\/]/;
+const FOLDERS: RegExp = /^.*[\\/]/s;
 
-export const fileName = (path: string): string => path.split(PATH_SEPARATOR).pop() ?? path;
+export const fileName = (path: string): string => path.replace(FOLDERS, "");
 
 export const elapsedParts = (ms: number): { minutes: number; seconds: number } => ({
   minutes: Math.floor(ms / MS_PER_SECOND / SECONDS_PER_MINUTE),
@@ -182,9 +183,9 @@ export function JobsPane({ store, snapshot, now }: JobsPaneProps): VNode {
       {missing.length === 0 ? null : (
         <p role="alert" className="mt-3 text-error">
           {format(messages.readinessMissing, {
-            roles: new Intl.ListFormat(snapshot.locale.replace("_", "-").split(".")[0], {
-              type: "conjunction",
-            }).format(missing),
+            roles: new Intl.ListFormat(languageFor(snapshot.locale).tag, { type: "conjunction" }).format(
+              missing,
+            ),
           })}
         </p>
       )}

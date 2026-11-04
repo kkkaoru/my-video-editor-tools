@@ -60,10 +60,11 @@ li {
   outline-offset: 2px;
 }
 
+/* Outside any layer, so it already beats Tailwind's layered utilities whatever their specificity. */
 @media (prefers-reduced-motion: reduce) {
   * {
-    animation: none !important;
-    transition: none !important;
+    animation: none;
+    transition: none;
   }
 }
 

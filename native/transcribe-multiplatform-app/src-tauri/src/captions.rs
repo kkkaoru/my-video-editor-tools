@@ -80,8 +80,13 @@ pub fn metrics_for(info: &VideoInfo, settings: &Settings) -> Metrics {
     let short_edge = f64::from(info.width.min(info.height));
     let font_px = (short_edge * settings.font_ratio).round().max(1.0);
     let outline_px = (font_px * settings.outline_ratio).max(1.0);
-    let max_line_px = (f64::from(info.width) * settings.width_ratio - 2.0 * outline_px).max(font_px);
-    Metrics { font_px, outline_px, max_line_px }
+    let max_line_px =
+        (f64::from(info.width) * settings.width_ratio - 2.0 * outline_px).max(font_px);
+    Metrics {
+        font_px,
+        outline_px,
+        max_line_px,
+    }
 }
 
 fn overlap(word: &Word, turn: &SpeakerTurn) -> f64 {
@@ -99,13 +104,18 @@ fn voice_of(word: &Word, turns: &[SpeakerTurn]) -> Voice {
         if share <= 0.0 {
             continue;
         }
-        match amounts.iter_mut().find(|(speaker, _)| *speaker == turn.speaker) {
+        match amounts
+            .iter_mut()
+            .find(|(speaker, _)| *speaker == turn.speaker)
+        {
             Some((_, total)) => *total += share,
             None => amounts.push((turn.speaker, share)),
         }
     }
     amounts.sort_by(descending_share);
-    let Some(&(top, top_share)) = amounts.first() else { return Voice::Silent };
+    let Some(&(top, top_share)) = amounts.first() else {
+        return Voice::Silent;
+    };
     let duration = (word.end - word.start).max(f64::EPSILON);
     let runner_up = amounts.get(1).map_or(0.0, |entry| entry.1);
     if amounts.len() > 1 && top_share - runner_up < DOMINANT_MARGIN * duration {
@@ -169,7 +179,10 @@ fn wrap(text: &str, metrics: &Metrics) -> Vec<String> {
                 }
             }
             lines.push(std::mem::take(&mut current));
-            width = carry.iter().map(|moved| glyph_width(*moved, metrics.font_px)).sum();
+            width = carry
+                .iter()
+                .map(|moved| glyph_width(*moved, metrics.font_px))
+                .sum();
             current = carry;
         }
         current.push(*c);
@@ -179,7 +192,10 @@ fn wrap(text: &str, metrics: &Metrics) -> Vec<String> {
         lines.push(current);
     }
     rebalance_orphan(&mut lines, metrics);
-    lines.into_iter().map(|line| line.into_iter().collect()).collect()
+    lines
+        .into_iter()
+        .map(|line| line.into_iter().collect())
+        .collect()
 }
 
 fn break_is_forbidden(current: &[char], next: char, carry: &[char]) -> bool {
@@ -189,8 +205,12 @@ fn break_is_forbidden(current: &[char], next: char, carry: &[char]) -> bool {
 }
 
 fn rebalance_orphan(lines: &mut [Vec<char>], metrics: &Metrics) {
-    let Some((last, earlier)) = lines.split_last_mut() else { return };
-    let Some(previous) = earlier.last_mut() else { return };
+    let Some((last, earlier)) = lines.split_last_mut() else {
+        return;
+    };
+    let Some(previous) = earlier.last_mut() else {
+        return;
+    };
     if last.len() > WRAP_ORPHAN_MAXIMUM {
         return;
     }
@@ -200,7 +220,9 @@ fn rebalance_orphan(lines: &mut [Vec<char>], metrics: &Metrics) {
         last.insert(0, moved);
         let text: String = last.iter().collect();
         let next_start = last.first().copied().unwrap_or(' ');
-        if measure(&text, metrics.font_px) > metrics.max_line_px || NO_LINE_START.contains(next_start) {
+        if measure(&text, metrics.font_px) > metrics.max_line_px
+            || NO_LINE_START.contains(next_start)
+        {
             last.remove(0);
             previous.push(moved);
             return;
@@ -209,7 +231,12 @@ fn rebalance_orphan(lines: &mut [Vec<char>], metrics: &Metrics) {
 }
 
 fn normalized_text(words: &[Word]) -> String {
-    words.iter().map(|word| word.text.as_str()).collect::<String>().trim().to_owned()
+    words
+        .iter()
+        .map(|word| word.text.as_str())
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 fn fits(words: &[Word], metrics: &Metrics) -> bool {
@@ -217,7 +244,9 @@ fn fits(words: &[Word], metrics: &Metrics) -> bool {
 }
 
 fn starts_new_cue(group: &[Word], next: &Word, metrics: &Metrics) -> bool {
-    let Some(last) = group.last() else { return false };
+    let Some(last) = group.last() else {
+        return false;
+    };
     let first_start = group.first().map_or(next.start, |word| word.start);
     let is_punctuation_only = next.text.trim().chars().all(|c| !c.is_alphanumeric());
     if is_punctuation_only {
@@ -249,7 +278,11 @@ fn block_height(line_count: usize, metrics: &Metrics) -> f64 {
 }
 
 fn block_width(lines: &[String], metrics: &Metrics) -> f64 {
-    lines.iter().map(|line| measure(line, metrics.font_px)).fold(0.0, f64::max) + 2.0 * metrics.outline_px
+    lines
+        .iter()
+        .map(|line| measure(line, metrics.font_px))
+        .fold(0.0, f64::max)
+        + 2.0 * metrics.outline_px
 }
 
 fn median(mut values: Vec<f64>) -> Option<f64> {
@@ -263,9 +296,17 @@ fn distance_to_span(sample: &FaceSample, start: f64, end: f64) -> f64 {
 
 /// The face during a cue: the median over its span, else the nearest sample in time.
 fn face_for_cue(faces: &[FaceSample], start: f64, end: f64) -> Option<FaceSample> {
-    let during: Vec<&FaceSample> = faces.iter().filter(|face| (start..=end).contains(&face.time)).collect();
+    let during: Vec<&FaceSample> = faces
+        .iter()
+        .filter(|face| (start..=end).contains(&face.time))
+        .collect();
     if during.is_empty() {
-        return faces.iter().min_by(|left, right| distance_to_span(left, start, end).total_cmp(&distance_to_span(right, start, end))).copied();
+        return faces
+            .iter()
+            .min_by(|left, right| {
+                distance_to_span(left, start, end).total_cmp(&distance_to_span(right, start, end))
+            })
+            .copied();
     }
     Some(FaceSample {
         time: start,
@@ -283,7 +324,13 @@ fn clamp_center(center: f64, block: f64, frame: f64) -> f64 {
     center.clamp(half, frame - half)
 }
 
-fn anchored_center(anchor: Anchor, face: Option<&FaceSample>, height: f64, info: &VideoInfo, metrics: &Metrics) -> (f64, f64) {
+fn anchored_center(
+    anchor: Anchor,
+    face: Option<&FaceSample>,
+    height: f64,
+    info: &VideoInfo,
+    metrics: &Metrics,
+) -> (f64, f64) {
     let (frame_w, frame_h) = (f64::from(info.width), f64::from(info.height));
     let margin = frame_h * VIDEO_MARGIN_RATIO;
     let bottom_of_frame = (frame_w / 2.0, frame_h - margin - height / 2.0);
@@ -298,7 +345,12 @@ fn anchored_center(anchor: Anchor, face: Option<&FaceSample>, height: f64, info:
 
 /// Builds positioned cues. The returned flag reports a face anchor that found no face.
 #[must_use]
-pub fn build_cues(words: &[Word], faces: &[FaceSample], info: &VideoInfo, settings: &Settings) -> (Vec<Cue>, bool) {
+pub fn build_cues(
+    words: &[Word],
+    faces: &[FaceSample],
+    info: &VideoInfo,
+    settings: &Settings,
+) -> (Vec<Cue>, bool) {
     let metrics = metrics_for(info, settings);
     let placement = settings.placement;
     let (frame_w, frame_h) = (f64::from(info.width), f64::from(info.height));
@@ -308,20 +360,39 @@ pub fn build_cues(words: &[Word], faces: &[FaceSample], info: &VideoInfo, settin
     let mut cues: Vec<Cue> = Vec::with_capacity(groups.len());
     let mut faceless = false;
     for (index, group) in groups.iter().enumerate() {
-        let (Some(first), Some(last)) = (group.first(), group.last()) else { continue };
+        let (Some(first), Some(last)) = (group.first(), group.last()) else {
+            continue;
+        };
         let text = normalized_text(group);
         if text.is_empty() {
             continue;
         }
         let lines = wrap(&text, &metrics);
-        let next_start = groups.get(index + 1).and_then(|next| next.first()).map_or(f64::INFINITY, |word| word.start);
-        let end = last.end.max(first.start + MIN_CUE_SECONDS).min(next_start.max(first.start + f64::EPSILON));
-        let face = wants_face.then(|| face_for_cue(faces, first.start, last.end)).flatten();
+        let next_start = groups
+            .get(index + 1)
+            .and_then(|next| next.first())
+            .map_or(f64::INFINITY, |word| word.start);
+        let end = last
+            .end
+            .max(first.start + MIN_CUE_SECONDS)
+            .min(next_start.max(first.start + f64::EPSILON));
+        let face = wants_face
+            .then(|| face_for_cue(faces, first.start, last.end))
+            .flatten();
         faceless |= wants_face && face.is_none();
         let height = block_height(lines.len(), &metrics);
-        let (center_x, center_y) = anchored_center(placement.anchor, face.as_ref(), height, info, &metrics);
-        let mut x = clamp_center(center_x + placement.offset_x_percent / 100.0 * frame_w, block_width(&lines, &metrics), frame_w);
-        let mut y = clamp_center(center_y + placement.offset_y_percent / 100.0 * frame_h, height, frame_h);
+        let (center_x, center_y) =
+            anchored_center(placement.anchor, face.as_ref(), height, info, &metrics);
+        let mut x = clamp_center(
+            center_x + placement.offset_x_percent / 100.0 * frame_w,
+            block_width(&lines, &metrics),
+            frame_w,
+        );
+        let mut y = clamp_center(
+            center_y + placement.offset_y_percent / 100.0 * frame_h,
+            height,
+            frame_h,
+        );
         if let Some(previous) = cues.last() {
             if (previous.x - x).abs() <= deadband {
                 x = previous.x;
@@ -330,7 +401,14 @@ pub fn build_cues(words: &[Word], faces: &[FaceSample], info: &VideoInfo, settin
                 y = previous.y;
             }
         }
-        cues.push(Cue { start: first.start, end, speaker: first.speaker, lines, x, y });
+        cues.push(Cue {
+            start: first.start,
+            end,
+            speaker: first.speaker,
+            lines,
+            x,
+            y,
+        });
     }
     (cues, faceless)
 }
@@ -341,19 +419,54 @@ mod tests {
     use crate::settings::Placement;
 
     fn word(start: f64, end: f64, text: &str) -> Word {
-        Word { start, end, text: text.to_owned(), speaker: None }
+        Word {
+            start,
+            end,
+            text: text.to_owned(),
+            speaker: None,
+        }
     }
 
     fn spoken(start: f64, end: f64, text: &str, speaker: u32) -> Word {
-        Word { start, end, text: text.to_owned(), speaker: Some(speaker) }
+        Word {
+            start,
+            end,
+            text: text.to_owned(),
+            speaker: Some(speaker),
+        }
     }
 
-    const FULL_HD: VideoInfo = VideoInfo { width: 1920, height: 1080, duration: 60.0, fps_num: 30, fps_den: 1 };
-    const VERTICAL: VideoInfo = VideoInfo { width: 1080, height: 1920, duration: 60.0, fps_num: 30, fps_den: 1 };
-    const UHD: VideoInfo = VideoInfo { width: 3840, height: 2160, duration: 60.0, fps_num: 30, fps_den: 1 };
+    const FULL_HD: VideoInfo = VideoInfo {
+        width: 1920,
+        height: 1080,
+        duration: 60.0,
+        fps_num: 30,
+        fps_den: 1,
+    };
+    const VERTICAL: VideoInfo = VideoInfo {
+        width: 1080,
+        height: 1920,
+        duration: 60.0,
+        fps_num: 30,
+        fps_den: 1,
+    };
+    const UHD: VideoInfo = VideoInfo {
+        width: 3840,
+        height: 2160,
+        duration: 60.0,
+        fps_num: 30,
+        fps_den: 1,
+    };
 
     fn at(anchor: Anchor, x: f64, y: f64) -> Settings {
-        Settings { placement: Placement { anchor, offset_x_percent: x, offset_y_percent: y }, ..Settings::default() }
+        Settings {
+            placement: Placement {
+                anchor,
+                offset_x_percent: x,
+                offset_y_percent: y,
+            },
+            ..Settings::default()
+        }
     }
 
     #[test]
@@ -377,50 +490,103 @@ mod tests {
     #[test]
     fn dominant_voice_wins() {
         let mut words = [word(0.0, 1.0, "は")];
-        assign_speakers(&mut words, &[SpeakerTurn { start: 0.0, end: 5.0, speaker: 2 }]);
+        assign_speakers(
+            &mut words,
+            &[SpeakerTurn {
+                start: 0.0,
+                end: 5.0,
+                speaker: 2,
+            }],
+        );
         assert_eq!(words[0].speaker, Some(2));
     }
 
     #[test]
     fn overlapping_voices_are_not_guessed() {
         let mut words = [word(0.0, 1.0, "は")];
-        assign_speakers(&mut words, &[
-            SpeakerTurn { start: 0.0, end: 0.5, speaker: 1 },
-            SpeakerTurn { start: 0.5, end: 1.0, speaker: 2 },
-        ]);
+        assign_speakers(
+            &mut words,
+            &[
+                SpeakerTurn {
+                    start: 0.0,
+                    end: 0.5,
+                    speaker: 1,
+                },
+                SpeakerTurn {
+                    start: 0.5,
+                    end: 1.0,
+                    speaker: 2,
+                },
+            ],
+        );
         assert_eq!(words[0].speaker, None);
     }
 
     #[test]
     fn a_word_in_a_small_silent_gap_takes_the_nearest_speaker() {
         let mut words = [word(5.2, 5.3, "ね")];
-        assign_speakers(&mut words, &[SpeakerTurn { start: 0.0, end: 5.0, speaker: 3 }]);
+        assign_speakers(
+            &mut words,
+            &[SpeakerTurn {
+                start: 0.0,
+                end: 5.0,
+                speaker: 3,
+            }],
+        );
         assert_eq!(words[0].speaker, Some(3));
     }
 
     #[test]
     fn a_word_far_from_any_speech_stays_unassigned() {
         let mut words = [word(9.0, 9.1, "ね")];
-        assign_speakers(&mut words, &[SpeakerTurn { start: 0.0, end: 5.0, speaker: 3 }]);
+        assign_speakers(
+            &mut words,
+            &[SpeakerTurn {
+                start: 0.0,
+                end: 5.0,
+                speaker: 3,
+            }],
+        );
         assert_eq!(words[0].speaker, None);
     }
 
     #[test]
     fn closing_marks_never_start_a_line() {
-        let metrics = Metrics { font_px: 10.0, outline_px: 1.0, max_line_px: 50.0 };
-        assert_eq!(wrap("あいうえお。かきくけこさ", &metrics), vec!["あいうえ", "お。かき", "くけこさ"]);
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 50.0,
+        };
+        assert_eq!(
+            wrap("あいうえお。かきくけこさ", &metrics),
+            vec!["あいうえ", "お。かき", "くけこさ"]
+        );
     }
 
     #[test]
     fn opening_marks_never_end_a_line() {
-        let metrics = Metrics { font_px: 10.0, outline_px: 1.0, max_line_px: 50.0 };
-        assert_eq!(wrap("あいうえ「おかきくけこさしすせ", &metrics), vec!["あいうえ", "「おかきく", "けこさ", "しすせ"]);
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 50.0,
+        };
+        assert_eq!(
+            wrap("あいうえ「おかきくけこさしすせ", &metrics),
+            vec!["あいうえ", "「おかきく", "けこさ", "しすせ"]
+        );
     }
 
     #[test]
     fn a_short_last_line_is_rebalanced() {
-        let metrics = Metrics { font_px: 10.0, outline_px: 1.0, max_line_px: 100.0 };
-        assert_eq!(wrap("あいうえおかきくけこさし", &metrics), vec!["あいうえおか", "きくけこさし"]);
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 100.0,
+        };
+        assert_eq!(
+            wrap("あいうえおかきくけこさし", &metrics),
+            vec!["あいうえおか", "きくけこさし"]
+        );
     }
 
     #[test]
@@ -434,9 +600,18 @@ mod tests {
 
     #[test]
     fn pauses_and_sentence_ends_split_cues() {
-        let words = [spoken(0.0, 1.0, "はい", 1), spoken(2.0, 3.0, "そう。", 1), spoken(3.1, 4.0, "次", 1)];
+        let words = [
+            spoken(0.0, 1.0, "はい", 1),
+            spoken(2.0, 3.0, "そう。", 1),
+            spoken(3.1, 4.0, "次", 1),
+        ];
         let (cues, _) = build_cues(&words, &[], &FULL_HD, &Settings::default());
-        assert_eq!(cues.iter().map(|cue| cue.lines.join("")).collect::<Vec<_>>(), vec!["はい", "そう。", "次"]);
+        assert_eq!(
+            cues.iter()
+                .map(|cue| cue.lines.join(""))
+                .collect::<Vec<_>>(),
+            vec!["はい", "そう。", "次"]
+        );
     }
 
     #[test]
@@ -448,7 +623,11 @@ mod tests {
 
     #[test]
     fn short_cues_last_long_enough_but_never_overlap_the_next() {
-        let words = [spoken(0.0, 0.1, "あ", 1), spoken(0.3, 2.0, "い", 2), spoken(2.0, 2.1, "う", 1)];
+        let words = [
+            spoken(0.0, 0.1, "あ", 1),
+            spoken(0.3, 2.0, "い", 2),
+            spoken(2.0, 2.1, "う", 1),
+        ];
         let (cues, _) = build_cues(&words, &[], &FULL_HD, &Settings::default());
         assert_eq!(cues[0].end, 0.3);
         assert_eq!(cues[1].end, 2.0);
@@ -482,7 +661,12 @@ mod tests {
     #[test]
     fn captions_can_sit_above_or_below_a_face() {
         let words = [spoken(0.0, 1.0, "はい", 1)];
-        let faces = [FaceSample { time: 0.5, top: 400.0, bottom: 600.0, center_x: 700.0 }];
+        let faces = [FaceSample {
+            time: 0.5,
+            top: 400.0,
+            bottom: 600.0,
+            center_x: 700.0,
+        }];
         let (above, _) = build_cues(&words, &faces, &FULL_HD, &at(Anchor::FaceAbove, 0.0, 0.0));
         let (below, _) = build_cues(&words, &faces, &FULL_HD, &at(Anchor::FaceBelow, 0.0, 2.0));
         assert_eq!((above[0].x, above[0].y.round()), (700.0, 338.0));
@@ -500,8 +684,18 @@ mod tests {
     #[test]
     fn the_face_nearest_in_time_covers_gaps() {
         let faces = [
-            FaceSample { time: 0.0, top: 1.0, bottom: 2.0, center_x: 3.0 },
-            FaceSample { time: 10.0, top: 4.0, bottom: 5.0, center_x: 6.0 },
+            FaceSample {
+                time: 0.0,
+                top: 1.0,
+                bottom: 2.0,
+                center_x: 3.0,
+            },
+            FaceSample {
+                time: 10.0,
+                top: 4.0,
+                bottom: 5.0,
+                center_x: 6.0,
+            },
         ];
         assert_eq!(face_for_cue(&faces, 8.0, 9.0).unwrap().top, 4.0);
     }
@@ -510,8 +704,18 @@ mod tests {
     fn small_face_drift_keeps_the_caption_still() {
         let words = [spoken(0.0, 1.0, "はい。", 1), spoken(2.0, 3.0, "そう。", 1)];
         let faces = [
-            FaceSample { time: 0.5, top: 400.0, bottom: 600.0, center_x: 700.0 },
-            FaceSample { time: 2.5, top: 404.0, bottom: 604.0, center_x: 702.0 },
+            FaceSample {
+                time: 0.5,
+                top: 400.0,
+                bottom: 600.0,
+                center_x: 700.0,
+            },
+            FaceSample {
+                time: 2.5,
+                top: 404.0,
+                bottom: 604.0,
+                center_x: 702.0,
+            },
         ];
         let (cues, _) = build_cues(&words, &faces, &FULL_HD, &at(Anchor::FaceAbove, 0.0, 0.0));
         assert_eq!(cues[0].y, cues[1].y);

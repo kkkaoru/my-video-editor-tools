@@ -60,8 +60,12 @@ export const ActionButton = ({ onClick, children, primary, pressed }: ActionButt
   </Button>
 );
 
-const firstValue = (value: number | readonly number[]): number =>
-  typeof value === "number" ? value : (value[0] ?? 0);
+/** Runs `apply` unless the control was cleared, which leaves the saved value as it is. */
+function whenPresent<Value>(next: Value | null, apply: (value: Value) => void): void {
+  if (next !== null) {
+    apply(next);
+  }
+}
 
 export const AdjustField = ({ label, value, min, max, step, onChange }: AdjustFieldProps): VNode => (
   <Field.Root className="my-3">
@@ -73,7 +77,7 @@ export const AdjustField = ({ label, value, min, max, step, onChange }: AdjustFi
         min={min}
         max={max}
         step={step}
-        onValueChange={(next: number | readonly number[]): void => onChange(firstValue(next))}
+        onValueChange={(next: number): void => onChange(next)}
       >
         <Slider.Control className="flex min-h-11 items-center">
           <Slider.Track className="h-1.5 w-full rounded bg-line">
@@ -90,11 +94,7 @@ export const AdjustField = ({ label, value, min, max, step, onChange }: AdjustFi
         min={min}
         max={max}
         step={step}
-        onValueChange={(next: number | null): void => {
-          if (next !== null) {
-            onChange(next);
-          }
-        }}
+        onValueChange={(next: number | null): void => whenPresent(next, onChange)}
       >
         <NumberField.Input
           aria-label={label}
@@ -109,11 +109,7 @@ export const SelectField = ({ label, value, options, onChange }: SelectFieldProp
   <Select.Root
     items={options}
     value={value}
-    onValueChange={(next: string | null): void => {
-      if (next !== null) {
-        onChange(next);
-      }
-    }}
+    onValueChange={(next: string | null): void => whenPresent(next, onChange)}
   >
     <Select.Label className="mt-3 block">{label}</Select.Label>
     <Select.Trigger className={`${BASE_BUTTON} flex w-full items-center justify-between gap-2`}>

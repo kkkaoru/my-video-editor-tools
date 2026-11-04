@@ -178,12 +178,14 @@ async function addFolder({ applySnapshot }: AppStore, settings: Settings): Promi
 const ROLE_ORDER: Role[] = ["transcribe", "diarize", "face", "runtime"];
 
 const roleHeading = (messages: Messages, role: Role): string =>
-  new Map<Role, string>([
-    ["transcribe", messages.roleTranscribe],
-    ["diarize", messages.roleDiarize],
-    ["face", messages.roleFace],
-    ["runtime", messages.roleRuntime],
-  ]).get(role) ?? role;
+  (
+    ({
+      transcribe: messages.roleTranscribe,
+      diarize: messages.roleDiarize,
+      face: messages.roleFace,
+      runtime: messages.roleRuntime,
+    }) satisfies Record<Role, string>
+  )[role];
 
 export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
   const messages: Messages = useMessages();

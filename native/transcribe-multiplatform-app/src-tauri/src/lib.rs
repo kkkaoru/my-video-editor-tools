@@ -35,19 +35,27 @@ pub fn run_headless(video: &Path) -> AppResult<JobOutcome> {
             println!("{line}");
         }
     };
-    pipeline::run_job(video, &paths, &settings, &hardware, &CancelToken::default(), &mut sink)
+    pipeline::run_job(
+        video,
+        &paths,
+        &settings,
+        &hardware,
+        &CancelToken::default(),
+        &mut sink,
+    )
 }
 
 fn print_outcome(outcome: &JobOutcome) -> AppResult<()> {
-    let line = serde_json::to_string(outcome).map_err(|error| error::AppError::Invalid(error.to_string()))?;
+    let line = serde_json::to_string(outcome)
+        .map_err(|error| error::AppError::Invalid(error.to_string()))?;
     println!("{line}");
     Ok(())
 }
 
-/// Runs the requested mode: headless with the flag and a video, otherwise the desktop window.
-pub fn entry(args: &[OsString]) -> AppResult<()> {
+/// Runs the requested mode: headless with the flag and a video, otherwise `window`.
+pub fn entry(args: &[OsString], window: impl FnOnce() -> AppResult<()>) -> AppResult<()> {
     match args {
         [flag, video] if flag == HEADLESS_FLAG => print_outcome(&run_headless(Path::new(video))?),
-        _ => shell::run(),
+        _ => window(),
     }
 }

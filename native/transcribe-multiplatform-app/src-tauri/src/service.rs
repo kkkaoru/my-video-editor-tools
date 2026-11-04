@@ -30,9 +30,18 @@ pub enum JobEvent {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum DownloadEvent {
-    Running { id: String, done_bytes: u64, total_bytes: u64 },
-    Finished { id: String },
-    Failed { id: String, error: serde_json::Value },
+    Running {
+        id: String,
+        done_bytes: u64,
+        total_bytes: u64,
+    },
+    Finished {
+        id: String,
+    },
+    Failed {
+        id: String,
+        error: serde_json::Value,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -80,7 +89,9 @@ pub struct Service {
 }
 
 fn locked<'a, Value>(mutex: &'a Mutex<Value>, name: &str) -> AppResult<MutexGuard<'a, Value>> {
-    mutex.lock().map_err(|_| AppError::Invalid(format!("{name} lock poisoned")))
+    mutex
+        .lock()
+        .map_err(|_| AppError::Invalid(format!("{name} lock poisoned")))
 }
 
 /// The JSON shape the UI translates; serializing an `AppError` cannot fail.
@@ -92,7 +103,10 @@ fn job_result_event(id: u64, result: AppResult<JobOutcome>) -> JobEvent {
     match result {
         Ok(outcome) => JobEvent::Finished { id, outcome },
         Err(AppError::Cancelled) => JobEvent::Cancelled { id },
-        Err(error) => JobEvent::Failed { id, error: error_json(&error) },
+        Err(error) => JobEvent::Failed {
+            id,
+            error: error_json(&error),
+        },
     }
 }
 
@@ -102,10 +116,17 @@ fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
     let sink = Arc::clone(&shared.sink);
     let mut report = |progress: Progress| sink(AppEvent::Job(JobEvent::Running { id, progress }));
     let result = match &job.request {
-        JobRequest::Transcribe(video) => {
-            pipeline::run_job(video, &shared.paths, &settings, &shared.hardware, &job.cancel, &mut report)
+        JobRequest::Transcribe(video) => pipeline::run_job(
+            video,
+            &shared.paths,
+            &settings,
+            &shared.hardware,
+            &job.cancel,
+            &mut report,
+        ),
+        JobRequest::Relayout(file) => {
+            pipeline::relayout(file, &shared.paths, &settings, &job.cancel, &mut report)
         }
-        JobRequest::Relayout(file) => pipeline::relayout(file, &shared.paths, &settings, &job.cancel, &mut report),
     };
     (shared.sink)(AppEvent::Job(job_result_event(id, result)));
     locked(&shared.jobs, "job")?.remove(&id);
@@ -116,7 +137,10 @@ fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
 fn work_through_queue(shared: &Shared, receiver: &Receiver<QueuedJob>) {
     for job in receiver {
         if let Err(error) = run_queued(shared, &job) {
-            (shared.sink)(AppEvent::Job(JobEvent::Failed { id: job.id, error: error_json(&error) }));
+            (shared.sink)(AppEvent::Job(JobEvent::Failed {
+                id: job.id,
+                error: error_json(&error),
+            }));
         }
     }
 }
@@ -133,7 +157,10 @@ fn run_download(entry: &'static ModelEntry, shared: &Shared, cancel: &CancelToke
     let result = download::download_entry(entry, &shared.paths, cancel, &mut report);
     let event = match result {
         Ok(()) => DownloadEvent::Finished { id: id.clone() },
-        Err(error) => DownloadEvent::Failed { id: id.clone(), error: error_json(&error) },
+        Err(error) => DownloadEvent::Failed {
+            id: id.clone(),
+            error: error_json(&error),
+        },
     };
     (shared.sink)(AppEvent::Download(event));
 }
@@ -158,7 +185,13 @@ fn remove_own_copy(entry: &ModelEntry, paths: &AppPaths) -> AppResult<()> {
 impl Service {
     /// Starts the job worker; the service ends with the process.
     #[must_use]
-    pub fn start(paths: AppPaths, hardware: Hardware, settings: Settings, locale: Option<String>, sink: EventSink) -> Self {
+    pub fn start(
+        paths: AppPaths,
+        hardware: Hardware,
+        settings: Settings,
+        locale: Option<String>,
+        sink: EventSink,
+    ) -> Self {
         let (queue, receiver) = mpsc::channel();
         let shared = Arc::new(Shared {
             paths,
@@ -180,7 +213,11 @@ impl Service {
 
     pub fn snapshot(&self) -> AppResult<Snapshot> {
         let settings = locked(&self.shared.settings, "settings")?.clone();
-        let models = catalog::statuses(&self.shared.hardware, &self.shared.paths, &settings.model_dirs);
+        let models = catalog::statuses(
+            &self.shared.hardware,
+            &self.shared.paths,
+            &settings.model_dirs,
+        );
         Ok(Snapshot {
             locale: self.locale.clone(),
             hardware: self.shared.hardware.clone(),
@@ -200,13 +237,25 @@ impl Service {
         let id = self.next_job.fetch_add(1, Ordering::Relaxed);
         let cancel = CancelToken::default();
         locked(&self.shared.jobs, "job")?.insert(id, cancel.clone());
-        (self.shared.sink)(AppEvent::Job(JobEvent::Queued { id, path: path.to_path_buf() }));
-        self.queue.send(QueuedJob { id, request, cancel }).map_err(|_| AppError::Invalid("job worker stopped".into()))?;
+        (self.shared.sink)(AppEvent::Job(JobEvent::Queued {
+            id,
+            path: path.to_path_buf(),
+        }));
+        self.queue
+            .send(QueuedJob {
+                id,
+                request,
+                cancel,
+            })
+            .map_err(|_| AppError::Invalid("job worker stopped".into()))?;
         Ok(id)
     }
 
     pub fn add_videos(&self, videos: &[PathBuf]) -> AppResult<Vec<u64>> {
-        videos.iter().map(|video| self.enqueue(video, JobRequest::Transcribe(video.clone()))).collect()
+        videos
+            .iter()
+            .map(|video| self.enqueue(video, JobRequest::Transcribe(video.clone())))
+            .collect()
     }
 
     pub fn relayout(&self, transcript: &Path) -> AppResult<u64> {
@@ -251,19 +300,33 @@ mod tests {
     const WAIT: Duration = Duration::from_secs(20);
 
     fn scratch(name: &str) -> PathBuf {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test").join(format!("service-{name}"));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("service-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
     }
 
     fn started(root: &Path) -> (Service, Receiver<AppEvent>) {
-        let paths = AppPaths { data: root.join("data"), resources: root.join("resources") };
-        let hardware = Hardware { is_mac: true, memory_gib: 16, nvidia_name: None, nvidia_memory_gib: 0 };
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let hardware = Hardware {
+            is_mac: true,
+            memory_gib: 16,
+            nvidia_name: None,
+            nvidia_memory_gib: 0,
+        };
         let (sender, receiver) = mpsc::channel();
         let sender = Mutex::new(sender);
         let sink: EventSink = Arc::new(move |event| sender.lock().unwrap().send(event).unwrap());
-        (Service::start(paths, hardware, Settings::default(), None, sink), receiver)
+        (
+            Service::start(paths, hardware, Settings::default(), None, sink),
+            receiver,
+        )
     }
 
     fn next_job_event(receiver: &Receiver<AppEvent>) -> JobEvent {
@@ -284,27 +347,57 @@ mod tests {
     fn saved_settings_appear_in_the_snapshot_and_on_disk() {
         let root = scratch("settings");
         let (service, _events) = started(&root);
-        let settings = Settings { font_ratio: 0.05, ..Settings::default() };
-        assert_eq!(service.save_settings(settings).unwrap().settings.font_ratio, 0.05);
-        assert_eq!(Settings::load(&root.join("data/settings.json")).unwrap().font_ratio, 0.05);
+        let settings = Settings {
+            font_ratio: 0.05,
+            ..Settings::default()
+        };
+        assert_eq!(
+            service.save_settings(settings).unwrap().settings.font_ratio,
+            0.05
+        );
+        assert_eq!(
+            Settings::load(&root.join("data/settings.json"))
+                .unwrap()
+                .font_ratio,
+            0.05
+        );
     }
 
     #[test]
     fn invalid_settings_are_refused() {
         let (service, _events) = started(&scratch("invalid"));
-        let settings = Settings { palette: Vec::new(), ..Settings::default() };
-        assert_eq!(service.save_settings(settings).unwrap_err().to_string(), "the speaker palette needs at least one colour");
+        let settings = Settings {
+            palette: Vec::new(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            service.save_settings(settings).unwrap_err().to_string(),
+            "the speaker palette needs at least one colour"
+        );
     }
 
     #[test]
     fn a_failing_job_reports_a_translatable_code_and_leaves_the_queue_working() {
         let (service, events) = started(&scratch("job"));
-        let ids = service.add_videos(&[PathBuf::from("/nope.mp4"), PathBuf::from("/nope2.mp4")]).unwrap();
+        let ids = service
+            .add_videos(&[PathBuf::from("/nope.mp4"), PathBuf::from("/nope2.mp4")])
+            .unwrap();
         assert_eq!(ids, vec![1, 2]);
-        assert!(matches!(next_job_event(&events), JobEvent::Queued { id: 1, .. }));
-        assert!(matches!(next_job_event(&events), JobEvent::Queued { id: 2, .. }));
-        assert!(matches!(next_job_event(&events), JobEvent::Running { id: 1, .. }));
-        let JobEvent::Failed { id, error } = next_job_event(&events) else { panic!("job should fail") };
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 1, .. }
+        ));
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 2, .. }
+        ));
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Running { id: 1, .. }
+        ));
+        let JobEvent::Failed { id, error } = next_job_event(&events) else {
+            panic!("job should fail")
+        };
         assert_eq!(id, 1);
         assert_eq!(error["code"], "no_model_for_role");
         assert_eq!(error["role"], "diarize");
@@ -313,9 +406,19 @@ mod tests {
     #[test]
     fn relayout_of_a_missing_transcript_fails_with_internal_detail() {
         let (service, events) = started(&scratch("relayout"));
-        assert_eq!(service.relayout(Path::new("/nope.transcript.json")).unwrap(), 1);
-        assert!(matches!(next_job_event(&events), JobEvent::Queued { id: 1, .. }));
-        let JobEvent::Failed { error, .. } = next_job_event(&events) else { panic!("job should fail") };
+        assert_eq!(
+            service
+                .relayout(Path::new("/nope.transcript.json"))
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 1, .. }
+        ));
+        let JobEvent::Failed { error, .. } = next_job_event(&events) else {
+            panic!("job should fail")
+        };
         assert_eq!(error["code"], "internal");
     }
 
@@ -328,16 +431,34 @@ mod tests {
 
     #[test]
     fn job_results_map_to_events() {
-        assert!(matches!(job_result_event(4, Err(AppError::Cancelled)), JobEvent::Cancelled { id: 4 }));
-        let outcome = JobOutcome { outputs: Vec::new(), base: PathBuf::from("b"), speaker_count: 2, cue_count: 3, faceless: false };
-        assert!(matches!(job_result_event(5, Ok(outcome)), JobEvent::Finished { id: 5, .. }));
+        assert!(matches!(
+            job_result_event(4, Err(AppError::Cancelled)),
+            JobEvent::Cancelled { id: 4 }
+        ));
+        let outcome = JobOutcome {
+            outputs: Vec::new(),
+            base: PathBuf::from("b"),
+            speaker_count: 2,
+            cue_count: 3,
+            faceless: false,
+        };
+        assert!(matches!(
+            job_result_event(5, Ok(outcome)),
+            JobEvent::Finished { id: 5, .. }
+        ));
     }
 
     #[test]
     fn unknown_models_cannot_be_downloaded_or_deleted() {
         let (service, _events) = started(&scratch("unknown"));
-        assert_eq!(service.start_download("nope").unwrap_err().to_string(), "unknown model nope");
-        assert_eq!(service.delete_model("nope").unwrap_err().to_string(), "unknown model nope");
+        assert_eq!(
+            service.start_download("nope").unwrap_err().to_string(),
+            "unknown model nope"
+        );
+        assert_eq!(
+            service.delete_model("nope").unwrap_err().to_string(),
+            "unknown model nope"
+        );
     }
 
     #[test]
@@ -348,7 +469,11 @@ mod tests {
         let cancel = CancelToken::default();
         cancel.cancel();
         run_download(entry, &service.shared, &cancel);
-        let AppEvent::Download(DownloadEvent::Failed { id, .. }) = events.recv_timeout(WAIT).unwrap() else { panic!("download should fail") };
+        let AppEvent::Download(DownloadEvent::Failed { id, .. }) =
+            events.recv_timeout(WAIT).unwrap()
+        else {
+            panic!("download should fail")
+        };
         assert_eq!(id, "whisper-large-v3-turbo");
     }
 
@@ -384,7 +509,10 @@ mod tests {
         let (service, events) = started(&scratch("start-download"));
         // The YuNet entry has no files, so this finishes without touching the network.
         service.start_download(catalog::YUNET_ID).unwrap();
-        let AppEvent::Download(DownloadEvent::Finished { id }) = events.recv_timeout(WAIT).unwrap() else { panic!("should finish") };
+        let AppEvent::Download(DownloadEvent::Finished { id }) = events.recv_timeout(WAIT).unwrap()
+        else {
+            panic!("should finish")
+        };
         assert_eq!(id, "yunet");
     }
 }
