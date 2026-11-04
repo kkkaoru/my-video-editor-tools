@@ -514,3 +514,17 @@ it("places speaker icons at the bottom edge of their lanes, as the shared expect
   writeSetting(() => storage, SETTING_KEYS.icon("v"), "0");
   expect(readSettings(() => storage, "v", plan).icon).toBe(false);
 });
+
+it("keeps the caption canvas transparent and hideable over the movie", () => {
+  // The page's generic canvas rule (timeline bars) paints a panel background and display:block,
+  // which covered the playing movie (sound with no picture) when the caption canvas inherited it.
+  const page = readFileSync(resolve(import.meta.dirname, "../public/index.html"), "utf8");
+  expect(page).toMatch(/#captionCanvas \{[^}]*background:none;/);
+  expect(page).toContain("#captionCanvas[hidden] { display:none; }");
+});
+
+it("makes only the captions unselectable, not the movie player", () => {
+  const page = readFileSync(resolve(import.meta.dirname, "../public/index.html"), "utf8");
+  expect(page).toMatch(/#captionCanvas \{[^}]*-webkit-user-select:none; user-select:none;/);
+  expect(page).not.toMatch(/#videoSlot \{[^}]*user-select/);
+});
