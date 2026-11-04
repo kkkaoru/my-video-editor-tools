@@ -27,7 +27,8 @@ export const frMessages: Messages = {
   speakerCount: "Nombre de locuteurs",
   speakerCountAuto: "Détection automatique",
   speakerCountValue: "{count} locuteurs",
-  jobFewerSpeakers: "{requested} locuteurs demandés, mais seulement {found} trouvés. Cela arrive avec des enregistrements courts ou des voix proches.",
+  jobFewerSpeakers:
+    "{requested} locuteurs demandés, mais seulement {found} trouvés. Cela arrive avec des enregistrements courts ou des voix proches.",
   jobStep: "Étape {number} sur {total} : {stage}",
   jobEstimating: "Estimation du temps restant",
   jobRemaining: "Environ {minutes} min restantes",
@@ -69,13 +70,15 @@ export const frMessages: Messages = {
   captionLineHeight: "Interligne (multiple de la taille du texte)",
   rimWidth: "Bord noir à l'extérieur du contour (pourcentage du texte)",
   unknownSpeaker: "Locuteur inconnu",
-  contrastWarning: "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisissez des couleurs plus éloignées.",
+  contrastWarning:
+    "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisissez des couleurs plus éloignées.",
   shadowEnabled: "Ajouter une ombre",
   shadowStrength: "Intensité de l'ombre (pourcentage)",
   previewHeading: "Aperçu",
   previewFrameLabel: "Taille de l’aperçu",
   previewDescription:
     "Sous-titre d’exemple à {x} % en partant de la gauche et à {y} % en partant du haut du cadre {size}.",
+  previewFontPixels: "Taille du texte à cette résolution : {px} px.",
   previewSample: "Les sous-titres contourés changent de couleur selon l’intervenant",
   previewLandscape: "1920×1080",
   previewVertical: "Vertical 1080×1920",

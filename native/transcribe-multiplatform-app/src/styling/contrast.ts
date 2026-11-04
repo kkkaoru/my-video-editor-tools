@@ -23,12 +23,8 @@ const luminance = (hex: string): number =>
   BLUE_WEIGHT * linearChannel(hex, 5);
 
 export const contrastRatio = (first: string, second: string): number => {
-  const [lighter, darker]: number[] = [luminance(first), luminance(second)].sort(descending);
-  return ((lighter ?? 0) + LUMINANCE_OFFSET) / ((darker ?? 0) + LUMINANCE_OFFSET);
+  const [one, other]: [number, number] = [luminance(first), luminance(second)];
+  return (Math.max(one, other) + LUMINANCE_OFFSET) / (Math.min(one, other) + LUMINANCE_OFFSET);
 };
-
-function descending(left: number, right: number): number {
-  return right - left;
-}
 
 export const meetsAa = (ratio: number): boolean => ratio >= AA_MINIMUM_RATIO;

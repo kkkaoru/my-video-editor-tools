@@ -12,8 +12,8 @@ use crate::engines::VideoInfo;
 use crate::error::AppResult;
 use crate::face::FaceSample;
 use crate::morphology::{
-    grapheme_ends, is_japanese, is_katakana_run, is_latin_or_number, Boundaries, BreakClass,
-    PhraseEnd, Segmenter, DEPENDENT_KANA,
+    grapheme_ends, is_katakana_run, is_latin_or_number, Boundaries, BreakClass, PhraseEnd,
+    Segmenter, DEPENDENT_KANA,
 };
 use crate::settings::{Anchor, Settings};
 use serde::{Deserialize, Serialize};
@@ -40,8 +40,6 @@ const PHRASE_GAP_SECONDS: f64 = 0.25;
 const SHORTEST_GROUP_SECONDS: f64 = 0.92;
 /// Zero-length recognized spans still divide safely.
 const SHORTEST_SPAN_SECONDS: f64 = 1e-9;
-/// `speaker_subtitles.SINGLE_WRAP`: the longest line, in full-width characters.
-const MAX_LINE_EMS: f64 = 24.0;
 const MAX_LINES: usize = 2;
 /// `caption_layout_file`: one line's native measurement, at the style-20 calibration.
 const EM_LINE_HEIGHT: f64 = 150.0 / 82.955_801_104_972_38;
@@ -53,8 +51,11 @@ const MAX_DRIFT_PX: f64 = 150.0;
 const PADDING_PX: f64 = 24.0;
 /// `caption_style_defaults.HEAD_EXTENSION_FACE_HEIGHT_RATIO`, used as in `head_reference`.
 const HEAD_EXTENSION_FACE_HEIGHT_RATIO: f64 = 1.25;
-/// Samples on each side a face is compared with: a lone false detection never moves a caption.
-const OUTLIER_WINDOW: usize = 5;
+/// A face is compared with its neighbours this close in time: a false detection never moves a
+/// caption, and a real shot at least this long keeps its own zone.
+const OUTLIER_WINDOW_SECONDS: f64 = 5.0;
+/// Fewer samples than this say nothing about which of them is wrong.
+const OUTLIER_MINIMUM_SAMPLES: usize = 3;
 /// `caption_safe_wrap`: a conservative estimate, so real glyphs fit; everything else takes a full em.
 const NARROW_GLYPH_EM: f64 = 0.6;
 const HALF_WIDTH_GLYPH_EM: f64 = 0.5;
@@ -85,16 +86,6 @@ const STOCK_PHRASES: [&str; 6] = [
 ];
 const STOCK_PHRASE_MARKS: &str = "。、，,．.！!？?…・ 　";
 const CLOSING_WINDOW_SECONDS: f64 = 90.0;
-/// `CaptionPolicy.maximum_characters` and the Japanese rate cap of `caption_display_hold`.
-const JAPANESE_BUDGET: Budget = Budget {
-    characters: 36,
-    characters_per_second: FAST_READING_CPS,
-};
-/// Two 42-character lines and the fast adult rate in Netflix's Latin-script guides.
-const SPACED_BUDGET: Budget = Budget {
-    characters: 84,
-    characters_per_second: 20.0,
-};
 /// Page cost weights, tuned by reading real transcripts. Only their order matters much: a page
 /// ends at a clause rather than a particle, at a particle rather than mid-phrase, and it breaks a
 /// word only when nothing else fits.
@@ -114,16 +105,8 @@ const TINY_PAGE_COST: f64 = 6.0;
 const SHORT_PAGE_COST: f64 = 2.0;
 /// A page under `MIN_DISPLAY` is the last thing to accept, short of breaking a word.
 const FLASH_COST: f64 = 30.0;
-const SLOW_PAGE_COST: f64 = 1.0;
 const FAST_PAGE_COST: f64 = 3.0;
 const FORCED_PAGE_COST: f64 = 1000.0;
-
-/// What one page may hold, by script.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Budget {
-    characters: usize,
-    characters_per_second: f64,
-}
 
 /// One speaker's continuous speech, by character, with everything paging needs.
 struct Run<'a> {
@@ -136,7 +119,6 @@ struct Run<'a> {
     graphemes: Vec<usize>,
     kept_runs: Vec<(usize, usize)>,
     metrics: &'a Metrics,
-    budget: Budget,
     speaker: Option<u32>,
     /// Silence after the run, which keeps its last page readable without more speech.
     following_gap: f64,
@@ -239,9 +221,8 @@ pub fn metrics_for(info: &VideoInfo, settings: &Settings) -> Metrics {
     let font_px = (short_edge * settings.font_ratio).round().max(1.0);
     let outline_px = (font_px * settings.outline_ratio).max(1.0);
     let rim_px = font_px * settings.rim_ratio;
-    let max_line_px = (f64::from(info.width) * settings.width_ratio - 2.0 * (outline_px + rim_px))
-        .min(MAX_LINE_EMS * font_px)
-        .max(font_px);
+    let max_line_px =
+        (f64::from(info.width) * settings.width_ratio - 2.0 * (outline_px + rim_px)).max(font_px);
     Metrics {
         font_px,
         outline_px,
@@ -675,11 +656,6 @@ impl<'a> Run<'a> {
             widths.push(widths[widths.len() - 1] + glyph_width(*c, metrics.font_px));
             visible.push(visible[visible.len() - 1] + usize::from(!c.is_whitespace()));
         }
-        let budget = if is_japanese(&text) {
-            JAPANESE_BUDGET
-        } else {
-            SPACED_BUDGET
-        };
         let mut run = Self {
             chars,
             times,
@@ -690,7 +666,6 @@ impl<'a> Run<'a> {
             graphemes: grapheme_ends(&text),
             kept_runs: Vec::new(),
             metrics,
-            budget,
             speaker: group.iter().find_map(|word| word.speaker),
             following_gap,
         };
@@ -820,8 +795,7 @@ impl<'a> Run<'a> {
     }
 
     fn within_budget(&self, start: usize, end: usize) -> bool {
-        self.count(start, end) <= self.budget.characters
-            && self.speech_seconds(start, end) <= MAX_CUE_SECONDS
+        self.speech_seconds(start, end) <= MAX_CUE_SECONDS
     }
 
     fn fits(&self, start: usize, end: usize) -> bool {
@@ -901,8 +875,8 @@ impl<'a> Run<'a> {
             return FORCED_PAGE_COST;
         };
         let seconds = self.speech_seconds(start, end);
-        let characters = count as f64;
-        let fill = characters / (self.budget.characters as f64 / 2.0);
+        // How much a page holds follows the speech: the same time holds more when it is fast.
+        let fill = seconds / PAGE_TARGET_SECONDS;
         let tiny = match count {
             0..=STRAY_CHARACTERS => TINY_PAGE_COST,
             _ if count <= WRAP_ORPHAN_MAXIMUM => SHORT_PAGE_COST,
@@ -918,10 +892,11 @@ impl<'a> Run<'a> {
         } else {
             0.0
         };
-        let slow = (seconds - PAGE_TARGET_SECONDS).max(0.0) * SLOW_PAGE_COST;
-        let rate = characters / seconds.max(SHORTEST_SPAN_SECONDS);
-        let fast = (rate / self.budget.characters_per_second - 1.0).max(0.0) * FAST_PAGE_COST;
-        PAGE_COST + fill * fill + tiny + flash + slow + fast + layout.penalty
+        // In full-width character widths, so a narrow Latin letter counts for what it is.
+        let shown_ems = self.width(start, end) / self.metrics.font_px;
+        let rate = shown_ems / seconds.max(SHORTEST_SPAN_SECONDS);
+        let fast = (rate / FAST_READING_CPS - 1.0).max(0.0) * FAST_PAGE_COST;
+        PAGE_COST + fill * fill + tiny + flash + fast + layout.penalty
     }
 
     /// The cheapest way to reach `breaks[index]`, as `(cost, previous break)`.
@@ -934,7 +909,7 @@ impl<'a> Run<'a> {
             if cost < arrival.0 {
                 arrival = (cost, previous);
             }
-            if self.count(start, end) > self.budget.characters {
+            if self.width(start, end) > MAX_LINES as f64 * self.metrics.max_line_px {
                 break;
             }
         }
@@ -1059,21 +1034,22 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
 
 /// Drops samples far from the median of their neighbours in time: detector mistakes, not shots.
 fn without_outliers(faces: &[FaceSample], drift: f64) -> Vec<FaceSample> {
-    let medians = |index: usize, value: fn(&FaceSample) -> f64| {
-        let first = index.saturating_sub(OUTLIER_WINDOW);
-        let last = (index + OUTLIER_WINDOW + 1).min(faces.len());
-        median(faces[first..last].iter().map(value).collect())
+    let is_close = |face: &FaceSample, value: fn(&FaceSample) -> f64| {
+        let first = faces.partition_point(|near| near.time < face.time - OUTLIER_WINDOW_SECONDS);
+        let last = faces.partition_point(|near| near.time <= face.time + OUTLIER_WINDOW_SECONDS);
+        let near = &faces[first..last];
+        near.len() < OUTLIER_MINIMUM_SAMPLES
+            || median(near.iter().map(value).collect())
+                .is_some_and(|middle| (value(face) - middle).abs() <= drift)
     };
-    let is_close = |index: usize, value: fn(&FaceSample) -> f64| {
-        medians(index, value).is_some_and(|middle| (value(&faces[index]) - middle).abs() <= drift)
-    };
-    (0..faces.len())
-        .filter(|index| {
-            is_close(*index, |face| face.top)
-                && is_close(*index, |face| face.bottom)
-                && is_close(*index, |face| face.center_x)
+    faces
+        .iter()
+        .filter(|face| {
+            is_close(face, |near| near.top)
+                && is_close(face, |near| near.bottom)
+                && is_close(face, |near| near.center_x)
         })
-        .map(|index| faces[index])
+        .copied()
         .collect()
 }
 
@@ -1191,16 +1167,14 @@ impl FacePlacer {
         }
     }
 
-    /// Keeps the current position while it is at least as clear as the wanted one, so a caption
-    /// never follows face movement (`caption_fixed_y`, which holds one origin over a run).
-    fn hold(&mut self, wanted: Spot) -> Spot {
-        let held = match (self.current, wanted) {
-            (Some(Spot::Above(now)), Spot::Above(new)) if now <= new => Spot::Above(now),
-            (Some(Spot::Below(now)), Spot::Below(new)) if now >= new => Spot::Below(now),
-            _ => wanted,
-        };
-        self.current = Some(held);
-        held
+    /// Whether the tallest block at the current position clears the head and face; while it does,
+    /// a caption never follows the face (`caption_fixed_y`, which holds one origin over a run).
+    fn holds(&self, zone: &FaceZone) -> bool {
+        match self.current {
+            Some(Spot::Above(bottom)) => bottom <= zone.head_top,
+            Some(Spot::Below(top)) => top >= zone.bottom,
+            None => false,
+        }
     }
 
     /// No two-line room around the face. The low edge keeps captions in one place: centred when
@@ -1237,14 +1211,16 @@ impl FacePlacer {
     /// of every clean face in the span unless the faces leave no place in the frame at all.
     fn center(&mut self, start: f64, end: f64, block: (f64, f64)) -> Option<(f64, f64)> {
         let zone = self.zone_during(start, end)?;
-        if let Some(wanted) = self.vertical_spot(&zone) {
-            let y = match self.hold(wanted) {
+        if !self.holds(&zone) {
+            self.current = self.vertical_spot(&zone);
+        }
+        if let Some(spot) = self.current {
+            let y = match spot {
                 Spot::Above(bottom) => bottom - block.1 / 2.0,
                 Spot::Below(top) => top + block.1 / 2.0,
             };
             return Some((self.frame_w / 2.0, y));
         }
-        self.current = None;
         let narrow = self
             .zone_of_span(start, end)
             .and_then(|span| self.free_center(&span, block));
@@ -1407,13 +1383,18 @@ mod tests {
     }
 
     #[test]
-    fn caption_size_follows_the_resolution() {
+    fn caption_size_and_line_width_follow_the_resolution() {
         let settings = Settings::default();
         assert_eq!(metrics_for(&FULL_HD, &settings).font_px, 52.0);
         assert_eq!(metrics_for(&UHD, &settings).font_px, 104.0);
         assert_eq!(metrics_for(&VERTICAL, &settings).font_px, 52.0);
-        assert!(metrics_for(&FULL_HD, &settings).max_line_px > 1700.0);
-        assert!(metrics_for(&VERTICAL, &settings).max_line_px < 961.0);
+        assert_eq!(metrics_for(&FULL_HD, &settings).max_line_px.round(), 1712.0);
+        assert_eq!(metrics_for(&UHD, &settings).max_line_px.round(), 3425.0);
+        assert_eq!(metrics_for(&VERTICAL, &settings).max_line_px.round(), 956.0);
+        assert_eq!(
+            metrics_for(&VERTICAL_SMALL, &settings).max_line_px.round(),
+            638.0
+        );
     }
 
     #[test]
@@ -1631,8 +1612,54 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        assert_eq!((bottom[0].x, bottom[0].y.round()), (960.0, 988.0));
-        assert_eq!((top[0].x, top[0].y.round()), (960.0, 92.0));
+        assert_eq!((bottom[0].x, bottom[0].y.round()), (960.0, 913.0));
+        assert_eq!((top[0].x, top[0].y.round()), (960.0, 167.0));
+    }
+
+    #[test]
+    fn margins_scale_with_the_short_edge_on_every_frame() {
+        let words = [spoken(0.0, 1.0, "はい", 1)];
+        let settings = at(Anchor::VideoBottom, 0.0, 0.0);
+        let (tall, _) =
+            build_cues(&words, &[], &VERTICAL_SMALL, &settings, test_segmenter()).unwrap();
+        let (large, _) = build_cues(&words, &[], &VERTICAL, &settings, test_segmenter()).unwrap();
+        let (uhd, _) = build_cues(&words, &[], &UHD, &settings, test_segmenter()).unwrap();
+        assert_eq!((tall[0].x, tall[0].y.round()), (360.0, 1168.0));
+        assert_eq!((large[0].x, large[0].y.round()), (540.0, 1753.0));
+        assert_eq!((uhd[0].x, uhd[0].y.round()), (1920.0, 1826.0));
+    }
+
+    #[test]
+    fn a_second_line_grows_by_the_line_height_setting() {
+        let metrics = metrics_for(&FULL_HD, &Settings::default());
+        assert_eq!(
+            block_height(1, &metrics, &Settings::default()).round(),
+            94.0
+        );
+        assert_eq!(
+            block_height(2, &metrics, &Settings::default()).round(),
+            169.0
+        );
+        let settings = Settings {
+            line_height: 2.0,
+            ..Settings::default()
+        };
+        assert_eq!(block_height(2, &metrics, &settings).round(), 198.0);
+    }
+
+    #[test]
+    fn a_block_is_as_wide_as_its_longest_line_with_the_outline_and_rim() {
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 500.0,
+        };
+        let settings = Settings {
+            rim_ratio: 0.5,
+            ..Settings::default()
+        };
+        let width = block_width(&["あい".to_owned(), "a".to_owned()], &metrics, &settings);
+        assert_eq!(width, 32.0);
     }
 
     #[test]
@@ -1646,7 +1673,7 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        assert_eq!((cues[0].x, cues[0].y.round()), (1152.0, 880.0));
+        assert_eq!((cues[0].x, cues[0].y.round()), (1152.0, 805.0));
     }
 
     #[test]
@@ -1660,17 +1687,18 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        assert_eq!(cues[0].y.round(), 1042.0);
+        assert_eq!(cues[0].y.round(), 1033.0);
         assert!(cues[0].x < 1920.0);
     }
 
     #[test]
-    fn captions_can_sit_above_or_below_a_face() {
+    fn captions_sit_above_the_estimated_head_or_below_the_face() {
         let words = [spoken(0.0, 1.0, "はい", 1)];
+        // A small face low in the frame: head top 600 - 1.25 * 100 = 475.
         let faces = [FaceSample {
             time: 0.5,
-            top: 400.0,
-            bottom: 600.0,
+            top: 600.0,
+            bottom: 700.0,
             center_x: 700.0,
         }];
         let (above, _) = build_cues(
@@ -1689,8 +1717,8 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        assert_eq!((above[0].x, above[0].y.round()), (700.0, 338.0));
-        assert_eq!((below[0].x, below[0].y.round()), (700.0, 684.0));
+        assert_eq!((above[0].x, above[0].y.round()), (960.0, 368.0));
+        assert_eq!((below[0].x, below[0].y.round()), (960.0, 829.0));
     }
 
     #[test]
@@ -1705,43 +1733,43 @@ mod tests {
         )
         .unwrap();
         assert!(faceless);
-        assert_eq!(cues[0].y.round(), 988.0);
+        assert_eq!(cues[0].y.round(), 913.0);
     }
 
     #[test]
-    fn the_face_nearest_in_time_covers_gaps() {
-        let faces = [
-            FaceSample {
-                time: 0.0,
-                top: 1.0,
-                bottom: 2.0,
-                center_x: 3.0,
-            },
-            FaceSample {
-                time: 10.0,
-                top: 4.0,
-                bottom: 5.0,
-                center_x: 6.0,
-            },
-        ];
-        assert_eq!(face_for_cue(&faces, 8.0, 9.0).unwrap().top, 4.0);
+    fn between_shots_a_caption_clears_the_faces_on_both_sides() {
+        let sample = |time: f64, top: f64, bottom: f64| FaceSample {
+            time,
+            top,
+            bottom,
+            center_x: 960.0,
+        };
+        let placer = FacePlacer::new(
+            &[sample(0.0, 100.0, 200.0), sample(10.0, 500.0, 600.0)],
+            &FULL_HD,
+            &metrics_for(&FULL_HD, &Settings::default()),
+            &Settings::default(),
+        );
+        let zone = placer.zone_during(4.0, 5.0).unwrap();
+        assert_eq!((zone.top, zone.bottom), (100.0, 600.0));
+        assert_eq!(placer.zone_during(-5.0, -4.0).unwrap().bottom, 200.0);
     }
 
     #[test]
-    fn small_face_drift_keeps_the_caption_still() {
+    fn face_movement_keeps_the_caption_still_while_it_stays_clear() {
         let words = [spoken(0.0, 1.0, "はい。", 1), spoken(2.0, 3.0, "そう。", 1)];
         let faces = [
             FaceSample {
                 time: 0.5,
-                top: 400.0,
-                bottom: 600.0,
+                top: 600.0,
+                bottom: 700.0,
                 center_x: 700.0,
             },
             FaceSample {
                 time: 2.5,
-                top: 404.0,
-                bottom: 604.0,
-                center_x: 702.0,
+                top: 650.0,
+                bottom: 750.0,
+                center_x: 900.0,
             },
         ];
         let (cues, _) = build_cues(
@@ -1754,6 +1782,418 @@ mod tests {
         .unwrap();
         assert_eq!(cues[0].y, cues[1].y);
         assert_eq!(cues[0].x, cues[1].x);
+    }
+
+    #[test]
+    fn a_lone_false_detection_never_moves_a_caption() {
+        let steady = |time: f64| FaceSample {
+            time,
+            top: 600.0,
+            bottom: 700.0,
+            center_x: 960.0,
+        };
+        let faces = [
+            steady(0.0),
+            steady(1.0),
+            FaceSample {
+                time: 2.0,
+                top: 5.0,
+                bottom: 80.0,
+                center_x: 100.0,
+            },
+            steady(3.0),
+            steady(4.0),
+        ];
+        assert_eq!(without_outliers(&faces, 150.0).len(), 4);
+        assert_eq!(without_outliers(&faces[1..3], 150.0).len(), 2);
+        let words = [spoken(1.5, 2.5, "はい", 1)];
+        let (cues, _) = build_cues(
+            &words,
+            &faces,
+            &FULL_HD,
+            &at(Anchor::FaceAbove, 0.0, 0.0),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].y.round(), 368.0);
+    }
+
+    #[test]
+    fn a_new_shot_moves_the_caption_only_when_the_old_place_covers_the_face() {
+        let at_top = |time: f64, top: f64| FaceSample {
+            time,
+            top,
+            bottom: top + 100.0,
+            center_x: 960.0,
+        };
+        let faces = [
+            at_top(0.0, 600.0),
+            at_top(1.0, 600.0),
+            at_top(10.0, 300.0),
+            at_top(11.0, 300.0),
+            at_top(20.0, 700.0),
+            at_top(21.0, 700.0),
+        ];
+        let words = [
+            spoken(0.0, 1.0, "はい。", 1),
+            spoken(10.0, 11.0, "そう。", 1),
+            spoken(20.0, 21.0, "次。", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &faces,
+            &FULL_HD,
+            &at(Anchor::FaceAbove, 0.0, 0.0),
+            test_segmenter(),
+        )
+        .unwrap();
+        // Above the head while it fits, below when the head leaves no room, above again when the
+        // place below no longer clears the head.
+        assert_eq!(
+            cues.iter().map(|cue| cue.y.round()).collect::<Vec<_>>(),
+            vec![368.0, 507.0, 468.0]
+        );
+    }
+
+    /// Whether any face rectangle meets any cue's block during that cue.
+    fn cues_touch_faces(
+        cues: &[Cue],
+        faces: &[FaceSample],
+        settings: &Settings,
+        info: &VideoInfo,
+    ) -> bool {
+        let metrics = metrics_for(info, settings);
+        cues.iter().any(|cue| {
+            let width = block_width(&cue.lines, &metrics, settings) / 2.0;
+            let height = block_height(cue.lines.len(), &metrics, settings) / 2.0;
+            faces
+                .iter()
+                .filter(|face| (cue.start..=cue.end).contains(&face.time))
+                .any(|face| {
+                    let half = (face.bottom - face.top) / 2.0;
+                    cue.y - height < face.bottom
+                        && cue.y + height > face.top
+                        && cue.x - width < face.center_x + half
+                        && cue.x + width > face.center_x - half
+                })
+        })
+    }
+
+    fn talking_over(face: (f64, f64, f64), info: &VideoInfo, anchor: Anchor) -> bool {
+        let faces: Vec<FaceSample> = (0..12)
+            .map(|second| FaceSample {
+                time: f64::from(second),
+                top: face.0,
+                bottom: face.1,
+                center_x: face.2,
+            })
+            .collect();
+        let words = [
+            spoken(0.0, 2.0, "今日はみんなで公園に行って", 1),
+            spoken(2.0, 4.0, "お弁当を食べてきました", 1),
+            spoken(4.0, 6.0, "とても楽しかったので", 1),
+            spoken(6.0, 8.0, "また来週も行こうと思います", 1),
+        ];
+        let settings = at(anchor, 0.0, 0.0);
+        let (cues, _) = build_cues(&words, &faces, info, &settings, test_segmenter()).unwrap();
+        cues_touch_faces(&cues, &faces, &settings, info)
+    }
+
+    #[test]
+    fn captions_never_touch_a_face_wherever_it_is_on_full_hd() {
+        assert!(!talking_over(
+            (100.0, 300.0, 960.0),
+            &FULL_HD,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (400.0, 700.0, 960.0),
+            &FULL_HD,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (700.0, 1000.0, 960.0),
+            &FULL_HD,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (320.0, 800.0, 1270.0),
+            &FULL_HD,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (320.0, 950.0, 300.0),
+            &FULL_HD,
+            Anchor::FaceBelow
+        ));
+        assert!(!talking_over(
+            (0.0, 1000.0, 1700.0),
+            &FULL_HD,
+            Anchor::FaceBelow
+        ));
+        assert!(!talking_over(
+            (100.0, 300.0, 960.0),
+            &FULL_HD,
+            Anchor::FaceBelow
+        ));
+    }
+
+    #[test]
+    fn captions_never_touch_a_face_on_vertical_and_uhd() {
+        assert!(!talking_over(
+            (500.0, 750.0, 320.0),
+            &VERTICAL_SMALL,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (60.0, 300.0, 360.0),
+            &VERTICAL_SMALL,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (900.0, 1150.0, 360.0),
+            &VERTICAL_SMALL,
+            Anchor::FaceBelow
+        ));
+        assert!(!talking_over(
+            (800.0, 1200.0, 540.0),
+            &VERTICAL,
+            Anchor::FaceAbove
+        ));
+        assert!(!talking_over(
+            (1500.0, 1850.0, 540.0),
+            &VERTICAL,
+            Anchor::FaceBelow
+        ));
+        assert!(!talking_over(
+            (640.0, 1600.0, 2540.0),
+            &UHD,
+            Anchor::FaceAbove
+        ));
+    }
+
+    #[test]
+    fn a_face_filling_the_frame_leaves_the_last_resort_at_the_low_edge() {
+        let settings = at(Anchor::FaceAbove, 0.0, 0.0);
+        let metrics = metrics_for(&FULL_HD, &settings);
+        let faces = [FaceSample {
+            time: 0.5,
+            top: 0.0,
+            bottom: 1080.0,
+            center_x: 960.0,
+        }];
+        let mut placer = FacePlacer::new(&faces, &FULL_HD, &metrics, &settings);
+        assert_eq!(
+            placer.center(0.0, 1.0, (100.0, 94.0)),
+            Some((180.0, 1009.0))
+        );
+        assert_eq!(
+            placer.center(0.0, 1.0, (1900.0, 94.0)),
+            Some((960.0, 1009.0))
+        );
+    }
+
+    #[test]
+    fn a_position_that_no_longer_clears_the_face_gives_way() {
+        let settings = at(Anchor::FaceBelow, 0.0, 0.0);
+        let metrics = metrics_for(&FULL_HD, &settings);
+        let sample = |time: f64, top: f64, bottom: f64| FaceSample {
+            time,
+            top,
+            bottom,
+            center_x: 960.0,
+        };
+        let faces = [
+            sample(0.0, 100.0, 200.0),
+            sample(10.0, 40.0, 100.0),
+            sample(20.0, 700.0, 800.0),
+            sample(30.0, 100.0, 200.0),
+        ];
+        let mut placer = FacePlacer::new(&faces, &FULL_HD, &metrics, &settings);
+        assert_eq!(placer.center(0.0, 0.5, (100.0, 94.0)), Some((960.0, 307.0)));
+        assert_eq!(placer.current, Some(Spot::Below(260.0)));
+        assert_eq!(
+            placer.center(10.0, 10.5, (100.0, 94.0)),
+            Some((960.0, 307.0))
+        );
+        assert_eq!(
+            placer.center(20.0, 20.5, (100.0, 94.0)),
+            Some((960.0, 468.0))
+        );
+        assert_eq!(placer.current, Some(Spot::Above(515.0)));
+        assert_eq!(
+            placer.center(30.0, 30.5, (100.0, 94.0)),
+            Some((960.0, 307.0))
+        );
+        assert_eq!(placer.current, Some(Spot::Below(260.0)));
+    }
+
+    #[test]
+    fn with_no_room_a_block_goes_beside_the_face_on_its_wider_side() {
+        let settings = Settings::default();
+        let metrics = metrics_for(&FULL_HD, &settings);
+        let placer = FacePlacer::new(&[], &FULL_HD, &metrics, &settings);
+        let zone = |left: f64, right: f64| FaceZone {
+            start: 0.0,
+            end: 1.0,
+            head_top: 0.0,
+            top: 50.0,
+            bottom: 1000.0,
+            left,
+            right,
+        };
+        assert_eq!(
+            placer.free_center(&zone(1000.0, 1500.0), (400.0, 94.0)),
+            Some((470.0, 1009.0))
+        );
+        assert_eq!(
+            placer.free_center(&zone(300.0, 800.0), (400.0, 94.0)),
+            Some((1390.0, 1009.0))
+        );
+        assert_eq!(
+            placer.free_center(&zone(300.0, 1600.0), (400.0, 94.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_block_too_wide_for_the_side_may_use_the_top_above_the_face_box() {
+        let settings = Settings::default();
+        let metrics = metrics_for(&FULL_HD, &settings);
+        let placer = FacePlacer::new(&[], &FULL_HD, &metrics, &settings);
+        let zone = FaceZone {
+            start: 0.0,
+            end: 1.0,
+            head_top: 0.0,
+            top: 300.0,
+            bottom: 1000.0,
+            left: 300.0,
+            right: 1600.0,
+        };
+        assert_eq!(
+            placer.free_center(&zone, (400.0, 100.0)),
+            Some((960.0, 190.0))
+        );
+    }
+
+    #[test]
+    fn a_face_that_only_visits_during_a_shot_still_lets_a_cue_use_its_own_moment() {
+        let settings = Settings::default();
+        let metrics = metrics_for(&FULL_HD, &settings);
+        let sample = |time: f64, top: f64, bottom: f64| FaceSample {
+            time,
+            top,
+            bottom,
+            center_x: 960.0,
+        };
+        let mut placer = FacePlacer::new(
+            &[
+                sample(0.0, 0.0, 1040.0),
+                sample(1.0, 0.0, 1040.0),
+                sample(3.0, 0.0, 900.0),
+                sample(4.0, 0.0, 900.0),
+            ],
+            &FULL_HD,
+            &metrics,
+            &settings,
+        );
+        assert_eq!(placer.zones.len(), 1);
+        assert_eq!(
+            placer.center(3.0, 4.0, (2000.0, 94.0)),
+            Some((960.0, 1009.0))
+        );
+    }
+
+    #[test]
+    fn a_nudge_is_the_only_way_a_caption_covers_a_face() {
+        let words = [spoken(0.0, 1.0, "はい", 1)];
+        let faces = [FaceSample {
+            time: 0.5,
+            top: 600.0,
+            bottom: 700.0,
+            center_x: 960.0,
+        }];
+        let (cues, _) = build_cues(
+            &words,
+            &faces,
+            &FULL_HD,
+            &at(Anchor::FaceAbove, 0.0, 26.0),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].y.round(), 649.0);
+    }
+
+    #[test]
+    fn every_cue_stays_inside_the_budgets_and_clear_of_the_next() {
+        let words = [
+            spoken(0.0, 0.1, "はい", 1),
+            spoken(0.1, 0.2, "そう", 1),
+            spoken(
+                0.2,
+                1.4,
+                "今日はみんなで公園に行ってお弁当を食べてきました",
+                1,
+            ),
+            spoken(
+                1.4,
+                5.0,
+                "それからとても楽しかったので来週もまた行こうと思います",
+                1,
+            ),
+            spoken(5.0, 5.2, "ね。", 1),
+            spoken(
+                5.2,
+                13.0,
+                "ゆっくりと話していたらいつの間にか夕方になっていました",
+                1,
+            ),
+            spoken(16.0, 16.1, "ん", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        let metrics = metrics_for(&FULL_HD, &Settings::default());
+        assert!(cues
+            .iter()
+            .flat_map(|cue| cue.lines.iter())
+            .all(|line| line.chars().count() as f64 * metrics.font_px <= metrics.max_line_px));
+        assert!(cues.iter().all(|cue| cue.lines.len() <= 2));
+        assert!(cues
+            .iter()
+            .all(|cue| cue.end - cue.start >= 5.0 / 6.0 - 1e-9));
+        assert!(cues.iter().all(|cue| cue.end - cue.start <= 7.0));
+        assert!(cues.windows(2).all(|pair| pair[0].end <= pair[1].start));
+    }
+
+    #[test]
+    fn a_stray_at_the_cue_time_limit_joins_by_time_too() {
+        let group = [word(0.0, 0.3, "はいそうですありがとう")];
+        let next = [spoken(0.3, 0.5, "いいですよそのとおり", 1)];
+        assert!(joins_stray(&group, &next));
+    }
+
+    #[test]
+    fn silence_after_a_group_keeps_its_last_page_readable() {
+        assert_eq!(
+            following_silence(&[word(0.0, 1.0, "は")], Some(&vec![word(3.0, 4.0, "い")])),
+            2.0
+        );
+        assert_eq!(
+            following_silence(&[word(0.0, 1.0, "は")], None),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn words_past_the_end_of_the_video_show_nothing() {
+        let words = [word(0.0, 1.0, "はい"), word(60.5, 61.0, "time.")];
+        assert_eq!(display_words(&words, 60.0).len(), 1);
     }
 
     #[test]
@@ -1863,9 +2303,9 @@ mod tests {
     #[test]
     fn a_page_ends_at_a_clause_rather_than_filling_the_width() {
         let words = [
-            spoken(0.0, 1.0, "今日は天気がいいので、", 1),
-            spoken(1.0, 2.0, "みんなで公園に行って", 1),
-            spoken(2.0, 3.0, "お弁当を食べました", 1),
+            spoken(0.0, 3.0, "今日は天気がいいので、", 1),
+            spoken(3.0, 5.0, "みんなで公園に行って", 1),
+            spoken(5.0, 7.0, "お弁当を食べました", 1),
         ];
         let (cues, _) = build_cues(
             &words,
@@ -1882,6 +2322,50 @@ mod tests {
                 vec!["みんなで公園に行って", "お弁当を食べました"],
             ]
         );
+    }
+
+    #[test]
+    fn fast_speech_holds_more_on_a_page_than_slow_speech() {
+        let timed = |seconds: f64| {
+            [
+                spoken(0.0, seconds, "今日は", 1),
+                spoken(seconds, seconds * 2.0, "公園に", 1),
+                spoken(seconds * 2.0, seconds * 3.0, "行って", 1),
+                spoken(seconds * 3.0, seconds * 4.0, "遊びました", 1),
+            ]
+        };
+        let settings = Settings::default();
+        let (fast, _) =
+            build_cues(&timed(0.6), &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        let (slow, _) =
+            build_cues(&timed(1.6), &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        assert_eq!(fast.len(), 1);
+        assert_eq!(slow.len(), 2);
+    }
+
+    #[test]
+    fn a_larger_font_fits_fewer_characters_on_a_line_with_no_fixed_limit() {
+        let words = [spoken(
+            0.0,
+            3.0,
+            "あのねお茶漬けをいろんな人に食べてもらいました",
+            1,
+        )];
+        let large = Settings {
+            font_ratio: 0.09,
+            ..Settings::default()
+        };
+        let (normal, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        let (big, _) = build_cues(&words, &[], &FULL_HD, &large, test_segmenter()).unwrap();
+        assert_eq!(normal[0].lines.len(), 1);
+        assert_eq!(big[0].lines.len(), 2);
     }
 
     #[test]
@@ -1944,8 +2428,8 @@ mod tests {
             outline_px: 1.0,
             max_line_px: 62.0,
         };
-        let group = [spoken(0.0, 2.0, "はい、(そうです。)はい", 1)];
-        let run = Run::new(&group, &metrics, test_segmenter()).unwrap();
+        let group = [spoken(0.0, 7.0, "はい、(そうです。)はい", 1)];
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         let lines: Vec<Vec<String>> = run.pages().into_iter().map(|page| page.lines).collect();
         assert_eq!(lines, vec![vec!["はい、"], vec!["(そうです。)", "はい"]]);
     }
@@ -1958,7 +2442,7 @@ mod tests {
             max_line_px: 50.0,
         };
         let group = [spoken(0.0, 5.0, "サンフランシスコ", 1)];
-        let run = Run::new(&group, &metrics, test_segmenter()).unwrap();
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         let lines: Vec<Vec<String>> = run.pages().into_iter().map(|page| page.lines).collect();
         assert_eq!(lines, vec![vec!["サンフラ", "ンシスコ"]]);
     }
@@ -1971,7 +2455,7 @@ mod tests {
             max_line_px: 10.0,
         };
         let group = [spoken(0.0, 1.0, "っっ", 1)];
-        let run = Run::new(&group, &metrics, test_segmenter()).unwrap();
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         let lines: Vec<Vec<String>> = run.pages().into_iter().map(|page| page.lines).collect();
         assert_eq!(lines, vec![vec!["っっ"]]);
     }
@@ -1999,7 +2483,7 @@ mod tests {
             max_line_px: 12.0,
         };
         let group = [spoken(0.0, 1.0, "   ", 1)];
-        let run = Run::new(&group, &metrics, test_segmenter()).unwrap();
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(run.pages(), Vec::<Page>::new());
     }
 
@@ -2031,9 +2515,9 @@ mod tests {
             cues.iter()
                 .map(|cue| cue.lines.join(""))
                 .collect::<Vec<_>>(),
-            vec!["今日は公園へ", "行きました", "とても楽しかったです"]
+            vec!["今日は公園へ行きました", "とても楽しかったです"]
         );
-        assert_eq!(cues[1].start.round(), 4.0);
+        assert_eq!(cues[1].start.round(), 12.0);
     }
 
     #[test]
@@ -2097,7 +2581,7 @@ mod tests {
         ];
         let group = group_words(&words);
         let metrics = metrics_for(&FULL_HD, &Settings::default());
-        let run = Run::new(&group[0], &metrics, test_segmenter()).unwrap();
+        let run = Run::new(&group[0], f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(
             run.phrase_cost(&PhraseEnd {
                 offset: 5,
@@ -2111,7 +2595,7 @@ mod tests {
     fn a_break_inside_a_token_costs_more_than_one_at_its_edge() {
         let group = [spoken(0.0, 1.0, "公園に", 1), spoken(1.0, 2.0, "行く人", 1)];
         let metrics = metrics_for(&FULL_HD, &Settings::default());
-        let run = Run::new(&group, &metrics, test_segmenter()).unwrap();
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(
             run.phrase_cost(&PhraseEnd {
                 offset: 3,
@@ -2463,7 +2947,7 @@ mod tests {
             ],
         };
         assert_eq!((required_seconds(20, 0.0, 0.5) * 1000.0).round(), 1667.0);
-        assert_eq!((held_end(&page, 100.0, 30.0) * 1000.0).round(), 1333.0);
+        assert_eq!((held_end(&page, 100.0, 30.0) * 1000.0).round(), 1667.0);
     }
 
     #[test]

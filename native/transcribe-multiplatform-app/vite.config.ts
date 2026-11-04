@@ -24,7 +24,7 @@ const config: UserConfig = defineConfig({
     alias: [{ find: /^use-sync-external-store\/shim$/, replacement: "preact/compat" }],
     server: { deps: { inline: [/@base-ui/, /@floating-ui/, /@testing-library\/preact/] } },
     css: { include: [/\.css\?raw$/] },
-    include: ["src/**/*.test.{ts,tsx}"],
+    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],

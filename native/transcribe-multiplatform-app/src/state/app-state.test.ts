@@ -24,6 +24,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
@@ -57,6 +60,9 @@ it("starts empty", () => {
         diarize_model: "b",
         face_model: "c",
         model_dirs: [],
+        rim_ratio: 0.034,
+        line_height: 1.448,
+        speaker_count: 0,
       },
       models: [],
       models_dir: "/models",
@@ -119,7 +125,14 @@ it("records the outcome of a finished job", () => {
     {
       state: "finished",
       id: 1,
-      outcome: { outputs: ["/a.srt"], base: "/a", speaker_count: 2, cue_count: 9, faceless: false },
+      outcome: {
+        outputs: ["/a.srt"],
+        base: "/a",
+        speaker_count: 2,
+        cue_count: 9,
+        faceless: false,
+        requested_speakers: 0,
+      },
     },
     300,
   );
@@ -129,7 +142,14 @@ it("records the outcome of a finished job", () => {
       path: "/a.mp4",
       state: "finished",
       startedAt: 100,
-      outcome: { outputs: ["/a.srt"], base: "/a", speaker_count: 2, cue_count: 9, faceless: false },
+      outcome: {
+        outputs: ["/a.srt"],
+        base: "/a",
+        speaker_count: 2,
+        cue_count: 9,
+        faceless: false,
+        requested_speakers: 0,
+      },
     },
   ]);
 });

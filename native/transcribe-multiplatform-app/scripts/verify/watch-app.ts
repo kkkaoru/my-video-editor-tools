@@ -9,7 +9,13 @@ interface PendingTimer {
 }
 
 const APP_DIR: string = join(import.meta.dirname, "../..");
-const WATCHED: string[] = ["src", "src-tauri/src", "src-tauri/resources", "src-tauri/tauri.conf.json", "index.html"];
+const WATCHED: string[] = [
+  "src",
+  "src-tauri/src",
+  "src-tauri/resources",
+  "src-tauri/tauri.conf.json",
+  "index.html",
+];
 const SETTLE_MS: number = 5000;
 const APP_NAME: string = "Transcribe for Resolve";
 const TEST_FILE: RegExp = /\.test\.tsx?$/;
@@ -19,14 +25,17 @@ const isRunning = (): boolean => spawnSync("pgrep", ["-x", "transcribe-app"]).st
 function buildAndRestart(): void {
   const wasRunning: boolean = isRunning();
   const build = spawnSync("bunx", ["tauri", "build", "--bundles", "app"], { cwd: APP_DIR, stdio: "inherit" });
+  spawnSync("bash", [join(APP_DIR, "scripts/verify/prune-build.sh")], { stdio: "inherit" });
   if (build.status !== 0) {
     console.error("watch-app: the build failed; keeping the previous app");
     return;
   }
-  spawnSync("bash", [join(APP_DIR, "scripts/verify/prune-build.sh")], { stdio: "inherit" });
   if (wasRunning) {
     spawnSync("pkill", ["-x", "transcribe-app"]);
-    spawnSync("open", ["-g", join(process.env.CARGO_TARGET_DIR ?? "src-tauri/target", "release/bundle/macos", `${APP_NAME}.app`)]);
+    spawnSync("open", [
+      "-g",
+      join(process.env.CARGO_TARGET_DIR ?? "src-tauri/target", "release/bundle/macos", `${APP_NAME}.app`),
+    ]);
   }
   console.log(`watch-app: rebuilt at ${new Date().toISOString()}`);
 }

@@ -16,6 +16,9 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 });
 
 it("derives the metrics from the short edge and the width", () => {
@@ -99,8 +102,8 @@ it("places the block at the bottom of the video", () => {
   );
   expect(layout.lines).toStrictEqual(["abcd"]);
   expect(layout.x).toBe(960);
-  expect(layout.y).toBeCloseTo(986.85);
-  expect(layout.usesFace).toBe(false);
+  expect(layout.y).toBeCloseTo(979.668);
+  expect(layout.face).toBe(null);
 });
 
 it("places the block at the top of the video", () => {
@@ -109,8 +112,8 @@ it("places the block at the top of the video", () => {
     { width: 1920, height: 1080 },
     settingsWith("video_top", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(93.15);
-  expect(layout.usesFace).toBe(false);
+  expect(layout.y).toBeCloseTo(100.332);
+  expect(layout.face).toBe(null);
 });
 
 it("places the block above the face", () => {
@@ -119,8 +122,8 @@ it("places the block above the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_above", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(173.61);
-  expect(layout.usesFace).toBe(true);
+  expect(layout.y).toBeCloseTo(198.828);
+  expect(layout.face?.centerX).toBe(960);
 });
 
 it("places the block below the face", () => {
@@ -129,8 +132,8 @@ it("places the block below the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_below", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(603.99);
-  expect(layout.usesFace).toBe(true);
+  expect(layout.y).toBeCloseTo(827.172);
+  expect(layout.face?.centerX).toBe(960);
 });
 
 it("applies the percentage offsets", () => {
@@ -140,7 +143,7 @@ it("applies the percentage offsets", () => {
     settingsWith("video_top", 10, 20),
   );
   expect(layout.x).toBe(600);
-  expect(layout.y).toBeCloseTo(286.25);
+  expect(layout.y).toBeCloseTo(292.9);
 });
 
 it("keeps the block inside the frame when the offset pushes it out", () => {
@@ -150,7 +153,7 @@ it("keeps the block inside the frame when the offset pushes it out", () => {
     settingsWith("video_bottom", -50, 50),
   );
   expect(layout.x).toBe(105);
-  expect(layout.y).toBeCloseTo(963.75);
+  expect(layout.y).toBeCloseTo(957.1);
 });
 
 it("centres a block wider than the frame", () => {

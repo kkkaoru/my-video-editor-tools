@@ -95,6 +95,7 @@ export interface Messages {
   previewHeading: string;
   previewFrameLabel: string;
   previewDescription: string;
+  previewFontPixels: string;
   previewSample: string;
   previewLandscape: string;
   previewVertical: string;

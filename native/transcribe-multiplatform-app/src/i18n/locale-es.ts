@@ -27,7 +27,8 @@ export const esMessages: Messages = {
   speakerCount: "Número de hablantes",
   speakerCountAuto: "Detectar automáticamente",
   speakerCountValue: "{count} hablantes",
-  jobFewerSpeakers: "Se indicaron {requested} hablantes, pero solo se encontraron {found}. Puede ocurrir con grabaciones cortas o voces parecidas.",
+  jobFewerSpeakers:
+    "Se indicaron {requested} hablantes, pero solo se encontraron {found}. Puede ocurrir con grabaciones cortas o voces parecidas.",
   jobStep: "Paso {number} de {total}: {stage}",
   jobEstimating: "Calculando el tiempo restante",
   jobRemaining: "Quedan unos {minutes} min",
@@ -68,13 +69,15 @@ export const esMessages: Messages = {
   captionLineHeight: "Interlineado (múltiplo del tamaño del texto)",
   rimWidth: "Borde negro fuera del contorno (porcentaje del texto)",
   unknownSpeaker: "Hablante desconocido",
-  contrastWarning: "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elija colores más distintos.",
+  contrastWarning:
+    "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elija colores más distintos.",
   shadowEnabled: "Añadir sombra",
   shadowStrength: "Intensidad de la sombra (porcentaje)",
   previewHeading: "Vista previa",
   previewFrameLabel: "Tamaño de la vista previa",
   previewDescription:
     "Subtítulo de ejemplo al {x} % desde la izquierda y al {y} % desde arriba en el fotograma {size}.",
+  previewFontPixels: "Tamaño del texto en esta resolución: {px} px.",
   previewSample: "Los subtítulos con contorno cambian de color con cada hablante",
   previewLandscape: "1920×1080",
   previewVertical: "Vertical 1080×1920",

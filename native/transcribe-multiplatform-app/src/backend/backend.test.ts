@@ -37,6 +37,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -73,6 +76,9 @@ it("saves the settings", async () => {
           diarize_model: "b",
           face_model: "c",
           model_dirs: [],
+          rim_ratio: 0.034,
+          line_height: 1.448,
+          speaker_count: 0,
         },
       },
     ],

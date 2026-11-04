@@ -95,12 +95,12 @@ const anchorY = (
   frame: FrameSize,
   gap: number,
 ): number =>
-  new Map<string, number>([
-    ["face_above", aroundFaceY(true, sampleFace(frame), block, gap)],
-    ["face_below", aroundFaceY(false, sampleFace(frame), block, gap)],
-    ["video_top", frame.height * VIDEO_MARGIN_RATIO + block.height / 2],
-    ["video_bottom", frame.height * (1 - VIDEO_MARGIN_RATIO) - block.height / 2],
-  ]).get(anchor) ?? frame.height / 2;
+  ({
+    face_above: (): number => aroundFaceY(true, sampleFace(frame), block, gap),
+    face_below: (): number => aroundFaceY(false, sampleFace(frame), block, gap),
+    video_top: (): number => frame.height * VIDEO_MARGIN_RATIO + block.height / 2,
+    video_bottom: (): number => frame.height * (1 - VIDEO_MARGIN_RATIO) - block.height / 2,
+  })[anchor]();
 
 export function previewLayout(text: string, frame: FrameSize, settings: Settings): PreviewLayout {
   const { fontPx, outlinePx, maxLinePx } = metricsFor(frame, settings);

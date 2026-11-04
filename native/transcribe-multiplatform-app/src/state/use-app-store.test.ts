@@ -28,6 +28,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
@@ -166,6 +169,9 @@ it("shows new settings at once and saves only the last of a burst", async () => 
           diarize_model: "b",
           face_model: "c",
           model_dirs: [],
+          rim_ratio: 0.034,
+          line_height: 1.448,
+          speaker_count: 0,
         },
       },
     ],

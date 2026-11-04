@@ -197,7 +197,8 @@ function CaptionPreview({ settings, frame }: { settings: Settings; frame: FrameC
           size: frame.label(messages),
           x: Math.round((layout.x / width) * PERCENT),
           y: Math.round((layout.y / height) * PERCENT),
-        })}
+        })}{" "}
+        {format(messages.previewFontPixels, { px: layout.fontPx })}
       </p>
     </>
   );

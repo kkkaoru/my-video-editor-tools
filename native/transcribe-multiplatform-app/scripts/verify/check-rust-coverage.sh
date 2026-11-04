@@ -2,6 +2,7 @@
 # Fails unless every Rust file in src-tauri/src reaches the minimum line coverage. Run from src-tauri.
 set -euo pipefail
 minimum=95
+trap 'bash "$(dirname "${BASH_SOURCE[0]}")/prune-build.sh"' EXIT
 cargo llvm-cov --lib --bins --tests --json --summary-only --output-path target-coverage.json
 python3 - "$minimum" <<'PY'
 import json

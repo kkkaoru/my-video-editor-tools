@@ -22,6 +22,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const WHISPER: ModelStatus = {
   id: "whisper",
@@ -294,6 +297,7 @@ it("shows the results of a finished job and can write it again", () => {
       speaker_count: 2,
       cue_count: 9,
       faceless: false,
+      requested_speakers: 0,
     },
   });
   expect(screen.getByRole("status").textContent).toBe("Finished: 9 captions, 2 speakers");
@@ -318,7 +322,14 @@ it("mentions captions placed without a face", () => {
   showJob({
     ...QUEUED_JOB,
     state: "finished",
-    outcome: { outputs: [], base: "/videos/talk", speaker_count: 1, cue_count: 1, faceless: true },
+    outcome: {
+      outputs: [],
+      base: "/videos/talk",
+      speaker_count: 1,
+      cue_count: 1,
+      faceless: true,
+      requested_speakers: 0,
+    },
   });
   expect(
     screen.getByText("Captions where no face was found were placed at the bottom of the video.").tagName,
@@ -330,7 +341,14 @@ it("reports a rewrite that fails", async () => {
   const store: AppStore = showJob({
     ...QUEUED_JOB,
     state: "finished",
-    outcome: { outputs: [], base: "/videos/talk", speaker_count: 1, cue_count: 1, faceless: false },
+    outcome: {
+      outputs: [],
+      base: "/videos/talk",
+      speaker_count: 1,
+      cue_count: 1,
+      faceless: false,
+      requested_speakers: 0,
+    },
   });
   fireEvent.click(
     screen.getByRole("button", { name: "Write talk.mp4 again with the current position and colours" }),

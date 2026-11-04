@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
 import { initialState } from "../state/app-state.ts";
 import type { AppStore } from "../state/use-app-store.ts";
-import { defaultPalette, previewShadow, StylePane } from "./StylePane.tsx";
+import { defaultPalette, StylePane } from "./StylePane.tsx";
 
 // The edge-aligned thumb stays visibility:hidden until measured and happy-dom measures nothing,
 // which also empties its accessible name, so its input is found by the label attribute.
@@ -25,6 +25,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "yunet",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
   locale: "en",
@@ -80,24 +83,16 @@ afterEach(cleanup);
 it("starts speaker 1 white on black and the others in colour on white", () => {
   expect(defaultPalette()).toStrictEqual([
     { fill: "#FFFFFF", outline: "#000000" },
-    { fill: "#7CDC8C", outline: "#FFFFFF" },
-    { fill: "#6CD4FF", outline: "#FFFFFF" },
-    { fill: "#FF9E5E", outline: "#FFFFFF" },
-    { fill: "#FF7FA8", outline: "#FFFFFF" },
-    { fill: "#F2D64B", outline: "#FFFFFF" },
-    { fill: "#5EE0C8", outline: "#FFFFFF" },
-    { fill: "#8FA8FF", outline: "#FFFFFF" },
-    { fill: "#E08CE0", outline: "#FFFFFF" },
-    { fill: "#B5E05E", outline: "#FFFFFF" },
+    { fill: "#005A9C", outline: "#FFFFFF" },
+    { fill: "#6A1FA8", outline: "#FFFFFF" },
+    { fill: "#0B672C", outline: "#FFFFFF" },
+    { fill: "#A3123A", outline: "#FFFFFF" },
+    { fill: "#8A4500", outline: "#FFFFFF" },
+    { fill: "#7A1D7A", outline: "#FFFFFF" },
+    { fill: "#006262", outline: "#FFFFFF" },
+    { fill: "#3A3AA8", outline: "#FFFFFF" },
+    { fill: "#5C5C00", outline: "#FFFFFF" },
   ]);
-});
-
-it("draws no shadow when it is off", () => {
-  expect(previewShadow({ enabled: false, strength: 0.5 })).toBe("none");
-});
-
-it("draws the shadow at its strength, relative to the text", () => {
-  expect(previewShadow({ enabled: true, strength: 0.5 })).toBe("0.06em 0.06em 0.12em rgb(0 0 0 / 0.5)");
 });
 
 it("turns the shadow on", () => {
@@ -183,21 +178,44 @@ it("converts the outline width to a ratio", () => {
   expect(lastSaved(store)?.outline_ratio).toBe(0.2);
 });
 
+it("reports the line spacing as it is", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.keyDown(screen.getByLabelText("Line spacing (times the text size)", SLIDER_INPUT), {
+    key: "ArrowRight",
+  });
+  expect(lastSaved(store)?.line_height).toBeCloseTo(1.449);
+});
+
+it("converts the rim width to a ratio", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.input(
+    screen.getByRole("spinbutton", { name: "Black rim outside the outline (percent of the text)" }),
+    { target: { value: "5" } },
+  );
+  expect(lastSaved(store)?.rim_ratio).toBe(0.05);
+});
+
 it("describes the preview in the landscape frame by default", () => {
   show(SETTINGS);
-  expect(descriptionText()).toBe("Sample caption at 51% across and 90% down the 1920×1080 frame.");
+  expect(descriptionText()).toBe(
+    "Sample caption at 51% across and 89% down the 1920×1080 frame. Text size at this resolution: 54 px.",
+  );
 });
 
 it("shows the vertical frame narrower", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Vertical 1080×1920" }));
-  expect(descriptionText()).toBe("Sample caption at 51% across and 90% down the Vertical 1080×1920 frame.");
+  expect(descriptionText()).toBe(
+    "Sample caption at 51% across and 88% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
+  );
 });
 
 it("shows the 4K frame", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "4K" }));
-  expect(descriptionText()).toBe("Sample caption at 51% across and 90% down the 4K frame.");
+  expect(descriptionText()).toBe(
+    "Sample caption at 51% across and 89% down the 4K frame. Text size at this resolution: 108 px.",
+  );
 });
 
 it("draws a face only for the face anchors", () => {
@@ -208,34 +226,53 @@ it("draws a face only for the face anchors", () => {
         settings={{ ...SETTINGS, placement: { ...SETTINGS.placement, anchor: "face_below" } }}
         faceOptions={[]}
       />,
-    ).container.querySelectorAll(".rounded-full.bg-neutral-400").length,
-  ).toBe(1);
+    ).container.querySelectorAll("ellipse").length,
+  ).toBe(2);
   cleanup();
   expect(
     render(<StylePane store={storeOf()} settings={SETTINGS} faceOptions={[]} />).container.querySelectorAll(
-      ".rounded-full.bg-neutral-400",
+      "ellipse",
     ).length,
   ).toBe(0);
 });
 
-it("places the sample as a share of the frame with the first speaker's colours and shadow", () => {
-  const sample: HTMLElement | null = render(
-    <StylePane store={storeOf()} settings={SETTINGS} faceOptions={[]} />,
-  ).container.querySelector("div.outlined-text");
-  expect(sample?.style.color).toBe("#111111");
-  expect(Number.parseFloat(sample?.style.left ?? "")).toBeCloseTo(51);
-  expect(sample?.style.textShadow).toBe("none");
+it("draws the sample with the first speaker's colours at its place in the frame", () => {
+  const { container } = render(<StylePane store={storeOf()} settings={SETTINGS} faceOptions={[]} />);
+  expect(container.querySelector("g g:last-child")?.getAttribute("fill")).toBe("#111111");
+  expect(Number.parseFloat(container.querySelector("text")?.getAttribute("x") ?? "")).toBeCloseTo(979.2);
+});
+
+it("warns when a speaker's fill and outline are below AA", () => {
+  show({ ...SETTINGS, palette: [{ fill: "#777777", outline: "#888888" }] });
+  expect(screen.getByRole("alert").textContent).toMatch(/Speaker 1/);
+});
+
+it("gives no warning for a readable pair", () => {
+  show({
+    ...SETTINGS,
+    unassigned: { fill: "#FFFFFF", outline: "#000000" },
+    palette: [{ fill: "#FFFFFF", outline: "#000000" }],
+  });
+  expect(screen.queryByRole("alert")).toBe(null);
+});
+
+it("changes the unknown speaker's colours", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.input(screen.getByLabelText("Unknown speaker: fill"), { target: { value: "#abcdef" } });
+  expect(lastSaved(store)?.unassigned).toStrictEqual({ fill: "#ABCDEF", outline: "#000000" });
 });
 
 it("still draws the sample with an empty palette", () => {
   show({ ...SETTINGS, palette: [] });
-  expect(descriptionText()).toBe("Sample caption at 51% across and 90% down the 1920×1080 frame.");
+  expect(descriptionText()).toBe(
+    "Sample caption at 51% across and 89% down the 1920×1080 frame. Text size at this resolution: 54 px.",
+  );
   expect(screen.queryByRole("button", { name: "Remove a speaker" })).toBe(null);
 });
 
 it("changes the fill of one speaker, in capitals", () => {
   const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByLabelText("Fill of speaker 2"), { target: { value: "#abcdef" } });
+  fireEvent.input(screen.getByLabelText("Speaker 2: fill"), { target: { value: "#abcdef" } });
   expect(lastSaved(store)?.palette).toStrictEqual([
     { fill: "#111111", outline: "#222222" },
     { fill: "#ABCDEF", outline: "#444444" },
@@ -244,7 +281,7 @@ it("changes the fill of one speaker, in capitals", () => {
 
 it("changes the outline of one speaker, in capitals", () => {
   const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByLabelText("Outline of speaker 1"), { target: { value: "#abcdef" } });
+  fireEvent.input(screen.getByLabelText("Speaker 1: outline"), { target: { value: "#abcdef" } });
   expect(lastSaved(store)?.palette).toStrictEqual([
     { fill: "#111111", outline: "#ABCDEF" },
     { fill: "#333333", outline: "#444444" },

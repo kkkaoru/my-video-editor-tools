@@ -21,6 +21,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const MODEL: ModelStatus = {
   id: "whisper-large-v3-turbo",
@@ -308,6 +311,9 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
           diarize_model: "b",
           face_model: "c",
           model_dirs: ["/x", "/extra"],
+          rim_ratio: 0.034,
+          line_height: 1.448,
+          speaker_count: 0,
         },
       },
     ],

@@ -24,6 +24,9 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "here",
   model_dirs: [],
+  rim_ratio: 0.034,
+  line_height: 1.448,
+  speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
   locale: "en-US",
