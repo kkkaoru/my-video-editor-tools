@@ -7,7 +7,16 @@ import type { ModelStatus, Settings, Snapshot } from "../backend/types.ts";
 import { enMessages } from "../i18n/locale-en.ts";
 import { initialState, type JobRow } from "../state/app-state.ts";
 import type { AppStore } from "../state/use-app-store.ts";
-import { fileName, JobsPane, missingRoles, modelLabel, outputPurpose, remainingText } from "./JobsPane.tsx";
+import {
+  fileName,
+  JobsPane,
+  missingRoles,
+  modelLabel,
+  outputPurpose,
+  remainingText,
+  slowProcessingNotice,
+  subtitleTargetText,
+} from "./JobsPane.tsx";
 
 const SETTINGS: Settings = {
   palette: [],
@@ -22,6 +31,7 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
@@ -35,7 +45,6 @@ const WHISPER: ModelStatus = {
   found_at: "/w",
   blocked: null,
   recommended: true,
-  hidden: false,
 };
 const DIARIZER: ModelStatus = {
   ...WHISPER,
@@ -45,12 +54,14 @@ const DIARIZER: ModelStatus = {
   found_at: "/d",
 };
 const READY: Snapshot = {
+  version: "1.2.3",
   locale: "en-US",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
   settings: SETTINGS,
   models: [WHISPER, DIARIZER],
   models_dir: "/models",
+  profiles: [],
 };
 const QUEUED_JOB: JobRow = {
   id: 1,
@@ -69,7 +80,9 @@ const storeWith = (snapshot: Snapshot, jobs: JobRow[], hovering: boolean): AppSt
   setState: vi.fn(),
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
+  replaceSnapshot: vi.fn(),
   dropVideos: vi.fn(),
+  dropSubtitles: vi.fn(),
 });
 
 function showJob(job: JobRow): AppStore {
@@ -109,7 +122,9 @@ it("rounds the time left up to whole minutes", () => {
 
 it("names what each output file is for", () => {
   expect(outputPurpose("/a.ttml", enMessages)).toBe("Styled subtitles (colour, outline, position)");
-  expect(outputPurpose("/a.srt", enMessages)).toBe("Plain subtitle track");
+  expect(outputPurpose("/a.srt", enMessages)).toBe(
+    "Subtitles with words and times (colours may not show; no outlines or positions)",
+  );
   expect(outputPurpose("/a.fcpxml", enMessages)).toBe("Timeline with titles");
   expect(outputPurpose("/a.transcript.json", enMessages)).toBe("Transcript data for writing again");
 });
@@ -139,17 +154,17 @@ it("labels a model by id, and falls back to the id or nothing", () => {
 
 it("invites a drop and hides the readiness note when ready", () => {
   render(<JobsPane store={storeWith(READY, [], false)} snapshot={READY} />);
-  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Drop videos here");
+  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Drop videos or subtitle files here");
   expect(screen.queryByRole("alert")).toBe(null);
-  expect(screen.getByRole("region", { name: "Drop videos here" }).className).toBe(
+  expect(screen.getByRole("region", { name: "Drop videos or subtitle files here" }).className).toBe(
     "flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors border-border bg-card",
   );
 });
 
 it("changes the drop target while files hover", () => {
   render(<JobsPane store={storeWith(READY, [], true)} snapshot={READY} />);
-  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Release to add the videos");
-  expect(screen.getByRole("region", { name: "Drop videos here" }).className).toBe(
+  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Release to add the files");
+  expect(screen.getByRole("region", { name: "Drop videos or subtitle files here" }).className).toBe(
     "flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors border-primary bg-muted",
   );
 });
@@ -306,7 +321,10 @@ it("shows the results of a finished job and can write it again", () => {
       .getAllByRole("listitem")
       .slice(1)
       .map((item: HTMLElement): string | null => item.textContent),
-  ).toStrictEqual(["Plain subtitle track: /a.srt", "Timeline with titles: /a.fcpxml"]);
+  ).toStrictEqual([
+    "Subtitles with words and times (colours may not show; no outlines or positions): /a.srt",
+    "Timeline with titles: /a.fcpxml",
+  ]);
   expect(screen.queryByText("Captions where no face was found were placed at the bottom of the video.")).toBe(
     null,
   );
@@ -361,4 +379,150 @@ it("reports a rewrite that fails", async () => {
 it("explains a failed job with the model's label", () => {
   showJob({ ...QUEUED_JOB, state: "failed", error: { code: "model_missing", model: "whisper" } });
   expect(screen.getByRole("alert").textContent).toBe("Whisper is not installed. Download it in Models.");
+});
+
+it("says subtitle files follow the selected profile", () => {
+  expect(
+    subtitleTargetText(
+      {
+        ...READY,
+        settings: { ...SETTINGS, active_profile: "A" },
+        profiles: [
+          {
+            name: "A",
+            look: {
+              palette: [],
+              unassigned: { fill: "#AAAAAA", outline: "#000000" },
+              font_family: "Sans",
+              font_ratio: 0.05,
+              outline_ratio: 0.1,
+              rim_ratio: 0.03,
+              line_height: 1.4,
+              shadow: { enabled: false, strength: 0.5 },
+              width_ratio: 0.8,
+              placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+            },
+          },
+        ],
+      },
+      enMessages,
+    ),
+  ).toBe("Dropped subtitle files are written again as new files with the saved profile A.");
+});
+
+it("says subtitle files follow the current settings without a saved selection", () => {
+  expect(
+    subtitleTargetText({ ...READY, settings: { ...SETTINGS, active_profile: "Gone" } }, enMessages),
+  ).toBe("Dropped subtitle files are written again as new files with the current caption settings.");
+});
+
+it("keeps the speaker count above the drop target and explains it", async () => {
+  render(
+    <main>
+      <JobsPane store={storeWith(READY, [], false)} snapshot={READY} />
+    </main>,
+  );
+  const count: HTMLElement = screen.getByRole("combobox", { name: "Number of speakers" });
+  const target: HTMLElement = screen.getByRole("region", { name: "Drop videos or subtitle files here" });
+  expect(count.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(4);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Why set the number of speakers?" }));
+  });
+  expect(screen.getByRole("dialog", { name: "Why set the number of speakers?" }).textContent).toBe(
+    "Speaker colours depend on telling voices apart. Saying how many people speak keeps similar voices from merging and one voice from splitting. With 1 speaker, speaker separation is skipped, so it is faster and needs no speaker model.",
+  );
+});
+
+it("refuses to choose videos without their models, saying what is missing", () => {
+  const snapshot: Snapshot = { ...READY, models: [] };
+  const store: AppStore = storeWith(snapshot, [], false);
+  render(<JobsPane store={store} snapshot={snapshot} />);
+  fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
+  expect(vi.mocked(open).mock.calls).toStrictEqual([]);
+  expect(failureOf(store)).toStrictEqual({ code: "models_missing", roles: ["transcribe", "diarize"] });
+});
+
+it("rewrites the chosen subtitle files", async () => {
+  vi.mocked(open).mockResolvedValue(["/a.srt"]);
+  const store: AppStore = storeWith(READY, [], false);
+  render(<JobsPane store={store} snapshot={READY} />);
+  fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
+  await waitFor((): void => {
+    expect(vi.mocked(store.dropSubtitles).mock.calls).toStrictEqual([[["/a.srt"]]]);
+  });
+  expect(vi.mocked(open).mock.calls[0]?.[0]).toStrictEqual({
+    multiple: true,
+    filters: [{ name: "Subtitle files", extensions: ["fcpxml", "srt", "ttml", "json"] }],
+  });
+});
+
+it("rewrites nothing when the subtitle dialog is dismissed", async () => {
+  vi.mocked(open).mockResolvedValue(null);
+  const store: AppStore = storeWith(READY, [], false);
+  render(<JobsPane store={store} snapshot={READY} />);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
+  });
+  expect(vi.mocked(store.dropSubtitles).mock.calls).toStrictEqual([]);
+});
+
+it("reports a subtitle dialog that fails", async () => {
+  vi.mocked(open).mockRejectedValue(new Error("no dialog"));
+  const store: AppStore = storeWith(READY, [], false);
+  render(<JobsPane store={store} snapshot={READY} />);
+  fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
+  await waitFor((): void => {
+    expect(failureOf(store)).toStrictEqual({ code: "internal", detail: "Error: no dialog" });
+  });
+});
+
+it("saves the chosen number of speakers", async () => {
+  const store: AppStore = storeWith(READY, [], false);
+  render(
+    <main>
+      <JobsPane store={store} snapshot={READY} />
+    </main>,
+  );
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
+  });
+  await act(async (): Promise<void> => {
+    fireEvent.pointerDown(screen.getByRole("option", { name: "3 speakers" }));
+    fireEvent.click(screen.getByRole("option", { name: "3 speakers" }));
+  });
+  expect(vi.mocked(store.updateSettings).mock.calls[0]?.[0].speaker_count).toBe(3);
+});
+
+it("says nothing about speed on a Mac or with a usable GPU", () => {
+  expect(slowProcessingNotice(READY, enMessages)).toBe(null);
+  expect(
+    slowProcessingNotice(
+      {
+        ...READY,
+        backend: "vulkan",
+        hardware: { is_mac: false, memory_gib: 8, gpu: { vendor: "radeon", name: "RX", memory_gib: 16 } },
+      },
+      enMessages,
+    ),
+  ).toBe(null);
+});
+
+it("warns when speakers run on the CPU until the GeForce runtime is here", () => {
+  const snapshot: Snapshot = {
+    ...READY,
+    backend: "speakers_on_cpu",
+    hardware: { is_mac: false, memory_gib: 8, gpu: { vendor: "nvidia", name: "RTX", memory_gib: 16 } },
+  };
+  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
+  expect(
+    screen.getByText(
+      "Telling speakers apart runs on the CPU until you download the GeForce runtime in Models, so it is slower.",
+    ).tagName,
+  ).toBe("P");
+});
+
+it("warns when no usable GPU was found", () => {
+  expect(
+    slowProcessingNotice({ ...READY, hardware: { is_mac: false, memory_gib: 8, gpu: null } }, enMessages),
+  ).toBe("No GPU this version can use was found, so everything runs on the CPU. It is slower.");
 });

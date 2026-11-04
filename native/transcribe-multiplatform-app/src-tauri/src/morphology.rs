@@ -43,6 +43,8 @@ pub(crate) enum BreakClass {
     Predicate,
     /// Between a case or topic particle and the verb or adjective it belongs to.
     Argument,
+    /// Inside a run of nouns, which usually name one thing (実|食).
+    Compound,
     /// Beside a word whose opening also reads as a particle (`からい` after て may be `から`).
     Ambiguous,
     /// After any other particle.
@@ -235,6 +237,9 @@ fn break_class(previous: &Morpheme, item: &Morpheme) -> BreakClass {
     }
     if previous.part(0) == "助詞" {
         return BreakClass::Particle;
+    }
+    if previous.part(0) == "名詞" && item.part(0) == "名詞" && item.part(1) != "代名詞" {
+        return BreakClass::Compound;
     }
     BreakClass::Plain
 }
@@ -894,5 +899,13 @@ mod tests {
         assert!(test_segmenter().leans_on_previous("ですね").unwrap());
         assert!(!test_segmenter().leans_on_previous("そうです").unwrap());
         assert!(!test_segmenter().leans_on_previous("hello").unwrap());
+    }
+
+    #[test]
+    fn a_run_of_nouns_is_a_weak_break_unless_a_pronoun_opens_it() {
+        let compound = test_segmenter().boundaries("学校図書館").unwrap();
+        assert_eq!(compound.phrases[0].class, BreakClass::Compound);
+        let pronoun = test_segmenter().boundaries("明日私").unwrap();
+        assert_eq!(pronoun.phrases[0].class, BreakClass::Plain);
     }
 }

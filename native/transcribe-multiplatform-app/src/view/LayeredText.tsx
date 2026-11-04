@@ -8,6 +8,7 @@ export interface LayeredTextProps {
   /** Centre of the block. */
   x: number;
   y: number;
+  fontFamily: string;
   fontPx: number;
   lineHeightPx: number;
   color: SpeakerColor;
@@ -23,7 +24,8 @@ interface Layer {
 }
 
 const BLACK: string = "#000000";
-const FONT_STACK: string = '"Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
+/** Stands in for a chosen family this computer does not have. */
+const FALLBACK_FONTS: string = '"Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif';
 /** Style 20's shadow straight down, in em. */
 const SHADOW_OFFSET_EM: number = 16 / 88;
 const SHADOW_BLUR_EM: number = 8 / 88;
@@ -38,6 +40,8 @@ export const captionLayers = ({ fill, outline }: SpeakerColor, outlinePx: number
   { fill, stroke: "none", strokeWidth: 0 },
 ];
 
+export const fontStack = (family: string): string => `"${family}", ${FALLBACK_FONTS}`;
+
 export const shadowFilter = ({ enabled, strength }: CaptionShadow, fontPx: number): string =>
   enabled
     ? `drop-shadow(0 ${fontPx * SHADOW_OFFSET_EM}px ${fontPx * SHADOW_BLUR_EM}px rgb(0 0 0 / ${strength}))`
@@ -47,6 +51,7 @@ export const LayeredText = ({
   lines,
   x,
   y,
+  fontFamily,
   fontPx,
   lineHeightPx,
   color,
@@ -55,7 +60,7 @@ export const LayeredText = ({
   shadow,
 }: LayeredTextProps): VNode => (
   <g
-    fontFamily={FONT_STACK}
+    fontFamily={fontStack(fontFamily)}
     fontSize={fontPx}
     fontWeight={700}
     textAnchor="middle"

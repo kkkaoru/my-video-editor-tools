@@ -29,6 +29,14 @@ pub enum UserError {
         required: u64,
         available: u64,
     },
+    #[error("no transcript was found beside {file}")]
+    TranscriptMissing { file: String },
+    #[error("profile {name} already exists")]
+    ProfileExists { name: String },
+    #[error("profile {name} does not exist")]
+    ProfileMissing { name: String },
+    #[error("models cannot be reset while a job or a download is running")]
+    ModelsBusy,
 }
 
 /// Every failure the app reports; messages reach the UI, so they name the failed step.
@@ -47,6 +55,9 @@ pub enum AppError {
     Tool { tool: String, detail: String },
     #[error("download failed: {0}")]
     Download(String),
+    /// The connection was lost: what arrived is kept, so trying again resumes.
+    #[error("download failed: {0}")]
+    Interrupted(String),
     #[error("cancelled")]
     Cancelled,
 }

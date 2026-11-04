@@ -7,6 +7,7 @@ import type { Snapshot } from "../backend/types.ts";
 import { mount, reportStartupFailure, start } from "./main.tsx";
 
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
@@ -23,12 +24,14 @@ const SNAPSHOT: Snapshot = {
     diarize_model: "b",
     face_model: "c",
     model_dirs: [],
+    active_profile: "",
     rim_ratio: 0.034,
     line_height: 1.448,
     speaker_count: 0,
   },
   models: [],
   models_dir: "/models",
+  profiles: [],
 };
 
 // main.tsx starts itself on import, so its host and backend must be ready before the imports above run.

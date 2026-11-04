@@ -14,6 +14,13 @@ const MIN_GPU_MEMORY_GIB: u64 = 4;
 const SPEECH_LLM_MAX_SECONDS: u64 = 3600;
 const Q2M_MAX_SECONDS: u64 = 420;
 const SECONDS_PER_MINUTE: u64 = 60;
+#[cfg(all(feature = "windows-geforce", feature = "windows-radeon"))]
+compile_error!("a build is either windows-geforce or windows-radeon, not both");
+/// The GPU vendor this distribution was built for; other vendors' cards are never used.
+const BUILD_GPU_VENDOR: Option<GpuVendor> = build_gpu_vendor(
+    cfg!(feature = "windows-geforce"),
+    cfg!(feature = "windows-radeon"),
+);
 const GPU_QUERY: Option<ToolQuery> = if cfg!(windows) {
     Some((
         "powershell",
@@ -80,8 +87,6 @@ const Q2L_ID: &str = "nemotron-3.5-transcribe-q2l";
 const Q8_ID: &str = "nemotron-3.5-transcribe-q8";
 const NEMO_CUDA_URL: &str =
     "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip";
-const WHISPER_CUDA_URL: &str =
-    "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-12.4.0-x64.zip";
 /// Settings for 16 GB GPUs, documented by the GGUF publisher; `max_context` holds about 7 minutes.
 const Q2M_ARGS: [&str; 12] = [
     "--asr.salm.max_sequences",
@@ -270,20 +275,12 @@ const DIARIZATION_FILES: [FileSpec; 1] = [FileSpec {
     size: 107_012_128,
     sha256: "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1",
 }];
-const GEFORCE_FILES: [FileSpec; 2] = [
-    FileSpec {
-        url_kind: UrlKind::Direct(NEMO_CUDA_URL),
-        path: "nemo/nemo-speech-cuda.zip",
-        size: 508_625_181,
-        sha256: "d0d32ae1bf6ee0534767a47b2aa0e9e2ff6fe39643465c0baae9301d04f6ed42",
-    },
-    FileSpec {
-        url_kind: UrlKind::Direct(WHISPER_CUDA_URL),
-        path: "whisper/whisper-cuda.zip",
-        size: 684_913_404,
-        sha256: "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a",
-    },
-];
+const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
+    url_kind: UrlKind::Direct(NEMO_CUDA_URL),
+    path: "nemo/nemo-speech-cuda.zip",
+    size: 508_625_181,
+    sha256: "d0d32ae1bf6ee0534767a47b2aa0e9e2ff6fe39643465c0baae9301d04f6ed42",
+}];
 
 /// Every model and runtime the app knows.
 pub const CATALOG: [ModelEntry; 10] = [
@@ -409,15 +406,18 @@ pub struct Hardware {
     pub gpu: Option<Gpu>,
 }
 
-/// Which build of the speech tools runs: GeForce uses CUDA once downloaded, and Vulkan until then.
-/// Radeon uses Vulkan, the only GPU path NeMo-Speech.cpp and whisper.cpp offer it.
+/// Which builds of the speech tools run. Only this distribution's vendor is ever considered.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
     /// Metal on a Mac, the CPU elsewhere.
     Default,
+    /// Radeon distribution: both tools on Vulkan.
     Vulkan,
+    /// GeForce distribution with its runtime: speakers on CUDA, transcription on Vulkan.
     Cuda,
+    /// GeForce distribution without its runtime: transcription on Vulkan, speakers on the CPU.
+    SpeakersOnCpu,
 }
 
 /// One row of the model manager.
@@ -433,22 +433,31 @@ pub struct ModelStatus {
     /// The hardware's reason this model cannot run, if any.
     pub blocked: Option<UserError>,
     pub recommended: bool,
-    pub hidden: bool,
+}
+
+const fn build_gpu_vendor(geforce: bool, radeon: bool) -> Option<GpuVendor> {
+    match (geforce, radeon) {
+        (true, _) => Some(GpuVendor::Nvidia),
+        (_, true) => Some(GpuVendor::Radeon),
+        _ => None,
+    }
 }
 
 /// Parses `DriverDesc|bytes` lines from the display adapters' registry keys. The registry, unlike
-/// `Win32_VideoController.AdapterRAM`, reports more than 4 GB. The largest usable GPU wins.
+/// `Win32_VideoController.AdapterRAM`, reports more than 4 GB. The largest GPU of `vendor` wins.
 #[must_use]
-pub fn parse_display_adapters(output: &str) -> Option<Gpu> {
+pub fn parse_display_adapters(output: &str, vendor: GpuVendor) -> Option<Gpu> {
     output
         .lines()
-        .filter_map(parse_display_adapter)
+        .filter_map(|line| parse_display_adapter(line, vendor))
         .max_by_key(|gpu| gpu.memory_gib)
 }
 
-fn parse_display_adapter(line: &str) -> Option<Gpu> {
+fn parse_display_adapter(line: &str, vendor: GpuVendor) -> Option<Gpu> {
     let (name, bytes) = line.trim().rsplit_once('|')?;
-    let vendor = gpu_vendor(name)?;
+    if !is_from_vendor(name, vendor) {
+        return None;
+    }
     let memory_gib = bytes.trim().parse::<u64>().ok()? / GIB;
     (memory_gib >= MIN_GPU_MEMORY_GIB).then(|| Gpu {
         vendor,
@@ -457,20 +466,20 @@ fn parse_display_adapter(line: &str) -> Option<Gpu> {
     })
 }
 
-fn gpu_vendor(name: &str) -> Option<GpuVendor> {
+fn is_from_vendor(name: &str, vendor: GpuVendor) -> bool {
     let upper = name.to_uppercase();
-    if upper.contains("NVIDIA") || upper.contains("GEFORCE") {
-        return Some(GpuVendor::Nvidia);
+    match vendor {
+        GpuVendor::Nvidia => upper.contains("NVIDIA") || upper.contains("GEFORCE"),
+        GpuVendor::Radeon => upper.contains("RADEON"),
     }
-    upper.contains("RADEON").then_some(GpuVendor::Radeon)
 }
 
-fn query_gpu(query: Option<ToolQuery>) -> Option<Gpu> {
-    let (program, args) = query?;
+fn query_gpu(query: Option<ToolQuery>, vendor: Option<GpuVendor>) -> Option<Gpu> {
+    let (vendor, (program, args)) = (vendor?, query?);
     let mut command = background_command(Path::new(program));
     command.args(args);
     let output = run_capture(command, "display adapter query").ok()?;
-    parse_display_adapters(&String::from_utf8_lossy(&output))
+    parse_display_adapters(&String::from_utf8_lossy(&output), vendor)
 }
 
 fn parse_memory_bytes(output: &[u8]) -> AppResult<u64> {
@@ -491,7 +500,7 @@ pub fn detect_hardware() -> AppResult<Hardware> {
     Ok(Hardware {
         is_mac: cfg!(target_os = "macos"),
         memory_gib: query_memory_bytes()?.div_ceil(GIB),
-        gpu: query_gpu(GPU_QUERY),
+        gpu: query_gpu(GPU_QUERY, BUILD_GPU_VENDOR),
     })
 }
 
@@ -549,7 +558,7 @@ const fn has_nvidia(hardware: &Hardware) -> bool {
     )
 }
 
-/// GeForce: CUDA when its runtime is downloaded, otherwise Vulkan. Radeon: Vulkan.
+/// What this machine runs on: `gpu` only ever holds this distribution's vendor.
 #[must_use]
 pub fn backend_for(hardware: &Hardware, paths: &AppPaths) -> Backend {
     match &hardware.gpu {
@@ -557,7 +566,14 @@ pub fn backend_for(hardware: &Hardware, paths: &AppPaths) -> Backend {
             vendor: GpuVendor::Nvidia,
             ..
         }) if locate_runtime(paths).is_some() => Backend::Cuda,
-        Some(_) => Backend::Vulkan,
+        Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            ..
+        }) => Backend::SpeakersOnCpu,
+        Some(Gpu {
+            vendor: GpuVendor::Radeon,
+            ..
+        }) => Backend::Vulkan,
         None => Backend::Default,
     }
 }
@@ -571,6 +587,7 @@ pub fn device_for(entry: &ModelEntry, hardware: &Hardware, backend: Backend) -> 
         .is_some_and(|gpu| gpu.memory_gib >= entry.min_memory_gib);
     match backend {
         Backend::Default => "auto",
+        Backend::SpeakersOnCpu => "cpu",
         Backend::Cuda | Backend::Vulkan if !fits_gpu => "cpu",
         Backend::Cuda => "cuda",
         Backend::Vulkan => "vulkan",
@@ -609,8 +626,9 @@ pub fn blocked_reason(entry: &ModelEntry, hardware: &Hardware) -> Option<UserErr
     })
 }
 
-fn is_hidden(entry: &ModelEntry, hardware: &Hardware) -> bool {
-    entry.id == GEFORCE_RUNTIME_ID && !has_nvidia(hardware)
+/// The runtime exists only for a GeForce; every other machine never sees it.
+fn is_listed(entry: &ModelEntry, hardware: &Hardware) -> bool {
+    entry.id != GEFORCE_RUNTIME_ID || has_nvidia(hardware)
 }
 
 fn find_named(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
@@ -693,13 +711,13 @@ pub fn locate_whisper_source(paths: &AppPaths, extra: &[PathBuf]) -> Option<Path
     locate_whisper_checkpoint(&search_roots(paths, extra), paths.hf_hub.as_deref())
 }
 
+/// The verified archive is published only once complete, so a running or broken download does not count.
 fn locate_runtime(paths: &AppPaths) -> Option<PathBuf> {
     let folder = paths.downloaded_runtime_dir().join("geforce");
-    folder
-        .join("nemo")
-        .is_dir()
-        .then_some(folder.clone())
-        .filter(|_| folder.join("whisper").is_dir())
+    let archive = folder.join(GEFORCE_FILES[0].path);
+    std::fs::metadata(archive)
+        .is_ok_and(|meta| meta.len() == GEFORCE_FILES[0].size)
+        .then_some(folder)
 }
 
 /// Where a usable copy of the entry is: its main file, or the folder for runtimes.
@@ -742,6 +760,7 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
     let recommended = recommended_speech_llm(hardware);
     CATALOG
         .iter()
+        .filter(|entry| is_listed(entry, hardware))
         .map(|entry| ModelStatus {
             id: entry.id,
             role: entry.role,
@@ -753,7 +772,6 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
             recommended: recommended == Some(entry.id)
                 || entry.id == WHISPER_ID
                 || entry.id == YUNET_ID,
-            hidden: is_hidden(entry, hardware),
         })
         .collect()
 }
@@ -805,27 +823,59 @@ mod tests {
     }
 
     #[test]
-    fn display_adapters_parse_and_the_largest_usable_gpu_wins() {
+    fn only_the_build_vendors_largest_gpu_is_read() {
+        let adapters = "Intel(R) UHD Graphics|2147483648\r\nNVIDIA GeForce RTX 3060|12884901888\r\nNVIDIA GeForce RTX 4090|25769803776\r\nAMD Radeon RX 7900 XTX|17179869184\r\n";
         assert_eq!(
-            parse_display_adapters(
-                "Intel(R) UHD Graphics|2147483648\r\nNVIDIA GeForce RTX 3060|12884901888\r\nAMD Radeon RX 7900 XTX|25769803776\r\n"
-            ),
+            parse_display_adapters(adapters, GpuVendor::Nvidia),
             Some(Gpu {
-                vendor: GpuVendor::Radeon,
-                name: "AMD Radeon RX 7900 XTX".to_owned(),
+                vendor: GpuVendor::Nvidia,
+                name: "NVIDIA GeForce RTX 4090".to_owned(),
                 memory_gib: 24
             })
         );
-        assert_eq!(parse_display_adapters(""), None);
-        assert_eq!(parse_display_adapters("no separator"), None);
-        assert_eq!(parse_display_adapters("NVIDIA GeForce|many"), None);
-        assert_eq!(parse_display_adapters("NVIDIA GeForce|1073741824"), None);
+        assert_eq!(
+            parse_display_adapters(adapters, GpuVendor::Radeon),
+            Some(Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "AMD Radeon RX 7900 XTX".to_owned(),
+                memory_gib: 16
+            })
+        );
+    }
+
+    #[test]
+    fn another_vendors_gpu_counts_as_no_gpu() {
+        assert_eq!(
+            parse_display_adapters("AMD Radeon RX 7900 XTX|25769803776", GpuVendor::Nvidia),
+            None
+        );
+        assert_eq!(
+            parse_display_adapters("NVIDIA GeForce RTX 4090|25769803776", GpuVendor::Radeon),
+            None
+        );
+    }
+
+    #[test]
+    fn unusable_adapter_lines_are_skipped() {
+        assert_eq!(parse_display_adapters("", GpuVendor::Nvidia), None);
+        assert_eq!(
+            parse_display_adapters("no separator", GpuVendor::Nvidia),
+            None
+        );
+        assert_eq!(
+            parse_display_adapters("NVIDIA GeForce|many", GpuVendor::Nvidia),
+            None
+        );
+        assert_eq!(
+            parse_display_adapters("NVIDIA GeForce|1073741824", GpuVendor::Nvidia),
+            None
+        );
     }
 
     #[test]
     fn a_geforce_is_recognised_without_the_vendor_name() {
         assert_eq!(
-            parse_display_adapters("GeForce GT|8589934592"),
+            parse_display_adapters("GeForce GT|8589934592", GpuVendor::Nvidia),
             Some(Gpu {
                 vendor: GpuVendor::Nvidia,
                 name: "GeForce GT".to_owned(),
@@ -834,22 +884,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_features_choose_the_build_vendor() {
+        assert_eq!(build_gpu_vendor(false, false), None);
+        assert_eq!(build_gpu_vendor(true, false), Some(GpuVendor::Nvidia));
+        assert_eq!(build_gpu_vendor(false, true), Some(GpuVendor::Radeon));
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_gpu_query_runs_its_tool_and_tolerates_failure() {
-        assert_eq!(query_gpu(None), None);
+        let geforce: ToolQuery = (
+            "/bin/sh",
+            &["-c", "echo 'NVIDIA GeForce RTX 4090|25769803776'"],
+        );
+        assert_eq!(query_gpu(None, Some(GpuVendor::Nvidia)), None);
+        assert_eq!(query_gpu(Some(geforce), None), None);
+        assert_eq!(query_gpu(Some(geforce), Some(GpuVendor::Radeon)), None);
         assert_eq!(
-            query_gpu(Some((
-                "/bin/sh",
-                &["-c", "echo 'NVIDIA GeForce RTX 4090|25769803776'"]
-            ))),
+            query_gpu(Some(geforce), Some(GpuVendor::Nvidia)),
             Some(Gpu {
                 vendor: GpuVendor::Nvidia,
                 name: "NVIDIA GeForce RTX 4090".to_owned(),
                 memory_gib: 24
             })
         );
-        assert_eq!(query_gpu(Some(("/bin/sh", &["-c", "exit 1"]))), None);
+        assert_eq!(
+            query_gpu(
+                Some(("/bin/sh", &["-c", "exit 1"])),
+                Some(GpuVendor::Nvidia)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -896,12 +962,22 @@ mod tests {
         assert_eq!(backend_for(&radeon, &paths), Backend::Vulkan);
         assert_eq!(
             backend_for(&geforce("RTX 4090", 24), &paths),
-            Backend::Vulkan
+            Backend::SpeakersOnCpu
         );
-        std::fs::create_dir_all(root.join("data/runtime/geforce/nemo")).unwrap();
-        std::fs::create_dir_all(root.join("data/runtime/geforce/whisper")).unwrap();
+        let archive = root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip");
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::File::create(&archive).unwrap().set_len(5).unwrap();
+        assert_eq!(
+            backend_for(&geforce("RTX 4090", 24), &paths),
+            Backend::SpeakersOnCpu
+        );
+        std::fs::File::create(&archive)
+            .unwrap()
+            .set_len(508_625_181)
+            .unwrap();
         assert_eq!(backend_for(&geforce("RTX 4090", 24), &paths), Backend::Cuda);
         assert_eq!(backend_for(&radeon, &paths), Backend::Vulkan);
+        assert_eq!(backend_for(&mac(64), &paths), Backend::Default);
     }
 
     #[test]
@@ -910,6 +986,7 @@ mod tests {
         let big = geforce("RTX 4090", 24);
         let small = geforce("RTX 3060", 12);
         assert_eq!(device_for(iq4, &mac(64), Backend::Default), "auto");
+        assert_eq!(device_for(iq4, &big, Backend::SpeakersOnCpu), "cpu");
         assert_eq!(device_for(iq4, &big, Backend::Cuda), "cuda");
         assert_eq!(device_for(iq4, &big, Backend::Vulkan), "vulkan");
         assert_eq!(device_for(iq4, &small, Backend::Cuda), "cpu");
@@ -1004,10 +1081,21 @@ mod tests {
     }
 
     #[test]
-    fn the_geforce_runtime_shows_only_with_a_geforce() {
+    fn the_geforce_runtime_is_listed_only_with_a_geforce() {
         let entry = find_entry("geforce-runtime").unwrap();
-        assert!(is_hidden(entry, &mac(48)));
-        assert!(!is_hidden(entry, &geforce("NVIDIA GeForce RTX 4090", 24)));
+        let radeon = Hardware {
+            is_mac: false,
+            memory_gib: 64,
+            gpu: Some(Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "AMD Radeon".to_owned(),
+                memory_gib: 24,
+            }),
+        };
+        assert!(!is_listed(entry, &mac(48)));
+        assert!(!is_listed(entry, &radeon));
+        assert!(is_listed(entry, &geforce("NVIDIA GeForce RTX 4090", 24)));
+        assert!(is_listed(find_entry("yunet").unwrap(), &radeon));
     }
 
     #[test]

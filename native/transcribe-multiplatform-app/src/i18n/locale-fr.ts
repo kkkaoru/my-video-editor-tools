@@ -5,14 +5,61 @@ export const frMessages: Messages = {
   appName: "Transcribe for Resolve",
   tabJobs: "Transcrire",
   tabStyle: "Apparence et position des sous-titres",
+  tabHelp: "Mode d'emploi",
   tabModels: "Modèles",
-  dropTitle: "Déposez les vidéos ici",
-  dropHint: "Les fichiers de sous-titres pour DaVinci Resolve sont écrits à côté de chaque vidéo.",
-  dropHover: "Relâchez pour ajouter les vidéos",
+  noticeSpeakersOnCpu:
+    "La distinction des voix tourne sur le CPU, donc c'est plus lent. Télécharge les données GeForce dans Modèles pour aller plus vite.",
+  noticeCpuOnly:
+    "Aucun GPU utilisable par cette version n'a été trouvé. Tout tourne sur le CPU, donc c'est plus lent.",
+  dropTitle: "Dépose ici des vidéos ou des fichiers de sous-titres",
+  dropHint:
+    "Les vidéos donnent des fichiers de sous-titres pour DaVinci Resolve, enregistrés à côté de chaque vidéo.",
+  dropHover: "Relâche pour ajouter les fichiers",
   pickVideos: "Choisir des vidéos",
+  pickSubtitles: "Choisir des fichiers de sous-titres",
+  subtitleFilterName: "Fichiers de sous-titres",
+  dropProfileHint:
+    "Les fichiers de sous-titres déposés sont réécrits dans de nouveaux fichiers avec le profil enregistré {name}.",
+  dropCurrentHint:
+    "Les fichiers de sous-titres déposés sont réécrits dans de nouveaux fichiers avec les réglages actuels des sous-titres.",
+  speakerCountHelpLabel: "Pourquoi indiquer le nombre de locuteurs ?",
+  speakerCountHelp:
+    "Les couleurs des locuteurs dépendent de la distinction des voix. Indiquer le nombre évite que des voix proches se confondent ou qu'une voix soit scindée. Avec 1 locuteur, la séparation est ignorée : c'est plus rapide et aucun modèle de locuteurs n'est nécessaire.",
+  profilesHeading: "Profils",
+  profilesHint:
+    "Enregistre l'apparence et la position des sous-titres sous un nom, puis restaure-les plus tard. Les modèles et la langue parlée ne font pas partie d'un profil.",
+  profileName: "Nom du profil",
+  profileSave: "Enregistrer comme nouveau profil",
+  profileEmpty: "Aucun profil enregistré pour l'instant.",
+  profileSelected: "Sélectionné",
+  profileChanged: "Modifications non enregistrées",
+  profileLoad: "Charger {name}",
+  profileOverwrite: "Écraser {name}",
+  profileOverwriteTitle: "Écraser {name} ?",
+  profileOverwriteDescription:
+    "L'apparence enregistrée est remplacée par les réglages actuels. Cette action est irréversible.",
+  profileDelete: "Supprimer {name}",
+  profileDeleteTitle: "Supprimer {name} ?",
+  profileDeleteDescription:
+    "Le profil est supprimé. Les réglages actuels et les fichiers de sous-titres existants ne changent pas. Cette action est irréversible.",
+  dialogCancel: "Annuler",
+  fontFamily: "Famille de police",
+  fontSearch: "Rechercher une police",
+  fontHint: "Utilisée pour tous les locuteurs. Saisis du texte pour filtrer la liste.",
+  fontLoading: "Lecture des polices installées",
+  fontNoMatch: "Aucune police installée ne correspond",
+  fontNotInstalled:
+    "{font} n'est pas installée sur cet ordinateur. L'aperçu utilise une police de remplacement et les fichiers de sous-titres gardent ce nom.",
+  downloadAllLabel: "Télécharger ce qui manque",
+  downloadAll: "{label} : {count} modèles ({size})",
+  resetModels: "Réinitialiser les modèles et les retélécharger",
+  resetModelsTitle: "Réinitialiser les modèles et les retélécharger ?",
+  resetModelsDescription:
+    "Tout ce que cette application a téléchargé dans {path} est supprimé, puis les modèles nécessaires à cet ordinateur sont retéléchargés. Les dossiers que tu as ajoutés ne sont jamais modifiés. Cette action est irréversible.",
+  resetModelsConfirm: "Supprimer et retélécharger",
   videoFilterName: "Vidéos",
   readinessMissing:
-    "Aucun modèle n’est disponible pour : {roles}. Téléchargez-en un dans Modèles, ou ajoutez un dossier qui en contient déjà un.",
+    "Aucun modèle n’est disponible pour : {roles}. Télécharges-en un dans Modèles, ou ajoute un dossier qui en contient déjà un.",
   roleTranscribe: "la transcription",
   roleDiarize: "la séparation des voix",
   roleFace: "la détection des visages",
@@ -36,7 +83,7 @@ export const frMessages: Messages = {
   stepStates: { done: "terminé", current: "en cours", pending: "en attente" },
   outputPurposes: {
     ttml: "Sous-titres stylés (couleur, contour, position)",
-    srt: "Piste de sous-titres simple",
+    srt: "Sous-titres avec les mots et les temps (couleurs parfois absentes, ni contours ni positions)",
     fcpxml: "Timeline avec titres",
     json: "Données de transcription pour réécrire",
   },
@@ -71,7 +118,7 @@ export const frMessages: Messages = {
   rimWidth: "Bord noir à l'extérieur du contour (pourcentage du texte)",
   unknownSpeaker: "Locuteur inconnu",
   contrastWarning:
-    "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisissez des couleurs plus éloignées.",
+    "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisis des couleurs plus éloignées.",
   shadowEnabled: "Ajouter une ombre",
   shadowStrength: "Intensité de l'ombre (pourcentage)",
   previewHeading: "Aperçu",
@@ -85,7 +132,7 @@ export const frMessages: Messages = {
   previewUhd: "4K",
   speakersHeading: "Couleurs des intervenants (jusqu’à {count} intervenants)",
   speakersHint:
-    "Chaque intervenant reçoit automatiquement une couleur de remplissage et une couleur de contour. Modifiez-les ici.",
+    "Chaque intervenant reçoit automatiquement une couleur de remplissage et une couleur de contour. Modifie-les ici.",
   speakerName: "Intervenant {number}",
   fillLabel: "remplissage",
   outlineLabel: "contour",
@@ -108,28 +155,33 @@ export const frMessages: Messages = {
   deleteModel: "Supprimer la copie téléchargée de {name}",
   sourceLabel: "Source : {url}",
   locationLabel: "Emplacement : {path}",
-  hardwareCpu: "CPU uniquement",
-  hardwareMetal: "Apple GPU (Metal)",
-  hardwareMemory: "mémoire {gib} Go",
   loadFailed: "Un problème est survenu : {detail}",
   errors: {
-    no_video_stream: "Ce fichier ne contient pas de vidéo. Choisissez un fichier vidéo.",
+    no_video_stream: "Ce fichier ne contient pas de vidéo. Choisis un fichier vidéo.",
     no_audio_stream: "Cette vidéo n’a pas de son : il n’y a rien à transcrire.",
     unreadable_size: "La taille de cette vidéo est illisible. Le fichier est peut-être endommagé.",
     unreadable_duration: "La durée de cette vidéo est illisible. Le fichier est peut-être endommagé.",
     no_words: "Aucun mot n’a été trouvé dans l’audio.",
-    model_missing: "{model} n’est pas installé. Téléchargez-le dans Modèles.",
-    no_model_for_role: "Aucun modèle n’est installé pour {role}. Téléchargez-en un dans Modèles.",
-    needs_nvidia: "{model} nécessite un GPU NVIDIA. Choisissez un autre modèle dans Modèles.",
+    model_missing: "{model} n’est pas installé. Télécharge-le dans Modèles.",
+    no_model_for_role: "Aucun modèle n’est installé pour {role}. Télécharges-en un dans Modèles.",
+    needs_nvidia: "{model} nécessite un GPU NVIDIA. Choisis un autre modèle dans Modèles.",
     needs_memory:
-      "{model} nécessite {required} Go de mémoire ; cet ordinateur en a {available} Go. Choisissez un modèle plus petit.",
+      "{model} nécessite {required} Go de mémoire ; cet ordinateur en a {available} Go. Choisis un modèle plus petit.",
     too_long_for_model:
-      "{model} accepte les enregistrements jusqu'à {limit} minutes. Cette vidéo est plus longue. Choisissez Nemotron 3 Diarization dans Modèles.",
+      "{model} accepte les enregistrements jusqu'à {limit} minutes. Cette vidéo est plus longue. Choisis Nemotron 3 Diarization dans Modèles.",
+    transcript_missing:
+      "{file} n'a pas de transcription à côté de lui ; il ne peut donc pas être réécrit. Garde le fichier .transcript.json du même nom dans le même dossier.",
+    profile_exists: "Un profil nommé {name} existe déjà. Choisis un autre nom ou écrase-le depuis la liste.",
+    profile_missing: "Le profil {name} n'existe plus.",
+    models_busy:
+      "Les modèles ne peuvent pas être réinitialisés pendant une tâche ou un téléchargement. Attends la fin ou annule, puis réessaie.",
+    models_missing:
+      "Les vidéos n'ont pas été ajoutées, car aucun modèle n'est disponible pour : {roles}. Télécharge-les dans Modèles ou ajoute un dossier qui les contient.",
     internal: "{detail}",
     cancelled: "Annulé",
   },
   modelNotes: {
-    "whisper-large-v3-turbo": "Transcription. Le même modèle fonctionne sur Mac (Metal) et GeForce (CUDA).",
+    "whisper-large-v3-turbo": "Transcription. Le même modèle fonctionne sur Mac (Metal) et Windows (Vulkan).",
     "nemotron-3.5-transcribe-iq4":
       "Séparation des voix. Pour les Mac de 32 Go ou plus, les GPU de 24 Go ou plus et les CPU.",
     "nemotron-3.5-transcribe-nvfp4":
@@ -145,6 +197,250 @@ export const frMessages: Messages = {
     "avatar-face-yolo":
       "Visages d’avatars. Fonctionne une fois le fichier ONNX exporté placé dans un dossier de modèles.",
     "geforce-runtime":
-      "Versions CUDA des outils vocaux. Nécessaire uniquement sous Windows avec un GPU NVIDIA.",
+      "Version CUDA de l’outil de séparation des voix. Sans elle, la séparation s’exécute sur le CPU.",
+  },
+  help: {
+    version: "Version {version}",
+    intro:
+      "Cette application transforme ce qui est dit dans une vidéo en sous-titres, avec une couleur par personne. Tu peux utiliser ces sous-titres dans DaVinci Resolve, un logiciel de montage vidéo.",
+    sections: {
+      start: {
+        heading: "Pour commencer",
+        parts: [
+          {
+            heading: "Installer l'application",
+            intro: "Télécharge le fichier qui convient à ton ordinateur, puis installe-le.",
+            steps: [
+              "Choisis dans la liste ci-dessous le fichier pour ton ordinateur.",
+              "Sur Mac, ouvre le zip et mets l'application dans le dossier « Applications ».",
+              "Sur Windows, ouvre le exe et suis les étapes.",
+            ],
+            notes: [
+              "Mac : Transcribe-for-Resolve-macos-arm64.zip",
+              "Windows avec GeForce : Transcribe-for-Resolve-windows-geforce-x64-setup.exe",
+              "Windows avec Radeon : Transcribe-for-Resolve-windows-radeon-x64-setup.exe",
+              "Windows sans aucune des deux : n'importe quel exe convient. Il tourne seulement sur le CPU, donc c'est plus lent.",
+              "Si le Mac te bloque : ouvre Réglages Système > Confidentialité et sécurité et appuie sur « Ouvrir quand même ».",
+              "Si Windows te bloque : appuie sur « Informations complémentaires », puis sur « Exécuter quand même ».",
+            ],
+          },
+          {
+            heading: "Télécharger les modèles",
+            intro:
+              "Les modèles sont les données qui servent à changer la parole en texte. Il suffit de les télécharger une fois.",
+            steps: [
+              "Ouvre l'onglet « {tabModels} ».",
+              "Appuie sur « {downloadAllLabel} ».",
+              "Attends que la barre de chaque modèle arrive au bout.",
+            ],
+            notes: [
+              "Un modèle prêt affiche « {badgePresent} ».",
+              "S'il ne manque rien, ce bouton n'apparaît pas.",
+              "Il faut Internet. Les fichiers sont gros, cela prend du temps.",
+              "Si un téléchargement s'arrête, appuie de nouveau sur le bouton. Il reprend là où il s'est arrêté.",
+            ],
+          },
+          {
+            heading: "Utiliser des modèles que tu as déjà",
+            intro: "Si tu as déjà téléchargé des modèles, inutile de recommencer.",
+            steps: [
+              "Ouvre l'onglet « {tabModels} ».",
+              "Appuie sur « {addModelFolder} ».",
+              "Choisis le dossier qui contient les modèles.",
+            ],
+            notes: ["Les modèles trouvés affichent « {badgePresent} »."],
+          },
+        ],
+      },
+      transcribe: {
+        heading: "Créer des sous-titres à partir d'une vidéo",
+        parts: [
+          {
+            heading: "Ajouter une vidéo",
+            intro: "Quand tu ajoutes une vidéo, l'application commence les sous-titres.",
+            steps: [
+              "Ouvre l'onglet « {tabJobs} ».",
+              "Dans « {speakerCount} », choisis combien de personnes parlent. Si tu ne sais pas, laisse « {speakerCountAuto} ».",
+              "Fais glisser la vidéo dans le cadre et lâche-la. Faire glisser, c'est garder appuyé en bougeant. Tu peux aussi appuyer sur « {pickVideos} ».",
+            ],
+            notes: [
+              "Le « ? » à côté du nombre explique à quoi il sert.",
+              "Si une seule personne parle, choisis 1. C'est plus rapide.",
+              "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Avec d'autres fichiers, il ne se passe rien.",
+              "Si tu ajoutes plusieurs vidéos, elles sont traitées une par une.",
+              "La première fois, l'application met aussi un modèle sous une forme qu'elle peut utiliser.",
+              "Si la langue des sous-titres n'est pas la bonne, choisis-la dans « {speechLanguage} », dans l'onglet « {tabStyle} ».",
+            ],
+          },
+          {
+            heading: "Suivre l'avancement",
+            intro: "Une fois la vidéo ajoutée, une liste apparaît sous le cadre.",
+            steps: [],
+            notes: [
+              "Elle montre l'étape en cours et le nombre d'étapes.",
+              "La barre montre l'avancement de tout le travail.",
+              "Elle indique aussi à peu près le temps restant.",
+              "Pour arrêter, appuie sur le bouton à côté du nom de la vidéo.",
+            ],
+          },
+          {
+            heading: "Les fichiers créés",
+            intro:
+              "Quatre fichiers apparaissent dans le dossier de la vidéo. Les anciens sont gardés. Si le nom est déjà pris, les nouveaux reçoivent -2 dans leur nom.",
+            steps: [],
+            notes: [
+              ".fcpxml : les sous-titres avec la vidéo, pour DaVinci Resolve.",
+              ".ttml : des sous-titres avec couleurs et positions.",
+              ".srt : des sous-titres avec les mots et les temps. Les couleurs peuvent ne pas s'afficher. Il n'y a ni contours ni positions.",
+              ".transcript.json : les données pour réécrire les sous-titres. Garde-le.",
+            ],
+          },
+        ],
+      },
+      resolve: {
+        heading: "Ouvrir dans DaVinci Resolve",
+        parts: [
+          {
+            heading: "Commence par le fichier FCPXML",
+            intro:
+              "Un fichier FCPXML apporte la vidéo et les sous-titres d'un coup, avec leurs couleurs, contours et positions. C'est pour cela qu'on l'utilise d'abord.",
+            steps: [
+              "Ouvre un projet dans DaVinci Resolve. Un projet contient tout ton travail de montage.",
+              "Dans le menu, choisis File > Import > Timeline.",
+              "Choisis le fichier .fcpxml créé par l'application.",
+              "La vidéo et les sous-titres arrivent sur une timeline. Une timeline, c'est l'endroit où la vidéo est rangée dans l'ordre du temps.",
+            ],
+            notes: [
+              "Chaque sous-titre a 2 ou 3 couches l'une sur l'autre. Pour changer les mots, change toutes les couches.",
+            ],
+          },
+          {
+            heading: "Quand utiliser les autres fichiers",
+            intro: "Les autres fichiers servent seulement au besoin.",
+            steps: [],
+            notes: [
+              "Pour un fichier .ttml, choisis Import Subtitle dans le Media Pool. Le Media Pool, c'est l'endroit où sont rangés tes vidéos et sous-titres.",
+              "Utilise le fichier .srt pour corriger les mots ou les temps dans Resolve. Si cette application réécrit les sous-titres, tes corrections n'y sont pas.",
+              "N'utilise pas FCPXML et TTML sur la même timeline. Les sous-titres s'afficheraient deux fois.",
+            ],
+          },
+        ],
+      },
+      look: {
+        heading: "Changer l'aspect et la place des sous-titres",
+        parts: [
+          {
+            heading: "Changer l'aspect et la place",
+            intro: "Tes changements se voient tout de suite dans l'exemple et s'enregistrent tout seuls.",
+            steps: [
+              "Ouvre l'onglet « {tabStyle} ».",
+              "Dans « {positionHeading} », choisis « {anchorFaceAbove} », « {anchorFaceBelow} », « {anchorVideoTop} » ou « {anchorVideoBottom} ».",
+              "Règle la taille du texte et l'épaisseur du contour avec les curseurs. Un curseur est une poignée à bouger à gauche et à droite. Tu peux aussi taper un nombre.",
+              "Choisis la couleur du texte et du contour pour chaque personne.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "Choisir une police",
+            intro:
+              "La police, c'est la forme des lettres. Tu choisis parmi celles de cet ordinateur. Tout le monde a la même.",
+            steps: [
+              "Sous « {fontFamily} », appuie à l'endroit où s'affiche le nom de la police.",
+              "Tape une partie du nom. La liste devient plus courte.",
+              "Appuie sur la police que tu veux.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "Enregistrer et charger un profil",
+            intro: "Un profil, ce sont des réglages d'aspect et de place enregistrés sous un nom.",
+            steps: [
+              "Tape un nom.",
+              "Appuie sur « {profileSave} ».",
+              "Pour t'en servir plus tard, appuie sur son bouton de chargement dans la liste.",
+            ],
+            notes: [
+              "L'application demande avant d'écraser ou de supprimer un profil.",
+              "Les modèles et la langue parlée ne font pas partie du profil.",
+            ],
+          },
+        ],
+      },
+      rewrite: {
+        heading: "Donner un nouvel aspect à des sous-titres finis",
+        parts: [
+          {
+            heading: "Ajouter un fichier de sous-titres",
+            intro:
+              "Tu peux changer l'aspect sans refaire les sous-titres à partir du son. C'est souvent rapide. C'est plus long si l'application doit chercher des visages.",
+            steps: [
+              "Charge le profil que tu veux. Sinon, les réglages actuels sont utilisés.",
+              "Ouvre l'onglet « {tabJobs} ».",
+              "Fais glisser un fichier .fcpxml, .srt, .ttml ou .transcript.json dans le cadre et lâche-le. Tu peux aussi appuyer sur « {pickSubtitles} ».",
+              "La liste sous le cadre montre l'avancement et le résultat.",
+            ],
+            notes: [
+              "Le bouton de réécriture, à côté du nom d'une vidéo dans la liste, remplace les fichiers du même nom. Les anciens ne sont pas gardés.",
+              "Les fichiers d'origine sont gardés. Les nouveaux reçoivent -2 ou un autre numéro dans leur nom.",
+              "Le fichier .transcript.json du même nom doit être dans le même dossier.",
+              "Quand tu utilises un profil, les changements non enregistrés dans ce profil ne sont pas utilisés.",
+            ],
+          },
+        ],
+      },
+      trouble: {
+        heading: "Si quelque chose ne marche pas",
+        parts: [
+          {
+            heading: "Il manque un modèle",
+            intro: "Sans les modèles nécessaires, l'application ne peut pas commencer les sous-titres.",
+            steps: [
+              "Ouvre l'onglet « {tabModels} ».",
+              "Appuie sur « {downloadAllLabel} ».",
+              "Ensuite, ajoute de nouveau la vidéo.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "Aucun visage n'a été trouvé",
+            intro:
+              "Sans visage, le sous-titre va en bas de la vidéo. Si tu choisis une place sans visage, les sous-titres restent toujours au même endroit.",
+            steps: [
+              "Ouvre l'onglet « {tabStyle} ».",
+              "Pour la place des sous-titres, choisis le haut ou le bas de la vidéo.",
+              "Appuie sur le bouton de réécriture, à côté du nom de la vidéo.",
+            ],
+            notes: [
+              "Si elle n'est pas dans la liste, ajoute le fichier de sous-titres. Si tu utilises un profil, écrase-le d'abord.",
+              "Les visages d'avatars demandent un autre modèle. Mets son fichier dans un dossier de modèles, puis choisis-le dans « {faceModel} ».",
+            ],
+          },
+          {
+            heading: "Tu veux recommencer",
+            intro: "Si un modèle est peut-être abîmé, tu peux le télécharger de nouveau.",
+            steps: [
+              "Ouvre l'onglet « {tabModels} ».",
+              "Appuie sur « {resetModels} ».",
+              "Lis le message, puis continue.",
+            ],
+            notes: [
+              "Seul ce que cette application a téléchargé est supprimé. Les dossiers que tu as ajoutés sont gardés.",
+              "C'est impossible pendant la création de sous-titres ou un téléchargement.",
+              "Après la suppression, le téléchargement des modèles manquants démarre tout seul.",
+            ],
+          },
+          {
+            heading: "Resolve ne trouve pas la vidéo",
+            intro:
+              "Un fichier FCPXML contient la place et le nom de la vidéo. Si tu déplaces ou renommes la vidéo, Resolve ne la trouve plus.",
+            steps: [
+              "Remets la vidéo à son ancienne place, avec son ancien nom.",
+              "Ouvre de nouveau le fichier .fcpxml.",
+            ],
+            notes: [],
+          },
+        ],
+      },
+    },
   },
 };

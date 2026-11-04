@@ -6,13 +6,24 @@ import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
-import type { Snapshot, Stage } from "../backend/types.ts";
+import type { Profile, Role, Snapshot, Stage } from "../backend/types.ts";
 import { languageFor } from "../i18n/language.ts";
-import { errorText, format, type Messages } from "../i18n/messages.ts";
+import { errorText, format, type Messages, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
-import type { FinishedJobRow, JobRow, RunningJobRow } from "../state/app-state.ts";
-import { type AppStore, reportFailure, VIDEO_EXTENSIONS } from "../state/use-app-store.ts";
+import {
+  type FinishedJobRow,
+  type JobRow,
+  missingModelRoles,
+  type RunningJobRow,
+} from "../state/app-state.ts";
+import {
+  type AppStore,
+  reportFailure,
+  SUBTITLE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+} from "../state/use-app-store.ts";
 import { SelectField, type SelectOption } from "./fields.tsx";
+import { HelpTip } from "./HelpTip.tsx";
 
 export type StepPosition = "done" | "current" | "pending";
 
@@ -31,11 +42,6 @@ interface StepRowProps {
   stage: Stage;
   position: StepPosition;
   messages: Messages;
-}
-
-interface RoleNeed {
-  role: string;
-  text: string;
 }
 
 const SECONDS_PER_MINUTE: number = 60;
@@ -73,6 +79,14 @@ export const outputPurpose = (path: string, messages: Messages): string => {
   return messages.outputPurposes[extension] ?? extension;
 };
 
+/** Only when the work will be slower than this computer could manage: there is nothing to say otherwise. */
+export const slowProcessingNotice = ({ backend, hardware }: Snapshot, messages: Messages): string | null => {
+  if (backend === "speakers_on_cpu") {
+    return messages.noticeSpeakersOnCpu;
+  }
+  return !hardware.is_mac && hardware.gpu === null ? messages.noticeCpuOnly : null;
+};
+
 export const speakerCountOptions = (messages: Messages): SelectOption[] => [
   { value: "0", label: messages.speakerCountAuto, disabled: false },
   ...Array.from(
@@ -85,19 +99,14 @@ export const speakerCountOptions = (messages: Messages): SelectOption[] => [
   ),
 ];
 
-/** One known speaker skips speaker separation, so it needs no model for it. */
 export const missingRoles = (snapshot: Snapshot, messages: Messages): string[] =>
-  [
-    { role: "transcribe", text: messages.roleTranscribe },
-    ...(snapshot.settings.speaker_count === 1 ? [] : [{ role: "diarize", text: messages.roleDiarize }]),
-  ]
-    .filter(
-      ({ role }: RoleNeed): boolean =>
-        !snapshot.models.some(
-          (model): boolean => model.role === role && model.found_at !== null && model.blocked === null,
-        ),
-    )
-    .map(({ text }: RoleNeed): string => text);
+  missingModelRoles(snapshot).map((role: Role): string => roleName(messages, role));
+
+/** Says which look dropped subtitle files get; a selection left over from a deleted profile does not count. */
+export const subtitleTargetText = (snapshot: Snapshot, messages: Messages): string =>
+  snapshot.profiles.some(({ name }: Profile): boolean => name === snapshot.settings.active_profile)
+    ? format(messages.dropProfileHint, { name: snapshot.settings.active_profile })
+    : messages.dropCurrentHint;
 
 export const modelLabel = (snapshot: Snapshot, id: string | undefined): string =>
   snapshot.models.find((model): boolean => model.id === id)?.label ?? id ?? "";
@@ -184,7 +193,7 @@ const FinishedJob = ({ job }: { job: FinishedJobRow }): VNode => {
         <ul className="break-all text-muted-foreground">
           {job.outcome.outputs.map(
             (path: string): VNode => (
-              <li key={path} className="max-w-[65ch]">
+              <li key={path} className="max-w-[min(65ch,40em)]">
                 <span className="font-medium text-foreground">{outputPurpose(path, messages)}</span>: {path}
               </li>
             ),
@@ -247,7 +256,22 @@ function JobItem({ job, store, snapshot }: JobItemProps): VNode {
   );
 }
 
+function chooseSubtitles(store: AppStore, messages: Messages): void {
+  pickFiles(SUBTITLE_EXTENSIONS, messages.subtitleFilterName)
+    .then((picked: string[] | null): void => {
+      if (picked !== null) {
+        store.dropSubtitles(picked);
+      }
+    })
+    .catch((error: unknown): void => reportFailure(store.setState, error));
+}
+
 function chooseVideos(store: AppStore, messages: Messages): void {
+  const missing: Role[] = missingModelRoles(store.state.snapshot);
+  if (missing.length > 0) {
+    reportFailure(store.setState, { code: "models_missing", roles: missing });
+    return;
+  }
   pickFiles(VIDEO_EXTENSIONS, messages.videoFilterName)
     .then((picked: string[] | null): void => {
       if (picked !== null) {
@@ -261,8 +285,21 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
   const messages: Messages = useMessages();
   const missing: string[] = missingRoles(snapshot, messages);
   const { hovering, jobs } = store.state;
+  const notice: string | null = slowProcessingNotice(snapshot, messages);
   return (
     <div className="grid grid-cols-1 gap-4">
+      {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
+      <div className="max-w-xs">
+        <SelectField
+          label={messages.speakerCount}
+          value={String(snapshot.settings.speaker_count)}
+          options={speakerCountOptions(messages)}
+          help={<HelpTip label={messages.speakerCountHelpLabel}>{messages.speakerCountHelp}</HelpTip>}
+          onChange={(value: string): void =>
+            store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
+          }
+        />
+      </div>
       <section
         aria-label={messages.dropTitle}
         className={`flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${hovering ? "border-primary bg-muted" : "border-border bg-card"}`}
@@ -271,19 +308,16 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
         <div className="grid justify-items-center gap-1">
           <h2 className="text-lg font-semibold">{hovering ? messages.dropHover : messages.dropTitle}</h2>
           <p className="text-muted-foreground">{messages.dropHint}</p>
+          <p className="text-muted-foreground">{subtitleTargetText(snapshot, messages)}</p>
         </div>
-        <Button onClick={(): void => chooseVideos(store, messages)}>{messages.pickVideos}</Button>
+        {/* Buttons, because dragging must not be the only way (WCAG 2.5.7). */}
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button onClick={(): void => chooseVideos(store, messages)}>{messages.pickVideos}</Button>
+          <Button variant="outline" onClick={(): void => chooseSubtitles(store, messages)}>
+            {messages.pickSubtitles}
+          </Button>
+        </div>
       </section>
-      <div className="max-w-xs">
-        <SelectField
-          label={messages.speakerCount}
-          value={String(snapshot.settings.speaker_count)}
-          options={speakerCountOptions(messages)}
-          onChange={(value: string): void =>
-            store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
-          }
-        />
-      </div>
       {missing.length === 0 ? null : (
         <Alert>
           {format(messages.readinessMissing, {

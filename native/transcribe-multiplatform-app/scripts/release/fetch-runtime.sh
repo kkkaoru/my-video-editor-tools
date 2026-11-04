@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Fills src-tauri/runtime with pinned speech and media tools for the current OS.
-# Usage: fetch-runtime.sh macos|windows   (run from any directory; needs curl, tar/unzip, cmake on macOS)
+# Fills src-tauri/runtime with pinned speech and media tools for one distribution.
+# Usage: fetch-runtime.sh macos|windows-geforce|windows-radeon
+# (run from any directory; needs curl, tar/unzip, cmake on macOS, and the Vulkan SDK on Windows)
 set -euo pipefail
-os="${1:?usage: fetch-runtime.sh macos|windows}"
+distribution="${1:?usage: fetch-runtime.sh macos|windows-geforce|windows-radeon}"
 app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runtime="$app_dir/src-tauri/runtime"
 work="${RUNTIME_WORK_DIR:-$app_dir/src-tauri/target-runtime}"
@@ -74,18 +75,26 @@ windows_whisper_vulkan() {
   rm -rf "$short"
 }
 
-windows_all() {
-  # Radeon and CUDA-less GeForce run these Vulkan builds; they need the GPU driver's vulkan-1.dll, so CPU builds stay too.
-  fetch "$(nemo_url windows-x86_64-vulkan.zip)" 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce "$work/nemo-vulkan.zip"
-  rm -rf "$runtime/nemo-vulkan" && mkdir -p "$runtime/nemo-vulkan" && unzip -q -o "$work/nemo-vulkan.zip" -d "$runtime/nemo-vulkan"
-  find "$runtime/nemo-vulkan" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
+# The archive holds every example and test of whisper.cpp; these are all whisper-cli's imports reach.
+# ggml-cpu-*.dll are loaded at run time by CPU features, so no import table lists them.
+prune_whisper_bin() { # folder
+  find "$1" -type f ! \( -name whisper-cli.exe -o -name whisper.dll -o -name ggml.dll -o -name ggml-base.dll -o -name 'ggml-cpu-*.dll' \) -delete
+  [ "$(find "$1" -name '*.exe' | wc -l | tr -d ' ')" = 1 ] || { echo "whisper-bin kept unexpected executables" >&2; return 1; }
+}
+
+nemo_zip() { # sha256 asset folder
+  fetch "$(nemo_url "$2")" "$1" "$work/$3.zip"
+  rm -rf "${runtime:?}/${3:?}" && mkdir -p "$runtime/$3" && unzip -q -o "$work/$3.zip" -d "$runtime/$3"
+  find "$runtime/$3" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
+}
+
+# Both Windows distributions: whisper on Vulkan, and CPU builds for machines without a usable GPU.
+windows_common() {
   windows_whisper_vulkan
-  fetch "$(nemo_url windows-x86_64-cpu.zip)" 4ed9740e361e4653f56c3dce7d1e81883a1c8b831c1bd7d01567fff1130b5b05 "$work/nemo.zip"
-  rm -rf "$runtime/nemo" && mkdir -p "$runtime/nemo" && unzip -q -o "$work/nemo.zip" -d "$runtime/nemo"
-  find "$runtime/nemo" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
+  nemo_zip 4ed9740e361e4653f56c3dce7d1e81883a1c8b831c1bd7d01567fff1130b5b05 windows-x86_64-cpu.zip nemo
   fetch "https://github.com/ggml-org/whisper.cpp/releases/download/$WHISPER_BIN_TAG/whisper-bin-x64.zip" 6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb "$work/whisper.zip"
   rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper" && unzip -q -o "$work/whisper.zip" -d "$runtime/whisper"
-  find "$runtime/whisper" -name '*.exe' ! -name whisper-cli.exe -delete
+  prune_whisper_bin "$runtime/whisper"
   # whisper.cpp's archive omits the VC++ runtime, which clean Windows installs do not have; nemo-speech ships it.
   find "$runtime/nemo" \( -name 'vcruntime140*.dll' -o -name 'msvcp140*.dll' -o -name 'vcomp140.dll' \) -exec cp {} "$runtime/whisper/Release/" \;
   fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
@@ -93,9 +102,11 @@ windows_all() {
   find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} "$runtime/ffmpeg/" \;
 }
 
-case "$os" in
+case "$distribution" in
   macos) mac_nemo; mac_whisper; mac_ffmpeg ;;
-  windows) windows_all ;;
-  *) echo "unknown OS: $os" >&2; exit 2 ;;
+  # A GeForce runs nemo-speech on the CUDA runtime the app downloads, so no Vulkan nemo-speech ships.
+  windows-geforce) windows_common; rm -rf "$runtime/nemo-vulkan" ;;
+  windows-radeon) windows_common; nemo_zip 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce windows-x86_64-vulkan.zip nemo-vulkan ;;
+  *) echo "unknown distribution: $distribution" >&2; exit 2 ;;
 esac
 du -sh "$runtime"/*

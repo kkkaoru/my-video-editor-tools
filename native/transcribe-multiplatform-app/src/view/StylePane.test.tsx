@@ -1,4 +1,5 @@
 // Runs with bun: every style control reports its change, and the preview follows the settings.
+import { invoke } from "@tauri-apps/api/core";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
@@ -25,25 +26,35 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "yunet",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
   settings: SETTINGS,
   models: [],
   models_dir: "/models",
+  profiles: [],
 };
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const storeOf = (): AppStore => ({
   state: initialState(SNAPSHOT),
   setState: vi.fn(),
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
+  replaceSnapshot: vi.fn(),
   dropVideos: vi.fn(),
+  dropSubtitles: vi.fn(),
 });
 
 function show(settings: Settings): AppStore {
@@ -53,6 +64,7 @@ function show(settings: Settings): AppStore {
       <StylePane
         store={store}
         settings={settings}
+        profiles={[]}
         faceOptions={[
           { value: "yunet", label: "YuNet", disabled: false },
           { value: "yolo", label: "YOLO", disabled: false },
@@ -224,20 +236,23 @@ it("draws a face only for the face anchors", () => {
       <StylePane
         store={storeOf()}
         settings={{ ...SETTINGS, placement: { ...SETTINGS.placement, anchor: "face_below" } }}
+        profiles={[]}
         faceOptions={[]}
       />,
     ).container.querySelectorAll("ellipse").length,
   ).toBe(2);
   cleanup();
   expect(
-    render(<StylePane store={storeOf()} settings={SETTINGS} faceOptions={[]} />).container.querySelectorAll(
-      "ellipse",
-    ).length,
+    render(
+      <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+    ).container.querySelectorAll("ellipse").length,
   ).toBe(0);
 });
 
 it("draws the sample with the first speaker's colours at its place in the frame", () => {
-  const { container } = render(<StylePane store={storeOf()} settings={SETTINGS} faceOptions={[]} />);
+  const { container } = render(
+    <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+  );
   expect(container.querySelector("g g:last-child")?.getAttribute("fill")).toBe("#111111");
   expect(Number.parseFloat(container.querySelector("text")?.getAttribute("x") ?? "")).toBeCloseTo(979.2);
 });
@@ -314,4 +329,57 @@ it("restores the first colours", () => {
   const store: AppStore = show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Restore the first colours" }));
   expect(lastSaved(store)?.palette.length).toBe(10);
+});
+
+it("lists the unknown speaker after every numbered speaker", () => {
+  const { container } = render(
+    <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+  );
+  expect(
+    Array.from(new Set(container.querySelectorAll('input[type="color"] ~ span.whitespace-nowrap'))).map(
+      (name: Element): string | null => name.textContent,
+    ),
+  ).toStrictEqual(["Speaker 1", "Speaker 2", "Unknown speaker"]);
+});
+
+it("draws the preview and the colour samples in the chosen font", () => {
+  const { container } = render(
+    <StylePane
+      store={storeOf()}
+      settings={{ ...SETTINGS, font_family: "Hiragino Sans" }}
+      profiles={[]}
+      faceOptions={[]}
+    />,
+  );
+  expect(
+    new Set(
+      Array.from(container.querySelectorAll("g[font-family]")).map((group: Element) =>
+        group.getAttribute("font-family"),
+      ),
+    ),
+  ).toStrictEqual(new Set(['"Hiragino Sans", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif']));
+});
+
+it("saves the chosen font family", async () => {
+  vi.mocked(invoke).mockResolvedValue(["Arial"]);
+  const store: AppStore = show(SETTINGS);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Font family" }));
+  });
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("option", { name: "Arial" }));
+  });
+  expect(lastSaved(store)?.font_family).toBe("Arial");
+});
+
+it("reports a font list that cannot be read", async () => {
+  vi.mocked(invoke).mockRejectedValue(new Error("no fonts"));
+  const store: AppStore = show(SETTINGS);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Font family" }));
+  });
+  expect(vi.mocked(store.setState).mock.calls[0]?.[0](initialState(SNAPSHOT)).loadError).toStrictEqual({
+    code: "internal",
+    detail: "Error: no fonts",
+  });
 });

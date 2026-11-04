@@ -29,6 +29,51 @@ fn add_videos(service: State<'_, Service>, paths: Vec<PathBuf>) -> AppResult<Vec
 }
 
 #[tauri::command]
+fn reformat_files(service: State<'_, Service>, paths: Vec<PathBuf>) -> AppResult<Vec<u64>> {
+    service.reformat_files(&paths)
+}
+
+#[tauri::command]
+fn save_profile(
+    service: State<'_, Service>,
+    name: String,
+    settings: Settings,
+) -> AppResult<Snapshot> {
+    service.save_profile(&name, settings)
+}
+
+#[tauri::command]
+fn overwrite_profile(
+    service: State<'_, Service>,
+    name: String,
+    settings: Settings,
+) -> AppResult<Snapshot> {
+    service.overwrite_profile(&name, settings)
+}
+
+#[tauri::command]
+fn load_profile(service: State<'_, Service>, name: String) -> AppResult<Snapshot> {
+    service.load_profile(&name)
+}
+
+#[tauri::command]
+fn delete_profile(service: State<'_, Service>, name: String) -> AppResult<Snapshot> {
+    service.delete_profile(&name)
+}
+
+/// Off the main thread: the first call reads the header of every installed font.
+#[tauri::command(async)]
+fn font_families(service: State<'_, Service>) -> Vec<String> {
+    service.font_families()
+}
+
+/// Off the main thread: model folders can be large.
+#[tauri::command(async)]
+fn reset_models(service: State<'_, Service>) -> AppResult<Snapshot> {
+    service.reset_models()
+}
+
+#[tauri::command]
 fn relayout_transcript(service: State<'_, Service>, path: PathBuf) -> AppResult<u64> {
     service.relayout(&path)
 }
@@ -59,6 +104,13 @@ fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
         save_settings,
         add_videos,
         relayout_transcript,
+        reformat_files,
+        save_profile,
+        overwrite_profile,
+        load_profile,
+        delete_profile,
+        font_families,
+        reset_models,
         cancel_job,
         start_download,
         cancel_download,
@@ -249,6 +301,76 @@ mod tests {
         assert!(
             call(&window, "delete_model", json!({ "id": "yunet" })).unwrap()["models"].is_array()
         );
+    }
+
+    #[test]
+    fn profile_commands_save_load_overwrite_and_delete() {
+        let (_app, window) = app_window("profiles");
+        let settings = call(&window, "snapshot", json!({})).unwrap()["settings"].clone();
+        let saved = call(
+            &window,
+            "save_profile",
+            json!({ "name": "A", "settings": settings }),
+        )
+        .unwrap();
+        assert_eq!(saved["profiles"][0]["name"], json!("A"));
+        assert_eq!(saved["settings"]["active_profile"], json!("A"));
+        let refused = call(
+            &window,
+            "save_profile",
+            json!({ "name": "A", "settings": settings }),
+        )
+        .unwrap_err();
+        assert_eq!(refused, json!({ "code": "profile_exists", "name": "A" }));
+        let mut newer = settings.clone();
+        newer["font_ratio"] = json!(0.07);
+        let overwritten = call(
+            &window,
+            "overwrite_profile",
+            json!({ "name": "A", "settings": newer }),
+        )
+        .unwrap();
+        assert_eq!(
+            overwritten["profiles"][0]["look"]["font_ratio"],
+            json!(0.07)
+        );
+        let loaded = call(&window, "load_profile", json!({ "name": "A" })).unwrap();
+        assert_eq!(loaded["settings"]["font_ratio"], json!(0.07));
+        let deleted = call(&window, "delete_profile", json!({ "name": "A" })).unwrap();
+        assert_eq!(deleted["profiles"], json!([]));
+    }
+
+    #[test]
+    fn reformatting_queues_one_job_per_file_and_reports_what_is_missing() {
+        let (app, window) = app_window("reformat");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.listen(JOB_EVENT, move |event| {
+            let _ = sender.send(event.payload().to_owned());
+        });
+        assert_eq!(
+            call(&window, "reformat_files", json!({ "paths": ["/nope.srt"] })).unwrap(),
+            json!([1])
+        );
+        let queued = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        assert_eq!(queued, r#"{"state":"queued","id":1,"path":"/nope.srt"}"#);
+        let failed = receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        assert_eq!(
+            failed,
+            r#"{"state":"failed","id":1,"error":{"code":"transcript_missing","file":"nope.srt"}}"#
+        );
+    }
+
+    #[test]
+    fn the_reset_and_font_commands_answer() {
+        let (_app, window) = app_window("reset");
+        assert!(call(&window, "reset_models", json!({})).unwrap()["models"].is_array());
+        assert!(call(&window, "font_families", json!({}))
+            .unwrap()
+            .is_array());
     }
 
     #[test]

@@ -1,12 +1,14 @@
 // Runs with bun: pure state transitions; side effects live in use-app-store.ts.
 import type {
   BackendError,
+  CaptionLook,
   DownloadEvent,
   JobEvent,
   JobOutcome,
   JobQueuedEvent,
   ModelStatus,
   Progress,
+  Role,
   Settings,
   Snapshot,
 } from "../backend/types.ts";
@@ -133,7 +135,50 @@ export const withSettings = (state: AppState, settings: Settings): AppState => (
   snapshot: { ...state.snapshot, settings },
 });
 
+/** A save that answered also ends the banner of an earlier failed one. */
 export const withModels = (state: AppState, models: ModelStatus[]): AppState => ({
   ...state,
   snapshot: { ...state.snapshot, models },
+  loadError: null,
 });
+
+/** One known speaker skips speaker separation, so it needs no model for it. */
+export const missingModelRoles = ({ models, settings }: Snapshot): Role[] =>
+  (settings.speaker_count === 1
+    ? (["transcribe"] satisfies Role[])
+    : (["transcribe", "diarize"] satisfies Role[])
+  ).filter(
+    (role: Role): boolean =>
+      !models.some(
+        (model: ModelStatus): boolean =>
+          model.role === role && model.found_at !== null && model.blocked === null,
+      ),
+  );
+
+const lookFields = ({
+  palette,
+  unassigned,
+  font_family,
+  font_ratio,
+  outline_ratio,
+  rim_ratio,
+  line_height,
+  shadow,
+  width_ratio,
+  placement,
+}: CaptionLook): CaptionLook => ({
+  palette,
+  unassigned,
+  font_family,
+  font_ratio,
+  outline_ratio,
+  rim_ratio,
+  line_height,
+  shadow,
+  width_ratio,
+  placement,
+});
+
+/** Whether the look on screen differs from what the profile saved. */
+export const lookChanged = (settings: Settings, saved: CaptionLook): boolean =>
+  JSON.stringify(lookFields(settings)) !== JSON.stringify(lookFields(saved));

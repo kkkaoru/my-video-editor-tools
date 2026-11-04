@@ -16,6 +16,7 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,

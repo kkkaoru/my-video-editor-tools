@@ -1,7 +1,7 @@
 // Runs with bun: placeholders fill in and backend errors read as sentences.
 import { expect, it } from "vitest";
 import { enMessages } from "./locale-en.ts";
-import { errorText, format } from "./messages.ts";
+import { errorText, format, roleName } from "./messages.ts";
 
 it("fills every placeholder", () => {
   expect(format("{a} of {b}", { a: 1, b: "two" })).toBe("1 of two");
@@ -64,5 +64,30 @@ it("shows an unknown code when it has no detail", () => {
 it("states the recording limit when it is known", () => {
   expect(errorText(enMessages, { code: "too_long_for_model", limit_minutes: 7 }, "Big")).toBe(
     "Big takes recordings up to 7 minutes. This video is longer. Choose Nemotron 3 Diarization in Models.",
+  );
+});
+
+it("names every model role", () => {
+  expect(roleName(enMessages, "transcribe")).toBe("transcription");
+  expect(roleName(enMessages, "diarize")).toBe("speaker separation");
+  expect(roleName(enMessages, "face")).toBe("face detection");
+  expect(roleName(enMessages, "runtime")).toBe("runtime");
+});
+
+it("names the dropped file that has no transcript", () => {
+  expect(errorText(enMessages, { code: "transcript_missing", file: "clip.srt" }, "")).toBe(
+    "clip.srt has no transcript beside it, so it cannot be written again. Keep the .transcript.json file with the same name in the same folder.",
+  );
+});
+
+it("names the profile that already exists", () => {
+  expect(errorText(enMessages, { code: "profile_exists", name: "A" }, "")).toBe(
+    "A profile named A already exists. Choose another name, or overwrite it in the list.",
+  );
+});
+
+it("says which models are missing and what to do", () => {
+  expect(errorText(enMessages, { code: "models_missing", roles: ["transcribe", "diarize"] }, "")).toBe(
+    "The videos were not added because no model is available for: transcription, speaker separation. Download them in Models, or add a folder that already has them.",
   );
 });

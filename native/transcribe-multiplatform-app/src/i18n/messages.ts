@@ -1,5 +1,5 @@
 // Runs with bun: the text every language must supply, and the formatter that fills it in.
-import type { BackendError, Stage } from "../backend/types.ts";
+import type { BackendError, Role, Stage } from "../backend/types.ts";
 
 export interface StepStates {
   done: string;
@@ -30,20 +30,89 @@ export interface ErrorMessages {
   no_model_for_role: string;
   needs_nvidia: string;
   needs_memory: string;
+  transcript_missing: string;
+  profile_exists: string;
+  profile_missing: string;
+  models_busy: string;
+  models_missing: string;
   too_long_for_model: string;
   internal: string;
   cancelled: string;
+}
+
+/** One h3 block of the help page; `steps` is a numbered list, `notes` a plain one. */
+export interface HelpPart {
+  heading: string;
+  intro: string;
+  steps: string[];
+  notes: string[];
+}
+
+export interface HelpSection {
+  heading: string;
+  parts: HelpPart[];
+}
+
+export interface HelpSections {
+  start: HelpSection;
+  transcribe: HelpSection;
+  resolve: HelpSection;
+  look: HelpSection;
+  rewrite: HelpSection;
+  trouble: HelpSection;
+}
+
+export interface HelpMessages {
+  version: string;
+  intro: string;
+  sections: HelpSections;
 }
 
 export interface Messages {
   appName: string;
   tabJobs: string;
   tabStyle: string;
+  tabHelp: string;
   tabModels: string;
+  noticeSpeakersOnCpu: string;
+  noticeCpuOnly: string;
   dropTitle: string;
   dropHint: string;
   dropHover: string;
   pickVideos: string;
+  pickSubtitles: string;
+  subtitleFilterName: string;
+  dropProfileHint: string;
+  dropCurrentHint: string;
+  speakerCountHelpLabel: string;
+  speakerCountHelp: string;
+  profilesHeading: string;
+  profilesHint: string;
+  profileName: string;
+  profileSave: string;
+  profileEmpty: string;
+  profileSelected: string;
+  profileChanged: string;
+  profileLoad: string;
+  profileOverwrite: string;
+  profileOverwriteTitle: string;
+  profileOverwriteDescription: string;
+  profileDelete: string;
+  profileDeleteTitle: string;
+  profileDeleteDescription: string;
+  dialogCancel: string;
+  fontFamily: string;
+  fontSearch: string;
+  fontHint: string;
+  fontLoading: string;
+  fontNoMatch: string;
+  fontNotInstalled: string;
+  downloadAllLabel: string;
+  downloadAll: string;
+  resetModels: string;
+  resetModelsTitle: string;
+  resetModelsDescription: string;
+  resetModelsConfirm: string;
   videoFilterName: string;
   readinessMissing: string;
   roleTranscribe: string;
@@ -123,12 +192,10 @@ export interface Messages {
   deleteModel: string;
   sourceLabel: string;
   locationLabel: string;
-  hardwareCpu: string;
-  hardwareMetal: string;
-  hardwareMemory: string;
   loadFailed: string;
   errors: ErrorMessages;
   modelNotes: ModelNotes;
+  help: HelpMessages;
 }
 
 export type Params = Readonly<Record<string, string | number>>;
@@ -141,6 +208,16 @@ export const format = (template: string, params: Params): string =>
 const isErrorCode = (messages: Messages, code: string): code is keyof ErrorMessages =>
   code in messages.errors;
 
+export const roleName = (messages: Messages, role: Role): string =>
+  (
+    ({
+      transcribe: messages.roleTranscribe,
+      diarize: messages.roleDiarize,
+      face: messages.roleFace,
+      runtime: messages.roleRuntime,
+    }) satisfies Record<Role, string>
+  )[role];
+
 /** Unknown codes still show their technical detail rather than nothing. */
 export const errorText = (messages: Messages, error: BackendError, modelLabel: string): string =>
   isErrorCode(messages, error.code)
@@ -151,5 +228,8 @@ export const errorText = (messages: Messages, error: BackendError, modelLabel: s
         available: error.available ?? 0,
         limit: error.limit_minutes ?? 0,
         detail: error.detail ?? "",
+        file: error.file ?? "",
+        name: error.name ?? "",
+        roles: (error.roles ?? []).map((role: Role): string => roleName(messages, role)).join(", "),
       })
     : (error.detail ?? error.code);

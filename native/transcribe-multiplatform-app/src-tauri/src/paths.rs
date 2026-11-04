@@ -52,6 +52,11 @@ impl AppPaths {
     }
 
     #[must_use]
+    pub fn profiles_file(&self) -> PathBuf {
+        self.data.join("profiles.json")
+    }
+
+    #[must_use]
     pub fn stage_rates_file(&self) -> PathBuf {
         self.data.join("stage-rates.json")
     }

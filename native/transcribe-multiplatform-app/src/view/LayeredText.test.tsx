@@ -1,7 +1,7 @@
 // Runs with bun: the preview paints the same layers, in the same order, as the subtitle files.
 import { cleanup, render } from "@testing-library/preact";
 import { afterEach, expect, it } from "vitest";
-import { captionLayers, LayeredText, shadowFilter } from "./LayeredText.tsx";
+import { captionLayers, fontStack, LayeredText, shadowFilter } from "./LayeredText.tsx";
 
 afterEach(cleanup);
 
@@ -42,6 +42,7 @@ it("centres the lines on the block, one line height apart", () => {
         lines={["a", "b"]}
         x={10}
         y={100}
+        fontFamily="Test Font"
         fontPx={20}
         lineHeightPx={30}
         color={{ fill: "#FFFFFF", outline: "#000000" }}
@@ -55,4 +56,10 @@ it("centres the lines on the block, one line height apart", () => {
     (text: Element): string | null => text.getAttribute("y"),
   );
   expect(baselines).toStrictEqual(["92", "122"]);
+});
+
+it("puts the chosen family ahead of the substitutes", () => {
+  expect(fontStack("Test Font")).toBe(
+    '"Test Font", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif',
+  );
 });

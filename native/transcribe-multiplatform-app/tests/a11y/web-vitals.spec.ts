@@ -18,7 +18,14 @@ const GOOD_CLS: number = 0.1;
 // Four times slower approximates the slowest supported machines, as Lighthouse's mobile profile does.
 const CPU_SLOWDOWN: number = 4;
 const SETTLE_MS: number = 300;
-const MEASURED_STATES: string[] = ["jobs empty", "job finished", "style face_above landscape", "models idle"];
+const MEASURED_STATES: string[] = [
+  "jobs empty",
+  "job finished",
+  "style face_above landscape",
+  "style with profiles",
+  "models idle",
+  "help",
+];
 
 /** Runs in the page. Sums all shifts and keeps the slowest interaction, both stricter than the field definitions. */
 function observeVitals(): void {
@@ -46,6 +53,11 @@ async function exercise(page: Page): Promise<void> {
   await page.getByRole("tab").nth(1).click();
   await page.locator('[role="group"][aria-label] button').first().click();
   await page.getByRole("spinbutton").first().fill("10");
+  // The list with thousands of fonts: opening it and narrowing it must stay as quick as anything else.
+  await page.getByRole("tabpanel").getByRole("combobox").nth(2).click();
+  await page.getByRole("listbox").waitFor();
+  await page.keyboard.type("Family 12");
+  await page.keyboard.press("Escape");
   await page.getByRole("tab").nth(2).click();
   await page.getByRole("tab").nth(0).click();
 }

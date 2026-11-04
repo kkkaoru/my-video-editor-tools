@@ -5,11 +5,49 @@ export const zhHantMessages: Messages = {
   appName: "Transcribe for Resolve",
   tabJobs: "轉寫",
   tabStyle: "字幕外觀和位置",
+  tabHelp: "使用方法",
   tabModels: "模型",
-  dropTitle: "將影片拖放到這裡",
-  dropHint: "可在 DaVinci Resolve 中匯入的字幕檔會儲存在每部影片旁邊。",
-  dropHover: "放開即可加入影片",
+  noticeSpeakersOnCpu: "區分說話者的工作在 CPU 上執行,所以比較慢。在模型頁下載 GeForce 執行元件後會變快。",
+  noticeCpuOnly: "沒有找到這個版本能用的 GPU,所有工作都在 CPU 上執行,所以比較慢。",
+  dropTitle: "將影片或字幕檔拖放到這裡",
+  dropHint: "影片會產生 DaVinci Resolve 字幕檔,儲存在影片旁邊。",
+  dropHover: "放開即可新增檔案",
   pickVideos: "選擇影片",
+  pickSubtitles: "選擇字幕檔",
+  subtitleFilterName: "字幕檔",
+  dropProfileHint: "拖放的字幕檔會依已儲存的設定檔 {name} 重新寫成新檔案。",
+  dropCurrentHint: "拖放的字幕檔會依目前的字幕設定重新寫成新檔案。",
+  speakerCountHelpLabel: "為什麼要指定說話者人數?",
+  speakerCountHelp:
+    "說話者顏色取決於能否分辨聲音。指定人數後,相似的聲音不易被合併,同一個人也不易被拆成兩個人。選擇 1 人時會略過說話者分離,因此速度更快,也不需要說話者模型。",
+  profilesHeading: "設定檔",
+  profilesHint: "為字幕的外觀和位置命名並儲存,之後可以還原。模型和語音語言不包含在設定檔中。",
+  profileName: "設定檔名稱",
+  profileSave: "另存為新設定檔",
+  profileEmpty: "還沒有儲存的設定檔。",
+  profileSelected: "已選取",
+  profileChanged: "有未儲存的變更",
+  profileLoad: "載入 {name}",
+  profileOverwrite: "覆寫 {name}",
+  profileOverwriteTitle: "要覆寫 {name} 嗎?",
+  profileOverwriteDescription: "已儲存的外觀將由目前設定取代。此動作無法復原。",
+  profileDelete: "刪除 {name}",
+  profileDeleteTitle: "要刪除 {name} 嗎?",
+  profileDeleteDescription: "將刪除此設定檔。目前設定和現有字幕檔維持不變。此動作無法復原。",
+  dialogCancel: "取消",
+  fontFamily: "字型系列",
+  fontSearch: "搜尋字型",
+  fontHint: "用於所有說話者。輸入文字可篩選清單。",
+  fontLoading: "正在讀取已安裝的字型",
+  fontNoMatch: "沒有符合的字型",
+  fontNotInstalled: "這台電腦沒有安裝 {font}。預覽使用替代字型,字幕檔中仍寫入此名稱。",
+  downloadAllLabel: "下載缺少的模型",
+  downloadAll: "{label}:{count} 個({size})",
+  resetModels: "重設模型並重新下載",
+  resetModelsTitle: "要重設模型並重新下載嗎?",
+  resetModelsDescription:
+    "將刪除此應用程式在 {path} 中下載的所有內容,然後重新下載這台電腦需要的模型。絕不會變更你新增的資料夾。此動作無法復原。",
+  resetModelsConfirm: "刪除並重新下載",
   videoFilterName: "影片",
   readinessMissing: "沒有可用的{roles}模型。請在「模型」中下載，或加入已有模型所在的資料夾。",
   roleTranscribe: "轉寫",
@@ -34,7 +72,7 @@ export const zhHantMessages: Messages = {
   stepStates: { done: "已完成", current: "進行中", pending: "等待中" },
   outputPurposes: {
     ttml: "帶樣式的字幕（顏色、描邊、位置）",
-    srt: "一般字幕軌",
+    srt: "只有文字和時間的字幕(顏色可能不顯示,沒有外框和位置)",
     fcpxml: "含標題的時間軸",
     json: "用於重新寫出的逐字稿資料",
   },
@@ -102,9 +140,6 @@ export const zhHantMessages: Messages = {
   deleteModel: "刪除已下載的 {name}",
   sourceLabel: "來源：{url}",
   locationLabel: "位置：{path}",
-  hardwareCpu: "僅 CPU",
-  hardwareMetal: "Apple GPU (Metal)",
-  hardwareMemory: "記憶體 {gib} GB",
   loadFailed: "發生問題：{detail}",
   errors: {
     no_video_stream: "此檔案沒有影像。請選擇影片檔。",
@@ -118,11 +153,17 @@ export const zhHantMessages: Messages = {
     needs_memory: "{model} 需要 {required} GB 記憶體，而這台電腦只有 {available} GB。請選擇較小的模型。",
     too_long_for_model:
       "{model} 最多支援 {limit} 分鐘的音訊。此影片過長，請在模型中選擇 Nemotron 3 Diarization。",
+    transcript_missing:
+      "{file} 旁邊沒有逐字稿資料,無法重新寫入。請把同名的 .transcript.json 檔案放在同一資料夾中。",
+    profile_exists: "已有名為 {name} 的設定檔。請換一個名稱,或在清單中覆寫它。",
+    profile_missing: "設定檔 {name} 已不存在。",
+    models_busy: "有工作或下載正在進行時無法重設模型。請等待完成或取消後再試。",
+    models_missing: "由於缺少以下模型,影片未新增:{roles}。請在模型頁下載,或新增已有模型的資料夾。",
     internal: "{detail}",
     cancelled: "已取消",
   },
   modelNotes: {
-    "whisper-large-v3-turbo": "轉寫。同一個模型可在 Mac (Metal) 和 GeForce (CUDA) 上執行。",
+    "whisper-large-v3-turbo": "轉寫。同一個模型可在 Mac (Metal) 和 Windows (Vulkan) 上執行。",
     "nemotron-3.5-transcribe-iq4": "說話者分離。適用於 32 GB 以上的 Mac、24 GB 以上的 GPU 和 CPU。",
     "nemotron-3.5-transcribe-nvfp4": "說話者分離。適用於 GeForce RTX 50 系列等 Blackwell GPU。",
     "nemotron-3.5-transcribe-q2m": "說話者分離。適用於 16 GB GPU；每段錄音約 7 分鐘。",
@@ -131,6 +172,216 @@ export const zhHantMessages: Messages = {
     "nemotron-3-diarization": "僅用於說話者分離，107 MB。最多 8 位說話者；佔用記憶體很少。",
     yunet: "真人人臉。隨應用程式附帶；在 Mac 和 Windows 上結果相同。",
     "avatar-face-yolo": "虛擬化身的臉。將匯出的 ONNX 檔放入模型資料夾後即可使用。",
-    "geforce-runtime": "語音工具的 CUDA 版本。僅在配有 NVIDIA GPU 的 Windows 上需要。",
+    "geforce-runtime": "說話者分離工具的 CUDA 版本。沒有它時，說話者分離會在 CPU 上執行。",
+  },
+  help: {
+    version: "版本 {version}",
+    intro:
+      "這個應用程式會把影片裡說的話變成字幕，並為每個人使用不同的顏色。字幕可以在影片剪輯軟體 DaVinci Resolve 中使用。",
+    sections: {
+      start: {
+        heading: "開始之前",
+        parts: [
+          {
+            heading: "安裝應用程式",
+            intro: "下載適合你電腦的檔案，然後安裝。",
+            steps: [
+              "從下面的清單中選擇適合你電腦的檔案。",
+              "Mac：打開 zip，把應用程式放進「應用程式」資料夾。",
+              "Windows：打開 exe，依提示操作。",
+            ],
+            notes: [
+              "Mac：Transcribe-for-Resolve-macos-arm64.zip",
+              "有 GeForce 的 Windows：Transcribe-for-Resolve-windows-geforce-x64-setup.exe",
+              "有 Radeon 的 Windows：Transcribe-for-Resolve-windows-radeon-x64-setup.exe",
+              "兩種都沒有的 Windows：哪個 exe 都可以。只用 CPU 執行，所以比較慢。",
+              "Mac 阻止打開時：打開 系統設定 > 隱私權與安全性，按「強制打開」。",
+              "Windows 阻止打開時：按「其他資訊」，再按「仍要執行」。",
+            ],
+          },
+          {
+            heading: "下載模型",
+            intro: "模型是把說話變成文字時要用的資料。只需要下載一次。",
+            steps: ["開啟「{tabModels}」分頁。", "按「{downloadAllLabel}」。", "等每個模型的進度列走到底。"],
+            notes: [
+              "下載好的模型會顯示「{badgePresent}」。",
+              "沒有缺少的模型時，不會出現這個按鈕。",
+              "需要連上網路。檔案很大，要花一些時間。",
+              "下載停下時，再按一次按鈕，會從停下的地方繼續。",
+            ],
+          },
+          {
+            heading: "使用已有的模型",
+            intro: "如果以前下載過模型，就不用再下載一次。",
+            steps: ["開啟「{tabModels}」分頁。", "按「{addModelFolder}」。", "選擇放著模型的資料夾。"],
+            notes: ["找到的模型會顯示「{badgePresent}」。"],
+          },
+        ],
+      },
+      transcribe: {
+        heading: "用影片做字幕",
+        parts: [
+          {
+            heading: "加入影片",
+            intro: "加入影片後，應用程式就開始做字幕。",
+            steps: [
+              "開啟「{tabJobs}」分頁。",
+              "在「{speakerCount}」中選擇有幾個人說話。不確定時，維持「{speakerCountAuto}」。",
+              "把影片拖到框裡再放開。拖就是按住不放並移動。也可以按「{pickVideos}」。",
+            ],
+            notes: [
+              "按人數旁邊的「?」，可以看到為什麼要選人數。",
+              "只有一個人說話時，選 1 人會更快。",
+              "可以加入的影片：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。加入其他檔案不會有任何反應。",
+              "加入多部影片時，會一部一部依序處理。",
+              "第一次做字幕時，應用程式還要把模型轉換成能用的形式。",
+              "字幕的語言不對時，在「{tabStyle}」分頁的「{speechLanguage}」中選擇語言。",
+            ],
+          },
+          {
+            heading: "查看進度",
+            intro: "加入影片後，框下面會出現一個清單。",
+            steps: [],
+            notes: [
+              "這裡顯示現在做的步驟，以及一共有幾步。",
+              "進度列表示整個工作的進度。",
+              "也會顯示大約還要多久。",
+              "想停止時，按影片名稱旁邊的按鈕。",
+            ],
+          },
+          {
+            heading: "產生的檔案",
+            intro:
+              "影片所在的資料夾裡會多出 4 個檔案。以前的檔案會保留。名稱重複時，新檔案的名稱後面會加上 -2。",
+            steps: [],
+            notes: [
+              ".fcpxml：DaVinci Resolve 能讀取的檔案，字幕和影片在一起。",
+              ".ttml：帶顏色和位置的字幕檔。",
+              ".srt：只有文字和時間的字幕。顏色可能不顯示。沒有外框和位置。",
+              ".transcript.json：重新寫字幕時用的資料。請不要刪除。",
+            ],
+          },
+        ],
+      },
+      resolve: {
+        heading: "匯入 DaVinci Resolve",
+        parts: [
+          {
+            heading: "先匯入 FCPXML",
+            intro: "FCPXML 檔案能一次匯入影片和字幕，字幕的顏色、外框和位置也一起帶進去。所以請先用它。",
+            steps: [
+              "在 DaVinci Resolve 中開啟專案。專案就是保存全部剪輯工作的地方。",
+              "在選單中選擇 File > Import > Timeline。",
+              "選擇產生的 .fcpxml 檔案。",
+              "時間軸上會出現影片和字幕。時間軸就是依時間順序排列影片的地方。",
+            ],
+            notes: ["每條字幕由 2 到 3 層疊成。修改文字時，要改每一層。"],
+          },
+          {
+            heading: "什麼時候用其他檔案",
+            intro: "其他檔案只在需要時使用。",
+            steps: [],
+            notes: [
+              "匯入 .ttml 檔案時，在 Media Pool 中選擇 Import Subtitle。Media Pool 是存放影片和字幕的地方。",
+              "在 Resolve 中修改文字或時間時，使用 .srt 檔案。如果用這個應用程式重新寫入，你改過的文字不會保留。",
+              "不要在同一條時間軸上同時使用 FCPXML 和 TTML。字幕會顯示兩次。",
+            ],
+          },
+        ],
+      },
+      look: {
+        heading: "改變字幕的外觀和位置",
+        parts: [
+          {
+            heading: "改變外觀和位置",
+            intro: "變更後，範例會馬上改變，並自動儲存。",
+            steps: [
+              "開啟「{tabStyle}」分頁。",
+              "在「{positionHeading}」中，選擇「{anchorFaceAbove}」「{anchorFaceBelow}」「{anchorVideoTop}」或「{anchorVideoBottom}」。",
+              "用滑桿設定文字大小和外框粗細。滑桿是可以左右移動的把手。也可以輸入數字。",
+              "為每個人選擇文字顏色和外框顏色。",
+            ],
+            notes: [],
+          },
+          {
+            heading: "選擇字型",
+            intro: "字型就是文字的樣子。可以從這台電腦上的字型中選擇，所有人的字幕都用同一種字型。",
+            steps: [
+              "按「{fontFamily}」下面顯示字型名稱的地方。",
+              "輸入字型名稱的一部分，清單會變短。",
+              "按你想用的字型。",
+            ],
+            notes: [],
+          },
+          {
+            heading: "儲存和載入設定檔",
+            intro: "設定檔就是取了名字的一組外觀和位置設定。",
+            steps: ["輸入名稱。", "按「{profileSave}」。", "以後要用時，按清單裡的載入按鈕。"],
+            notes: ["覆寫和刪除設定檔前，應用程式會先問你。", "模型和說話語言不會存在設定檔裡。"],
+          },
+        ],
+      },
+      rewrite: {
+        heading: "幫做好的字幕換外觀",
+        parts: [
+          {
+            heading: "加入字幕檔",
+            intro: "不用從聲音重新做，就能改變字幕的外觀。通常很快。如果要找臉，會多花一些時間。",
+            steps: [
+              "載入想用的設定檔。沒有載入時，使用現在的設定。",
+              "開啟「{tabJobs}」分頁。",
+              "把 .fcpxml、.srt、.ttml 或 .transcript.json 檔案拖到框裡再放開。也可以按「{pickSubtitles}」。",
+              "框下面的清單會顯示進度和結果。",
+            ],
+            notes: [
+              "清單中影片名稱旁邊的重新寫入按鈕，會覆寫同名檔案。原來的檔案不會保留。",
+              "原來的檔案會保留。新檔案的名稱後面會加上 -2 等數字。",
+              "同一資料夾裡需要有同名的 .transcript.json 檔案。",
+              "使用設定檔時，沒有存到這個設定檔的變更不會被使用。",
+            ],
+          },
+        ],
+      },
+      trouble: {
+        heading: "遇到問題時",
+        parts: [
+          {
+            heading: "提示缺少模型",
+            intro: "缺少需要的模型時，不能開始做字幕。",
+            steps: ["開啟「{tabModels}」分頁。", "按「{downloadAllLabel}」。", "完成後，再加入一次影片。"],
+            notes: [],
+          },
+          {
+            heading: "提示沒有找到臉",
+            intro: "找不到臉的畫面，字幕會放在影片下方。如果選擇不用臉的位置，字幕會一直在同一個地方。",
+            steps: [
+              "開啟「{tabStyle}」分頁。",
+              "在字幕的位置中，選擇影片的上方或下方。",
+              "按影片名稱旁邊的重新寫入按鈕。",
+            ],
+            notes: [
+              "清單裡沒有時，加入字幕檔。使用設定檔時，要先覆寫設定檔。",
+              "虛擬形象的臉需要另一個模型。把模型檔案放進模型資料夾，再在「{faceModel}」中選擇。",
+            ],
+          },
+          {
+            heading: "想從頭再來",
+            intro: "模型可能損壞時，可以重新下載。",
+            steps: ["開啟「{tabModels}」分頁。", "按「{resetModels}」。", "看完提示後繼續。"],
+            notes: [
+              "只會刪除這個應用程式下載的內容。你新增的資料夾會保留。",
+              "正在做字幕或正在下載時，不能這樣做。",
+              "刪除後，會自動開始下載缺少的模型。",
+            ],
+          },
+          {
+            heading: "Resolve 找不到影片時",
+            intro: "FCPXML 檔案裡寫著影片的位置和名稱。移動影片或改名後，就找不到了。",
+            steps: ["把影片放回原來的位置，改回原來的名稱。", "再次匯入 .fcpxml 檔案。"],
+            notes: [],
+          },
+        ],
+      },
+    },
   },
 };

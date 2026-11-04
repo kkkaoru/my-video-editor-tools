@@ -4,14 +4,25 @@ import type {
   DownloadEvent,
   JobEvent,
   ModelStatus,
+  Profile,
   Snapshot,
   Stage,
 } from "../../src/backend/types.ts";
 import { enMessages } from "../../src/i18n/locale-en.ts";
 import type { ErrorMessages } from "../../src/i18n/messages.ts";
 
-export type Tab = "jobs" | "style" | "models";
-export type StateStep = "open-face-select" | "open-language-select" | "hover-drop";
+export type Tab = "jobs" | "style" | "models" | "help";
+export type StateStep =
+  | "open-face-select"
+  | "open-language-select"
+  | "hover-drop"
+  | "open-speaker-help"
+  | "open-font-list"
+  | "open-reset-dialog"
+  | "open-overwrite-dialog"
+  | "open-delete-dialog"
+  | "drop-video"
+  | "drop-subtitles";
 
 export interface UiState {
   name: string;
@@ -65,7 +76,6 @@ const model = (
   found_at: null,
   blocked: null,
   recommended: false,
-  hidden: false,
   ...changes,
 });
 
@@ -89,10 +99,12 @@ const ALL_MODELS: ModelStatus[] = [
   }),
   model("yunet", "face", "YuNet", { found_at: "/app/yunet.onnx", download_bytes: 0, recommended: true }),
   model("avatar-face-yolo", "face", "Avatar face YOLO", { download_bytes: 0, source_url: "" }),
-  model("geforce-runtime", "runtime", "GeForce CUDA runtime", {}),
 ];
+/** Only the GeForce distribution, on a machine with a GeForce, lists its runtime. */
+const GEFORCE_RUNTIME: ModelStatus = model("geforce-runtime", "runtime", "GeForce CUDA runtime", {});
 
 const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
+  version: "1.2.3",
   locale: "en",
   backend: "default",
   hardware: { is_mac: true, memory_gib: 48, gpu: null },
@@ -117,8 +129,34 @@ const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
     speaker_count: 0,
     face_model: "yunet",
     model_dirs: ["/user/models"],
+    active_profile: "",
   },
+  profiles: [],
   ...changes,
+});
+
+const profile = (name: string): Profile => ({
+  name,
+  look: {
+    palette: snapshot({}).settings.palette,
+    unassigned: snapshot({}).settings.unassigned,
+    font_family: "Noto Sans JP",
+    font_ratio: 0.048,
+    outline_ratio: 0.115,
+    rim_ratio: 0.034,
+    line_height: 1.448,
+    shadow: { enabled: true, strength: 0.8 },
+    width_ratio: 0.9,
+    placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
+  },
+});
+
+const WITH_PROFILES: Snapshot = snapshot({
+  profiles: [
+    profile("配信用 16:9 白フチ"),
+    profile("A long profile name for vertical shorts and interviews"),
+  ],
+  settings: { ...snapshot({}).settings, active_profile: "配信用 16:9 白フチ" },
 });
 
 const state = (name: string, tab: Tab, changes: Partial<UiState>): UiState => ({
@@ -144,6 +182,10 @@ const errorsByCode = (): BackendError[] =>
       role: "diarize",
       required: 24,
       available: 12,
+      limit_minutes: 60,
+      file: "recording.fcpxml",
+      name: "配信用",
+      roles: ["transcribe", "diarize"],
     }),
   );
 
@@ -194,6 +236,28 @@ function isStage(key: string): key is Stage {
 export const UI_STATES: UiState[] = [
   state("jobs empty", "jobs", {}),
   state("jobs drop hover", "jobs", { steps: ["hover-drop"] }),
+  state("jobs on a geforce without its runtime", "jobs", {
+    snapshot: snapshot({
+      backend: "speakers_on_cpu",
+      hardware: {
+        is_mac: false,
+        memory_gib: 64,
+        gpu: { vendor: "nvidia", name: "NVIDIA GeForce RTX 5090", memory_gib: 32 },
+      },
+    }),
+  }),
+  state("jobs with no usable gpu", "jobs", {
+    snapshot: snapshot({ hardware: { is_mac: false, memory_gib: 12, gpu: null } }),
+  }),
+  state("jobs speaker help open", "jobs", { steps: ["open-speaker-help"] }),
+  state("jobs with a selected profile", "jobs", { snapshot: WITH_PROFILES }),
+  state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
+  state("jobs video dropped without models", "jobs", {
+    snapshot: snapshot({
+      models: ALL_MODELS.map((row: ModelStatus): ModelStatus => ({ ...row, found_at: null })),
+    }),
+    steps: ["drop-video"],
+  }),
   state("jobs missing models", "jobs", {
     snapshot: snapshot({
       models: ALL_MODELS.map((row: ModelStatus): ModelStatus => ({ ...row, found_at: null })),
@@ -294,11 +358,42 @@ export const UI_STATES: UiState[] = [
       },
     }),
   }),
+  state("style with profiles", "style", { snapshot: WITH_PROFILES }),
+  state("style with an unsaved change to the profile", "style", {
+    snapshot: {
+      ...WITH_PROFILES,
+      settings: { ...WITH_PROFILES.settings, font_ratio: 0.06 },
+    },
+  }),
+  state("style overwrite profile dialog", "style", {
+    snapshot: WITH_PROFILES,
+    steps: ["open-overwrite-dialog"],
+  }),
+  state("style delete profile dialog", "style", { snapshot: WITH_PROFILES, steps: ["open-delete-dialog"] }),
+  state("style font list open", "style", { steps: ["open-font-list"] }),
+  state("style font not installed", "style", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, font_family: "Missing Font Family" } }),
+    steps: ["open-font-list"],
+  }),
   state("style face select open", "style", { steps: ["open-face-select"] }),
   state("style language select open", "style", { steps: ["open-language-select"] }),
+  state("help", "help", {}),
   state("models idle", "models", {}),
-  state("models on geforce", "models", {
+  state("models on geforce without its runtime", "models", {
     snapshot: snapshot({
+      backend: "speakers_on_cpu",
+      models: [...ALL_MODELS, GEFORCE_RUNTIME],
+      hardware: {
+        is_mac: false,
+        memory_gib: 64,
+        gpu: { vendor: "nvidia", name: "NVIDIA GeForce RTX 5090", memory_gib: 32 },
+      },
+    }),
+  }),
+  state("models on geforce with its runtime", "models", {
+    snapshot: snapshot({
+      backend: "cuda",
+      models: [...ALL_MODELS, { ...GEFORCE_RUNTIME, found_at: "/data/runtime/geforce" }],
       hardware: {
         is_mac: false,
         memory_gib: 64,
@@ -308,6 +403,7 @@ export const UI_STATES: UiState[] = [
   }),
   state("models on radeon", "models", {
     snapshot: snapshot({
+      backend: "vulkan",
       hardware: {
         is_mac: false,
         memory_gib: 32,
@@ -319,6 +415,26 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({
       hardware: { is_mac: false, memory_gib: 12, gpu: null },
     }),
+  }),
+  state("models with nothing missing", "models", {
+    snapshot: snapshot({
+      models: ALL_MODELS.map(
+        (row: ModelStatus): ModelStatus => (row.recommended ? { ...row, found_at: "/data/models/x" } : row),
+      ),
+    }),
+  }),
+  state("models reset dialog", "models", { steps: ["open-reset-dialog"] }),
+  state("models downloading all at once", "models", {
+    downloadEvents: [
+      { state: "running", id: "whisper-large-v3-turbo", done_bytes: 0, total_bytes: 1_700_000_000 },
+      {
+        state: "running",
+        id: "nemotron-3.5-transcribe-iq4",
+        done_bytes: 800_000_000,
+        total_bytes: 1_700_000_000,
+      },
+      { state: "running", id: "nemotron-3-diarization", done_bytes: 107_000_000, total_bytes: 107_000_000 },
+    ],
   }),
   state("model downloading", "models", {
     downloadEvents: [

@@ -13,6 +13,12 @@ use std::time::{Duration, Instant};
 const CHUNK_BYTES: usize = 1 << 20;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_PARTIAL: u16 = 206;
+const MAX_RETRIES: u32 = 5;
+const RETRY_WAIT: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(2)
+};
 
 #[derive(Clone, Copy, Debug, serde::Serialize, PartialEq)]
 pub struct DownloadProgress {
@@ -58,6 +64,15 @@ struct Transfer<'a> {
     entry_bytes: u64,
 }
 
+/// A refusal from the server stays a refusal; anything else is a lost connection worth another try.
+fn request_failure(url: &str, error: &ureq::Error) -> AppError {
+    let detail = format!("{url}: {error}");
+    match error {
+        ureq::Error::StatusCode(_) => AppError::Download(detail),
+        _ => AppError::Interrupted(detail),
+    }
+}
+
 fn stream_to_file(
     transfer: &Transfer<'_>,
     hasher: &mut Sha256,
@@ -72,7 +87,7 @@ fn stream_to_file(
     let response = ureq::get(transfer.url)
         .header("Range", &format!("bytes={have}-"))
         .call()
-        .map_err(|error| AppError::Download(format!("{}: {error}", transfer.url)))?;
+        .map_err(|error| request_failure(transfer.url, &error))?;
     let mut file = if response.status().as_u16() == STATUS_PARTIAL {
         OpenOptions::new()
             .append(true)
@@ -93,7 +108,7 @@ fn stream_to_file(
         cancel.check()?;
         let count = reader
             .read(&mut buffer)
-            .map_err(|error| AppError::Download(error.to_string()))?;
+            .map_err(|error| AppError::Interrupted(error.to_string()))?;
         if count == 0 {
             return Ok(());
         }
@@ -183,7 +198,6 @@ fn download_file(
     std::fs::create_dir_all(parent).map_err(io_context(format!("create {}", parent.display())))?;
     let partial = partial_path(destination);
     let url = transfer_file.url();
-    let mut hasher = Sha256::new();
     let transfer = Transfer {
         url: &url,
         partial: &partial,
@@ -191,8 +205,19 @@ fn download_file(
         earlier_bytes,
         entry_bytes,
     };
-    stream_to_file(&transfer, &mut hasher, cancel, progress)?;
-    verify_and_publish(&partial, destination, transfer_file, hasher)
+    let mut retries_left = MAX_RETRIES;
+    loop {
+        let mut hasher = Sha256::new();
+        match stream_to_file(&transfer, &mut hasher, cancel, progress) {
+            Ok(()) => return verify_and_publish(&partial, destination, transfer_file, hasher),
+            Err(AppError::Interrupted(_)) if retries_left > 0 => {
+                retries_left -= 1;
+                std::thread::sleep(RETRY_WAIT);
+                cancel.check()?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Downloads every file of the entry; files already present at the right size are kept.
@@ -643,5 +668,79 @@ mod tests {
             error.starts_with("download failed: http://127.0.0.1:9/unused: "),
             "{error}"
         );
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        String::from_utf8(request).unwrap().to_lowercase()
+    }
+
+    #[test]
+    fn a_lost_connection_resumes_from_what_arrived() {
+        let paths = scratch("reconnect");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            read_request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 11\r\n\r\nhello ")
+                .unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let request = read_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nConnection: close\r\n\r\nworld")
+                .unwrap();
+            request
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert!(server.join().unwrap().contains("range: bytes=6-\r\n"));
+        assert_eq!(
+            std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_server_refusal_is_not_retried() {
+        let paths = scratch("refused");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        // A retry would reach the closed listener and fail differently.
+        assert!(error.ends_with(": http status: 404"), "{error}");
+    }
+
+    #[test]
+    fn a_connection_that_never_returns_gives_up_with_the_failure() {
+        let paths = scratch("gives-up");
+        let cancel = CancelToken::default();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "m.bin",
+            11,
+            HELLO_SHA256,
+        )]);
+        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        assert!(matches!(result, Err(AppError::Interrupted(_))));
     }
 }

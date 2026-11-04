@@ -7,13 +7,14 @@ use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::eta::{
     convert_step, export_step, PlannedStage, Progress, RateInputs, Stage, StageRates, Tracker,
 };
-use crate::export::{unused_base, write_outputs, Transcript};
+use crate::export::{transcript_base, unused_base, write_outputs, Transcript};
 use crate::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
 use crate::settings::{Anchor, Settings};
 use crate::speakers::{limit_speakers, speaker_total};
+use crate::speech_timing::SpeechMap;
 use crate::whisper_ggml;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -293,7 +294,7 @@ pub fn run_job(
         return Err(error.into());
     }
     let inputs = RateInputs {
-        accelerated: hardware.is_mac || tools.backend != Backend::Default,
+        accelerated: hardware.is_mac || matches!(tools.backend, Backend::Vulkan | Backend::Cuda),
         speech_llm: speaker_model
             .as_ref()
             .is_some_and(|prepared| prepared.entry.max_audio_seconds.is_some()),
@@ -336,6 +337,9 @@ pub fn run_job(
         cancel,
         &mut |fraction| report(Stage::Transcribe, Some(fraction)),
     )?;
+    if let Some(speech) = SpeechMap::from_wav(&wav) {
+        words = speech.align(words);
+    }
     if words.is_empty() {
         return Err(UserError::NoWords.into());
     }
@@ -392,9 +396,29 @@ pub fn run_job(
     })
 }
 
-/// Lays out an earlier transcript again with new colours or position, without the speech models.
+/// Writes a transcript's own files again, replacing them; the caller asked for exactly that.
 pub fn relayout(
     transcript_file: &Path,
+    paths: &AppPaths,
+    settings: &Settings,
+    cancel: &CancelToken,
+    sink: &mut dyn FnMut(Progress),
+) -> AppResult<JobOutcome> {
+    relayout_to(
+        transcript_file,
+        &transcript_base(transcript_file),
+        paths,
+        settings,
+        cancel,
+        sink,
+    )
+}
+
+/// Lays out an earlier transcript again with new colours or position, without the speech models.
+/// All outputs go to `base`.
+pub fn relayout_to(
+    transcript_file: &Path,
+    base: &Path,
     paths: &AppPaths,
     settings: &Settings,
     cancel: &CancelToken,
@@ -441,14 +465,12 @@ pub fn relayout(
     )?;
     transcript.metrics = metrics_for(&transcript.info, settings);
     transcript.cues = cues;
-    let name = transcript_file.to_string_lossy();
-    let base = PathBuf::from(name.strip_suffix(".transcript.json").unwrap_or(&name));
-    let outputs = write_outputs(&base, &transcript, settings)?;
+    let outputs = write_outputs(base, &transcript, settings)?;
     report(Stage::Export, Some(1.0));
     tracker.finish(Instant::now())?;
     Ok(JobOutcome {
         outputs,
-        base,
+        base: base.to_path_buf(),
         speaker_count: transcript.speaker_count,
         requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),

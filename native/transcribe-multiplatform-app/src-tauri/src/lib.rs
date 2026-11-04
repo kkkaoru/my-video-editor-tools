@@ -8,14 +8,17 @@ pub mod error;
 pub mod eta;
 pub mod export;
 pub mod face;
+pub mod fonts;
 pub mod morphology;
 pub mod paths;
 pub mod pipeline;
 pub mod process;
+pub mod profiles;
 pub mod service;
 pub mod settings;
 pub mod shell;
 pub mod speakers;
+pub mod speech_timing;
 pub mod whisper_ggml;
 
 use error::AppResult;

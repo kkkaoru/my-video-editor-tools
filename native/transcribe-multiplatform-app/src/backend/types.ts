@@ -21,7 +21,8 @@ export interface CaptionShadow {
   strength: number;
 }
 
-export interface Settings {
+/** What a profile saves and restores. */
+export interface CaptionLook {
   palette: SpeakerColor[];
   unassigned: SpeakerColor;
   font_family: string;
@@ -32,14 +33,24 @@ export interface Settings {
   shadow: CaptionShadow;
   width_ratio: number;
   placement: Placement;
+}
+
+export interface Profile {
+  name: string;
+  look: CaptionLook;
+}
+
+export interface Settings extends CaptionLook {
   language: string;
   diarize_model: string;
   speaker_count: number;
   face_model: string;
   model_dirs: string[];
+  /** The profile dropped subtitle files follow; empty for the settings above. */
+  active_profile: string;
 }
 
-export type Backend = "default" | "vulkan" | "cuda";
+export type Backend = "default" | "vulkan" | "cuda" | "speakers_on_cpu";
 export type GpuVendor = "nvidia" | "radeon";
 
 export interface Gpu {
@@ -62,6 +73,9 @@ export interface BackendError {
   required?: number;
   available?: number;
   limit_minutes?: number;
+  file?: string;
+  name?: string;
+  roles?: Role[];
 }
 
 export interface ModelStatus {
@@ -73,16 +87,18 @@ export interface ModelStatus {
   found_at: string | null;
   blocked: BackendError | null;
   recommended: boolean;
-  hidden: boolean;
 }
 
 export interface Snapshot {
+  /** The app's version, from Cargo. */
+  version: string;
   locale: string;
   hardware: Hardware;
   backend: Backend;
   settings: Settings;
   models: ModelStatus[];
   models_dir: string;
+  profiles: Profile[];
 }
 
 export interface Progress {

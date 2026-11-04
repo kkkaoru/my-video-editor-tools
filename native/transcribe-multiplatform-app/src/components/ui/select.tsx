@@ -5,7 +5,7 @@ import type { RefObject, VNode } from "preact";
 import { cn, type PrimitiveProps } from "@/styling/cn.ts";
 
 // Read when the popup opens: <main> does not exist yet while this component first renders.
-const MAIN_LANDMARK: RefObject<HTMLElement | null> = {
+export const MAIN_LANDMARK: RefObject<HTMLElement | null> = {
   get current(): HTMLElement | null {
     return document.querySelector("main");
   },

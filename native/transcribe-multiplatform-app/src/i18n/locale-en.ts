@@ -5,11 +5,54 @@ export const enMessages: Messages = {
   appName: "Transcribe for Resolve",
   tabJobs: "Transcribe",
   tabStyle: "Caption look and position",
+  tabHelp: "How to use",
   tabModels: "Models",
-  dropTitle: "Drop videos here",
-  dropHint: "Subtitle files for DaVinci Resolve are written next to each video.",
-  dropHover: "Release to add the videos",
+  noticeSpeakersOnCpu:
+    "Telling speakers apart runs on the CPU until you download the GeForce runtime in Models, so it is slower.",
+  noticeCpuOnly: "No GPU this version can use was found, so everything runs on the CPU. It is slower.",
+  dropTitle: "Drop videos or subtitle files here",
+  dropHint: "Videos become subtitle files for DaVinci Resolve, written next to each video.",
+  dropHover: "Release to add the files",
   pickVideos: "Choose videos",
+  pickSubtitles: "Choose subtitle files",
+  subtitleFilterName: "Subtitle files",
+  dropProfileHint: "Dropped subtitle files are written again as new files with the saved profile {name}.",
+  dropCurrentHint: "Dropped subtitle files are written again as new files with the current caption settings.",
+  speakerCountHelpLabel: "Why set the number of speakers?",
+  speakerCountHelp:
+    "Speaker colours depend on telling voices apart. Saying how many people speak keeps similar voices from merging and one voice from splitting. With 1 speaker, speaker separation is skipped, so it is faster and needs no speaker model.",
+  profilesHeading: "Profiles",
+  profilesHint:
+    "Save the caption look and position under a name and restore it later. Models and the spoken language are not part of a profile.",
+  profileName: "Profile name",
+  profileSave: "Save as a new profile",
+  profileEmpty: "No profiles saved yet.",
+  profileSelected: "Selected",
+  profileChanged: "Unsaved changes",
+  profileLoad: "Load {name}",
+  profileOverwrite: "Overwrite {name}",
+  profileOverwriteTitle: "Overwrite {name}?",
+  profileOverwriteDescription:
+    "The profile's saved look is replaced with the current settings. This cannot be undone.",
+  profileDelete: "Delete {name}",
+  profileDeleteTitle: "Delete {name}?",
+  profileDeleteDescription:
+    "The profile is removed. The current settings and existing subtitle files stay as they are. This cannot be undone.",
+  dialogCancel: "Cancel",
+  fontFamily: "Font family",
+  fontSearch: "Search the fonts",
+  fontHint: "Used for every speaker. Type to narrow down the list.",
+  fontLoading: "Reading the installed fonts",
+  fontNoMatch: "No installed font matches",
+  fontNotInstalled:
+    "{font} is not installed on this computer. The preview uses a substitute, and the subtitle files still name it.",
+  downloadAllLabel: "Download what is missing",
+  downloadAll: "{label}: {count} models ({size})",
+  resetModels: "Reset models and download again",
+  resetModelsTitle: "Reset the models and download them again?",
+  resetModelsDescription:
+    "Everything this app downloaded in {path} is deleted, then the models this computer needs are downloaded again. Folders you added are never touched. This cannot be undone.",
+  resetModelsConfirm: "Delete and download again",
   videoFilterName: "Videos",
   readinessMissing:
     "No model is available for: {roles}. Download one in Models, or add a folder that already has it.",
@@ -36,7 +79,7 @@ export const enMessages: Messages = {
   stepStates: { done: "done", current: "in progress", pending: "waiting" },
   outputPurposes: {
     ttml: "Styled subtitles (colour, outline, position)",
-    srt: "Plain subtitle track",
+    srt: "Subtitles with words and times (colours may not show; no outlines or positions)",
     fcpxml: "Timeline with titles",
     json: "Transcript data for writing again",
   },
@@ -105,9 +148,6 @@ export const enMessages: Messages = {
   deleteModel: "Delete the downloaded copy of {name}",
   sourceLabel: "Source: {url}",
   locationLabel: "Location: {path}",
-  hardwareCpu: "CPU only",
-  hardwareMetal: "Apple GPU (Metal)",
-  hardwareMemory: "memory {gib} GB",
   loadFailed: "Something went wrong: {detail}",
   errors: {
     no_video_stream: "This file has no video. Choose a video file.",
@@ -122,11 +162,20 @@ export const enMessages: Messages = {
       "{model} needs {required} GB of memory; this computer has {available} GB. Choose a smaller model.",
     too_long_for_model:
       "{model} takes recordings up to {limit} minutes. This video is longer. Choose Nemotron 3 Diarization in Models.",
+    transcript_missing:
+      "{file} has no transcript beside it, so it cannot be written again. Keep the .transcript.json file with the same name in the same folder.",
+    profile_exists:
+      "A profile named {name} already exists. Choose another name, or overwrite it in the list.",
+    profile_missing: "The profile {name} no longer exists.",
+    models_busy:
+      "Models cannot be reset while a job or a download is running. Wait for it to finish or cancel it, then try again.",
+    models_missing:
+      "The videos were not added because no model is available for: {roles}. Download them in Models, or add a folder that already has them.",
     internal: "{detail}",
     cancelled: "Cancelled",
   },
   modelNotes: {
-    "whisper-large-v3-turbo": "Transcription. The same model runs on Mac (Metal) and GeForce (CUDA).",
+    "whisper-large-v3-turbo": "Transcription. The same model runs on Mac (Metal) and Windows (Vulkan).",
     "nemotron-3.5-transcribe-iq4":
       "Speaker separation. For Macs with 32 GB or more, GPUs with 24 GB or more, and CPUs.",
     "nemotron-3.5-transcribe-nvfp4": "Speaker separation. For Blackwell GPUs such as GeForce RTX 50 series.",
@@ -137,6 +186,246 @@ export const enMessages: Messages = {
     "nemotron-3-diarization": "Speaker separation only, 107 MB. Up to 8 speakers; runs with little memory.",
     yunet: "Real faces. Included with the app; gives the same result on Mac and Windows.",
     "avatar-face-yolo": "Avatar faces. Works once the exported ONNX file is in a model folder.",
-    "geforce-runtime": "CUDA builds of the speech tools. Needed only on Windows with an NVIDIA GPU.",
+    "geforce-runtime": "CUDA build of the speaker separation tool. Without it, speakers run on the CPU.",
+  },
+  help: {
+    version: "Version {version}",
+    intro:
+      "This app turns the words spoken in a video into subtitles, with a different colour for each person. You can use the subtitles in DaVinci Resolve, a video editing program.",
+    sections: {
+      start: {
+        heading: "First steps",
+        parts: [
+          {
+            heading: "Install the app",
+            intro: "Download the file that fits your computer, then install it.",
+            steps: [
+              "Choose the file for your computer from the list below.",
+              "On a Mac, open the zip and move the app to the Applications folder.",
+              "On Windows, open the exe and follow the steps.",
+            ],
+            notes: [
+              "Mac: Transcribe-for-Resolve-macos-arm64.zip",
+              "Windows with a GeForce: Transcribe-for-Resolve-windows-geforce-x64-setup.exe",
+              "Windows with a Radeon: Transcribe-for-Resolve-windows-radeon-x64-setup.exe",
+              "Windows with neither: either exe works. It runs on the CPU only, so it takes longer.",
+              "If a Mac stops you: open System Settings > Privacy & Security and press “Open Anyway”.",
+              "If Windows stops you: press “More info”, then “Run anyway”.",
+            ],
+          },
+          {
+            heading: "Download the models",
+            intro:
+              "Models are the data the app uses to turn speech into text. You only need to get them once.",
+            steps: [
+              "Open the “{tabModels}” tab.",
+              "Press “{downloadAllLabel}”.",
+              "Wait until each model's bar reaches the end.",
+            ],
+            notes: [
+              "A finished model shows “{badgePresent}”.",
+              "If nothing is missing, this button does not appear.",
+              "You need the internet. The files are large, so this takes time.",
+              "If a download stops, press the button again and it goes on from where it stopped.",
+            ],
+          },
+          {
+            heading: "Use models you already have",
+            intro: "If you downloaded models before, you do not need to download them again.",
+            steps: [
+              "Open the “{tabModels}” tab.",
+              "Press “{addModelFolder}”.",
+              "Choose the folder that holds the models.",
+            ],
+            notes: ["Models it finds show “{badgePresent}”."],
+          },
+        ],
+      },
+      transcribe: {
+        heading: "Make subtitles from a video",
+        parts: [
+          {
+            heading: "Add a video",
+            intro: "When you add a video, the app starts making subtitles.",
+            steps: [
+              "Open the “{tabJobs}” tab.",
+              "Choose how many people speak in “{speakerCount}”. If you are not sure, leave it at “{speakerCountAuto}”.",
+              "Drag the video into the box and let go. To drag means to hold it down while you move it. You can also press “{pickVideos}”.",
+            ],
+            notes: [
+              "Press the “?” next to the number to read why it helps.",
+              "If only one person speaks, choosing 1 makes it faster.",
+              "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Nothing happens with other files.",
+              "If you add several videos, they are done one at a time.",
+              "The first time, the app also changes a model into a form it can use.",
+              "If the subtitles are in the wrong language, choose it in “{speechLanguage}” on the “{tabStyle}” tab.",
+            ],
+          },
+          {
+            heading: "Watch the progress",
+            intro: "After you add a video, a list appears under the box.",
+            steps: [],
+            notes: [
+              "It shows the current step and how many steps there are.",
+              "The bar shows the progress of the whole job.",
+              "It also shows about how much time is left.",
+              "To stop, press the button next to the video's name.",
+            ],
+          },
+          {
+            heading: "The files you get",
+            intro:
+              "Four files appear in the same folder as the video. Older files are kept. If the name is taken, the new files get -2 added to their name.",
+            steps: [],
+            notes: [
+              ".fcpxml: subtitles DaVinci Resolve can read, together with the video.",
+              ".ttml: subtitles with colours and positions.",
+              ".srt: subtitles with words and times. Colours may not show. There are no outlines or positions.",
+              ".transcript.json: the data used to write subtitles again. Please keep it.",
+            ],
+          },
+        ],
+      },
+      resolve: {
+        heading: "Open the subtitles in DaVinci Resolve",
+        parts: [
+          {
+            heading: "Start with the FCPXML file",
+            intro:
+              "An FCPXML file brings in the video and the subtitles at once, with their colours, outlines and positions. That is why you should use it first.",
+            steps: [
+              "Open a project in DaVinci Resolve. A project holds all your editing work.",
+              "Choose File > Import > Timeline in the menu.",
+              "Choose the .fcpxml file the app made.",
+              "The video and subtitles appear on a timeline. A timeline is where a video is laid out in time order.",
+            ],
+            notes: [
+              "Each subtitle is 2 or 3 layers on top of each other. To change the words, change every layer.",
+            ],
+          },
+          {
+            heading: "When to use the other files",
+            intro: "Use the other files only when you need them.",
+            steps: [],
+            notes: [
+              "To bring in a .ttml file, choose Import Subtitle in the Media Pool. The Media Pool is where your videos and subtitles are kept.",
+              "Use the .srt file to fix words or times inside Resolve. If this app writes the subtitles again, your fixes are not included.",
+              "Do not use the FCPXML and TTML files on one timeline. The subtitles would show twice.",
+            ],
+          },
+        ],
+      },
+      look: {
+        heading: "Change how subtitles look and where they sit",
+        parts: [
+          {
+            heading: "Change the look and position",
+            intro: "Changes show in the sample right away and are saved by themselves.",
+            steps: [
+              "Open the “{tabStyle}” tab.",
+              "Under “{positionHeading}”, choose “{anchorFaceAbove}”, “{anchorFaceBelow}”, “{anchorVideoTop}” or “{anchorVideoBottom}”.",
+              "Use the sliders to set the text size and outline width. A slider is a handle you move left and right. You can type a number too.",
+              "Choose the text colour and outline colour for each person.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "Choose a font",
+            intro:
+              "A font is the shape of the letters. You choose from the fonts on this computer, and everyone's subtitles use the same one.",
+            steps: [
+              "Under “{fontFamily}”, press the place that shows the font's name.",
+              "Type part of the font's name to shorten the list.",
+              "Press the font you want.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "Save and load a profile",
+            intro: "A profile is a set of look and position settings saved under a name.",
+            steps: [
+              "Type a name.",
+              "Press “{profileSave}”.",
+              "To use it later, press its load button in the list.",
+            ],
+            notes: [
+              "The app asks you first before it overwrites or deletes a profile.",
+              "Models and the spoken language are not saved in a profile.",
+            ],
+          },
+        ],
+      },
+      rewrite: {
+        heading: "Give finished subtitles a new look",
+        parts: [
+          {
+            heading: "Add a subtitle file",
+            intro:
+              "You can change the look of subtitles without making them again from the sound. It is usually quick. It takes longer if the app has to look for faces.",
+            steps: [
+              "Load the profile you want. If none is loaded, the current settings are used.",
+              "Open the “{tabJobs}” tab.",
+              "Drag a .fcpxml, .srt, .ttml or .transcript.json file into the box and let go. You can also press “{pickSubtitles}”.",
+              "The list under the box shows the progress and the result.",
+            ],
+            notes: [
+              "The write-again button next to a video's name in the list replaces the files of the same name. The old files are not kept.",
+              "The original files are kept. The new files get -2 or a similar number added to their name.",
+              "The .transcript.json file with the same name must be in the same folder.",
+              "When you are using a profile, changes you have not saved to it are not used.",
+            ],
+          },
+        ],
+      },
+      trouble: {
+        heading: "If something goes wrong",
+        parts: [
+          {
+            heading: "It says a model is missing",
+            intro: "The app cannot start making subtitles without the models it needs.",
+            steps: [
+              "Open the “{tabModels}” tab.",
+              "Press “{downloadAllLabel}”.",
+              "When that is done, add the video again.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "It says no face was found",
+            intro:
+              "When no face is found, the subtitle goes at the bottom of the video. If you choose a place that does not use faces, subtitles always stay in one place.",
+            steps: [
+              "Open the “{tabStyle}” tab.",
+              "Under the place for subtitles, choose the top or bottom of the video.",
+              "Press the write-again button next to the video's name.",
+            ],
+            notes: [
+              "If it is not in the list, add the subtitle file. If you are using a profile, overwrite the profile first.",
+              "Avatar faces need a different model. Put its file in a model folder, then choose it in “{faceModel}”.",
+            ],
+          },
+          {
+            heading: "You want to start over",
+            intro: "If a model may be damaged, you can get it again.",
+            steps: ["Open the “{tabModels}” tab.", "Press “{resetModels}”.", "Read the message, then go on."],
+            notes: [
+              "Only what this app downloaded is deleted. Folders you added are kept.",
+              "You cannot do this while subtitles are being made or a download is running.",
+              "After deleting, the download of the missing models starts by itself.",
+            ],
+          },
+          {
+            heading: "Resolve cannot find the video",
+            intro:
+              "An FCPXML file holds the video's place and name. If you move or rename the video, Resolve cannot find it.",
+            steps: [
+              "Put the video back in its old place, with its old name.",
+              "Open the .fcpxml file again.",
+            ],
+            notes: [],
+          },
+        ],
+      },
+    },
   },
 };

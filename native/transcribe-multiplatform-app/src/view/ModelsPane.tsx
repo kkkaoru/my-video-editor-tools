@@ -6,12 +6,20 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
-import { cancelDownload, deleteModel, pickFolder, saveSettings, startDownload } from "../backend/backend.ts";
+import {
+  cancelDownload,
+  deleteModel,
+  pickFolder,
+  resetModels,
+  saveSettings,
+  startDownload,
+} from "../backend/backend.ts";
 import type { ModelStatus, Role, Settings, Snapshot } from "../backend/types.ts";
-import { errorText, format, type Messages, type ModelNotes } from "../i18n/messages.ts";
+import { errorText, format, type Messages, type ModelNotes, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import { type AppState, type DownloadRow, startedDownload } from "../state/app-state.ts";
 import { type AppStore, reportFailure } from "../state/use-app-store.ts";
+import { ConfirmButton } from "./ConfirmButton.tsx";
 
 export interface ModelsPaneProps {
   store: AppStore;
@@ -41,6 +49,35 @@ const noteFor = (notes: ModelNotes, id: string): string => (hasNote(notes, id) ?
 
 const canDownload = (model: ModelStatus): boolean =>
   model.download_bytes > 0 && model.found_at === null && model.blocked === null;
+
+const bySize = ({ download_bytes: first }: ModelStatus, { download_bytes: second }: ModelStatus): number =>
+  first - second;
+
+const totalBytes = ([first, ...rest]: ModelStatus[]): number =>
+  first === undefined ? 0 : first.download_bytes + totalBytes(rest);
+
+const isReadyDiarizer = ({ role, found_at, blocked }: ModelStatus): boolean =>
+  role === "diarize" && found_at !== null && blocked === null;
+
+/** What this computer lacks: the recommended models, and the smallest speaker model when none would be usable. */
+export const missingDownloads = ({ models }: Snapshot): ModelStatus[] => {
+  const recommended: ModelStatus[] = models.filter(
+    (model: ModelStatus): boolean => model.recommended && canDownload(model),
+  );
+  const hasDiarizer: boolean =
+    models.some(isReadyDiarizer) || recommended.some(({ role }: ModelStatus): boolean => role === "diarize");
+  const smallest: ModelStatus | undefined = models
+    .filter((model: ModelStatus): boolean => model.role === "diarize" && canDownload(model))
+    .toSorted(bySize)[0];
+  return hasDiarizer || smallest === undefined ? recommended : [...recommended, smallest];
+};
+
+function startDownloads(store: AppStore, models: ModelStatus[]): void {
+  models.forEach(({ id, download_bytes: bytes }: ModelStatus): void => {
+    store.setState((state: AppState): AppState => startedDownload(state, id, bytes));
+    startDownload(id).catch((error: unknown): void => reportFailure(store.setState, error));
+  });
+}
 
 function SelectButton({
   model,
@@ -177,20 +214,12 @@ async function addFolder({ applySnapshot }: AppStore, settings: Settings): Promi
   }
 }
 
-const roleHeading = (messages: Messages, role: Role): string =>
-  (
-    ({
-      transcribe: messages.roleTranscribe,
-      diarize: messages.roleDiarize,
-      face: messages.roleFace,
-      runtime: messages.roleRuntime,
-    }) satisfies Record<Role, string>
-  )[role];
-
 export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
   const messages: Messages = useMessages();
-  const visible: ModelStatus[] = snapshot.models.filter(({ hidden }: ModelStatus): boolean => !hidden);
   const fail = (error: unknown): void => reportFailure(store.setState, error);
+  const needed: ModelStatus[] = missingDownloads(snapshot).filter(
+    ({ id }: ModelStatus): boolean => store.state.downloads.get(id)?.running !== true,
+  );
   return (
     <div className="grid grid-cols-1 gap-4">
       <Card>
@@ -199,13 +228,41 @@ export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
           <CardDescription>{messages.modelsHint}</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-2">
-          <Button
-            className="w-fit"
-            variant="outline"
-            onClick={(): void => void addFolder(store, snapshot.settings).catch(fail)}
-          >
-            {messages.addModelFolder}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {needed.length === 0 ? null : (
+              <Button onClick={(): void => startDownloads(store, needed)}>
+                <DownloadIcon aria-hidden="true" />
+                {format(messages.downloadAll, {
+                  label: messages.downloadAllLabel,
+                  count: needed.length,
+                  size: formatBytes(totalBytes(needed)),
+                })}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={(): void => void addFolder(store, snapshot.settings).catch(fail)}
+            >
+              {messages.addModelFolder}
+            </Button>
+            <ConfirmButton
+              title={messages.resetModelsTitle}
+              description={format(messages.resetModelsDescription, { path: snapshot.models_dir })}
+              confirmLabel={messages.resetModelsConfirm}
+              cancelLabel={messages.dialogCancel}
+              onConfirm={(): void =>
+                void resetModels()
+                  .then((fresh: Snapshot): void => {
+                    store.applySnapshot(fresh);
+                    startDownloads(store, missingDownloads(fresh));
+                  })
+                  .catch(fail)
+              }
+            >
+              <Trash2Icon aria-hidden="true" />
+              {messages.resetModels}
+            </ConfirmButton>
+          </div>
           {snapshot.settings.model_dirs.length === 0 ? null : (
             <p className="break-all text-muted-foreground">
               {messages.modelFolders}: {snapshot.settings.model_dirs.join(" / ")}
@@ -214,16 +271,16 @@ export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
         </CardContent>
       </Card>
       {ROLE_ORDER.filter((role: Role): boolean =>
-        visible.some((model: ModelStatus): boolean => model.role === role),
+        snapshot.models.some((model: ModelStatus): boolean => model.role === role),
       ).map(
         (role: Role): VNode => (
           <Card key={role}>
             <CardHeader>
-              <CardTitle>{roleHeading(messages, role)}</CardTitle>
+              <CardTitle>{roleName(messages, role)}</CardTitle>
             </CardHeader>
             <CardContent>
               <ul className="grid grid-cols-1 gap-3">
-                {visible
+                {snapshot.models
                   .filter((model: ModelStatus): boolean => model.role === role)
                   .map(
                     (model: ModelStatus): VNode => (

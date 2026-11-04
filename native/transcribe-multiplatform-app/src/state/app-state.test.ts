@@ -6,6 +6,8 @@ import {
   applyDownloadEvent,
   applyJobEvent,
   initialState,
+  lookChanged,
+  missingModelRoles,
   startedDownload,
   withModels,
   withSettings,
@@ -24,17 +26,20 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
   settings: SETTINGS,
   models: [],
   models_dir: "/models",
+  profiles: [],
 };
 const FAILURE: BackendError = { code: "internal", detail: "boom" };
 
@@ -44,6 +49,7 @@ const queued = (): AppState =>
 it("starts empty", () => {
   expect(initialState(SNAPSHOT)).toStrictEqual({
     snapshot: {
+      version: "1.2.3",
       locale: "en",
       hardware: { is_mac: true, memory_gib: 16, gpu: null },
       backend: "default",
@@ -60,12 +66,14 @@ it("starts empty", () => {
         diarize_model: "b",
         face_model: "c",
         model_dirs: [],
+        active_profile: "",
         rim_ratio: 0.034,
         line_height: 1.448,
         speaker_count: 0,
       },
       models: [],
       models_dir: "/models",
+      profiles: [],
     },
     jobs: [],
     downloads: new Map(),
@@ -222,10 +230,54 @@ it("replaces the settings", () => {
   expect(state.snapshot.locale).toBe("en");
 });
 
-it("replaces only the models", () => {
+it("replaces the models and ends an earlier failure, keeping the settings", () => {
   const failed: AppState = { ...initialState(SNAPSHOT), loadError: { code: "internal" } };
   const state: AppState = withModels(failed, []);
   expect(state.snapshot.models).toStrictEqual([]);
   expect(state.snapshot.settings.language).toBe("auto");
-  expect(state.loadError).toStrictEqual({ code: "internal" });
+  expect(state.loadError).toBe(null);
+});
+
+it("needs a present, unblocked model for transcription and for speakers", () => {
+  expect(missingModelRoles(SNAPSHOT)).toStrictEqual(["transcribe", "diarize"]);
+  expect(
+    missingModelRoles({
+      ...SNAPSHOT,
+      models: [
+        {
+          id: "t",
+          role: "transcribe",
+          label: "T",
+          source_url: "",
+          download_bytes: 1,
+          found_at: "/t",
+          blocked: null,
+          recommended: true,
+        },
+        {
+          id: "d",
+          role: "diarize",
+          label: "D",
+          source_url: "",
+          download_bytes: 1,
+          found_at: "/d",
+          blocked: { code: "needs_nvidia" },
+          recommended: true,
+        },
+      ],
+    }),
+  ).toStrictEqual(["diarize"]);
+});
+
+it("needs no speaker model for one known speaker", () => {
+  expect(missingModelRoles({ ...SNAPSHOT, settings: { ...SETTINGS, speaker_count: 1 } })).toStrictEqual([
+    "transcribe",
+  ]);
+});
+
+it("notices a look that differs from the saved one, and ignores everything else", () => {
+  expect(lookChanged(SETTINGS, SETTINGS)).toBe(false);
+  expect(lookChanged({ ...SETTINGS, language: "ja", speaker_count: 2 }, SETTINGS)).toBe(false);
+  expect(lookChanged({ ...SETTINGS, font_ratio: 0.06 }, SETTINGS)).toBe(true);
+  expect(lookChanged({ ...SETTINGS, font_family: "Other" }, SETTINGS)).toBe(true);
 });

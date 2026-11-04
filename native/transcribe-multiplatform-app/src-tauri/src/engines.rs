@@ -61,32 +61,30 @@ fn find_tool(root: &Path, file_name: &str, depth: usize) -> Option<PathBuf> {
 }
 
 impl Tools {
-    /// The build for `backend`, or the bundled default where that build is not installed.
+    /// The builds for `backend`, or the bundled CPU ones where those are not installed.
     pub fn locate(paths: &AppPaths, backend: Backend) -> AppResult<Self> {
         let bundled = paths.bundled_runtime_dir();
-        let accelerated_root = |folder: &str| match backend {
-            Backend::Cuda => Some(paths.downloaded_runtime_dir().join("geforce").join(folder)),
-            Backend::Vulkan => Some(bundled.join(format!("{folder}-vulkan"))),
-            Backend::Default => None,
+        let nemo_root = match backend {
+            Backend::Cuda => Some(paths.downloaded_runtime_dir().join("geforce/nemo")),
+            Backend::Vulkan => Some(bundled.join("nemo-vulkan")),
+            Backend::Default | Backend::SpeakersOnCpu => None,
         };
-        let accelerated = |folder: &str, tool: &str| {
-            accelerated_root(folder)
-                .and_then(|root| find_tool(&root, &exe_name(tool), TOOL_SEARCH_DEPTH))
+        let whisper_root = (backend != Backend::Default).then(|| bundled.join("whisper-vulkan"));
+        let accelerated = |root: Option<PathBuf>, tool: &str| {
+            root.and_then(|root| find_tool(&root, &exe_name(tool), TOOL_SEARCH_DEPTH))
         };
         let plain = |folder: &str, tool: &str| {
             find_tool(&bundled.join(folder), &exe_name(tool), TOOL_SEARCH_DEPTH).ok_or_else(|| {
                 AppError::Invalid(format!("{tool} is missing from {}", bundled.display()))
             })
         };
-        let (nemo, whisper) = (
-            accelerated("nemo", "nemo-speech"),
-            accelerated("whisper", "whisper-cli"),
-        );
+        let nemo = accelerated(nemo_root, "nemo-speech");
+        let whisper = accelerated(whisper_root, "whisper-cli");
         Ok(Self {
-            backend: if nemo.is_some() {
-                backend
-            } else {
-                Backend::Default
+            backend: match (&nemo, &whisper) {
+                (Some(_), _) => backend,
+                (None, Some(_)) => Backend::SpeakersOnCpu,
+                (None, None) => Backend::Default,
             },
             ffmpeg: plain("ffmpeg", "ffmpeg")?,
             ffprobe: plain("ffmpeg", "ffprobe")?,

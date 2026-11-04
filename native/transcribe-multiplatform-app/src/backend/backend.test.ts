@@ -8,13 +8,20 @@ import {
   cancelDownload,
   cancelJob,
   deleteModel,
+  deleteProfile,
   fetchSnapshot,
+  fontFamilies,
+  loadProfile,
   onDownloadEvent,
   onFileDrop,
   onJobEvent,
+  overwriteProfile,
   pickFiles,
   pickFolder,
+  reformatFiles,
   relayoutTranscript,
+  resetModels,
+  saveProfile,
   saveSettings,
   startDownload,
 } from "./backend.ts";
@@ -37,6 +44,7 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
@@ -76,6 +84,7 @@ it("saves the settings", async () => {
           diarize_model: "b",
           face_model: "c",
           model_dirs: [],
+          active_profile: "",
           rim_ratio: 0.034,
           line_height: 1.448,
           speaker_count: 0,
@@ -166,4 +175,42 @@ it("picks one folder", async () => {
   vi.mocked(open).mockResolvedValue("/models");
   expect(await pickFolder()).toBe("/models");
   expect(vi.mocked(open).mock.calls).toStrictEqual([[{ directory: true }]]);
+});
+
+it("rewrites dropped subtitle files", async () => {
+  await reformatFiles(["/a.srt"]);
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reformat_files", { paths: ["/a.srt"] }]]);
+});
+
+it("saves a new profile with the settings on screen", async () => {
+  await saveProfile("A", SETTINGS);
+  expect(vi.mocked(invoke).mock.calls[0]?.[0]).toBe("save_profile");
+  expect(vi.mocked(invoke).mock.calls[0]?.[1]).toHaveProperty("name", "A");
+});
+
+it("overwrites a profile with the settings on screen", async () => {
+  await overwriteProfile("A", SETTINGS);
+  expect(vi.mocked(invoke).mock.calls[0]?.[0]).toBe("overwrite_profile");
+  expect(vi.mocked(invoke).mock.calls[0]?.[1]).toHaveProperty("name", "A");
+});
+
+it("loads a profile", async () => {
+  await loadProfile("A");
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["load_profile", { name: "A" }]]);
+});
+
+it("deletes a profile", async () => {
+  await deleteProfile("A");
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["delete_profile", { name: "A" }]]);
+});
+
+it("reads the installed fonts", async () => {
+  vi.mocked(invoke).mockResolvedValue(["Noto Sans JP"]);
+  expect(await fontFamilies()).toStrictEqual(["Noto Sans JP"]);
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["font_families"]]);
+});
+
+it("resets the models", async () => {
+  await resetModels();
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reset_models"]]);
 });

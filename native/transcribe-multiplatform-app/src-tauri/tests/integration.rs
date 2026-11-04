@@ -25,6 +25,7 @@ const Q2L_BYTES: u64 = 15_547_824_288;
 const ENCODER_FILE: &str =
     "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf";
 const ENCODER_BYTES: u64 = 1_670_410_080;
+const CUDA_ARCHIVE_BYTES: u64 = 508_625_181;
 const GGML_FILE: &str = "models/whisper-large-v3-turbo/ggml-large-v3-turbo.bin";
 const WHISPER_SOURCE_BYTES: u64 = 1_617_824_864;
 const WHISPER_MLX_BYTES: u64 = 1_613_977_612;
@@ -252,7 +253,7 @@ fn a_job_with_the_default_model_writes_every_format() {
     assert!(!outcome.faceless);
     assert_eq!(
         fs::read_to_string(root.join("clip.srt")).unwrap(),
-        "1\n00:00:00,100 --> 00:00:00,933\n<font color=\"#FFFFFF\">はい</font>\n\n2\n00:00:01,000 --> 00:00:01,933\n<font color=\"#005A9C\">どうも</font>\n\n"
+        "1\n00:00:00,100 --> 00:00:00,933\n<font color=\"#FFFFFF\">はい</font>\n\n2\n00:00:01,000 --> 00:00:01,920\n<font color=\"#005A9C\">どうも</font>\n\n"
     );
     assert_eq!(fs::read_dir(paths.jobs_dir()).unwrap().count(), 0);
 }
@@ -350,7 +351,10 @@ fn a_job_uses_the_downloaded_cuda_tools_on_a_geforce() {
         &geforce.join("nemo/nemo-speech"),
         "echo 'cuda build ran' >&2; exit 7",
     );
-    fs::create_dir_all(geforce.join("whisper")).unwrap();
+    sparse(
+        &geforce.join("nemo/nemo-speech-cuda.zip"),
+        CUDA_ARCHIVE_BYTES,
+    );
     let hardware = Hardware {
         is_mac: false,
         memory_gib: 64,
@@ -1246,11 +1250,18 @@ fn face_models_and_the_runtime_are_located_by_their_own_rules() {
     assert_eq!(catalog::locate(runtime, &paths, &[]), None);
     sparse(&paths.yunet_model(), 1);
     sparse(&root.join("data/models/avatar-face-caption-v2.onnx"), 1);
-    fs::create_dir_all(root.join("data/runtime/geforce/nemo")).unwrap();
+    // A running download has only its partial file and folders: not installed yet.
+    sparse(
+        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip.part"),
+        1,
+    );
     assert!(catalog::locate(yunet, &paths, &[]).is_some());
     assert!(catalog::locate(avatar, &paths, &[]).is_some());
     assert_eq!(catalog::locate(runtime, &paths, &[]), None);
-    fs::create_dir_all(root.join("data/runtime/geforce/whisper")).unwrap();
+    sparse(
+        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip"),
+        CUDA_ARCHIVE_BYTES,
+    );
     assert!(catalog::locate(runtime, &paths, &[])
         .unwrap()
         .ends_with("data/runtime/geforce"));
@@ -1272,8 +1283,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
             "nemotron-3.5-transcribe-q8",
             "nemotron-3-diarization",
             "yunet",
-            "avatar-face-yolo",
-            "geforce-runtime"
+            "avatar-face-yolo"
         ]
     );
     assert_eq!(
@@ -1303,13 +1313,6 @@ fn statuses_describe_every_entry_for_this_hardware() {
             "nemotron-3.5-transcribe-nvfp4",
             "nemotron-3.5-transcribe-q2m"
         ]
-    );
-    assert_eq!(
-        rows.iter()
-            .filter(|row| row.hidden)
-            .map(|row| row.id)
-            .collect::<Vec<_>>(),
-        vec!["geforce-runtime"]
     );
     assert_eq!(rows[0].download_bytes, 1_617_824_864);
 }
@@ -1662,10 +1665,6 @@ fn a_cuda_only_model_asks_for_the_runtime_on_vulkan() {
         13_572_208_800,
     );
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    write_tool(
-        &paths.bundled_runtime_dir().join("nemo-vulkan/nemo-speech"),
-        "",
-    );
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2m".to_owned(),
         ..bottom_anchored()
@@ -1931,4 +1930,108 @@ fn relayout_reports_the_requested_speaker_count() {
     .unwrap();
     assert_eq!(outcome.requested_speakers, 2);
     assert_eq!(outcome.speaker_count, 2);
+}
+
+fn geforce() -> Hardware {
+    Hardware {
+        is_mac: false,
+        memory_gib: 64,
+        gpu: Some(Gpu {
+            vendor: GpuVendor::Nvidia,
+            name: "NVIDIA GeForce RTX 4090".to_owned(),
+            memory_gib: 24,
+        }),
+    }
+}
+
+#[test]
+fn a_geforce_without_its_runtime_separates_speakers_on_the_cpu_build() {
+    let root = scratch("job-geforce-no-runtime");
+    let paths = ready(&root);
+    let runtime = paths.bundled_runtime_dir();
+    write_tool(&runtime.join("whisper-vulkan/whisper-cli"), WHISPER);
+    write_tool(
+        &runtime.join("nemo/bin/nemo-speech"),
+        "echo \"$*\" | grep -o -- '--device [a-z]*' >&2; exit 7",
+    );
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &bottom_anchored(),
+        &geforce(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "nemo-speech failed: exit status: 7\n--device cpu");
+}
+
+#[test]
+fn the_cuda_runtime_pairs_with_the_vulkan_transcriber() {
+    let root = scratch("tools-cuda-vulkan");
+    let paths = with_tools(&root);
+    let runtime = paths.bundled_runtime_dir();
+    write_tool(&runtime.join("whisper-vulkan/whisper-cli"), "");
+    write_tool(
+        &paths
+            .downloaded_runtime_dir()
+            .join("geforce/nemo/nemo-speech"),
+        "",
+    );
+    let tools = Tools::locate(&paths, Backend::Cuda).unwrap();
+    assert_eq!(tools.backend, Backend::Cuda);
+    assert!(tools
+        .nemo
+        .ends_with("data/runtime/geforce/nemo/nemo-speech"));
+    assert!(tools
+        .whisper
+        .ends_with("resources/runtime/whisper-vulkan/whisper-cli"));
+}
+
+#[test]
+fn the_speakers_on_cpu_backend_uses_vulkan_only_for_transcription() {
+    let root = scratch("tools-speakers-cpu");
+    let paths = with_tools(&root);
+    let runtime = paths.bundled_runtime_dir();
+    write_tool(&runtime.join("nemo-vulkan/nemo-speech"), "");
+    write_tool(&runtime.join("whisper-vulkan/whisper-cli"), "");
+    let tools = Tools::locate(&paths, Backend::SpeakersOnCpu).unwrap();
+    assert_eq!(tools.backend, Backend::SpeakersOnCpu);
+    assert!(tools
+        .nemo
+        .ends_with("resources/runtime/nemo/bin/nemo-speech"));
+    assert!(tools
+        .whisper
+        .ends_with("resources/runtime/whisper-vulkan/whisper-cli"));
+}
+
+#[test]
+fn a_missing_vulkan_speaker_build_keeps_vulkan_transcription() {
+    let root = scratch("tools-vulkan-no-nemo");
+    let paths = with_tools(&root);
+    write_tool(
+        &paths
+            .bundled_runtime_dir()
+            .join("whisper-vulkan/whisper-cli"),
+        "",
+    );
+    assert_eq!(
+        Tools::locate(&paths, Backend::Vulkan).unwrap().backend,
+        Backend::SpeakersOnCpu
+    );
+}
+
+#[test]
+fn only_a_geforce_lists_its_runtime() {
+    let root = scratch("statuses-runtime");
+    let paths = with_tools(&root);
+    let listed = |hardware: &Hardware| {
+        catalog::statuses(hardware, &paths, &[])
+            .iter()
+            .any(|row| row.id == "geforce-runtime")
+    };
+    assert!(listed(&geforce()));
+    assert!(!listed(&mac()));
+    assert!(!listed(&radeon()));
 }

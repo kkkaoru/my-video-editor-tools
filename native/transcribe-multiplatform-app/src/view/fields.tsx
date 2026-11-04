@@ -1,5 +1,5 @@
 // Runs with bun: labelled controls shared by the panes.
-import type { VNode } from "preact";
+import type { ComponentChildren, VNode } from "preact";
 import { useId } from "preact/hooks";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
@@ -27,6 +27,8 @@ export interface SelectFieldProps {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
+  /** Shown beside the label. */
+  help?: ComponentChildren;
 }
 
 export interface SwitchFieldProps {
@@ -39,7 +41,7 @@ export interface SwitchFieldProps {
 const typedNumber = ({ validity, value }: HTMLInputElement): number | null =>
   validity.valid && value !== "" ? Number(value) : null;
 
-function whenPresent<Value>(next: Value | null, apply: (value: Value) => void): void {
+export function whenPresent<Value>(next: Value | null, apply: (value: Value) => void): void {
   if (next !== null) {
     apply(next);
   }
@@ -76,14 +78,17 @@ export function AdjustField({ label, value, min, max, step, onChange }: AdjustFi
   );
 }
 
-export const SelectField = ({ label, value, options, onChange }: SelectFieldProps): VNode => (
+export const SelectField = ({ label, value, options, onChange, help }: SelectFieldProps): VNode => (
   <Select
     items={options}
     value={value}
     onValueChange={(next: string | null): void => whenPresent(next, onChange)}
   >
     <div className="grid grid-cols-1 gap-1">
-      <span className="text-sm font-medium">{label}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        {help}
+      </div>
       <SelectTrigger aria-label={label}>
         <SelectValue />
       </SelectTrigger>

@@ -12,8 +12,8 @@ use crate::engines::VideoInfo;
 use crate::error::AppResult;
 use crate::face::FaceSample;
 use crate::morphology::{
-    grapheme_ends, is_katakana_run, is_latin_or_number, Boundaries, BreakClass, PhraseEnd,
-    Segmenter, DEPENDENT_KANA,
+    grapheme_ends, is_japanese, is_katakana_run, is_latin_or_number, Boundaries, BreakClass,
+    PhraseEnd, Segmenter, DEPENDENT_KANA,
 };
 use crate::settings::{Anchor, Settings};
 use serde::{Deserialize, Serialize};
@@ -24,14 +24,20 @@ const DOMINANT_SHARE: f64 = 0.6;
 const DOMINANT_MARGIN: f64 = 0.2;
 /// Timing noise: a word just outside a turn belongs to the nearest speaker within this gap.
 const SILENT_WORD_REACH_SECONDS: f64 = 1.0;
-const CUE_BREAK_PAUSE_SECONDS: f64 = 0.7;
-/// Whisper's timing can open this much of a hole inside one word.
-const SPLIT_WORD_REACH_SECONDS: f64 = 1.5;
+/// `caption_display_hold.LINGER`: a pause this long ends a page, and nothing is shown over it.
+const CUE_BREAK_PAUSE_SECONDS: f64 = 0.5;
+/// Whisper's timing and the move onto the voice (`speech_timing`) can open this much of a hole
+/// inside one word.
+const SPLIT_WORD_REACH_SECONDS: f64 = 3.0;
+/// A particle after a longer pause is new speech: the caption before it does not wait.
+const DEPENDENT_WORD_REACH_SECONDS: f64 = 1.0;
+/// Characters on each side of a gap that decide whether a word spans it.
+const JUNCTION_CONTEXT_CHARACTERS: [usize; 3] = [4, 8, 16];
 /// `caption_display_hold`: Netflix minimum and maximum event duration, and its reading rates.
 const MAX_CUE_SECONDS: f64 = 7.0;
 const MIN_DISPLAY: f64 = 5.0 / 6.0;
-const LINGER: f64 = 0.5;
-const CHAIN_GAP: f64 = 0.5;
+/// `caption_phrase_ass.HOLD_SECONDS`: a caption leaves soon after its speech unless it needs reading.
+const LINGER: f64 = 0.12;
 const MIN_GAP_FRAMES: f64 = 2.0;
 const READING_CPS: f64 = 4.0;
 const FAST_READING_CPS: f64 = 12.0;
@@ -109,6 +115,12 @@ const SHORT_PAGE_COST: f64 = 2.0;
 /// A page under `MIN_DISPLAY` is the last thing to accept, short of breaking a word.
 const FLASH_COST: f64 = 30.0;
 const FAST_PAGE_COST: f64 = 3.0;
+/// Words with no time of their own read infinitely fast; that must not outweigh leaving the frame.
+const FASTEST_PAGE_COST: f64 = 20.0;
+/// A page filling its line reads worse than two natural shorter ones.
+const WIDTH_PAGE_COST: f64 = 1.5;
+/// A line wider than this share of the limit splits at a good phrase end if it has one.
+const COMFORTABLE_LINE_SHARE: f64 = 0.66;
 const FORCED_PAGE_COST: f64 = 1000.0;
 const OVERLONG_PAGE_COST: f64 = 100.0;
 /// Full-width characters of imbalance a line break accepts per unit of break cost.
@@ -176,6 +188,8 @@ struct Page {
     end: f64,
     speaker: Option<u32>,
     lines: Vec<String>,
+    /// The narrowest natural two lines, for when only a narrow place beside a face is free.
+    narrow: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -625,12 +639,13 @@ fn class_cost(class: BreakClass) -> f64 {
         BreakClass::Connective => CONNECTIVE_BREAK_COST,
         BreakClass::Particle => PARTICLE_BREAK_COST,
         BreakClass::Plain => PLAIN_BREAK_COST,
-        BreakClass::Argument => ARGUMENT_BREAK_COST,
+        BreakClass::Argument | BreakClass::Compound => ARGUMENT_BREAK_COST,
         BreakClass::Ambiguous => ATOMIC_BREAK_COST,
     }
 }
 
-/// Whether a timing gap fell before something that cannot stand alone (っ|て, 雨|です).
+/// Whether a timing gap fell inside a word or before something that cannot stand alone (頑|張る,
+/// っ|て, 雨|です): silence inside a word is no place for a caption to end.
 fn splits_a_word(left: &[Word], right: &[Word], segmenter: &Segmenter) -> AppResult<bool> {
     let (Some(last), Some(first)) = (left.last(), right.first()) else {
         return Ok(false);
@@ -639,7 +654,50 @@ fn splits_a_word(left: &[Word], right: &[Word], segmenter: &Segmenter) -> AppRes
         return Ok(false);
     }
     let head: String = right.iter().map(|word| word.text.as_str()).collect();
-    segmenter.leans_on_previous(head.trim_start())
+    let gap = first.start - last.end;
+    if gap <= DEPENDENT_WORD_REACH_SECONDS && segmenter.leans_on_previous(head.trim_start())? {
+        return Ok(true);
+    }
+    if ends_sentence(last) {
+        return Ok(false);
+    }
+    let tail: String = left.iter().map(|word| word.text.as_str()).collect();
+    for context in JUNCTION_CONTEXT_CHARACTERS {
+        if word_spans_gap(&tail, &head, context, gap, segmenter)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the morphology around a gap reads one word across it. A parse depends on what surrounds
+/// it, and either reading is reason enough to keep the two sides together.
+fn word_spans_gap(
+    tail: &str,
+    head: &str,
+    context: usize,
+    gap: f64,
+    segmenter: &Segmenter,
+) -> AppResult<bool> {
+    let before: Vec<char> = tail.chars().rev().take(context).collect();
+    let window: String = before
+        .iter()
+        .rev()
+        .copied()
+        .chain(head.chars().take(context))
+        .collect();
+    if !is_japanese(&window) {
+        return Ok(false);
+    }
+    let boundaries = segmenter.boundaries(&window)?;
+    // Past a short pause only a word really cut in two stays together; a particle may open a page.
+    if gap > DEPENDENT_WORD_REACH_SECONDS {
+        return Ok(!boundaries.morphemes.contains(&before.len()));
+    }
+    Ok(!boundaries
+        .phrases
+        .iter()
+        .any(|phrase| phrase.offset == before.len()))
 }
 
 fn rejoin_split_words(groups: Vec<Vec<Word>>, segmenter: &Segmenter) -> AppResult<Vec<Vec<Word>>> {
@@ -802,13 +860,24 @@ impl<'a> Run<'a> {
     /// Lines of one page: phrase ends, then intact morphemes, then characters for a single long word.
     fn lay_out(&self, start: usize, end: usize) -> Option<Layout> {
         let (start, end) = self.trimmed(start, end);
-        if self.width(start, end) <= self.metrics.max_line_px {
+        let width = self.width(start, end);
+        if width <= COMFORTABLE_LINE_SHARE * self.metrics.max_line_px {
             return Some(Layout {
                 split: None,
                 penalty: 0.0,
             });
         }
-        if let Some(point) = self.balanced_split(&self.boundaries.line_ends, start, end, true) {
+        let phrase_split = self.balanced_split(&self.boundaries.line_ends, start, end, true);
+        if width <= self.metrics.max_line_px {
+            let good = phrase_split.filter(|point| {
+                self.line_break_cost(*point, true) <= PARTICLE_BREAK_COST * LINE_BREAK_EMS_PER_COST
+            });
+            return Some(Layout {
+                split: good,
+                penalty: 0.0,
+            });
+        }
+        if let Some(point) = phrase_split {
             return Some(Layout {
                 split: Some(point),
                 penalty: 0.0,
@@ -944,8 +1013,17 @@ impl<'a> Run<'a> {
         };
         // In full-width character widths, so a narrow Latin letter counts for what it is.
         let rate = shown_ems / seconds.max(SHORTEST_SPAN_SECONDS);
-        let fast = (rate / FAST_READING_CPS - 1.0).max(0.0) * FAST_PAGE_COST;
-        PAGE_COST + fill * fill + tiny + flash + fast + overrun + layout.penalty
+        let fast =
+            ((rate / FAST_READING_CPS - 1.0).max(0.0) * FAST_PAGE_COST).min(FASTEST_PAGE_COST);
+        let filled = self.width(start, end) / self.metrics.max_line_px;
+        PAGE_COST
+            + fill * fill
+            + WIDTH_PAGE_COST * filled * filled
+            + tiny
+            + flash
+            + fast
+            + overrun
+            + layout.penalty
     }
 
     /// The cheapest way to reach `breaks[index]`, as `(cost, previous break)`.
@@ -999,7 +1077,15 @@ impl<'a> Run<'a> {
                     || vec![self.line(start, end)],
                     |point| vec![self.line(start, point), self.line(point, end)],
                 );
+                let narrow_split = self
+                    .balanced_split(&self.boundaries.line_ends, start, end, true)
+                    .or_else(|| self.balanced_split(&self.boundaries.morphemes, start, end, false));
+                let narrow = narrow_split.map_or_else(
+                    || lines.clone(),
+                    |point| vec![self.line(start, point), self.line(point, end)],
+                );
                 Page {
+                    narrow,
                     start: self.times[start].0,
                     end: self.times[end - 1].1,
                     speaker: self.speaker,
@@ -1027,23 +1113,14 @@ fn held_end(page: &Page, following: f64, rate: f64) -> f64 {
         .iter()
         .map(|line| line.chars().filter(|c| !c.is_whitespace()).count())
         .sum();
-    // Past `MAX_LINGER` only as far as the fast reading rate needs, never past the next cue.
-    let readable = start + characters as f64 / FAST_READING_CPS;
-    let latest = (end + MIN_DISPLAY)
-        .max(readable)
-        .min(start + MAX_CUE_SECONDS)
-        .min(following - MIN_GAP_FRAMES / rate);
-    if latest <= end {
-        return end.min(following).max(start + SHORTEST_SPAN_SECONDS);
-    }
+    let latest = (start + MAX_CUE_SECONDS).min(following - MIN_GAP_FRAMES / rate);
     let wanted = (start + required_seconds(characters, start, end))
         .max(end + LINGER)
         .min(latest);
-    if following - wanted < CHAIN_GAP {
-        latest
-    } else {
-        wanted
+    if wanted <= end {
+        return end.min(following).max(start + SHORTEST_SPAN_SECONDS);
     }
+    wanted
 }
 
 /// The start and end that give a cue at least one frame of its own (`ensure_display_frames`).
@@ -1248,6 +1325,20 @@ impl FacePlacer {
         (high >= self.padding).then_some((self.frame_w / 2.0, high + height / 2.0))
     }
 
+    /// Whether a block of this size can avoid the faces of a span without moving past the frame.
+    fn has_room(&self, start: f64, end: f64, block: (f64, f64)) -> bool {
+        let Some(zone) = self.zone_during(start, end) else {
+            return true;
+        };
+        self.holds(&zone)
+            || self.vertical_spot(&zone).is_some()
+            || self.free_center(&zone, block).is_some()
+            || self
+                .zone_of_span(start, end)
+                .and_then(|span| self.free_center(&span, block))
+                .is_some()
+    }
+
     /// Only the samples inside the span, when the whole shot leaves no room.
     fn zone_of_span(&self, start: f64, end: f64) -> Option<FaceZone> {
         self.clean
@@ -1327,13 +1418,20 @@ pub fn build_cues(
             .get(index + 1)
             .map_or(info.duration, |next| next.start);
         let previous_end = cues.last().map_or(0.0, |cue| cue.end);
-        let (start, end) = on_frames(
-            page.start,
-            held_end(page, following, rate),
-            previous_end,
-            rate,
-        );
-        let lines = page.lines.clone();
+        // A caption's minimum time comes first: the next one may start a moment late, never early.
+        let shortest = page.start.max(previous_end) + MIN_DISPLAY;
+        let end = held_end(page, following, rate).max(shortest.min(info.duration));
+        let (start, end) = on_frames(page.start, end, previous_end, rate);
+        let size = |lines: &[String]| {
+            (
+                block_width(lines, &metrics, settings),
+                block_height(lines.len(), &metrics, settings),
+            )
+        };
+        let rewrap = wants_face
+            && !placer.has_room(start, end, size(&page.lines))
+            && placer.has_room(start, end, size(&page.narrow));
+        let lines = if rewrap { &page.narrow } else { &page.lines }.clone();
         let height = block_height(lines.len(), &metrics, settings);
         let width = block_width(&lines, &metrics, settings);
         let at_face = wants_face
@@ -1613,8 +1711,8 @@ mod tests {
     fn pauses_and_sentence_ends_split_cues() {
         let words = [
             spoken(0.0, 1.0, "はい", 1),
-            spoken(2.0, 3.0, "そう。", 1),
-            spoken(3.1, 4.0, "次", 1),
+            spoken(4.5, 5.5, "そう。", 1),
+            spoken(5.6, 6.5, "次", 1),
         ];
         let (cues, _) = build_cues(
             &words,
@@ -1630,6 +1728,157 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["はい", "そう。", "次"]
         );
+    }
+
+    #[test]
+    fn nothing_stays_on_screen_through_a_silence() {
+        let words = [
+            spoken(0.0, 2.0, "今日は公園へ行きました", 1),
+            spoken(6.0, 8.0, "楽しかったです", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].end, 2.12);
+        assert_eq!(cues[1].start, 6.0);
+    }
+
+    #[test]
+    fn a_short_cue_grows_only_after_its_speech() {
+        let words = [spoken(1.0, 1.2, "はい", 1)];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].start, 1.0);
+        assert_eq!((cues[0].end * 1000.0).round(), 1833.0);
+    }
+
+    #[test]
+    fn a_gap_inside_a_word_keeps_the_word_together() {
+        let words = [
+            spoken(0.0, 1.0, "うーん頑", 1),
+            spoken(1.8, 3.0, "張るよ", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].lines, vec!["うーん頑張るよ"]);
+    }
+
+    #[test]
+    fn a_word_cut_in_two_by_the_move_onto_the_voice_stays_together() {
+        let words = [
+            spoken(0.0, 1.0, "うーん頑", 1),
+            spoken(3.5, 4.5, "張るよ", 1),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].lines, vec!["うーん頑張るよ"]);
+    }
+
+    #[test]
+    fn words_without_time_still_break_at_the_line_width() {
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 130.0,
+        };
+        let group = [spoken(
+            1.0,
+            1.0,
+            "ちょっとレベルアップしたほうがいいのかなっていうふうに",
+            1,
+        )];
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        let pages = run.pages();
+        assert!(pages.len() > 1);
+        assert!(pages
+            .iter()
+            .flat_map(|page| page.lines.iter())
+            .all(|line| line.chars().count() <= 13));
+    }
+
+    #[test]
+    fn a_short_cue_gets_its_minimum_time_before_a_late_next_cue() {
+        let words = [spoken(0.0, 0.3, "はい。", 1), spoken(0.4, 2.0, "いいえ", 2)];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| ((cue.start * 1000.0).round(), (cue.end * 1000.0).round()))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 833.0), (833.0, 2120.0)]
+        );
+    }
+
+    #[test]
+    fn the_minimum_time_stops_at_the_end_of_the_video() {
+        let words = [spoken(59.8, 59.9, "はい", 1)];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &Settings::default(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(cues[0].end, 60.0);
+    }
+
+    #[test]
+    fn a_wide_line_splits_at_a_good_phrase_end_but_stays_whole_without_one() {
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 200.0,
+        };
+        let group = [spoken(0.0, 6.0, "今日は天気がいいので、みんなで公園へ", 1)];
+        let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        assert_eq!(run.lay_out(0, 18).unwrap().split, Some(11));
+        let noun = [spoken(0.0, 6.0, "サンフランシスコサンフランシスコ", 1)];
+        let run = Run::new(&noun, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        assert_eq!(run.lay_out(0, 16).unwrap().split, None);
+    }
+
+    #[test]
+    fn using_more_of_the_width_costs_more() {
+        let metrics = Metrics {
+            font_px: 10.0,
+            outline_px: 1.0,
+            max_line_px: 1000.0,
+        };
+        let short = [spoken(0.0, 3.0, "今日は公園へ", 1)];
+        let long = [spoken(0.0, 3.0, "今日はみんなで公園に行きました", 1)];
+        let short = Run::new(&short, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        let long = Run::new(&long, f64::INFINITY, &metrics, test_segmenter()).unwrap();
+        assert!(long.page_cost(0, 15) > short.page_cost(0, 6));
     }
 
     #[test]
@@ -1980,7 +2229,7 @@ mod tests {
             Anchor::FaceBelow
         ));
         assert!(!talking_over(
-            (100.0, 800.0, 1700.0),
+            (0.0, 1000.0, 1700.0),
             &FULL_HD,
             Anchor::FaceBelow
         ));
@@ -2372,7 +2621,8 @@ mod tests {
             cues.iter().map(|cue| cue.lines.clone()).collect::<Vec<_>>(),
             vec![
                 vec!["今日は天気がいいので、"],
-                vec!["みんなで公園に行って", "お弁当を食べました"],
+                vec!["みんなで公園に行って"],
+                vec!["お弁当を食べました"],
             ]
         );
     }
@@ -2594,7 +2844,7 @@ mod tests {
             cues.iter()
                 .map(|cue| cue.lines.join(""))
                 .collect::<Vec<_>>(),
-            vec!["今日は天気が良いので", "公園へ行きました"]
+            vec!["今日は", "天気が", "良いので", "公園へ", "行きました"]
         );
     }
 
@@ -2619,7 +2869,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (0.0, 7.0, "おいしい".to_owned()),
-                (12.0, 14.5, "すごいこれ".to_owned())
+                (12.0, 14.12, "すごいこれ".to_owned())
             ]
         );
     }
@@ -3013,7 +3263,7 @@ mod tests {
             cues.iter()
                 .map(|cue| (cue.start, (cue.end * 1000.0).round()))
                 .collect::<Vec<_>>(),
-            vec![(0.0, 233.0), (0.3, 2000.0), (2.0, 2833.0)]
+            vec![(0.0, 833.0), (0.8333333333333334, 2000.0), (2.0, 2833.0)]
         );
     }
 
@@ -3024,9 +3274,11 @@ mod tests {
             end: 11.0,
             speaker: None,
             lines: vec!["はい".to_owned()],
+            narrow: Vec::new(),
         };
-        assert_eq!(held_end(&page, 100.0, 30.0), 11.5);
-        assert_eq!((held_end(&page, 11.2, 30.0) * 1000.0).round(), 11133.0);
+        assert_eq!(held_end(&page, 100.0, 30.0), 11.12);
+        assert_eq!(held_end(&page, 11.2, 30.0), 11.12);
+        assert_eq!((held_end(&page, 11.1, 30.0) * 1000.0).round(), 11033.0);
         assert_eq!(held_end(&page, 10.5, 30.0), 10.5);
     }
 
@@ -3040,6 +3292,7 @@ mod tests {
                 "あいうえおかきくけこ".to_owned(),
                 "さしすせそたちつてと".to_owned(),
             ],
+            narrow: Vec::new(),
         };
         assert_eq!((required_seconds(20, 0.0, 0.5) * 1000.0).round(), 1667.0);
         assert_eq!((held_end(&page, 100.0, 30.0) * 1000.0).round(), 1667.0);
@@ -3161,10 +3414,6 @@ mod tests {
         };
         let group = [spoken(0.0, 3.0, "今日は天気がいいので、みんなで公園へ", 1)];
         let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
-        let lines: Vec<Vec<String>> = run.pages().into_iter().map(|page| page.lines).collect();
-        assert_eq!(
-            lines,
-            vec![vec!["今日は天気がいいので、", "みんなで公園へ"]]
-        );
+        assert_eq!(run.lay_out(0, 18).unwrap().split, Some(11));
     }
 }

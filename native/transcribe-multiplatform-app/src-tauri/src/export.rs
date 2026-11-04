@@ -3,7 +3,7 @@
 
 use crate::captions::{Cue, Metrics, Word};
 use crate::engines::VideoInfo;
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, UserError};
 use crate::face::FaceSample;
 use crate::paths::write_atomic;
 use crate::settings::{CaptionShadow, Settings, SpeakerColor};
@@ -487,19 +487,25 @@ fn sibling(base: &Path, extension: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-const OUTPUT_EXTENSIONS: [&str; 4] = [".ttml", ".srt", ".fcpxml", ".transcript.json"];
+const TRANSCRIPT_EXTENSION: &str = ".transcript.json";
+const OUTPUT_EXTENSIONS: [&str; 4] = [".ttml", ".srt", ".fcpxml", TRANSCRIPT_EXTENSION];
 
 /// A base path beside the video that clobbers none of an earlier run's files.
 #[must_use]
 pub fn unused_base(video: &Path) -> PathBuf {
-    let stem = video.with_extension("");
+    unused_stem(&video.with_extension(""))
+}
+
+/// `stem` itself when free, otherwise `stem-2`, `stem-3` and so on.
+#[must_use]
+pub fn unused_stem(stem: &Path) -> PathBuf {
     let taken = |base: &Path| {
         OUTPUT_EXTENSIONS
             .iter()
             .any(|extension| sibling(base, extension).exists())
     };
-    if !taken(&stem) {
-        return stem;
+    if !taken(stem) {
+        return stem.to_path_buf();
     }
     (2u32..)
         .map(|number| {
@@ -508,7 +514,38 @@ pub fn unused_base(video: &Path) -> PathBuf {
             PathBuf::from(name)
         })
         .find(|candidate| !taken(candidate))
-        .unwrap_or(stem)
+        .unwrap_or_else(|| stem.to_path_buf())
+}
+
+/// The path every output of a transcript shares, without the extension.
+#[must_use]
+pub fn transcript_base(transcript_file: &Path) -> PathBuf {
+    let name = transcript_file.to_string_lossy();
+    PathBuf::from(name.strip_suffix(TRANSCRIPT_EXTENSION).unwrap_or(&name))
+}
+
+/// The same base whichever of a transcript's outputs was dropped.
+#[must_use]
+pub fn dropped_base(dropped: &Path) -> PathBuf {
+    let name = dropped.to_string_lossy();
+    if name.ends_with(TRANSCRIPT_EXTENSION) {
+        return transcript_base(dropped);
+    }
+    dropped.with_extension("")
+}
+
+/// The transcript a dropped subtitle file was written from; only it holds the timing and speakers.
+pub fn transcript_beside(dropped: &Path) -> AppResult<PathBuf> {
+    let transcript = sibling(&dropped_base(dropped), TRANSCRIPT_EXTENSION);
+    if transcript.is_file() {
+        return Ok(transcript);
+    }
+    Err(UserError::TranscriptMissing {
+        file: dropped
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+    }
+    .into())
 }
 
 /// Writes all formats next to `base`; each file is replaced atomically.
@@ -546,6 +583,61 @@ pub fn write_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stem_in_use_moves_to_the_next_free_number() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test/export-unused-stem");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(unused_stem(&root.join("clip")), root.join("clip"));
+        std::fs::write(root.join("clip.srt"), b"x").unwrap();
+        assert_eq!(unused_stem(&root.join("clip")), root.join("clip-2"));
+        std::fs::write(root.join("clip-2.transcript.json"), b"x").unwrap();
+        assert_eq!(unused_stem(&root.join("clip")), root.join("clip-3"));
+    }
+
+    #[test]
+    fn every_output_of_a_transcript_shares_one_base() {
+        assert_eq!(
+            dropped_base(Path::new("/a/clip.v2.transcript.json")),
+            Path::new("/a/clip.v2")
+        );
+        assert_eq!(
+            dropped_base(Path::new("/a/clip.v2.ttml")),
+            Path::new("/a/clip.v2")
+        );
+        assert_eq!(dropped_base(Path::new("/a/clip.SRT")), Path::new("/a/clip"));
+        assert_eq!(
+            transcript_base(Path::new("/a/clip.transcript.json")),
+            Path::new("/a/clip")
+        );
+        assert_eq!(
+            transcript_base(Path::new("/a/clip.json")),
+            Path::new("/a/clip.json")
+        );
+    }
+
+    #[test]
+    fn a_dropped_subtitle_finds_the_transcript_of_the_same_name() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test/export-transcript-beside");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("clip.transcript.json"), b"{}").unwrap();
+        assert_eq!(
+            transcript_beside(&root.join("clip.fcpxml")).unwrap(),
+            root.join("clip.transcript.json")
+        );
+        assert_eq!(
+            transcript_beside(&root.join("clip.transcript.json")).unwrap(),
+            root.join("clip.transcript.json")
+        );
+        assert_eq!(
+            serde_json::to_value(transcript_beside(&root.join("other.ttml")).unwrap_err()).unwrap(),
+            serde_json::json!({ "code": "transcript_missing", "file": "other.ttml" })
+        );
+    }
 
     const INFO: VideoInfo = VideoInfo {
         width: 1920,

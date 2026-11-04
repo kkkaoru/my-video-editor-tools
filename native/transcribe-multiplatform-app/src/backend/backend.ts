@@ -24,6 +24,24 @@ export const addVideos = (paths: string[]): Promise<number[]> => invoke<number[]
 export const relayoutTranscript = (path: string): Promise<number> =>
   invoke<number>("relayout_transcript", { path });
 
+export const reformatFiles = (paths: string[]): Promise<number[]> =>
+  invoke<number[]>("reformat_files", { paths });
+
+export const saveProfile = (name: string, settings: Settings): Promise<Snapshot> =>
+  invoke<Snapshot>("save_profile", { name, settings });
+
+export const overwriteProfile = (name: string, settings: Settings): Promise<Snapshot> =>
+  invoke<Snapshot>("overwrite_profile", { name, settings });
+
+export const loadProfile = (name: string): Promise<Snapshot> => invoke<Snapshot>("load_profile", { name });
+
+export const deleteProfile = (name: string): Promise<Snapshot> =>
+  invoke<Snapshot>("delete_profile", { name });
+
+export const fontFamilies = (): Promise<string[]> => invoke<string[]>("font_families");
+
+export const resetModels = (): Promise<Snapshot> => invoke<Snapshot>("reset_models");
+
 export const cancelJob = (id: number): Promise<void> => invoke<void>("cancel_job", { id });
 
 export const startDownload = (id: string): Promise<void> => invoke<void>("start_download", { id });

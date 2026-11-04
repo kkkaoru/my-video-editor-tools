@@ -4,8 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
-import { enMessages } from "../i18n/locale-en.ts";
-import { App, hardwareLabel } from "./App.tsx";
+import { App } from "./App.tsx";
 
 type DropPayload = { type: "drop"; paths: string[] } | { type: "enter" | "over" | "leave" };
 type DropCallback = (event: { payload: DropPayload }) => void;
@@ -24,11 +23,13 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "here",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en-US",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
@@ -43,7 +44,6 @@ const SNAPSHOT: Snapshot = {
       found_at: "/f",
       blocked: null,
       recommended: false,
-      hidden: false,
     },
     {
       id: "away",
@@ -54,7 +54,6 @@ const SNAPSHOT: Snapshot = {
       found_at: null,
       blocked: null,
       recommended: false,
-      hidden: false,
     },
     {
       id: "speech",
@@ -65,10 +64,10 @@ const SNAPSHOT: Snapshot = {
       found_at: "/s",
       blocked: null,
       recommended: false,
-      hidden: false,
     },
   ],
   models_dir: "/models",
+  profiles: [],
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -93,76 +92,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("names the Apple GPU on a Mac", () => {
-  expect(hardwareLabel(SNAPSHOT, enMessages)).toBe("Apple GPU (Metal) / memory 16 GB");
-});
-
-it("names the CPU elsewhere", () => {
-  expect(
-    hardwareLabel({ backend: "default", hardware: { is_mac: false, memory_gib: 8, gpu: null } }, enMessages),
-  ).toBe("CPU only / memory 8 GB");
-});
-
-it("names a GPU with its memory and no runtime by default", () => {
-  expect(
-    hardwareLabel(
-      {
-        backend: "default",
-        hardware: {
-          is_mac: false,
-          memory_gib: 8,
-          gpu: { vendor: "nvidia", name: "RTX 4090", memory_gib: 24 },
-        },
-      },
-      enMessages,
-    ),
-  ).toBe("RTX 4090 (24 GB) / memory 8 GB");
-});
-
-it("names the CUDA runtime", () => {
-  expect(
-    hardwareLabel(
-      {
-        backend: "cuda",
-        hardware: {
-          is_mac: false,
-          memory_gib: 8,
-          gpu: { vendor: "nvidia", name: "RTX 4090", memory_gib: 24 },
-        },
-      },
-      enMessages,
-    ),
-  ).toBe("RTX 4090 (24 GB, CUDA) / memory 8 GB");
-});
-
-it("names the Vulkan runtime", () => {
-  expect(
-    hardwareLabel(
-      {
-        backend: "vulkan",
-        hardware: {
-          is_mac: false,
-          memory_gib: 8,
-          gpu: { vendor: "radeon", name: "RX 7900", memory_gib: 16 },
-        },
-      },
-      enMessages,
-    ),
-  ).toBe("RX 7900 (16 GB, Vulkan) / memory 8 GB");
-});
-
 it("sets the document language and title before showing the app", () => {
   render(<App initial={{ ...SNAPSHOT, locale: "ja-JP" }} />);
   expect(document.documentElement.lang).toBe("ja");
   expect(document.title).toBe("Transcribe for Resolve");
-  expect(screen.getByRole("tab", { selected: true }).textContent).toBe("文字起こし");
+  expect(screen.getByRole("tab", { selected: true }).textContent).toBe("字幕を作る");
 });
 
 it("opens on the jobs tab with the hardware in the header", () => {
   render(<App initial={SNAPSHOT} />);
   expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Transcribe for Resolve");
   expect(screen.getByRole("tab", { selected: true }).textContent).toBe("Transcribe");
-  expect(screen.getByText("Apple GPU (Metal) / memory 16 GB").tagName).toBe("P");
+  expect(screen.queryByText(/memory 16 GB/)).toBe(null);
   expect(screen.getByRole("button", { name: "Choose videos" }).tagName).toBe("BUTTON");
 });
 
@@ -194,11 +135,51 @@ it("shows job progress from the backend", () => {
   expect(screen.getByText("Waiting in line").getAttribute("role")).toBe("status");
 });
 
-it("shows a background failure in the banner", async () => {
+it("refuses a dropped video without its models, saying what to do", () => {
   render(<App initial={{ ...SNAPSHOT, models: [] }} />);
+  act((): void => onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.mp4"] } }));
+  expect(
+    screen
+      .getByText(
+        "Something went wrong: The videos were not added because no model is available for: transcription, speaker separation. Download them in Models, or add a folder that already has them.",
+      )
+      .getAttribute("role"),
+  ).toBe("alert");
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+});
+
+it("shows a background failure in the banner", async () => {
+  render(<App initial={{ ...SNAPSHOT, settings: { ...SETTINGS, speaker_count: 1 } }} />);
   vi.mocked(invoke).mockRejectedValue(new Error("refused"));
   act((): void => onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.mp4"] } }));
   await waitFor((): void => {
     expect(screen.getByText("Something went wrong: Error: refused").getAttribute("role")).toBe("alert");
   });
+});
+
+it("shows the version only inside the open help tab", async () => {
+  render(<App initial={SNAPSHOT} />);
+  const version: HTMLElement = screen.getByText("Version 1.2.3");
+  expect(version.closest("[role=tabpanel]")?.hasAttribute("hidden")).toBe(true);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("tab", { name: "How to use" }));
+  });
+  expect(screen.getByRole("tab", { selected: true }).textContent).toBe("How to use");
+  expect(version.closest("[role=tabpanel]")?.hasAttribute("hidden")).toBe(false);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+  });
+  await waitFor((): void => {
+    expect(version.closest("[role=tabpanel]")?.hasAttribute("hidden")).toBe(true);
+  });
+});
+
+it("puts the tabs in order, with help last", () => {
+  render(<App initial={SNAPSHOT} />);
+  expect(screen.getAllByRole("tab").map((tab: HTMLElement): string | null => tab.textContent)).toStrictEqual([
+    "Transcribe",
+    "Caption look and position",
+    "Models",
+    "How to use",
+  ]);
 });

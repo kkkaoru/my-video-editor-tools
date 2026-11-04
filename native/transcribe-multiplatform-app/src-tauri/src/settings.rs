@@ -90,6 +90,8 @@ pub struct Settings {
     pub face_model: String,
     /// Extra folders searched for already-downloaded models.
     pub model_dirs: Vec<PathBuf>,
+    /// The saved profile dropped subtitle files follow; empty means the settings above.
+    pub active_profile: String,
 }
 
 impl Default for Settings {
@@ -128,6 +130,7 @@ impl Default for Settings {
             speaker_count: 0,
             face_model: "yunet".to_owned(),
             model_dirs: Vec::new(),
+            active_profile: String::new(),
         }
     }
 }
@@ -425,6 +428,7 @@ mod tests {
         std::fs::write(&file, br#"{"language":"ja","transcribe_model":"old"}"#).unwrap();
         let settings = Settings::load(&file).unwrap();
         assert_eq!(settings.language, "ja");
+        assert_eq!(settings.active_profile, "");
         assert_eq!(
             settings.shadow,
             CaptionShadow {

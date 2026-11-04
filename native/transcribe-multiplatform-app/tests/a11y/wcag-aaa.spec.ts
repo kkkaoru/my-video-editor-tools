@@ -36,11 +36,26 @@ const MINIMUM_TARGET_PX: number = 44;
 const MINIMUM_FOCUS_WIDTH_PX: number = 2;
 const MINIMUM_FOCUS_CONTRAST: number = 3;
 const MINIMUM_LINE_HEIGHT_RATIO: number = 1.5;
+const MAXIMUM_LINE_EM: number = 40;
 const INTERACTIVE_SELECTOR: string =
   'button, [role="tab"], [role="slider"], [role="option"], [role="combobox"], input:not([type="hidden"]), select, a[href]';
 const TAB_LIMIT: number = 120;
 /** Base UI gives this hidden focus-trap edge role="button" only under WebKit, on purpose, for VoiceOver's cursor. */
 const LIBRARY_FOCUS_GUARD: string = "[data-base-ui-focus-guard]";
+
+/** In page order: the face and language selects, then the font list. */
+const COMBOBOX_ORDER: string[] = ["open-face-select", "open-language-select", "open-font-list"];
+/** Each profile row has overwrite then delete; with no profiles, the first trigger is the models reset. */
+const DIALOG_BUTTONS: ReadonlyMap<string, number> = new Map([
+  ["open-overwrite-dialog", 0],
+  ["open-delete-dialog", 1],
+  ["open-reset-dialog", 0],
+]);
+const DIALOG_TRIGGER: string = 'button[aria-haspopup="dialog"]';
+const DROPPED_PATHS: ReadonlyMap<string, string[]> = new Map([
+  ["drop-video", ["/a.mp4"]],
+  ["drop-subtitles", ["/a.ttml"]],
+]);
 
 async function showState(page: Page, state: UiState, locale: string): Promise<void> {
   await page.addInitScript({ path: "tests/a11y/tauri-mock.js" });
@@ -64,7 +79,7 @@ async function showState(page: Page, state: UiState, locale: string): Promise<vo
     },
     { jobEvents: state.jobEvents, downloadEvents: state.downloadEvents },
   );
-  await page.getByRole("tab").nth(["jobs", "style", "models"].indexOf(state.tab)).click();
+  await page.getByRole("tab").nth(["jobs", "style", "models", "help"].indexOf(state.tab)).click();
   await applySteps(page, state, locale);
   await page.mouse.move(0, 0);
 }
@@ -102,13 +117,31 @@ async function applyStep(page: Page, step: string): Promise<void> {
     );
     return;
   }
+  const dropped: string[] | undefined = DROPPED_PATHS.get(step);
+  if (dropped !== undefined) {
+    await page.evaluate(
+      (paths: string[]): void =>
+        Reflect.get(window, "__emitTauri")("tauri://drag-drop", { paths, position: { x: 1, y: 1 } }),
+      dropped,
+    );
+    return;
+  }
   // Kept-mounted panels stay in the DOM; only the open one may be exposed to assistive technology.
   await expect(page.getByRole("tabpanel")).toHaveCount(1);
-  await page
-    .getByRole("tabpanel")
-    .getByRole("combobox")
-    .nth(step === "open-face-select" ? 0 : 1)
-    .click();
+  const panel = page.getByRole("tabpanel");
+  const dialogButton: number | undefined = DIALOG_BUTTONS.get(step);
+  if (dialogButton !== undefined) {
+    await panel.locator(DIALOG_TRIGGER).nth(dialogButton).click();
+    await page.getByRole("alertdialog").waitFor();
+    return;
+  }
+  if (step === "open-speaker-help") {
+    await panel.locator(DIALOG_TRIGGER).click();
+    await page.getByRole("dialog").waitFor();
+    return;
+  }
+  const comboboxIndex: number = COMBOBOX_ORDER.indexOf(step);
+  await panel.getByRole("combobox").nth(comboboxIndex).click();
   await page.getByRole("listbox").waitFor();
 }
 
@@ -201,7 +234,12 @@ const failingFocus = (reports: FocusReport[]): FocusReport[] =>
   );
 
 async function hoverViolations(page: Page): Promise<string[]> {
-  const buttons = await page.locator('button:visible, [role="tab"]:visible, [role="combobox"]:visible').all();
+  // Behind an open alert dialog the page is inert: nothing there can be hovered, or used at all.
+  const dialog = page.getByRole("alertdialog");
+  const scope = (await dialog.count()) > 0 ? dialog : page.locator("body");
+  const buttons = await scope
+    .locator('button:visible, [role="tab"]:visible, [role="combobox"]:visible')
+    .all();
   const found: string[][] = [];
   await buttons.reduce(async (previous: Promise<void>, button): Promise<void> => {
     await previous;
@@ -245,6 +283,67 @@ test("the sweep detects a low-contrast text, a small target and a missing focus 
   ).toStrictEqual(["color-contrast-enhanced"]);
   expect((await smallTargets(page)).length).toBe(1);
   expect((await focusReport(page)).outlineWidth).toBe(0);
+});
+
+const brokenSpeakerNames = (page: Page): Promise<string[]> =>
+  page.$$eval('input[type="color"] ~ span', (elements: Element[]): string[] =>
+    elements
+      .filter((element: Element): boolean => {
+        const { fontSize } = getComputedStyle(element);
+        return element.getClientRects().length > 1 || element.clientHeight > 2 * Number.parseFloat(fontSize);
+      })
+      .map((element: Element): string => element.textContent ?? ""),
+  );
+
+/** WCAG 1.4.8: at most 80 Latin characters a line, or 40 CJK; 40 em holds either. */
+const overlongLines = (page: Page): Promise<string[]> =>
+  page
+    .getByRole("tabpanel")
+    .locator("p, li")
+    .evaluateAll(
+      (elements: Element[], limit: number): string[] =>
+        elements
+          .filter(
+            (element: Element): boolean =>
+              element.getBoundingClientRect().width / Number.parseFloat(getComputedStyle(element).fontSize) >
+              limit,
+          )
+          .map((element: Element): string => element.textContent ?? ""),
+      MAXIMUM_LINE_EM,
+    );
+
+LOCALES.forEach((locale: string): void => {
+  test(`help text keeps a readable line length, and the version stays in its tab / ${locale}`, async ({
+    page,
+  }): Promise<void> => {
+    const state: UiState | undefined = UI_STATES.find(({ name }: UiState): boolean => name === "help");
+    if (state === undefined) {
+      throw new Error("the help state is missing");
+    }
+    await showState(page, state, locale);
+    expect(await overlongLines(page)).toStrictEqual([]);
+    const version = page.getByRole("tabpanel").locator("p").first();
+    await expect(version).toHaveText(
+      languageFor(locale).messages.help.version.replace("{version}", state.snapshot.version),
+    );
+    await page.getByRole("tab").nth(0).click();
+    await expect(page.getByText(state.snapshot.version)).toBeHidden();
+  });
+});
+
+LOCALES.forEach((locale: string): void => {
+  test(`speaker names stay on one line / ${locale}`, async ({ page }): Promise<void> => {
+    const state: UiState | undefined = UI_STATES.find(
+      ({ name }: UiState): boolean => name === "style with profiles",
+    );
+    if (state === undefined) {
+      throw new Error("the profile state is missing");
+    }
+    await showState(page, state, locale);
+    expect(await brokenSpeakerNames(page)).toStrictEqual([]);
+    await page.setViewportSize(NARROW_VIEWPORT);
+    expect(await brokenSpeakerNames(page)).toStrictEqual([]);
+  });
 });
 
 COLOR_SCHEMES.forEach((colorScheme: "light" | "dark"): void => {

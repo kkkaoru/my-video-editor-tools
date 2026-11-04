@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ModelStatus, Settings, Snapshot } from "../backend/types.ts";
 import { type DownloadRow, initialState } from "../state/app-state.ts";
 import type { AppStore } from "../state/use-app-store.ts";
-import { formatBytes, ModelsPane } from "./ModelsPane.tsx";
+import { formatBytes, ModelsPane, missingDownloads } from "./ModelsPane.tsx";
 
 const SETTINGS: Settings = {
   palette: [],
@@ -21,6 +21,7 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
@@ -34,15 +35,16 @@ const MODEL: ModelStatus = {
   found_at: null,
   blocked: null,
   recommended: false,
-  hidden: false,
 };
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
   settings: SETTINGS,
   models: [MODEL],
   models_dir: "/models",
+  profiles: [],
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -55,7 +57,9 @@ const storeWith = (snapshot: Snapshot, downloads: ReadonlyMap<string, DownloadRo
   setState: vi.fn(),
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
+  replaceSnapshot: vi.fn(),
   dropVideos: vi.fn(),
+  dropSubtitles: vi.fn(),
 });
 
 function showModel(model: ModelStatus, download: DownloadRow | null): AppStore {
@@ -89,7 +93,6 @@ it("groups visible models under their role, in a fixed order", () => {
       { ...MODEL, id: "f", role: "face", label: "Face" },
       { ...MODEL, id: "d", role: "diarize", label: "Diarizer" },
       { ...MODEL, id: "t", role: "transcribe", label: "Transcriber" },
-      { ...MODEL, id: "h", role: "transcribe", label: "Hidden", hidden: true },
     ],
   };
   render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
@@ -98,10 +101,9 @@ it("groups visible models under their role, in a fixed order", () => {
       .getAllByRole("heading", { level: 2 })
       .map((heading: HTMLElement): string | null => heading.textContent),
   ).toStrictEqual(["Models", "transcription", "speaker separation", "face detection", "runtime"]);
-  expect(screen.queryByText("Hidden")).toBe(null);
 });
 
-it("skips a role with no visible model", () => {
+it("skips a role with no model", () => {
   render(<ModelsPane store={storeWith(SNAPSHOT, new Map())} snapshot={SNAPSHOT} />);
   expect(screen.queryByRole("heading", { name: "runtime" })).toBe(null);
 });
@@ -110,7 +112,7 @@ it("explains a model from its note, and shows nothing for an unknown model", () 
   const snapshot: Snapshot = { ...SNAPSHOT, models: [MODEL, { ...MODEL, id: "unknown", label: "Other" }] };
   render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
   expect(
-    screen.getByText("Transcription. The same model runs on Mac (Metal) and GeForce (CUDA).").tagName,
+    screen.getByText("Transcription. The same model runs on Mac (Metal) and Windows (Vulkan).").tagName,
   ).toBe("P");
 });
 
@@ -140,7 +142,7 @@ it("explains a blocked model and offers no action", () => {
   expect(screen.getByText("Whisper needs an NVIDIA GPU. Choose another model in Models.").tagName).toBe("P");
   expect(
     screen.queryAllByRole("button").map((button: HTMLElement): string | null => button.textContent),
-  ).toStrictEqual(["Add a folder with existing models"]);
+  ).toStrictEqual(["Add a folder with existing models", "Reset models and download again"]);
 });
 
 it("selects a present diarizer", () => {
@@ -311,6 +313,7 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
           diarize_model: "b",
           face_model: "c",
           model_dirs: ["/x", "/extra"],
+          active_profile: "",
           rim_ratio: 0.034,
           line_height: 1.448,
           speaker_count: 0,
@@ -336,5 +339,151 @@ it("reports a folder dialog that fails", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Add a folder with existing models" }));
   await waitFor((): void => {
     expect(failureOf(store)).toStrictEqual({ code: "internal", detail: "Error: no dialog" });
+  });
+});
+
+it("downloads what is recommended and missing", () => {
+  expect(
+    missingDownloads({
+      ...SNAPSHOT,
+      models: [
+        { ...MODEL, id: "t", recommended: true, download_bytes: 5 },
+        { ...MODEL, id: "t2", download_bytes: 5 },
+        { ...MODEL, id: "d", role: "diarize", recommended: true, download_bytes: 9 },
+        { ...MODEL, id: "d2", role: "diarize", download_bytes: 2 },
+      ],
+    }).map(({ id }): string => id),
+  ).toStrictEqual(["t", "d"]);
+});
+
+it("adds the smallest speaker model when none is recommended", () => {
+  expect(
+    missingDownloads({
+      ...SNAPSHOT,
+      models: [
+        { ...MODEL, id: "t", recommended: true, download_bytes: 5 },
+        { ...MODEL, id: "big", role: "diarize", download_bytes: 9 },
+        { ...MODEL, id: "small", role: "diarize", download_bytes: 2 },
+        { ...MODEL, id: "blocked", role: "diarize", download_bytes: 1, blocked: { code: "needs_nvidia" } },
+      ],
+    }).map(({ id }): string => id),
+  ).toStrictEqual(["t", "small"]);
+});
+
+it("adds no speaker model when a usable one is already here", () => {
+  expect(
+    missingDownloads({
+      ...SNAPSHOT,
+      models: [
+        { ...MODEL, id: "here", role: "diarize", found_at: "/d" },
+        { ...MODEL, id: "small", role: "diarize", download_bytes: 2 },
+      ],
+    }),
+  ).toStrictEqual([]);
+});
+
+it("has nothing to add when no speaker model can be downloaded", () => {
+  expect(
+    missingDownloads({
+      ...SNAPSHOT,
+      models: [{ ...MODEL, id: "d", role: "diarize", download_bytes: 2, blocked: { code: "needs_nvidia" } }],
+    }),
+  ).toStrictEqual([]);
+});
+
+it("offers one button for everything missing and starts each download with its own bar", () => {
+  const snapshot: Snapshot = {
+    ...SNAPSHOT,
+    models: [
+      { ...MODEL, id: "t", recommended: true, download_bytes: 2097152 },
+      { ...MODEL, id: "d", role: "diarize", label: "Diarizer", recommended: true, download_bytes: 1048576 },
+    ],
+  };
+  const store: AppStore = storeWith(snapshot, new Map());
+  render(<ModelsPane store={store} snapshot={snapshot} />);
+  fireEvent.click(screen.getByRole("button", { name: "Download what is missing: 2 models (3 MB)" }));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([
+    ["start_download", { id: "t" }],
+    ["start_download", { id: "d" }],
+  ]);
+  expect(vi.mocked(store.setState).mock.calls.length).toBe(2);
+});
+
+it("does not offer what is already downloading", () => {
+  const snapshot: Snapshot = {
+    ...SNAPSHOT,
+    models: [{ ...MODEL, id: "t", recommended: true, download_bytes: 2097152 }],
+  };
+  render(
+    <ModelsPane
+      store={storeWith(
+        snapshot,
+        new Map([["t", { running: true, doneBytes: 0, totalBytes: 2097152, error: null }]]),
+      )}
+      snapshot={snapshot}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /Download what is missing/ })).toBe(null);
+});
+
+it("resets only after confirming, then downloads what is now missing", async () => {
+  const fresh: Snapshot = {
+    ...SNAPSHOT,
+    models: [{ ...MODEL, id: "t", recommended: true, download_bytes: 2097152 }],
+  };
+  vi.mocked(invoke).mockResolvedValue(fresh);
+  const store: AppStore = storeWith(SNAPSHOT, new Map());
+  render(
+    <main>
+      <ModelsPane store={store} snapshot={SNAPSHOT} />
+    </main>,
+  );
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Reset models and download again" }));
+  });
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(screen.getByRole("alertdialog", { name: "Reset the models and download them again?" }).tagName).toBe(
+    "DIV",
+  );
+  expect(
+    screen.getByText(
+      "Everything this app downloaded in /models is deleted, then the models this computer needs are downloaded again. Folders you added are never touched. This cannot be undone.",
+    ).tagName,
+  ).toBe("P");
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Delete and download again" }));
+  });
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reset_models"], ["start_download", { id: "t" }]]);
+  expect(vi.mocked(store.applySnapshot).mock.calls.length).toBe(1);
+});
+
+it("shows why a reset was refused", async () => {
+  vi.mocked(invoke).mockRejectedValue({ code: "models_busy" });
+  const store: AppStore = storeWith(SNAPSHOT, new Map());
+  render(
+    <main>
+      <ModelsPane store={store} snapshot={SNAPSHOT} />
+    </main>,
+  );
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Reset models and download again" }));
+  });
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Delete and download again" }));
+  });
+  expect(failureOf(store)).toStrictEqual({ code: "models_busy" });
+});
+
+it("reports a bulk download that cannot start", async () => {
+  vi.mocked(invoke).mockRejectedValue(new Error("offline"));
+  const snapshot: Snapshot = {
+    ...SNAPSHOT,
+    models: [{ ...MODEL, id: "t", recommended: true, download_bytes: 2097152 }],
+  };
+  const store: AppStore = storeWith(snapshot, new Map());
+  render(<ModelsPane store={store} snapshot={snapshot} />);
+  fireEvent.click(screen.getByRole("button", { name: /Download what is missing/ }));
+  await waitFor((): void => {
+    expect(vi.mocked(store.setState).mock.calls.length).toBe(2);
   });
 });

@@ -5,18 +5,21 @@ import { Alert } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group.tsx";
-import type { Anchor, Settings, SpeakerColor } from "../backend/types.ts";
+import type { Anchor, Profile, Settings, SpeakerColor } from "../backend/types.ts";
 import { format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import { type FrameSize, type PreviewLayout, previewLayout } from "../layout/preview-layout.ts";
-import type { AppStore } from "../state/use-app-store.ts";
+import { type AppStore, reportFailure } from "../state/use-app-store.ts";
 import { contrastRatio, meetsAa } from "../styling/contrast.ts";
+import { FontField } from "./FontField.tsx";
 import { AdjustField, SelectField, type SelectOption, SwitchField } from "./fields.tsx";
 import { LayeredText } from "./LayeredText.tsx";
+import { ProfilesCard } from "./ProfilesCard.tsx";
 
 export interface StylePaneProps {
   store: AppStore;
   settings: Settings;
+  profiles: Profile[];
   faceOptions: SelectOption[];
 }
 
@@ -43,6 +46,7 @@ interface FrameChoice {
 interface PaletteProps {
   palette: SpeakerColor[];
   unassigned: SpeakerColor;
+  fontFamily: string;
   onChange: (palette: SpeakerColor[]) => void;
   onUnassignedChange: (unassigned: SpeakerColor) => void;
 }
@@ -50,6 +54,7 @@ interface PaletteProps {
 interface ColorSlotProps {
   color: SpeakerColor;
   name: string;
+  fontFamily: string;
   onChange: (color: SpeakerColor) => void;
 }
 
@@ -184,6 +189,7 @@ function CaptionPreview({ settings, frame }: { settings: Settings; frame: FrameC
           lines={layout.lines}
           x={layout.x}
           y={layout.y}
+          fontFamily={settings.font_family}
           fontPx={layout.fontPx}
           lineHeightPx={layout.lineHeightPx}
           color={color ?? FIRST_SPEAKER}
@@ -204,12 +210,13 @@ function CaptionPreview({ settings, frame }: { settings: Settings; frame: FrameC
   );
 }
 
-function ColorSlot({ color, name, onChange }: ColorSlotProps): VNode {
+function ColorSlot({ color, name, fontFamily, onChange }: ColorSlotProps): VNode {
   const messages: Messages = useMessages();
   const ratio: number = contrastRatio(color.fill, color.outline);
   return (
     <div className="grid gap-1">
-      <div className="flex items-center gap-2">
+      {/* The name stays on one line: below the row's width it moves down whole instead of breaking. */}
+      <div className="flex flex-wrap items-center gap-2">
         <input
           type="color"
           className={COLOR_INPUT_CLASS}
@@ -228,7 +235,7 @@ function ColorSlot({ color, name, onChange }: ColorSlotProps): VNode {
             onChange({ ...color, outline: currentTarget.value.toUpperCase() })
           }
         />
-        <span className="flex-1">{name}</span>
+        <span className="flex-1 whitespace-nowrap">{name}</span>
         <svg
           aria-hidden="true"
           className="shrink-0 rounded-md bg-[linear-gradient(#a9d8ef_50%,#1f2530_50%)]"
@@ -240,6 +247,7 @@ function ColorSlot({ color, name, onChange }: ColorSlotProps): VNode {
             lines={["Aあ"]}
             x={SAMPLE_SIZE.width / 2}
             y={SAMPLE_SIZE.height / 2}
+            fontFamily={fontFamily}
             fontPx={SAMPLE_FONT_PX}
             lineHeightPx={SAMPLE_FONT_PX}
             color={color}
@@ -256,7 +264,13 @@ function ColorSlot({ color, name, onChange }: ColorSlotProps): VNode {
   );
 }
 
-function PaletteEditor({ palette, unassigned, onChange, onUnassignedChange }: PaletteProps): VNode {
+function PaletteEditor({
+  palette,
+  unassigned,
+  fontFamily,
+  onChange,
+  onUnassignedChange,
+}: PaletteProps): VNode {
   const messages: Messages = useMessages();
   return (
     <Card>
@@ -265,14 +279,14 @@ function PaletteEditor({ palette, unassigned, onChange, onUnassignedChange }: Pa
         <CardDescription>{messages.speakersHint}</CardDescription>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-3">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <ColorSlot color={unassigned} name={messages.unknownSpeaker} onChange={onUnassignedChange} />
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-2">
           {palette.map(
             (color: SpeakerColor, index: number): VNode => (
               <ColorSlot
                 key={String(index)}
                 color={color}
                 name={format(messages.speakerName, { number: index + 1 })}
+                fontFamily={fontFamily}
                 onChange={(next: SpeakerColor): void =>
                   onChange(
                     palette.map(
@@ -284,6 +298,12 @@ function PaletteEditor({ palette, unassigned, onChange, onUnassignedChange }: Pa
               />
             ),
           )}
+          <ColorSlot
+            color={unassigned}
+            name={messages.unknownSpeaker}
+            fontFamily={fontFamily}
+            onChange={onUnassignedChange}
+          />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -306,7 +326,7 @@ function PaletteEditor({ palette, unassigned, onChange, onUnassignedChange }: Pa
   );
 }
 
-export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNode {
+export function StylePane({ store, settings, profiles, faceOptions }: StylePaneProps): VNode {
   const messages: Messages = useMessages();
   const [frameId, setFrameId] = useState<FrameId>("landscape");
   const { placement } = settings;
@@ -320,147 +340,156 @@ export function StylePane({ store, settings, faceOptions }: StylePaneProps): VNo
     { value: "video_bottom", label: messages.anchorVideoBottom },
   ];
   return (
-    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-      <div className="grid min-w-0 grid-cols-1 gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle>{messages.positionHeading}</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-4">
-            <ChoiceGroup
-              label={messages.positionLabel}
-              value={placement.anchor}
-              choices={anchors}
-              onChange={(anchor: Anchor): void => place({ anchor })}
-            />
-            <AdjustField
-              label={messages.offsetX}
-              value={placement.offset_x_percent}
-              min={-OFFSET_LIMIT}
-              max={OFFSET_LIMIT}
-              step={OFFSET_STEP}
-              onChange={(offset_x_percent: number): void => place({ offset_x_percent })}
-            />
-            <AdjustField
-              label={messages.offsetY}
-              value={placement.offset_y_percent}
-              min={-OFFSET_LIMIT}
-              max={OFFSET_LIMIT}
-              step={OFFSET_STEP}
-              onChange={(offset_y_percent: number): void => place({ offset_y_percent })}
-            />
-            <SelectField
-              label={messages.faceModel}
-              value={settings.face_model}
-              options={faceOptions}
-              onChange={(face_model: string): void => update({ face_model })}
-            />
-            <SelectField
-              label={messages.speechLanguage}
-              value={settings.language}
-              options={[{ value: "auto", label: messages.languageAuto }, ...SPEECH_LANGUAGES].map(
-                (choice: ToggleChoice<string>): SelectOption => ({ ...choice, disabled: false }),
-              )}
-              onChange={(language: string): void => update({ language })}
-            />
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>{messages.sizeHeading}</CardTitle>
-            <CardDescription>{messages.sizeHint}</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-4">
-            <AdjustField
-              label={messages.fontSize}
-              value={
-                Math.round(settings.font_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
-              }
-              min={2}
-              max={12}
-              step={0.2}
-              onChange={(percent: number): void => update({ font_ratio: percent / PERCENT })}
-            />
-            <AdjustField
-              label={messages.captionWidth}
-              value={Math.round(settings.width_ratio * PERCENT)}
-              min={30}
-              max={100}
-              step={1}
-              onChange={(percent: number): void => update({ width_ratio: percent / PERCENT })}
-            />
-            <AdjustField
-              label={messages.outlineWidth}
-              value={Math.round(settings.outline_ratio * PERCENT)}
-              min={2}
-              max={30}
-              step={1}
-              onChange={(percent: number): void => update({ outline_ratio: percent / PERCENT })}
-            />
-            <AdjustField
-              label={messages.captionLineHeight}
-              value={settings.line_height}
-              min={LINE_HEIGHT_MIN}
-              max={LINE_HEIGHT_MAX}
-              step={LINE_HEIGHT_STEP}
-              onChange={(line_height: number): void => update({ line_height })}
-            />
-            <AdjustField
-              label={messages.rimWidth}
-              value={
-                Math.round(settings.rim_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
-              }
-              min={0}
-              max={RIM_PERCENT_MAX}
-              step={RIM_PERCENT_STEP}
-              onChange={(percent: number): void => update({ rim_ratio: percent / PERCENT })}
-            />
-            <SwitchField
-              label={messages.shadowEnabled}
-              checked={settings.shadow.enabled}
-              onChange={(enabled: boolean): void => update({ shadow: { ...settings.shadow, enabled } })}
-            />
-            {settings.shadow.enabled ? (
-              <AdjustField
-                label={messages.shadowStrength}
-                value={Math.round(settings.shadow.strength * PERCENT)}
-                min={0}
-                max={100}
-                step={5}
-                onChange={(percent: number): void =>
-                  update({ shadow: { ...settings.shadow, strength: percent / PERCENT } })
-                }
+    <div className="grid grid-cols-1 gap-4">
+      <ProfilesCard store={store} settings={settings} profiles={profiles} />
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+        <div className="grid min-w-0 grid-cols-1 gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>{messages.positionHeading}</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 gap-4">
+              <ChoiceGroup
+                label={messages.positionLabel}
+                value={placement.anchor}
+                choices={anchors}
+                onChange={(anchor: Anchor): void => place({ anchor })}
               />
-            ) : null}
-          </CardContent>
-        </Card>
-      </div>
-      <div className="grid min-w-0 grid-cols-1 gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle>{messages.previewHeading}</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 gap-3">
-            <ChoiceGroup
-              label={messages.previewFrameLabel}
-              value={frameId}
-              choices={Object.values(FRAMES).map(
-                ({ id, label }: FrameChoice): ToggleChoice<FrameId> => ({
-                  value: id,
-                  label: label(messages),
-                }),
-              )}
-              onChange={setFrameId}
-            />
-            <CaptionPreview settings={settings} frame={FRAMES[frameId]} />
-          </CardContent>
-        </Card>
-        <PaletteEditor
-          palette={settings.palette}
-          unassigned={settings.unassigned}
-          onChange={(palette: SpeakerColor[]): void => update({ palette })}
-          onUnassignedChange={(unassigned: SpeakerColor): void => update({ unassigned })}
-        />
+              <AdjustField
+                label={messages.offsetX}
+                value={placement.offset_x_percent}
+                min={-OFFSET_LIMIT}
+                max={OFFSET_LIMIT}
+                step={OFFSET_STEP}
+                onChange={(offset_x_percent: number): void => place({ offset_x_percent })}
+              />
+              <AdjustField
+                label={messages.offsetY}
+                value={placement.offset_y_percent}
+                min={-OFFSET_LIMIT}
+                max={OFFSET_LIMIT}
+                step={OFFSET_STEP}
+                onChange={(offset_y_percent: number): void => place({ offset_y_percent })}
+              />
+              <SelectField
+                label={messages.faceModel}
+                value={settings.face_model}
+                options={faceOptions}
+                onChange={(face_model: string): void => update({ face_model })}
+              />
+              <SelectField
+                label={messages.speechLanguage}
+                value={settings.language}
+                options={[{ value: "auto", label: messages.languageAuto }, ...SPEECH_LANGUAGES].map(
+                  (choice: ToggleChoice<string>): SelectOption => ({ ...choice, disabled: false }),
+                )}
+                onChange={(language: string): void => update({ language })}
+              />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>{messages.sizeHeading}</CardTitle>
+              <CardDescription>{messages.sizeHint}</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 gap-4">
+              <FontField
+                value={settings.font_family}
+                onChange={(font_family: string): void => update({ font_family })}
+                onFailure={(error: unknown): void => reportFailure(store.setState, error)}
+              />
+              <AdjustField
+                label={messages.fontSize}
+                value={
+                  Math.round(settings.font_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
+                }
+                min={2}
+                max={12}
+                step={0.2}
+                onChange={(percent: number): void => update({ font_ratio: percent / PERCENT })}
+              />
+              <AdjustField
+                label={messages.captionWidth}
+                value={Math.round(settings.width_ratio * PERCENT)}
+                min={30}
+                max={100}
+                step={1}
+                onChange={(percent: number): void => update({ width_ratio: percent / PERCENT })}
+              />
+              <AdjustField
+                label={messages.outlineWidth}
+                value={Math.round(settings.outline_ratio * PERCENT)}
+                min={2}
+                max={30}
+                step={1}
+                onChange={(percent: number): void => update({ outline_ratio: percent / PERCENT })}
+              />
+              <AdjustField
+                label={messages.captionLineHeight}
+                value={settings.line_height}
+                min={LINE_HEIGHT_MIN}
+                max={LINE_HEIGHT_MAX}
+                step={LINE_HEIGHT_STEP}
+                onChange={(line_height: number): void => update({ line_height })}
+              />
+              <AdjustField
+                label={messages.rimWidth}
+                value={
+                  Math.round(settings.rim_ratio * PERCENT * PERCENT_DECIMALS_SCALE) / PERCENT_DECIMALS_SCALE
+                }
+                min={0}
+                max={RIM_PERCENT_MAX}
+                step={RIM_PERCENT_STEP}
+                onChange={(percent: number): void => update({ rim_ratio: percent / PERCENT })}
+              />
+              <SwitchField
+                label={messages.shadowEnabled}
+                checked={settings.shadow.enabled}
+                onChange={(enabled: boolean): void => update({ shadow: { ...settings.shadow, enabled } })}
+              />
+              {settings.shadow.enabled ? (
+                <AdjustField
+                  label={messages.shadowStrength}
+                  value={Math.round(settings.shadow.strength * PERCENT)}
+                  min={0}
+                  max={100}
+                  step={5}
+                  onChange={(percent: number): void =>
+                    update({ shadow: { ...settings.shadow, strength: percent / PERCENT } })
+                  }
+                />
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
+        <div className="grid min-w-0 grid-cols-1 gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>{messages.previewHeading}</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 gap-3">
+              <ChoiceGroup
+                label={messages.previewFrameLabel}
+                value={frameId}
+                choices={Object.values(FRAMES).map(
+                  ({ id, label }: FrameChoice): ToggleChoice<FrameId> => ({
+                    value: id,
+                    label: label(messages),
+                  }),
+                )}
+                onChange={setFrameId}
+              />
+              <CaptionPreview settings={settings} frame={FRAMES[frameId]} />
+            </CardContent>
+          </Card>
+          <PaletteEditor
+            palette={settings.palette}
+            unassigned={settings.unassigned}
+            fontFamily={settings.font_family}
+            onChange={(palette: SpeakerColor[]): void => update({ palette })}
+            onUnassignedChange={(unassigned: SpeakerColor): void => update({ unassigned })}
+          />
+        </div>
       </div>
     </div>
   );

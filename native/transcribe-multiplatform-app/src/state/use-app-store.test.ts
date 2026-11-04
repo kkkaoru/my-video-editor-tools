@@ -4,7 +4,15 @@ import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
-import { type AppStore, onlyVideos, reportFailure, useAppStore, VIDEO_EXTENSIONS } from "./use-app-store.ts";
+import {
+  type AppStore,
+  onlySubtitles,
+  onlyVideos,
+  reportFailure,
+  SUBTITLE_EXTENSIONS,
+  useAppStore,
+  VIDEO_EXTENSIONS,
+} from "./use-app-store.ts";
 
 type DropPayload = { type: "drop"; paths: string[] } | { type: "enter" | "over" | "leave" };
 type DropCallback = (event: { payload: DropPayload }) => void;
@@ -28,17 +36,20 @@ const SETTINGS: Settings = {
   diarize_model: "b",
   face_model: "c",
   model_dirs: [],
+  active_profile: "",
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
 };
 const SNAPSHOT: Snapshot = {
+  version: "1.2.3",
   locale: "en",
   hardware: { is_mac: true, memory_gib: 16, gpu: null },
   backend: "default",
   settings: SETTINGS,
   models: [],
   models_dir: "/models",
+  profiles: [],
 };
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -46,12 +57,40 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
+const READY: Snapshot = {
+  ...SNAPSHOT,
+  models: [
+    {
+      id: "t",
+      role: "transcribe",
+      label: "T",
+      source_url: "",
+      download_bytes: 1,
+      found_at: "/t",
+      blocked: null,
+      recommended: true,
+    },
+    {
+      id: "d",
+      role: "diarize",
+      label: "D",
+      source_url: "",
+      download_bytes: 1,
+      found_at: "/d",
+      blocked: null,
+      recommended: true,
+    },
+  ],
+};
+
 const emitBackend = (name: string, payload: unknown): void =>
   vi
     .mocked(listen)
     .mock.calls.find(([event]): boolean => event === name)?.[1]({ event: name, id: 0, payload });
 
 const mounted = (): HookView => renderHook((): AppStore => useAppStore(SNAPSHOT));
+
+const mountedReady = (): HookView => renderHook((): AppStore => useAppStore(READY));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -124,7 +163,7 @@ it("tracks hovering files", () => {
 });
 
 it("adds only the videos of a drop and stops hovering", () => {
-  const view: HookView = mounted();
+  const view: HookView = mountedReady();
   act((): void => onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "enter" } }));
   act((): void =>
     onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.mp4", "/b.txt"] } }),
@@ -134,7 +173,7 @@ it("adds only the videos of a drop and stops hovering", () => {
 });
 
 it("reports videos the backend refuses", async () => {
-  const view: HookView = mounted();
+  const view: HookView = mountedReady();
   vi.mocked(invoke).mockRejectedValue(new Error("refused"));
   act((): void => view.result.current.dropVideos(["/a.mp4"]));
   await waitFor((): void => {
@@ -169,6 +208,7 @@ it("shows new settings at once and saves only the last of a burst", async () => 
           diarize_model: "b",
           face_model: "c",
           model_dirs: [],
+          active_profile: "",
           rim_ratio: 0.034,
           line_height: 1.448,
           speaker_count: 0,
@@ -178,7 +218,7 @@ it("shows new settings at once and saves only the last of a burst", async () => 
   ]);
 });
 
-it("takes only the models from a save, so newer settings and an old failure stay", async () => {
+it("takes only the models from a save, so newer settings stay, and ends an old failure", async () => {
   vi.useFakeTimers();
   const view: HookView = mounted();
   act((): void => view.result.current.setState((state) => ({ ...state, loadError: { code: "internal" } })));
@@ -196,7 +236,6 @@ it("takes only the models from a save, so newer settings and an old failure stay
         found_at: null,
         blocked: null,
         recommended: false,
-        hidden: false,
       },
     ],
   });
@@ -207,7 +246,7 @@ it("takes only the models from a save, so newer settings and an old failure stay
   expect(view.result.current.state.snapshot.models.map(({ id }): string => id)).toStrictEqual(["m"]);
   expect(view.result.current.state.snapshot.settings.language).toBe("ja");
   expect(view.result.current.state.snapshot.locale).toBe("en");
-  expect(view.result.current.state.loadError).toStrictEqual({ code: "internal" });
+  expect(view.result.current.state.loadError).toBe(null);
 });
 
 it("does not rescan the models for download progress", () => {
@@ -263,4 +302,104 @@ it("survives a subscription that fails to stop", async () => {
   await waitFor((): void => {
     expect(stopDownload).toHaveBeenCalledTimes(1);
   });
+});
+
+it("lists the subtitle files the picker offers", () => {
+  expect(SUBTITLE_EXTENSIONS).toStrictEqual(["fcpxml", "srt", "ttml", "json"]);
+});
+
+it("keeps only subtitle paths, in any case", () => {
+  expect(
+    onlySubtitles(["/a.SRT", "/b.ttml", "/c.fcpxml", "/d.transcript.json", "/e.json", "/f.mp4"]),
+  ).toStrictEqual(["/a.SRT", "/b.ttml", "/c.fcpxml", "/d.transcript.json"]);
+});
+
+it("passes the backend's translatable errors through", () => {
+  const setState: Mock<AppStore["setState"]> = vi.fn();
+  reportFailure(setState, { code: "profile_exists", name: "A" });
+  expect(setState.mock.calls[0]?.[0](mounted().result.current.state).loadError).toStrictEqual({
+    code: "profile_exists",
+    name: "A",
+  });
+});
+
+it("reports other rejected objects as text", () => {
+  const setState: Mock<AppStore["setState"]> = vi.fn();
+  reportFailure(setState, { code: 7 });
+  expect(setState.mock.calls[0]?.[0](mounted().result.current.state).loadError).toStrictEqual({
+    code: "internal",
+    detail: "[object Object]",
+  });
+});
+
+it("reports a rejected null as text", () => {
+  const setState: Mock<AppStore["setState"]> = vi.fn();
+  reportFailure(setState, null);
+  expect(setState.mock.calls[0]?.[0](mounted().result.current.state).loadError).toStrictEqual({
+    code: "internal",
+    detail: "null",
+  });
+});
+
+it("sends a mixed drop to the right jobs", () => {
+  mountedReady();
+  act((): void =>
+    onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.mp4", "/b.ttml", "/c.txt"] } }),
+  );
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([
+    ["add_videos", { paths: ["/a.mp4"] }],
+    ["reformat_files", { paths: ["/b.ttml"] }],
+  ]);
+});
+
+it("starts nothing for a drop with neither videos nor subtitles", () => {
+  mountedReady();
+  act((): void => onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.txt"] } }));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+});
+
+it("refuses videos without their models, naming what is missing, and starts nothing", () => {
+  const view: HookView = mounted();
+  act((): void => view.result.current.dropVideos(["/a.mp4"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(view.result.current.state.loadError).toStrictEqual({
+    code: "models_missing",
+    roles: ["transcribe", "diarize"],
+  });
+});
+
+it("still rewrites subtitle files without any model", () => {
+  const view: HookView = mounted();
+  act((): void => view.result.current.dropSubtitles(["/a.srt"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reformat_files", { paths: ["/a.srt"] }]]);
+  expect(view.result.current.state.loadError).toBe(null);
+});
+
+it("reports subtitle files the backend refuses", async () => {
+  const view: HookView = mounted();
+  vi.mocked(invoke).mockRejectedValue(new Error("refused"));
+  act((): void => view.result.current.dropSubtitles(["/a.srt"]));
+  await waitFor((): void => {
+    expect(view.result.current.state.loadError).toStrictEqual({ code: "internal", detail: "Error: refused" });
+  });
+});
+
+it("drops a waiting save when a snapshot replaces the settings", async () => {
+  vi.useFakeTimers();
+  const view: HookView = mounted();
+  act((): void => view.result.current.updateSettings({ ...SETTINGS, language: "ja" }));
+  act((): void =>
+    view.result.current.replaceSnapshot({ ...SNAPSHOT, settings: { ...SETTINGS, language: "ko" } }),
+  );
+  await act(async (): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(view.result.current.state.snapshot.settings.language).toBe("ko");
+});
+
+it("replaces the snapshot when no save is waiting", () => {
+  const view: HookView = mounted();
+  act((): void => view.result.current.replaceSnapshot({ ...SNAPSHOT, locale: "de" }));
+  expect(view.result.current.state.snapshot.locale).toBe("de");
 });

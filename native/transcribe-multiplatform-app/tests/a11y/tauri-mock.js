@@ -3,6 +3,12 @@
   const listeners = new Map();
   const callbacks = new Map();
   let nextCallback = 1;
+  // As many families as a designer's computer can have: the font list has to stay fast with this.
+  window.__FIXTURE_FONTS__ = [
+    "Noto Sans JP",
+    "Hiragino Sans",
+    ...Array.from({ length: 3000 }, (_, index) => `Family ${String(index).padStart(4, "0")}`),
+  ];
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main", windowLabel: "main" } },
     transformCallback(callback) {
@@ -20,6 +26,9 @@
       }
       if (command === "snapshot") {
         return Promise.resolve(window.__FIXTURE_SNAPSHOT__);
+      }
+      if (command === "font_families") {
+        return Promise.resolve(window.__FIXTURE_FONTS__);
       }
       if (command === "save_settings") {
         return Promise.resolve({ ...window.__FIXTURE_SNAPSHOT__, settings: args.settings });
