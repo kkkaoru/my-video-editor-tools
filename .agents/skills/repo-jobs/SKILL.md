@@ -84,6 +84,10 @@ resubmission; a new instruction is not a reason to duplicate an uncertain job.
   event. Report `step-ok` in one line. After `finished`, run the completion gate and
   check `hls/index.json` before calling a video complete. A `held` recording resumes
   at its failed step after a shared-code fix or `recording_queue unhold ID`.
+- Stop a job by its own process, never with an unanchored `pkill -f`: a `tmux-job` server's
+  command line holds its first job's command, so the match kills the server and every job in it.
+- Run `make check` as `UV_NO_SYNC=1 make check` here: its `uv run` can otherwise sync the shared
+  `.venv` that running pipelines depend on.
 - Read bounded log/status/receipt slices for the exact job. Do not expose secret
   environment values, signed URLs or unrelated process arguments in reports.
 - Distinguish running, timed out, failed, interrupted and verified complete.
