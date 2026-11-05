@@ -78,7 +78,7 @@
     <UserDefinedName/>
     <LayersVec/>
    </Sm2TiTrack>
-  </Element>
+  </Element>{{more_title_tracks}}
   </VideoTrackVec>
  {{#audio}}<AudioTrackVec>
   <Element>

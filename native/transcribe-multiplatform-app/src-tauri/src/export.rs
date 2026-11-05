@@ -26,6 +26,8 @@ const STROKE_SIDES: f64 = 2.0;
 const FCPXML_VERSION: &str = "1.10";
 /// `lineSpacing` in FCPXML is added to the title's own line height.
 const FCP_NATURAL_LINE_HEIGHT: f64 = 1.2;
+/// Rim, outline and fill: captions shown together stay on lanes of their own.
+const MAX_TITLE_LAYERS: usize = 3;
 
 /// One stacked title of a caption.
 pub(crate) struct TitleLayer {
@@ -54,6 +56,7 @@ struct CueMarkup<'a> {
     size: f64,
     line_height: f64,
     metrics: &'a Metrics,
+    scale: f64,
 }
 
 /// Everything needed to lay captions out again without running the models.
@@ -143,21 +146,70 @@ fn ttml_clock(seconds: f64) -> String {
     format!("{hours:02}:{minutes:02}:{whole:02}.{millis:03}")
 }
 
+/// One stretch of a subtitle track and the captions on screen during it.
+struct ShownTogether<'a> {
+    start: f64,
+    end: f64,
+    cues: Vec<&'a Cue>,
+}
+
+/// A subtitle track cannot hold two entries at once, so captions shown together share one entry for as
+/// long as they overlap, in speaker order (`speaker_subtitles._serial_events`).
+fn shown_together(cues: &[Cue]) -> Vec<ShownTogether<'_>> {
+    if cues.windows(2).all(|pair| pair[0].end <= pair[1].start) {
+        return cues
+            .iter()
+            .map(|cue| ShownTogether {
+                start: cue.start,
+                end: cue.end,
+                cues: vec![cue],
+            })
+            .collect();
+    }
+    let mut boundaries: Vec<f64> = cues.iter().flat_map(|cue| [cue.start, cue.end]).collect();
+    boundaries.sort_by(f64::total_cmp);
+    boundaries
+        .windows(2)
+        .filter(|pair| split_clock(pair[0]) != split_clock(pair[1]))
+        .filter_map(|pair| {
+            let mut active: Vec<&Cue> = cues
+                .iter()
+                .filter(|cue| cue.start <= pair[0] && cue.end >= pair[1])
+                .collect();
+            active.sort_by_key(|cue| cue.speaker.unwrap_or(u32::MAX));
+            (!active.is_empty()).then_some(ShownTogether {
+                start: pair[0],
+                end: pair[1],
+                cues: active,
+            })
+        })
+        .collect()
+}
+
 /// Colour survives in Resolve's reader only if it honours `<font>`; text and timing always do.
 #[must_use]
 pub fn render_srt(cues: &[Cue], settings: &Settings) -> String {
     let mut out = String::new();
-    for (index, cue) in cues.iter().enumerate() {
-        let color = settings.color_for(cue.speaker);
+    for (index, shown) in shown_together(cues).iter().enumerate() {
         // SRT is plain text: XML escapes would show up literally in Resolve.
-        let text = cue.lines.join("\n");
+        let text = shown
+            .cues
+            .iter()
+            .map(|cue| {
+                format!(
+                    "<font color=\"{}\">{}</font>",
+                    settings.color_for(cue.speaker).fill,
+                    cue.lines.join("\n"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = write!(
             out,
-            "{}\n{} --> {}\n<font color=\"{}\">{text}</font>\n\n",
+            "{}\n{} --> {}\n{text}\n\n",
             index + 1,
-            srt_clock(cue.start),
-            srt_clock(cue.end),
-            color.fill,
+            srt_clock(shown.start),
+            srt_clock(shown.end),
         );
     }
     out
@@ -202,11 +254,18 @@ pub fn render_ttml(
 ) -> String {
     let mut regions = String::new();
     let mut body = String::new();
-    let region_height = metrics.font_px * 3.0;
-    for (index, cue) in cues.iter().enumerate() {
+    for (index, shown) in shown_together(cues).iter().enumerate() {
+        let scale = shown.cues.iter().map(|cue| cue.scale).fold(1.0, f64::min);
+        let font_px = metrics.font_px * scale;
+        let line_px = font_px * settings.line_height;
+        let line_count: usize = shown.cues.iter().map(|cue| cue.lines.len()).sum();
+        let region_height = (font_px * 3.0).max(line_px * line_count as f64);
         let width = metrics.max_line_px + 2.0 * metrics.outline_px;
-        let left = (cue.x - width / 2.0).clamp(0.0, (f64::from(info.width) - width).max(0.0));
-        let top = (cue.y - region_height / 2.0)
+        let rows = || shown.cues.iter().map(|cue| cue.y);
+        let middle = (rows().fold(f64::INFINITY, f64::min) + rows().fold(0.0, f64::max)) / 2.0;
+        let center = shown.cues.first().map_or(0.0, |cue| cue.x);
+        let left = (center - width / 2.0).clamp(0.0, (f64::from(info.width) - width).max(0.0));
+        let top = (middle - region_height / 2.0)
             .clamp(0.0, (f64::from(info.height) - region_height).max(0.0));
         let _ = writeln!(
             regions,
@@ -216,17 +275,26 @@ pub fn render_ttml(
             percent(width, info.width),
             percent(region_height, info.height),
         );
-        let color = settings.color_for(cue.speaker);
-        let spans: Vec<String> = cue
-            .lines
+        let spans: Vec<String> = shown
+            .cues
             .iter()
-            .map(|line| ttml_span(line, color, metrics.font_px))
+            .flat_map(|cue| {
+                let color = settings.color_for(cue.speaker);
+                cue.lines
+                    .iter()
+                    .map(move |line| ttml_span(line, color, font_px))
+            })
             .collect();
+        let sized = if scale < 1.0 {
+            format!(" tts:fontSize=\"{font_px:.1}px\" tts:lineHeight=\"{line_px:.1}px\"")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             body,
-            "      <p region=\"r{index}\" begin=\"{}\" end=\"{}\">{}</p>",
-            ttml_clock(cue.start),
-            ttml_clock(cue.end),
+            "      <p region=\"r{index}\" begin=\"{}\" end=\"{}\"{sized}>{}</p>",
+            ttml_clock(shown.start),
+            ttml_clock(shown.end),
             spans.join("<br/>"),
         );
     }
@@ -270,6 +338,26 @@ fn fcp_frames(frames: u64, info: &VideoInfo) -> String {
 pub(crate) fn frame_span(start: f64, end: f64, info: &VideoInfo) -> (u64, u64) {
     let first = frame_at(start, info);
     (first, frame_at(end, info).saturating_sub(first).max(1))
+}
+
+/// The timeline track of each cue: the first whose last title has ended, as one track cannot hold two
+/// titles at once.
+pub(crate) fn frame_tracks(cues: &[Cue], info: &VideoInfo) -> Vec<usize> {
+    let mut free_from: Vec<u64> = Vec::new();
+    cues.iter()
+        .map(|cue| {
+            let (first, frames) = frame_span(cue.start, cue.end, info);
+            let track = free_from
+                .iter()
+                .position(|end| *end <= first)
+                .unwrap_or(free_from.len());
+            if track == free_from.len() {
+                free_from.push(0);
+            }
+            free_from[track] = first + frames;
+            track
+        })
+        .collect()
 }
 
 fn fcp_span(start: f64, end: f64, info: &VideoInfo) -> (String, String) {
@@ -344,7 +432,7 @@ pub(crate) fn title_layers(color: &SpeakerColor, font_px: f64) -> Vec<TitleLayer
 }
 
 /// FCPXML calls a negative `strokeWidth` percent of the font size; Resolve draws half of it in frame pixels.
-fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics) -> String {
+fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics, scale: f64) -> String {
     layer
         .stroke
         .as_ref()
@@ -352,7 +440,7 @@ fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics) -> String {
             format!(
                 " strokeColor=\"{}\" strokeWidth=\"-{:.1}\"",
                 fcp_color(color),
-                per_side * STROKE_SIDES / metrics.font_px * PERCENT
+                per_side * STROKE_SIDES / metrics.font_px * PERCENT * scale
             )
         })
 }
@@ -369,6 +457,7 @@ fn fcp_layer(id: &str, lane: usize, layer: &TitleLayer, cue_markup: &CueMarkup<'
         size,
         line_height,
         metrics,
+        scale,
     } = cue_markup;
     format!(
         concat!(
@@ -391,12 +480,13 @@ fn fcp_layer(id: &str, lane: usize, layer: &TitleLayer, cue_markup: &CueMarkup<'
         size = size,
         spacing = *size * (*line_height - FCP_NATURAL_LINE_HEIGHT),
         fill = fcp_color(&layer.fill),
-        stroke = fcp_stroke(layer, metrics),
+        stroke = fcp_stroke(layer, metrics, *scale),
     )
 }
 
 fn fcp_title(
     index: usize,
+    track: usize,
     cue: &Cue,
     info: &VideoInfo,
     metrics: &Metrics,
@@ -414,9 +504,10 @@ fn fcp_title(
         y: (frame_height / 2.0 - cue.y) / frame_height * PERCENT,
         text: &text,
         font: &settings.font_family,
-        size: metrics.font_px,
+        size: metrics.font_px * cue.scale,
         line_height: settings.line_height,
         metrics,
+        scale: cue.scale,
     };
     title_layers(settings.color_for(cue.speaker), metrics.font_px)
         .iter()
@@ -424,7 +515,7 @@ fn fcp_title(
         .map(|(layer_index, layer)| {
             fcp_layer(
                 &format!("ts{index}-{layer_index}"),
-                layer_index + 1,
+                track * MAX_TITLE_LAYERS + layer_index + 1,
                 layer,
                 &markup,
             )
@@ -443,11 +534,15 @@ pub fn render_fcpxml(transcript: &Transcript, settings: &Settings) -> String {
             .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
     );
     let duration = fcp_time(info.duration, info);
+    let tracks = frame_tracks(&transcript.cues, info);
     let titles: String = transcript
         .cues
         .iter()
+        .zip(&tracks)
         .enumerate()
-        .map(|(index, cue)| fcp_title(index, cue, info, &transcript.metrics, settings))
+        .map(|(index, (cue, track))| {
+            fcp_title(index, *track, cue, info, &transcript.metrics, settings)
+        })
         .collect();
     format!(
         concat!(
@@ -666,6 +761,7 @@ mod tests {
 
     fn cue(speaker: Option<u32>, text: &str) -> Cue {
         Cue {
+            scale: 1.0,
             start: 1.5,
             end: 3.25,
             speaker,
@@ -848,7 +944,7 @@ mod tests {
     #[test]
     fn a_white_band_stacks_band_and_fill_titles_without_a_rim() {
         let settings = Settings::default();
-        let out = fcp_title(0, &cue(Some(2), "A&B"), &INFO, &METRICS, &settings);
+        let out = fcp_title(0, 0, &cue(Some(2), "A&B"), &INFO, &METRICS, &settings);
         assert_eq!(
             out,
             concat!(
@@ -966,8 +1062,136 @@ mod tests {
         };
         let ttml = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &settings);
         assert!(ttml.contains("tts:lineHeight=\"104.0px\""), "{ttml}");
-        let title = fcp_title(0, &cue(None, "x"), &INFO, &METRICS, &settings);
+        let title = fcp_title(0, 0, &cue(None, "x"), &INFO, &METRICS, &settings);
         assert!(title.contains("lineSpacing=\"41.6\""), "{title}");
+    }
+
+    fn timed(start: f64, end: f64, speaker: Option<u32>, text: &str) -> Cue {
+        Cue {
+            start,
+            end,
+            ..cue(speaker, text)
+        }
+    }
+
+    #[test]
+    fn titles_shown_together_take_tracks_of_their_own_and_share_them_afterwards() {
+        let info = VideoInfo {
+            fps_num: 10,
+            fps_den: 1,
+            ..INFO
+        };
+        let cues = [
+            timed(0.0, 3.0, Some(1), "a"),
+            timed(1.0, 2.0, Some(2), "b"),
+            timed(1.5, 4.0, Some(3), "c"),
+            timed(3.0, 5.0, Some(1), "d"),
+            timed(6.0, 7.0, Some(2), "e"),
+        ];
+        assert_eq!(frame_tracks(&cues, &info), vec![0, 1, 2, 0, 0]);
+    }
+
+    #[test]
+    fn titles_one_after_another_stay_on_one_track() {
+        let cues = [
+            timed(0.0, 1.0, Some(1), "a"),
+            timed(1.0, 2.0, Some(2), "b"),
+            timed(3.0, 4.0, Some(1), "c"),
+        ];
+        assert_eq!(frame_tracks(&cues, &INFO), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn srt_has_one_entry_per_stretch_with_everyone_on_screen_in_speaker_order() {
+        let srt = render_srt(
+            &[
+                timed(0.0, 3.0, Some(2), "b"),
+                timed(1.0, 2.0, None, "x"),
+                timed(1.0, 4.0, Some(1), "a"),
+            ],
+            &Settings::default(),
+        );
+        assert_eq!(
+            srt,
+            concat!(
+                "1\n00:00:00,000 --> 00:00:01,000\n<font color=\"#005A9C\">b</font>\n\n",
+                "2\n00:00:01,000 --> 00:00:02,000\n<font color=\"#FFFFFF\">a</font>\n<font color=\"#005A9C\">b</font>\n<font color=\"#595959\">x</font>\n\n",
+                "3\n00:00:02,000 --> 00:00:03,000\n<font color=\"#FFFFFF\">a</font>\n<font color=\"#005A9C\">b</font>\n\n",
+                "4\n00:00:03,000 --> 00:00:04,000\n<font color=\"#FFFFFF\">a</font>\n\n",
+            )
+        );
+    }
+
+    #[test]
+    fn srt_of_captions_apart_is_written_as_they_are() {
+        let srt = render_srt(
+            &[timed(0.0, 1.0, Some(1), "a"), timed(2.0, 3.0, Some(2), "b")],
+            &Settings::default(),
+        );
+        assert_eq!(
+            srt,
+            concat!(
+                "1\n00:00:00,000 --> 00:00:01,000\n<font color=\"#FFFFFF\">a</font>\n\n",
+                "2\n00:00:02,000 --> 00:00:03,000\n<font color=\"#005A9C\">b</font>\n\n",
+            )
+        );
+    }
+
+    #[test]
+    fn a_stretch_shorter_than_the_clock_is_left_out() {
+        let cues = [
+            timed(0.0, 2.0, Some(1), "a"),
+            timed(1.0, 1.0001, Some(2), "b"),
+        ];
+        let shown = shown_together(&cues);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|stretch| (stretch.start, stretch.end, stretch.cues.len()))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 1.0, 1), (1.0001, 2.0, 1)]
+        );
+    }
+
+    #[test]
+    fn ttml_never_holds_two_paragraphs_at_once() {
+        let mut upper = timed(1.0, 2.0, Some(2), "b");
+        upper.y = 100.0;
+        let ttml = render_ttml(
+            &[timed(0.0, 2.0, Some(1), "a"), upper],
+            &INFO,
+            &METRICS,
+            &Settings::default(),
+        );
+        assert_eq!(ttml.matches("<p ").count(), 2);
+        assert!(ttml.contains("begin=\"00:00:00.000\" end=\"00:00:01.000\""));
+        assert!(ttml.contains("begin=\"00:00:01.000\" end=\"00:00:02.000\""));
+        assert!(ttml.contains(">a</span><br/><span"), "{ttml}");
+        assert!(!ttml
+            .contains("<p region=\"r1\" begin=\"00:00:01.000\" end=\"00:00:02.000\" tts:fontSize"));
+    }
+
+    #[test]
+    fn ttml_shrinks_only_captions_that_had_to_shrink() {
+        let mut small = timed(0.0, 2.0, Some(1), "a");
+        small.scale = 0.5;
+        let ttml = render_ttml(&[small], &INFO, &METRICS, &Settings::default());
+        assert!(
+            ttml.contains("end=\"00:00:02.000\" tts:fontSize=\"26.0px\""),
+            "{ttml}"
+        );
+    }
+
+    #[test]
+    fn fcpxml_keeps_captions_shown_together_on_separate_lanes_and_scales_them() {
+        let settings = Settings::default();
+        let mut small = cue(Some(1), "a");
+        small.scale = 0.5;
+        let title = fcp_title(0, 1, &small, &INFO, &METRICS, &settings);
+        assert!(title.contains("lane=\"4\""), "{title}");
+        assert!(title.contains("lane=\"5\""), "{title}");
+        assert!(title.contains("fontSize=\"26\""), "{title}");
+        assert!(title.contains("strokeWidth=\"-11.5\""), "{title}");
     }
 
     fn written_names(format: SubtitleFormat, name: &str) -> (Vec<String>, Vec<String>) {

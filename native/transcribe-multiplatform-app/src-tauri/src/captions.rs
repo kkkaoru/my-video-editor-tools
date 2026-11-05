@@ -25,6 +25,10 @@ const DOMINANT_SHARE: f64 = 0.6;
 const DOMINANT_MARGIN: f64 = 0.2;
 /// Timing noise: a word just outside a turn belongs to the nearest speaker within this gap.
 const SILENT_WORD_REACH_SECONDS: f64 = 1.0;
+/// Two speakers talk at once when their words coincide for this long; less is timing error (0.22 s).
+const SIMULTANEOUS_SECONDS: f64 = 0.25;
+/// `speaker_subtitles.STACK_GAP`: the space between rows of captions shown together.
+const ROW_GAP_PX: f64 = 12.0;
 /// `caption_display_hold.LINGER`: a pause this long ends a page, and nothing is shown over it.
 const CUE_BREAK_PAUSE_SECONDS: f64 = 0.5;
 /// Nobody pauses this long inside one morpheme: a longer gap there is a real break, a shorter one
@@ -239,6 +243,13 @@ pub struct Cue {
     pub lines: Vec<String>,
     pub x: f64,
     pub y: f64,
+    /// Below 1 only when more rows are shown together than fit the frame at full size.
+    #[serde(default = "unscaled", skip_serializing_if = "is_unscaled")]
+    pub scale: f64,
+}
+
+fn is_unscaled(scale: &f64) -> bool {
+    *scale == 1.0
 }
 
 /// Font and width for one video, derived from its resolution.
@@ -1497,6 +1508,198 @@ fn following_silence(group: &[Word], next: Option<&Vec<Word>>) -> f64 {
         .map_or(f64::INFINITY, |word| word.start - last_end)
 }
 
+/// One speaker's words without a real pause, as indexes into the words.
+struct SpeakerSpan {
+    speaker: Option<u32>,
+    start: f64,
+    end: f64,
+    words: Vec<usize>,
+}
+
+fn speaker_spans(words: &[Word], in_time_order: &[usize]) -> Vec<SpeakerSpan> {
+    let mut spans: Vec<SpeakerSpan> = Vec::new();
+    for &index in in_time_order {
+        let word = &words[index];
+        match spans.iter_mut().rfind(|span| span.speaker == word.speaker) {
+            Some(span) if word.start - span.end <= CUE_BREAK_PAUSE_SECONDS => {
+                span.end = span.end.max(word.end);
+                span.words.push(index);
+            }
+            _ => spans.push(SpeakerSpan {
+                speaker: word.speaker,
+                start: word.start,
+                end: word.end,
+                words: vec![index],
+            }),
+        }
+    }
+    spans
+}
+
+/// How long two spans' words really sound at once: quick turns interleave without coinciding.
+fn seconds_together(left: &SpeakerSpan, right: &SpeakerSpan, words: &[Word]) -> f64 {
+    let at_once = |(a, b): (&usize, &usize)| {
+        (words[*a].end.min(words[*b].end) - words[*a].start.max(words[*b].start)).max(0.0)
+    };
+    left.words
+        .iter()
+        .flat_map(|a| right.words.iter().map(move |b| (a, b)))
+        .map(at_once)
+        .sum()
+}
+
+/// The stretches where two speakers talk at once, in time order.
+fn simultaneous_stretches(words: &[Word], in_time_order: &[usize]) -> Vec<(f64, f64)> {
+    let spans = speaker_spans(words, in_time_order);
+    let mut found: Vec<(f64, f64)> = spans
+        .iter()
+        .enumerate()
+        .flat_map(|(at, left)| spans[at + 1..].iter().map(move |right| (left, right)))
+        .filter(|(left, right)| {
+            left.speaker != right.speaker
+                && seconds_together(left, right, words) >= SIMULTANEOUS_SECONDS
+        })
+        .map(|(left, right)| (left.start.min(right.start), left.end.max(right.end)))
+        .collect();
+    found.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in found {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// Words of speakers talking at once, one speaker after the other so each reads as its own captions;
+/// `None` when nobody does, which leaves every word where it is.
+fn speakers_apart(words: &[Word]) -> Option<Vec<Word>> {
+    let mut in_time_order: Vec<usize> = (0..words.len()).collect();
+    in_time_order.sort_by(|left, right| words[*left].start.total_cmp(&words[*right].start));
+    let stretches = simultaneous_stretches(words, &in_time_order);
+    if stretches.is_empty() {
+        return None;
+    }
+    let mut apart = Vec::with_capacity(words.len());
+    let mut rest = in_time_order.as_slice();
+    for (start, end) in stretches {
+        let before = rest.partition_point(|index| words[*index].start < start);
+        apart.extend(rest[..before].iter().map(|index| words[*index].clone()));
+        rest = &rest[before..];
+        let inside = rest.partition_point(|index| words[*index].start <= end);
+        let mut speakers: Vec<Option<u32>> = Vec::new();
+        for index in &rest[..inside] {
+            if !speakers.contains(&words[*index].speaker) {
+                speakers.push(words[*index].speaker);
+            }
+        }
+        for speaker in speakers {
+            let own = rest[..inside]
+                .iter()
+                .filter(|index| words[**index].speaker == speaker);
+            apart.extend(own.map(|index| words[*index].clone()));
+        }
+        rest = &rest[inside..];
+    }
+    apart.extend(rest.iter().map(|index| words[*index].clone()));
+    Some(apart)
+}
+
+fn pages_together(left: &Page, right: &Page) -> bool {
+    left.speaker != right.speaker
+        && left.end.min(right.end) - left.start.max(right.start) >= SIMULTANEOUS_SECONDS
+}
+
+/// Gives captions shown together one row per speaker, in speaker order from the anchor outwards. The
+/// rows keep to the frame's margins, shrinking only when they cannot fit there at full size.
+fn stack_rows(
+    cues: &mut [Cue],
+    grows_down: bool,
+    info: &VideoInfo,
+    metrics: &Metrics,
+    settings: &Settings,
+) {
+    let frame_h = f64::from(info.height);
+    let short_edge = f64::from(info.width.min(info.height)) / REFERENCE_SHORT_EDGE;
+    let (margin, gap) = (MARGIN_PX * short_edge, ROW_GAP_PX * short_edge);
+    let height_of = |cue: &Cue| block_height(cue.lines.len(), metrics, settings);
+    let mut speakers: Vec<Option<u32>> = cues.iter().map(|cue| cue.speaker).collect();
+    speakers.sort_by_key(|speaker| speaker.unwrap_or(u32::MAX));
+    speakers.dedup();
+    let rows: Vec<f64> = speakers
+        .iter()
+        .map(|speaker| {
+            cues.iter()
+                .filter(|cue| cue.speaker == *speaker)
+                .map(height_of)
+                .fold(0.0, f64::max)
+        })
+        .collect();
+    let total = rows.iter().sum::<f64>() + gap * rows.len().saturating_sub(1) as f64;
+    let scale = ((frame_h - 2.0 * margin) / total).min(1.0);
+    let stacked = total * scale;
+    let edges = cues.iter().map(|cue| {
+        let half = height_of(cue) / 2.0;
+        if grows_down {
+            cue.y - half
+        } else {
+            cue.y + half
+        }
+    });
+    let edge = if grows_down {
+        edges
+            .fold(f64::NEG_INFINITY, f64::max)
+            .clamp(0.0, frame_h - margin - stacked)
+    } else {
+        edges
+            .fold(f64::INFINITY, f64::min)
+            .clamp(margin + stacked, frame_h)
+    };
+    let mut reach = 0.0;
+    for (speaker, row) in speakers.iter().zip(&rows) {
+        for cue in cues.iter_mut().filter(|cue| cue.speaker == *speaker) {
+            let half = block_height(cue.lines.len(), metrics, settings) * scale / 2.0;
+            cue.y = if grows_down {
+                edge + reach + half
+            } else {
+                edge - reach - half
+            };
+            cue.scale = scale;
+        }
+        reach += (row + gap) * scale;
+    }
+}
+
+/// Stacks each run of captions that are on screen at the same time; a caption alone stays as placed.
+fn stack_simultaneous(
+    cues: &mut [Cue],
+    grows_down: &[bool],
+    info: &VideoInfo,
+    metrics: &Metrics,
+    settings: &Settings,
+) {
+    let mut first = 0;
+    while first < cues.len() {
+        let mut last = first + 1;
+        let mut until = cues[first].end;
+        while last < cues.len() && cues[last].start < until {
+            until = until.max(cues[last].end);
+            last += 1;
+        }
+        if last - first > 1 {
+            stack_rows(
+                &mut cues[first..last],
+                grows_down[first],
+                info,
+                metrics,
+                settings,
+            );
+        }
+        first = last;
+    }
+}
+
 /// A page timed into silence starts when the voice does. Only later, never earlier: a page whose
 /// start lies in a voice may be mid-sentence, where the voice's own start says nothing about it.
 fn start_with_the_voice(pages: &mut [Page], voice: &[VoiceSpan]) {
@@ -1528,21 +1731,43 @@ pub fn build_cues(
     let mut placer = FacePlacer::new(faces, info, metrics, settings);
     let rate = f64::from(info.fps_num) / f64::from(info.fps_den);
     let mut shown = display_words(words, info.duration);
+    let apart = speakers_apart(&shown);
+    let talk_at_once = apart.is_some();
+    if let Some(words) = apart {
+        shown = words;
+    }
     close_split_morphemes(&mut shown, segmenter)?;
     let groups = rejoin_split_words(merge_strays(group_words(&shown)), segmenter)?;
     let mut pages: Vec<Page> = Vec::new();
     for (index, group) in groups.iter().enumerate() {
-        let following_gap = following_silence(group, groups.get(index + 1));
+        let silence = following_silence(group, groups.get(index + 1));
+        // The next speaker may already be talking: that says nothing about this page's own end.
+        let following_gap = if talk_at_once && silence < 0.0 {
+            f64::INFINITY
+        } else {
+            silence
+        };
         pages.extend(Run::new(group, following_gap, metrics, segmenter)?.pages());
+    }
+    if talk_at_once {
+        pages.sort_by(|left, right| left.start.total_cmp(&right.start));
     }
     start_with_the_voice(&mut pages, voice);
     let mut cues: Vec<Cue> = Vec::with_capacity(pages.len());
+    let mut grows_down: Vec<bool> = Vec::with_capacity(pages.len());
     let mut faceless = false;
     for (index, page) in pages.iter().enumerate() {
-        let following = pages
-            .get(index + 1)
+        // Another speaker talking at the same time neither cuts this caption short nor delays it.
+        let following = pages[index + 1..]
+            .iter()
+            .find(|next| !pages_together(page, next))
             .map_or(info.duration, |next| next.start);
-        let previous_end = cues.last().map_or(0.0, |cue| cue.end);
+        let previous_end = pages
+            .iter()
+            .zip(&cues)
+            .filter(|(earlier, _)| !pages_together(earlier, page))
+            .map(|(_, cue)| cue.end)
+            .fold(0.0, f64::max);
         // A caption's minimum time comes first: the next one may start a moment late, never early.
         let shortest = page.start.max(previous_end) + MIN_DISPLAY;
         let end = held_end(page, following, rate).max(shortest.min(info.duration));
@@ -1582,6 +1807,11 @@ pub fn build_cues(
             height,
             frame_h,
         );
+        grows_down.push(if at_face.is_some() {
+            matches!(placer.current, Some(Spot::Below(_)))
+        } else {
+            placement.anchor == Anchor::VideoTop
+        });
         cues.push(Cue {
             start,
             end,
@@ -1589,8 +1819,10 @@ pub fn build_cues(
             lines,
             x,
             y,
+            scale: 1.0,
         });
     }
+    stack_simultaneous(&mut cues, &grows_down, info, metrics, settings);
     Ok((cues, faceless))
 }
 
@@ -3435,6 +3667,363 @@ mod tests {
             cues.iter().map(|cue| cue.speaker).collect::<Vec<_>>(),
             vec![Some(1), None]
         );
+    }
+
+    fn anchored(anchor: Anchor) -> Settings {
+        Settings {
+            placement: Placement {
+                anchor,
+                offset_x_percent: 0.0,
+                offset_y_percent: 0.0,
+            },
+            ..fcpxml_settings()
+        }
+    }
+
+    /// Speaker, and the block's top and bottom in pixels.
+    fn rows(cues: &[Cue], settings: &Settings, info: &VideoInfo) -> Vec<(Option<u32>, f64, f64)> {
+        let metrics = metrics_for(info, settings);
+        cues.iter()
+            .map(|cue| {
+                let half = block_height(cue.lines.len(), &metrics, settings) * cue.scale / 2.0;
+                (cue.speaker, (cue.y - half).round(), (cue.y + half).round())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_people_partly_together_each_keep_their_time_and_a_row() {
+        let words = [
+            spoken(0.0, 3.0, "今日はいい天気です", 1),
+            spoken(1.0, 4.0, "本当にそうですね", 2),
+        ];
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| (cue.start, cue.end.round() as u32))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 3), (1.0, 4)]
+        );
+        assert_eq!(
+            rows(&cues, &settings, &FULL_HD),
+            vec![(Some(1), 868.0, 960.0), (Some(2), 765.0, 856.0)]
+        );
+        assert_eq!(cues[0].scale, 1.0);
+    }
+
+    #[test]
+    fn two_people_fully_together_take_rows_in_speaker_order_whoever_came_first() {
+        let words = [
+            spoken(1.0, 3.0, "本当にそうですね", 2),
+            spoken(1.0, 3.0, "今日はいい天気です", 1),
+        ];
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        let mut by_speaker = rows(&cues, &settings, &FULL_HD);
+        by_speaker.sort_by_key(|row| row.0);
+        assert_eq!(
+            by_speaker,
+            vec![(Some(1), 868.0, 960.0), (Some(2), 765.0, 856.0)]
+        );
+    }
+
+    #[test]
+    fn words_of_two_people_mixed_in_time_stay_each_speakers_own_caption() {
+        let words = [
+            spoken(0.0, 0.8, "今日は", 1),
+            spoken(0.2, 1.0, "本当に", 2),
+            spoken(0.8, 1.6, "いい天気", 1),
+            spoken(1.0, 1.8, "そうですね", 2),
+        ];
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &anchored(Anchor::VideoBottom),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| (cue.speaker, cue.lines.join("")))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(1), "今日はいい天気".to_owned()),
+                (Some(2), "本当にそうですね".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn three_people_and_an_unknown_voice_stack_with_the_unknown_last() {
+        let words = [
+            spoken(0.0, 3.0, "今日はいい天気です", 3),
+            spoken(0.5, 3.0, "本当にそうですね", 1),
+            word(1.0, 3.0, "聞こえますか"),
+            spoken(1.0, 3.0, "出かけましょう", 2),
+        ];
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        let mut by_height = rows(&cues, &settings, &FULL_HD);
+        by_height.sort_by(|left, right| right.2.total_cmp(&left.2));
+        assert_eq!(
+            by_height.iter().map(|row| row.0).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3), None]
+        );
+        assert!(by_height.windows(2).all(|pair| pair[1].2 < pair[0].1));
+    }
+
+    #[test]
+    fn a_long_caption_wrapped_in_two_lines_pushes_the_next_row_up() {
+        let words = [
+            spoken(
+                0.0,
+                6.0,
+                "今日はとてもいい天気なので午後から近くの公園まで歩いて出かけようと思っていますが皆さんはどうされますか",
+                1,
+            ),
+            spoken(1.0, 4.0, "本当にそうですね", 2),
+        ];
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        let first = cues.iter().find(|cue| cue.speaker == Some(1)).unwrap();
+        assert_eq!(first.lines.len(), 2);
+        let found = rows(&cues, &settings, &FULL_HD);
+        let row = |speaker: u32| found.iter().find(|row| row.0 == Some(speaker)).unwrap();
+        assert_eq!(row(1).2, 960.0);
+        assert!(row(2).2 < row(1).1, "{found:?}");
+    }
+
+    /// Four people saying the same long sentence at once.
+    fn four_long_voices() -> Vec<Word> {
+        let long = "今日はとてもいい天気なので午後から近くの公園まで歩いて出かけようと思っていますが皆さんはどうされますか";
+        (1..=4)
+            .map(|speaker| spoken(0.0, 6.0, long, speaker))
+            .collect()
+    }
+
+    fn inside_without_touching(found: &[(Option<u32>, f64, f64)], top: f64, bottom: f64) -> bool {
+        let mut by_height: Vec<(f64, f64)> = found.iter().map(|row| (row.1, row.2)).collect();
+        by_height.sort_by(|left, right| left.0.total_cmp(&right.0));
+        by_height.windows(2).all(|pair| pair[0].1 <= pair[1].0)
+            && found.iter().all(|row| row.1 >= top && row.2 <= bottom)
+    }
+
+    #[test]
+    fn four_people_in_two_lines_fit_at_full_size() {
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(
+            &four_long_voices(),
+            &[],
+            &FULL_HD,
+            &settings,
+            test_segmenter(),
+        )
+        .unwrap();
+        let together: Vec<Cue> = cues.into_iter().filter(|cue| cue.start == 0.0).collect();
+        assert_eq!(together.len(), 4);
+        assert!(together.iter().all(|cue| cue.lines.len() == 2));
+        assert!(together.iter().all(|cue| cue.scale == 1.0));
+        let found = rows(&together, &settings, &FULL_HD);
+        assert!(inside_without_touching(&found, 120.0, 960.0), "{found:?}");
+    }
+
+    #[test]
+    fn four_people_stay_inside_a_small_landscape_and_a_vertical_frame() {
+        let small = VideoInfo {
+            width: 1280,
+            height: 720,
+            ..FULL_HD
+        };
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(
+            &four_long_voices(),
+            &[],
+            &small,
+            &settings,
+            test_segmenter(),
+        )
+        .unwrap();
+        let together: Vec<Cue> = cues.into_iter().filter(|cue| cue.start == 0.0).collect();
+        assert_eq!(together.len(), 4);
+        let found = rows(&together, &settings, &small);
+        assert!(inside_without_touching(&found, 80.0, 640.0), "{found:?}");
+        let (cues, _) = build_cues(
+            &four_long_voices(),
+            &[],
+            &VERTICAL,
+            &settings,
+            test_segmenter(),
+        )
+        .unwrap();
+        let together: Vec<Cue> = cues.into_iter().filter(|cue| cue.start == 0.0).collect();
+        assert_eq!(together.len(), 4);
+        let found = rows(&together, &settings, &VERTICAL);
+        assert!(inside_without_touching(&found, 120.0, 1800.0), "{found:?}");
+    }
+
+    #[test]
+    fn four_people_in_a_very_large_font_shrink_to_stay_in_the_frame() {
+        let settings = Settings {
+            font_ratio: 0.2,
+            ..anchored(Anchor::VideoBottom)
+        };
+        let (cues, _) = build_cues(
+            &four_long_voices(),
+            &[],
+            &FULL_HD,
+            &settings,
+            test_segmenter(),
+        )
+        .unwrap();
+        let together: Vec<Cue> = cues.into_iter().filter(|cue| cue.start == 0.0).collect();
+        assert_eq!(together.len(), 4);
+        assert!(together.iter().all(|cue| cue.scale < 1.0));
+        let found = rows(&together, &settings, &FULL_HD);
+        assert!(inside_without_touching(&found, 120.0, 960.0), "{found:?}");
+    }
+
+    /// Past four people the same logic runs and nothing is lost; how it looks is not promised.
+    #[test]
+    fn nine_people_keep_every_caption_and_a_track_each() {
+        let words: Vec<Word> = (1..=9)
+            .map(|speaker| spoken(0.0, 3.0, "そうですね", speaker))
+            .collect();
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        assert_eq!(
+            cues.iter().map(|cue| cue.speaker).collect::<Vec<_>>(),
+            (1..=9).map(Some).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            crate::export::frame_tracks(&cues, &FULL_HD),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn rows_grow_away_from_a_top_anchor() {
+        let words = [
+            spoken(0.0, 3.0, "今日はいい天気です", 1),
+            spoken(1.0, 4.0, "本当にそうですね", 2),
+        ];
+        let settings = anchored(Anchor::VideoTop);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        assert_eq!(
+            rows(&cues, &settings, &FULL_HD),
+            vec![(Some(1), 120.0, 212.0), (Some(2), 224.0, 315.0)]
+        );
+    }
+
+    #[test]
+    fn rows_grow_away_from_the_face() {
+        let face = |top: f64, bottom: f64| -> Vec<FaceSample> {
+            [0.0, 1.0, 2.0, 3.0, 4.0]
+                .map(|time| FaceSample {
+                    time,
+                    top,
+                    bottom,
+                    center_x: 960.0,
+                })
+                .to_vec()
+        };
+        let words = [
+            spoken(0.0, 3.0, "今日はいい天気です", 1),
+            spoken(1.0, 4.0, "本当にそうですね", 2),
+        ];
+        let above = anchored(Anchor::FaceAbove);
+        let low_face = face(600.0, 800.0);
+        let (cues, _) = build_cues(&words, &low_face, &FULL_HD, &above, test_segmenter()).unwrap();
+        let found = rows(&cues, &above, &FULL_HD);
+        assert!(found[1].2 < found[0].1, "{found:?}");
+        assert!(found[0].2 <= 350.0, "{found:?}");
+        let below = anchored(Anchor::FaceBelow);
+        let high_face = face(200.0, 400.0);
+        let (cues, _) = build_cues(&words, &high_face, &FULL_HD, &below, test_segmenter()).unwrap();
+        let found = rows(&cues, &below, &FULL_HD);
+        assert!(found[1].1 > found[0].2, "{found:?}");
+        assert_eq!(found[0].1, 460.0, "{found:?}");
+    }
+
+    #[test]
+    fn rows_that_would_leave_the_frame_move_back_inside() {
+        let words: Vec<Word> = (1..=4)
+            .map(|speaker| spoken(0.0, 3.0, "そうですね", speaker))
+            .collect();
+        let settings = Settings {
+            placement: Placement {
+                anchor: Anchor::VideoTop,
+                offset_x_percent: 0.0,
+                offset_y_percent: 80.0,
+            },
+            ..fcpxml_settings()
+        };
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        let found = rows(&cues, &settings, &FULL_HD);
+        assert!(found.iter().all(|row| row.2 <= 960.0), "{found:?}");
+    }
+
+    #[test]
+    fn one_speaker_never_stacks_whatever_the_word_times_say() {
+        let words = [
+            spoken(0.0, 3.0, "今日はいい天気です", 1),
+            spoken(1.0, 4.0, "本当にそうですね", 1),
+        ];
+        assert_eq!(speakers_apart(&words), None);
+        let settings = anchored(Anchor::VideoBottom);
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
+        assert!(cues.iter().all(|cue| cue.scale == 1.0));
+        assert!(cues.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        assert!(rows(&cues, &settings, &FULL_HD)
+            .iter()
+            .all(|row| row.2 == 960.0));
+        let saved = serde_json::to_value(&cues[0]).unwrap();
+        assert_eq!(saved.get("scale"), None);
+    }
+
+    #[test]
+    fn quick_turns_and_timing_noise_are_not_talking_together() {
+        let turns = [
+            spoken(0.0, 0.5, "はい", 1),
+            spoken(0.5, 1.0, "ええ", 2),
+            spoken(1.0, 1.5, "そう", 1),
+            spoken(1.5, 2.0, "うん", 2),
+        ];
+        assert_eq!(speakers_apart(&turns), None);
+        let noise = [
+            spoken(0.0, 1.1, "今日は", 1),
+            spoken(1.0, 2.0, "そうですね", 2),
+        ];
+        assert_eq!(speakers_apart(&noise), None);
+    }
+
+    #[test]
+    fn only_the_stretch_of_talking_together_is_rearranged() {
+        let words = [
+            spoken(0.0, 1.0, "あ", 2),
+            spoken(5.0, 7.0, "い", 2),
+            spoken(5.5, 6.0, "う", 1),
+            spoken(6.0, 8.0, "え", 2),
+            spoken(20.0, 21.0, "お", 1),
+        ];
+        assert_eq!(
+            speakers_apart(&words)
+                .unwrap()
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["あ", "い", "え", "う", "お"]
+        );
+    }
+
+    #[test]
+    fn a_saved_cue_without_a_scale_reads_at_full_size() {
+        let cue: Cue = serde_json::from_str(
+            r#"{"start":0.0,"end":1.0,"speaker":1,"lines":["あ"],"x":1.0,"y":2.0}"#,
+        )
+        .unwrap();
+        assert_eq!(cue.scale, 1.0);
     }
 
     #[test]

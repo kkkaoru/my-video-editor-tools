@@ -68,6 +68,10 @@ A profile saves the caption look and position under a name (`profiles.json` in t
 spoken language are not part of it. One font family, chosen from those installed on the computer, applies to every
 speaker in the FCPXML, the TTML and the preview.
 
+Speakers whose words coincide for 0.25 s or more are shown together, one row each in speaker order, growing away from
+the anchor; rows that cannot fit between the margins shrink together. `.drt` and FCPXML put them on separate tracks or
+lanes; TTML and SRT, whose subtitle track holds one entry at a time, join them in one entry while they overlap.
+
 Dropping `.fcpxml`, `.srt`, `.ttml` or `.transcript.json` files writes them again from the transcript of the same name,
 with the selected profile's saved look, or the current settings when none is selected. The results are new files named
 like a second run (`clip-2.ttml`); existing files are never replaced by a drop.

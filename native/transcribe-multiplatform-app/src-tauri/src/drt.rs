@@ -5,7 +5,7 @@
 use crate::captions::{Cue, Metrics};
 use crate::engines::{AudioInfo, VideoInfo};
 use crate::error::{AppError, AppResult};
-use crate::export::{escape_xml, frame_span, title_layers, LayerKind, Transcript};
+use crate::export::{escape_xml, frame_span, frame_tracks, title_layers, LayerKind, Transcript};
 use crate::settings::{Settings, SpeakerColor};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -21,6 +21,7 @@ const PROJECT_TEMPLATE: &str = include_str!("drt_template/project.xml");
 const FOLDER_TEMPLATE: &str = include_str!("drt_template/folder.xml");
 const SEQUENCE_TEMPLATE: &str = include_str!("drt_template/sequence.xml");
 const TITLE_TEMPLATE: &str = include_str!("drt_template/title.xml");
+const TITLE_TRACK_TEMPLATE: &str = include_str!("drt_template/title_track.xml");
 /// The template's id slot of the sequence container, which also names its file.
 const SEQUENCE_SLOT: &str = "13";
 /// Measured in Resolve 21.1.2: a Text+ em is `Size` x this x the frame width.
@@ -249,7 +250,9 @@ fn cue_inputs(
         ("Style".to_owned(), LuaValue::Text(FONT_STYLE.to_owned())),
         (
             "Size".to_owned(),
-            LuaValue::Number(metrics.font_px * metrics.rendered_scale / (EM_PER_SIZE * width)),
+            LuaValue::Number(
+                metrics.font_px * metrics.rendered_scale * cue.scale / (EM_PER_SIZE * width),
+            ),
         ),
         (
             "LineSpacing".to_owned(),
@@ -592,12 +595,28 @@ pub fn render(transcript: &Transcript, settings: &Settings, seed: &str) -> AppRe
         .rsplit_once('.')
         .map_or(file_name, |parts| parts.0);
     let frames = frame_total(info);
-    let titles = transcript
-        .cues
-        .iter()
-        .enumerate()
-        .map(|(index, cue)| title_xml(index, cue, transcript, settings, &ids))
+    let tracks = frame_tracks(&transcript.cues, info);
+    let titles_on = |track: usize| {
+        transcript
+            .cues
+            .iter()
+            .zip(&tracks)
+            .enumerate()
+            .filter(|(_, (_, on))| **on == track)
+            .map(|(index, (cue, _))| title_xml(index, cue, transcript, settings, &ids))
+            .collect::<AppResult<String>>()
+    };
+    // Titles shown together go on tracks of their own above the first.
+    let more_title_tracks = (1..=tracks.iter().copied().max().unwrap_or(0))
+        .map(|track| {
+            let values = [
+                ("track_id", ids.uuid(&format!("title-track-{track}"))),
+                ("titles", titles_on(track)?),
+            ];
+            fill(TITLE_TRACK_TEMPLATE, &ids, &values)
+        })
         .collect::<AppResult<String>>()?;
+    let titles = titles_on(0)?;
     let mut values = vec![
         ("name", escape_xml(stem)),
         ("file_name", escape_xml(file_name)),
@@ -631,6 +650,7 @@ pub fn render(transcript: &Transcript, settings: &Settings, seed: &str) -> AppRe
         ("version_body", version_body(info)),
         ("unlinked_fields", unlinked_fields()),
         ("titles", titles),
+        ("more_title_tracks", more_title_tracks),
     ];
     values.extend(audio_values(info.audio, &source, micros));
     let has_audio = info.audio.is_some();
@@ -708,6 +728,7 @@ mod tests {
             lines: lines.iter().map(|line| (*line).to_owned()).collect(),
             x: 360.0,
             y: 960.0,
+            scale: 1.0,
         }
     }
 
@@ -1007,6 +1028,66 @@ mod tests {
         assert!(lua.contains("Green3 = Input"), "{lua}");
         assert!(!lua.contains("ElementShape3"), "{lua}");
         assert!(!lua.contains("Thickness3"), "{lua}");
+    }
+
+    #[test]
+    fn titles_shown_together_go_on_tracks_of_their_own() {
+        let bytes = default_render(
+            VERTICAL,
+            vec![
+                cue(1.0, 4.0, Some(1), &["はい"]),
+                cue(2.0, 5.0, Some(2), &["ええ"]),
+                cue(3.0, 6.0, Some(3), &["うん"]),
+                cue(7.0, 8.0, Some(1), &["そう"]),
+            ],
+        );
+        let (_, _, sequence, _) = opened(&bytes);
+        let videos = sequence.split("</VideoTrackVec>").next().unwrap();
+        assert_eq!(videos.matches("<Sm2TiTrack ").count(), 4);
+        let items: Vec<usize> = videos
+            .split("<Sm2TiTrack ")
+            .skip(1)
+            .map(|track| track.matches("Fusion Title</PrettyType>").count())
+            .collect();
+        assert_eq!(items, vec![0, 2, 1, 1]);
+        assert!(!sequence.contains("{{"));
+    }
+
+    #[test]
+    fn titles_one_after_another_stay_on_the_one_title_track() {
+        let bytes = default_render(
+            VERTICAL,
+            vec![
+                cue(1.0, 2.0, Some(1), &["はい"]),
+                cue(2.0, 3.0, Some(2), &["ええ"]),
+            ],
+        );
+        let (_, _, sequence, _) = opened(&bytes);
+        let videos = sequence.split("</VideoTrackVec>").next().unwrap();
+        assert_eq!(videos.matches("<Sm2TiTrack ").count(), 2);
+    }
+
+    #[test]
+    fn a_title_that_had_to_shrink_is_drawn_smaller() {
+        let small = Cue {
+            scale: 0.5,
+            ..cue(1.0, 2.0, Some(1), &["はい"])
+        };
+        let doc = transcript(VERTICAL, vec![small, cue(3.0, 4.0, Some(1), &["はい"])]);
+        let bytes = render(&doc, &Settings::default(), "seed").unwrap();
+        let (_, _, sequence, _) = opened(&bytes);
+        let size = |index: usize| -> f64 {
+            title_lua(&sequence, index)
+                .split("Size = Input { Value = ")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        assert_eq!(size(0) * 2.0, size(1));
     }
 
     #[test]
