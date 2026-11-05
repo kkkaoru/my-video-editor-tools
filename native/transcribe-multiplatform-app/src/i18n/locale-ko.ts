@@ -1,0 +1,482 @@
+// Runs with bun: Korean UI text.
+import type { Messages } from "./messages.ts";
+
+export const koMessages: Messages = {
+  appName: "Transcribe Captions",
+  tabJobs: "받아쓰기",
+  tabStyle: "자막 모양과 위치",
+  tabHelp: "사용 방법",
+  tabModels: "모델",
+  noticeSpeakersOnCpu:
+    "화자를 구별하는 작업이 CPU에서 돌아가 시간이 더 걸립니다. 모델 탭에서 GeForce용 데이터를 받으면 빨라집니다.",
+  noticeCpuOnly: "이 버전에서 쓸 수 있는 GPU를 찾지 못해 모든 작업이 CPU에서 돌아갑니다. 시간이 더 걸립니다.",
+  dropTitle: "동영상이나 자막 파일을 여기에 놓으세요",
+  dropHint: "동영상에서 동영상 편집 프로그램용 자막 파일을 만들어 동영상 옆에 저장합니다.",
+  dropHover: "놓으면 파일을 추가합니다",
+  pickVideos: "동영상 선택",
+  pickSubtitles: "자막 파일 선택",
+  subtitleFilterName: "자막 파일",
+  dropProfileHint: "놓은 자막 파일은 저장된 프로필 {name}(으)로 새 파일에 다시 씁니다.",
+  dropCurrentHint: "놓은 자막 파일은 현재 자막 설정으로 새 파일에 다시 씁니다.",
+  speakerCountHelpLabel: "화자 수를 지정하는 이유",
+  speakerCountHelp:
+    "화자별 색상은 목소리를 구별하는 데 달려 있습니다. 인원수를 지정하면 비슷한 목소리가 하나로 합쳐지거나 한 사람이 둘로 나뉘는 일이 줄어듭니다. 1명을 선택하면 화자 분리를 건너뛰므로 더 빠르고 화자 모델도 필요 없습니다.",
+  profilesHeading: "프로필",
+  profilesHint:
+    "자막의 모양과 위치에 이름을 붙여 저장하고 나중에 복원합니다. 모델과 음성 언어는 프로필에 포함되지 않습니다.",
+  profileName: "프로필 이름",
+  profileSave: "새 프로필로 저장",
+  profileEmpty: "저장된 프로필이 아직 없습니다.",
+  profileSelected: "선택됨",
+  profileChanged: "저장되지 않은 변경 있음",
+  profileLoad: "{name} 불러오기",
+  profileOverwrite: "{name} 덮어쓰기",
+  profileOverwriteTitle: "{name}을(를) 덮어쓸까요?",
+  profileOverwriteDescription: "저장된 모양을 현재 설정으로 바꿉니다. 되돌릴 수 없습니다.",
+  profileDelete: "{name} 삭제",
+  profileDeleteTitle: "{name}을(를) 삭제할까요?",
+  profileDeleteDescription:
+    "프로필을 삭제합니다. 현재 설정과 기존 자막 파일은 그대로입니다. 되돌릴 수 없습니다.",
+  profileExport: "{name} 내보내기",
+  profileImport: "파일에서 가져오기",
+  profileFileFilter: "프로필",
+  resetLook: "처음 모양과 위치로 되돌리기",
+  resetLookTitle: "처음 모양과 위치로 되돌릴까요?",
+  resetLookCurrent:
+    "지금 모양과 위치를 앱의 처음 설정으로 되돌립니다. 다른 프로필, 화자 수, 모델, 언어는 바뀌지 않습니다. 되돌릴 수 없습니다.",
+  resetLookProfile:
+    "프로필 {name}의 모양과 위치를 앱의 처음 설정으로 되돌립니다. 다른 프로필, 화자 수, 모델, 언어는 바뀌지 않습니다. 되돌릴 수 없습니다.",
+  resetLookConfirm: "되돌리기",
+  dialogCancel: "취소",
+  fontFamily: "글꼴 패밀리",
+  fontSearch: "글꼴 검색",
+  fontHint: "모든 화자에 사용합니다. 입력하면 목록을 좁힐 수 있습니다.",
+  fontLoading: "설치된 글꼴을 읽는 중",
+  fontNoMatch: "일치하는 글꼴이 없습니다",
+  fontNotInstalled:
+    "{font}이(가) 이 컴퓨터에 설치되어 있지 않습니다. 미리 보기는 대체 글꼴을 쓰고, 자막 파일에는 이 이름을 씁니다.",
+  downloadAllLabel: "없는 모델 다운로드",
+  downloadAll: "{label}: {count} ({size})",
+  resetModels: "모델 초기화 후 다시 다운로드",
+  resetModelsTitle: "모델을 초기화하고 다시 다운로드할까요?",
+  resetModelsDescription:
+    "이 앱이 {path}에 다운로드한 것을 모두 삭제한 다음, 이 컴퓨터에 필요한 모델을 다시 다운로드합니다. 추가한 폴더는 절대 건드리지 않습니다. 되돌릴 수 없습니다.",
+  resetModelsConfirm: "삭제하고 다시 다운로드",
+  videoFilterName: "동영상",
+  readinessMissing: "{roles} 모델이 없습니다. 모델에서 다운로드하거나 이미 모델이 있는 폴더를 추가하세요.",
+  roleTranscribe: "받아쓰기",
+  roleDiarize: "화자 분리",
+  roleFace: "얼굴 감지",
+  roleRuntime: "실행 환경",
+  jobQueued: "대기 중",
+  jobCancelled: "취소됨",
+  jobCancel: "{name} 취소",
+  jobRelayout: "현재 위치와 색상으로 {name} 다시 저장",
+  jobDone: "완료: 자막 {cues}개, 화자 {speakers}명",
+  jobDoneOneSpeaker: "완료: 자막 {cues}개, 화자 1명",
+  jobFaceless: "얼굴이 없는 구간의 자막은 동영상 아래쪽에 배치했습니다.",
+  jobNoPercent: "이 모델은 진행률을 알려 주지 않습니다",
+  speakerCount: "화자 수",
+  speakerCountAuto: "자동 판별",
+  speakerCountValue: "{count}명",
+  speakerCountOne: "1명",
+  jobFewerSpeakers:
+    "{requested}명을 지정했지만 {found}명만 분리했습니다. 음성이 짧거나 목소리가 비슷하면 발생할 수 있습니다.",
+  jobStep: "{total}단계 중 {number}단계: {stage}",
+  jobEstimating: "남은 시간 계산 중",
+  jobRemaining: "약 {minutes}분 남음",
+  jobRemainingUnderMinute: "1분 미만 남음",
+  stepStates: { done: "완료", current: "진행 중", pending: "대기 중" },
+  outputPurposes: {
+    ttml: "스타일 자막(색상, 윤곽선, 위치)",
+    srt: "글자와 시간이 든 자막 (색은 나오지 않을 수 있음, 테두리와 위치 없음)",
+    fcpxml: "타이틀이 포함된 타임라인",
+    json: "다시 쓰기용 전사 데이터",
+  },
+  jobProgressLabel: "{name}의 진행 상황",
+  jobOutputs: "저장된 파일",
+  stages: {
+    convert_model: "모델 변환 중",
+    extract_audio: "오디오 추출 중",
+    transcribe: "받아쓰기 중",
+    diarize: "화자 분리 중",
+    faces: "얼굴 감지 중",
+    export: "자막 파일 저장 중",
+  },
+  positionHeading: "자막 위치",
+  positionLabel: "자막을 놓을 곳",
+  anchorFaceAbove: "얼굴 위",
+  anchorFaceBelow: "얼굴 아래",
+  anchorVideoTop: "동영상 위쪽",
+  anchorVideoBottom: "동영상 아래쪽",
+  offsetX: "좌우 미세 조정 (너비 대비 퍼센트)",
+  offsetY: "상하 미세 조정 (높이 대비 퍼센트)",
+  faceModel: "얼굴 감지 모델",
+  speechLanguage: "말하는 언어",
+  languageAuto: "자동 감지",
+  sizeHeading: "자막 크기",
+  sizeHint: "크기는 각 동영상의 해상도에 맞춰 자동으로 정해집니다. 아래 값은 동영상 대비 비율입니다.",
+  fontSize: "글자 크기 (짧은 변 대비 퍼센트)",
+  captionWidth: "가장 긴 줄 (너비 대비 퍼센트)",
+  outlineWidth: "외곽선 두께 (글자 대비 퍼센트)",
+  captionLineHeight: "자막 줄 간격(글자 크기의 배수)",
+  rimWidth: "윤곽선 바깥 검은 테두리 두께(글자 대비 %)",
+  unknownSpeaker: "알 수 없는 화자",
+  contrastWarning:
+    "{name}: 채우기와 윤곽선의 대비가 {ratio}:1로 WCAG AA 기준 4.5:1보다 낮습니다. 명암 차이가 큰 색을 선택하세요.",
+  shadowEnabled: "그림자 추가",
+  shadowStrength: "그림자 강도(%)",
+  previewHeading: "미리보기",
+  previewFrameLabel: "미리보기 크기",
+  previewDescription: "미리보기 자막은 {size} 화면에서 가로 {x}%, 세로 {y}% 위치에 있습니다.",
+  previewFontPixels: "이 해상도에서 글자 크기는 {px} px입니다.",
+  previewSample: "외곽선이 있는 자막은 화자마다 색이 바뀝니다",
+  previewLandscape: "1920×1080",
+  previewVertical: "세로 1080×1920",
+  previewUhd: "4K",
+  speakersHeading: "화자 색상 (최대 {count}명)",
+  speakersHint: "화자마다 채우기 색과 외곽선 색이 자동으로 지정됩니다. 여기서 바꿀 수 있습니다.",
+  speakerName: "화자 {number}",
+  fillLabel: "채우기",
+  outlineLabel: "윤곽선",
+  addSpeaker: "화자 추가",
+  removeSpeaker: "화자 줄이기",
+  resetPalette: "처음 색상으로 되돌리기",
+  modelsHeading: "모델",
+  noRecommendedSpeakerModel:
+    "이 컴퓨터에 추천하는 화자 분리 모델이 없습니다. 화자 수를 1명으로 하거나, 아래 목록에서 작은 모델을 내려받아 고르세요.",
+  modelsHint:
+    "이 컴퓨터에 알맞은 모델에는 추천 표시가 붙습니다. 이미 다운로드한 모델은 자동으로 찾아 다시 사용합니다.",
+  addModelFolder: "기존 모델이 있는 폴더 추가",
+  modelFolders: "검색할 폴더",
+  badgeRecommended: "이 컴퓨터에 추천",
+  badgePresent: "사용 가능",
+  useModel: "{name} 사용",
+  inUseModel: "사용 중: {name}",
+  download: "{name} 다운로드 ({size})",
+  downloadCancel: "{name} 다운로드 취소",
+  downloadProgress: "{done} / {total}",
+  downloadProgressLabel: "{name} 다운로드",
+  deleteModel: "다운로드한 {name} 삭제",
+  sourceLabel: "출처: {url}",
+  locationLabel: "위치: {path}",
+  loadFailed: "문제가 발생했습니다: {detail}",
+  errors: {
+    no_video_stream: "이 파일에는 영상이 없습니다. 동영상 파일을 선택하세요.",
+    no_audio_stream: "이 동영상에는 소리가 없어 받아쓸 내용이 없습니다.",
+    unreadable_size: "이 동영상의 크기를 읽을 수 없습니다. 파일이 손상되었을 수 있습니다.",
+    unreadable_duration: "이 동영상의 길이를 읽을 수 없습니다. 파일이 손상되었을 수 있습니다.",
+    no_words: "오디오에서 말을 찾지 못했습니다.",
+    model_missing: "{model}이(가) 설치되어 있지 않습니다. 모델에서 다운로드하세요.",
+    no_model_for_role:
+      "{role} 모델이 없습니다. 화자 수를 1명으로 하거나, 모델 탭에서 작은 모델을 내려받아 고르세요.",
+    needs_nvidia: "{model}에는 NVIDIA GPU가 필요합니다. 모델에서 다른 모델을 선택하세요.",
+    needs_memory:
+      "{model}에는 메모리 {required} GB가 필요하지만 이 컴퓨터는 {available} GB입니다. 더 작은 모델을 선택하세요.",
+    too_long_for_model:
+      "{model}은(는) 최대 {limit}분 음성을 지원합니다. 이 동영상은 더 깁니다. 모델에서 Nemotron 3 Diarization을 선택하세요.",
+    transcript_missing:
+      "{file} 옆에 대본 데이터가 없어 다시 쓸 수 없습니다. 같은 이름의 .transcript.json 파일을 같은 폴더에 두세요.",
+    profile_exists: "{name} 프로필이 이미 있습니다. 다른 이름을 쓰거나 목록에서 덮어쓰세요.",
+    profile_missing: "{name} 프로필이 더 이상 없습니다.",
+    models_busy:
+      "작업이나 다운로드가 진행 중일 때는 모델을 초기화할 수 없습니다. 끝나기를 기다리거나 취소한 뒤 다시 시도하세요.",
+    models_missing:
+      "다음 모델이 없어 동영상을 추가하지 않았습니다: {roles}. 모델 탭에서 다운로드하거나 모델이 있는 폴더를 추가하세요.",
+    no_supported_files:
+      "이 파일은 넣을 수 없습니다. 동영상(.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts)이나 자막 파일(.fcpxml .srt .ttml .transcript.json)을 고르세요.",
+    profile_invalid: "{file} 파일을 프로필로 읽을 수 없습니다. 이 앱에서 내보낸 파일을 고르세요.",
+    internal: "{detail}",
+    cancelled: "취소됨",
+  },
+  modelNotes: {
+    "whisper-large-v3-turbo": "받아쓰기. 같은 모델이 Mac (Metal)과 Windows (Vulkan)에서 동작합니다.",
+    "nemotron-3.5-transcribe-iq4": "화자 분리. 32 GB 이상의 Mac, 24 GB 이상의 GPU, CPU용입니다.",
+    "nemotron-3.5-transcribe-nvfp4": "화자 분리. GeForce RTX 50 시리즈 같은 Blackwell GPU용입니다.",
+    "nemotron-3.5-transcribe-q2m": "화자 분리. 16 GB GPU용이며, 녹음 한 건은 약 7분까지입니다.",
+    "nemotron-3.5-transcribe-q2l": "화자 분리. 24 GB Mac용입니다.",
+    "nemotron-3.5-transcribe-q8": "화자 분리. 최고 품질이며 64 GB Mac과 48 GB GPU용입니다.",
+    "nemotron-3-diarization": "화자 분리 전용, 107 MB. 최대 8명이며 적은 메모리로 동작합니다.",
+    yunet: "실제 얼굴. 앱에 포함되어 있으며 Mac과 Windows에서 같은 결과를 냅니다.",
+    "avatar-face-yolo": "아바타 얼굴. 내보낸 ONNX 파일을 모델 폴더에 넣으면 사용할 수 있습니다.",
+    "geforce-runtime": "화자 분리 도구의 CUDA 버전. 없으면 화자 분리를 CPU에서 실행합니다.",
+  },
+  help: {
+    version: "버전 {version}",
+    intro:
+      "이 앱은 동영상에서 하는 말을 자막으로 만들고, 사람마다 다른 색을 씁니다. 자막은 동영상 편집 프로그램에서 쓸 수 있습니다.",
+    sections: {
+      start: {
+        heading: "처음 할 일",
+        parts: [
+          {
+            heading: "앱 설치하기",
+            intro: "컴퓨터에 맞는 파일을 내려받아 설치합니다.",
+            steps: [
+              "아래 목록에서 컴퓨터에 맞는 파일을 고릅니다.",
+              "Mac은 zip을 열고 앱을 “응용 프로그램” 폴더로 옮깁니다.",
+              "Windows는 exe를 열고 안내대로 진행합니다.",
+            ],
+            notes: [
+              "Mac: Transcribe-Captions-macos-arm64.zip",
+              "GeForce가 있는 Windows: Transcribe-Captions-windows-geforce-x64-setup.exe",
+              "Radeon이 있는 Windows: Transcribe-Captions-windows-radeon-x64-setup.exe",
+              "둘 다 없는 Windows: 어느 exe든 됩니다. CPU로만 돌아가서 시간이 더 걸립니다.",
+              "Mac에서 막힐 때: 시스템 설정 > 개인정보 보호 및 보안을 열고 “그래도 열기”를 누릅니다.",
+              "Windows에서 막힐 때: “추가 정보”를 누른 뒤 “실행”을 누릅니다.",
+            ],
+          },
+          {
+            heading: "모델 내려받기",
+            intro: "모델은 말을 글자로 바꿀 때 쓰는 데이터입니다. 한 번만 받으면 됩니다.",
+            steps: [
+              "“{tabModels}” 탭을 엽니다.",
+              "“{downloadAllLabel}” 버튼을 누릅니다.",
+              "모델마다 막대가 끝까지 찰 때까지 기다립니다.",
+            ],
+            notes: [
+              "다 받은 모델에는 “{badgePresent}” 표시가 나옵니다.",
+              "없는 모델이 없으면 이 버튼은 나오지 않습니다.",
+              "인터넷이 필요합니다. 파일이 커서 시간이 걸립니다.",
+              "내려받기가 멈추면 버튼을 다시 누르세요. 멈춘 곳부터 이어서 받습니다.",
+            ],
+          },
+          {
+            heading: "이미 있는 모델 쓰기",
+            intro: "전에 받은 모델이 있으면 다시 받지 않아도 됩니다.",
+            steps: [
+              "“{tabModels}” 탭을 엽니다.",
+              "“{addModelFolder}” 버튼을 누릅니다.",
+              "모델이 들어 있는 폴더를 고릅니다.",
+            ],
+            notes: ["찾은 모델에는 “{badgePresent}” 표시가 나옵니다."],
+          },
+        ],
+      },
+      transcribe: {
+        heading: "동영상으로 자막 만들기",
+        parts: [
+          {
+            heading: "동영상 넣기",
+            intro: "동영상을 넣으면 자막을 만들기 시작합니다.",
+            steps: [
+              "“{tabJobs}” 탭을 엽니다.",
+              "“{speakerCount}” 값은 처음에 1명입니다. 더 많은 사람이 말하면 인원수를 고릅니다. 잘 모르면 “{speakerCountAuto}” 항목을 고릅니다.",
+              "동영상을 상자 안으로 끌어다 놓습니다. 끌기는 누른 채로 움직이는 것입니다. “{pickVideos}” 버튼을 눌러도 됩니다.",
+            ],
+            notes: [
+              "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
+              "한 사람만 말하면 1명 그대로 둡니다. 더 빨리 끝납니다.",
+              "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
+              "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
+              "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",
+              "자막의 언어가 다르면 “{tabStyle}” 탭의 “{speechLanguage}”에서 언어를 고릅니다.",
+            ],
+          },
+          {
+            heading: "진행 상황 보기",
+            intro: "동영상을 넣으면 상자 아래에 목록이 나옵니다.",
+            steps: [],
+            notes: [
+              "지금 하는 단계와 전체 단계 수가 나옵니다.",
+              "막대는 전체 진행 상황입니다.",
+              "남은 시간도 대략 나옵니다.",
+              "멈추고 싶으면 동영상 이름 옆의 버튼을 누릅니다.",
+            ],
+          },
+          {
+            heading: "만들어지는 파일",
+            intro:
+              "동영상과 같은 폴더에 파일 4개가 생깁니다. 전에 만든 파일은 지우지 않습니다. 이름이 같으면 새 파일 이름에 -2를 붙입니다.",
+            steps: [],
+            notes: [
+              ".fcpxml: 동영상 편집 프로그램에서 읽을 수 있는, 자막과 동영상이 함께 든 파일입니다.",
+              ".ttml: 색과 위치가 든 자막 파일입니다.",
+              ".srt: 글자와 시간이 든 자막입니다. 색은 나오지 않을 수 있습니다. 테두리와 위치는 들어 있지 않습니다.",
+              ".transcript.json: 자막을 다시 쓸 때 쓰는 데이터입니다. 지우지 마세요.",
+            ],
+          },
+        ],
+      },
+      editor: {
+        heading: "동영상 편집 프로그램으로 가져오기",
+        parts: [
+          {
+            heading: "먼저 FCPXML 가져오기",
+            intro:
+              "FCPXML 파일은 동영상과 자막을 한 번에 가져옵니다. 자막의 색, 테두리, 위치도 함께 들어옵니다. 그래서 먼저 이 파일을 씁니다.",
+            steps: [
+              "동영상 편집 프로그램에서 프로젝트를 엽니다. 프로젝트는 편집 작업을 모아 둔 것입니다.",
+              "메뉴에서 타임라인을 가져옵니다 (예: File > Import > Timeline).",
+              "만들어진 .fcpxml 파일을 고릅니다.",
+              "타임라인에 동영상과 자막이 나옵니다. 타임라인은 동영상을 시간 순서로 늘어놓는 곳입니다.",
+            ],
+            notes: ["자막은 2~3겹으로 겹쳐 있습니다. 글자를 고칠 때는 모든 겹을 고칩니다."],
+          },
+          {
+            heading: "다른 파일을 쓸 때",
+            intro: "다른 파일은 필요할 때만 씁니다.",
+            steps: [],
+            notes: [
+              ".ttml 파일은 Media Pool에서 Import Subtitle을 골라 가져옵니다. Media Pool은 동영상과 자막을 넣어 두는 곳입니다.",
+              ".srt 파일은 동영상 편집 프로그램 안에서 글자나 시간을 고칠 때 씁니다. 이 앱으로 다시 만들면 고친 글자는 들어가지 않습니다.",
+              "FCPXML과 TTML을 한 타임라인에서 함께 쓰지 마세요. 자막이 두 번 보입니다.",
+            ],
+          },
+        ],
+      },
+      look: {
+        heading: "자막의 모양과 위치 바꾸기",
+        parts: [
+          {
+            heading: "모양과 위치 바꾸기",
+            intro:
+              "바꾸면 미리보기에 바로 나오고 자동으로 저장됩니다. 미리보기는 자막이 어떻게 보일지 먼저 보는 화면입니다.",
+            steps: [
+              "“{tabStyle}” 탭을 엽니다.",
+              "“{positionHeading}”에서 “{anchorFaceAbove}”, “{anchorFaceBelow}”, “{anchorVideoTop}”, “{anchorVideoBottom}” 중 하나를 고릅니다.",
+              "슬라이더로 글자 크기와 테두리 굵기를 정합니다. 슬라이더는 좌우로 움직이는 손잡이입니다. 숫자를 입력해도 됩니다.",
+              "사람마다 글자 색과 테두리 색을 고릅니다.",
+            ],
+            notes: [
+              "미리보기는 넓은 화면에서는 오른쪽에, 좁은 화면에서는 위에 나옵니다. 아래로 내려도 계속 보입니다.",
+            ],
+          },
+          {
+            heading: "글꼴 고르기",
+            intro:
+              "글꼴은 글자의 모양입니다. 이 컴퓨터에 있는 글꼴에서 고르고, 모든 사람의 자막에 같은 글꼴을 씁니다.",
+            steps: [
+              "“{fontFamily}” 아래에서 글꼴 이름이 나온 곳을 누릅니다.",
+              "글꼴 이름의 일부를 입력하면 목록이 짧아집니다.",
+              "쓰고 싶은 글꼴을 누릅니다.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "프로필 저장하고 불러오기",
+            intro: "프로필은 모양과 위치 설정에 이름을 붙여 저장한 것입니다.",
+            steps: [
+              "이름을 입력합니다.",
+              "“{profileSave}” 버튼을 누릅니다.",
+              "나중에 쓸 때는 목록의 불러오기 버튼을 누릅니다.",
+            ],
+            notes: ["덮어쓰기와 삭제는 먼저 확인합니다.", "모델과 말하는 언어는 프로필에 저장되지 않습니다."],
+          },
+          {
+            heading: "다른 컴퓨터에서 프로필 쓰기",
+            intro: "프로필을 파일로 내보내면 다른 컴퓨터에서도 쓸 수 있습니다.",
+            steps: [
+              "목록의 내보내기 버튼을 누르고 저장할 곳을 고릅니다.",
+              "파일을 다른 컴퓨터로 복사합니다.",
+              "다른 컴퓨터에서 “{profileImport}” 버튼을 누르고 그 파일을 고릅니다.",
+            ],
+            notes: [
+              "가져온 프로필은 목록에 나옵니다.",
+              "이름이 같으면 덮어쓰지 않고 다른 이름으로 넣습니다.",
+            ],
+          },
+          {
+            heading: "처음 모양으로 되돌리기",
+            intro: "모양과 위치를 앱의 처음 설정으로 되돌릴 수 있습니다.",
+            steps: ["“{tabStyle}” 탭을 엽니다.", "“{resetLook}” 버튼을 누릅니다.", "안내를 읽고 계속합니다."],
+            notes: [
+              "프로필을 쓰고 있으면 그 프로필만 되돌립니다.",
+              "화자 수, 모델, 언어와 다른 프로필은 바뀌지 않습니다.",
+            ],
+          },
+        ],
+      },
+      rewrite: {
+        heading: "만든 자막의 모양 바꾸기",
+        parts: [
+          {
+            heading: "자막 파일 넣기",
+            intro:
+              "소리에서 다시 만들지 않아도 자막 모양을 바꿀 수 있습니다. 보통은 금방 끝납니다. 얼굴을 찾는 작업이 있으면 시간이 걸립니다.",
+            steps: [
+              "쓰고 싶은 프로필을 불러옵니다. 불러오지 않으면 지금 설정을 씁니다.",
+              "“{tabJobs}” 탭을 엽니다.",
+              ".fcpxml, .srt, .ttml, .transcript.json 중 하나를 상자 안으로 끌어다 놓습니다. “{pickSubtitles}” 버튼을 눌러도 됩니다.",
+              "상자 아래 목록에 진행 상황과 결과가 나옵니다.",
+            ],
+            notes: [
+              "목록에서 동영상 이름 옆의 다시 만들기 버튼은 다른 이름으로 새 파일을 만듭니다. 원래 파일은 남습니다.",
+              "원래 파일은 지우지 않습니다. 새 파일 이름에 -2 같은 번호를 붙입니다.",
+              "같은 폴더에 이름이 같은 .transcript.json 파일이 있어야 합니다.",
+              "프로필을 쓰고 있을 때는 그 프로필에 저장하지 않은 변경을 쓰지 않습니다.",
+            ],
+          },
+        ],
+      },
+      trouble: {
+        heading: "잘 안 될 때",
+        parts: [
+          {
+            heading: "모델이 없다고 나올 때",
+            intro: "필요한 모델이 없으면 자막을 만들기 시작할 수 없습니다.",
+            steps: [
+              "“{tabModels}” 탭을 엽니다.",
+              "“{downloadAllLabel}” 버튼을 누릅니다.",
+              "끝나면 동영상을 다시 넣습니다.",
+            ],
+            notes: [],
+          },
+          {
+            heading: "화자를 구별하는 모델이 없다고 나올 때",
+            intro: "컴퓨터에 따라 추천 모델이 없을 수 있습니다. 다음 중 하나를 하세요.",
+            steps: [],
+            notes: [
+              "한 사람만 말하는 동영상이면 “{speakerCount}”에서 1명을 고릅니다. 이 모델은 필요 없습니다.",
+              "“{tabModels}” 탭에서 작은 모델을 내려받고 사용 버튼을 누릅니다.",
+            ],
+          },
+          {
+            heading: "얼굴을 찾지 못했다고 나올 때",
+            intro:
+              "얼굴을 찾지 못한 장면의 자막은 동영상 아래에 둡니다. 얼굴을 쓰지 않는 곳을 고르면 자막이 늘 같은 곳에 나옵니다.",
+            steps: [
+              "“{tabStyle}” 탭을 엽니다.",
+              "자막을 둘 곳에서 동영상 위나 아래를 고릅니다.",
+              "동영상 이름 옆의 다시 만들기 버튼을 누릅니다.",
+            ],
+            notes: [
+              "목록에 없으면 자막 파일을 넣습니다. 프로필을 쓰고 있으면 먼저 덮어씁니다.",
+              "아바타 얼굴에는 다른 모델이 필요합니다. 모델 파일을 모델 폴더에 넣고 “{faceModel}”에서 고릅니다.",
+            ],
+          },
+          {
+            heading: "처음부터 다시 하고 싶을 때",
+            intro: "모델이 망가진 것 같으면 다시 받을 수 있습니다.",
+            steps: [
+              "“{tabModels}” 탭을 엽니다.",
+              "“{resetModels}” 버튼을 누릅니다.",
+              "안내를 읽고 계속합니다.",
+            ],
+            notes: [
+              "이 앱이 받은 것만 지웁니다. 직접 추가한 폴더는 지우지 않습니다.",
+              "자막을 만드는 중이거나 내려받는 중에는 할 수 없습니다.",
+              "지운 뒤에는 없는 모델의 내려받기가 자동으로 시작됩니다.",
+            ],
+          },
+          {
+            heading: "동영상 편집 프로그램에서 동영상을 찾지 못할 때",
+            intro:
+              "FCPXML 파일에는 동영상의 위치와 이름이 적혀 있습니다. 동영상을 옮기거나 이름을 바꾸면 찾지 못합니다.",
+            steps: ["동영상을 원래 위치와 원래 이름으로 되돌립니다.", ".fcpxml 파일을 다시 가져옵니다."],
+            notes: [],
+          },
+        ],
+      },
+    },
+    imageFolder: "ko",
+    images: {
+      models: "모델 탭 화면입니다. 1은 탭, 2는 내려받기 버튼, 3은 모델마다 있는 막대입니다.",
+      transcribe: "자막 만들기 탭 화면입니다. 1은 탭, 2는 화자 수, 3은 동영상을 넣는 상자입니다.",
+      look: "자막 모양과 위치 탭 화면입니다. 1은 탭, 2는 자막을 둘 곳, 3은 슬라이더, 4는 사람마다 쓰는 색입니다.",
+      font: "글꼴 목록을 연 화면입니다. 1은 글꼴 이름이 나온 곳, 2는 입력하는 곳, 3은 고를 글꼴입니다.",
+      profiles: "프로필 영역 화면입니다. 1은 이름을 입력하는 곳, 2는 저장 버튼, 3은 불러오기 버튼입니다.",
+      rewrite: "자막 파일을 넣은 화면입니다. 2는 탭, 3은 파일을 넣는 상자, 4는 결과 목록입니다.",
+    },
+  },
+};

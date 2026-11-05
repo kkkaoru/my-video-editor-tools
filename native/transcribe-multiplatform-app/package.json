@@ -1,0 +1,48 @@
+{
+  "name": "transcribe-multiplatform-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tsc": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "vitest run --coverage",
+    "test:a11y": "playwright test --config tests/a11y/playwright.config.ts --project=webkit --project=chromium",
+    "check:changed": "bun scripts/verify/changed-checks.ts",
+    "test:a11y:changed": "bun scripts/verify/changed-checks.ts WCAG",
+    "test:vitals": "playwright test --config tests/a11y/playwright.config.ts --project=vitals --workers=1",
+    "help:images": "bun scripts/docs/help-images.ts",
+    "tauri": "tauri",
+    "app:watch": "bun scripts/verify/watch-app.ts"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.9.0",
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.4",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-preact": "1.68.0",
+    "preact": "11.1.1",
+    "tailwind-merge": "3.7.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@babel/core": "7.28.5",
+    "@biomejs/biome": "2.6.5",
+    "@playwright/test": "1.64.1",
+    "@preact/preset-vite": "2.10.6",
+    "@tailwindcss/vite": "4.3.4",
+    "@tauri-apps/cli": "2.12.4",
+    "@testing-library/preact": "3.2.6",
+    "@types/node": "26.6.6",
+    "@vitest/coverage-v8": "5.1.0",
+    "axe-core": "4.14.0",
+    "happy-dom": "21.0.4",
+    "tailwindcss": "4.3.4",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

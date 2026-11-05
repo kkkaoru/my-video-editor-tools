@@ -1,0 +1,14 @@
+# The repository root ignores *.ts as MPEG-TS media; here it is TypeScript.
+!*.ts
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/runtime/
+dist/
+coverage/
+src-tauri/target-test/
+src-tauri/target-runtime/
+src-tauri/target-coverage.json
+# The repository root ignores *.png as media; these are the app icons the build needs.
+!src-tauri/icons/*.png
+!public/help/**/*.webp

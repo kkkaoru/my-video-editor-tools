@@ -17,8 +17,8 @@ Mac上で、アクセス権のある終了済みLIVE録画を直接ダウンロ�
 新しいMacでは、Homebrewを公式の https://brew.sh から導入してPATHを設定したあと、以下を実行します。Apple Silicon / IntelでHomebrewのインストール先を固定しない構成です。
 
 ```sh
-git clone https://github.com/kkkaoru/tiktok-live-archive-downloader.git
-cd tiktok-live-archive-downloader
+git clone https://github.com/kkkaoru/my-video-editor-tools.git
+cd my-video-editor-tools
 bash scripts/bootstrap.sh
 ```
 

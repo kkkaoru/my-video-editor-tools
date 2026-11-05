@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* shadcn's neutral theme, adjusted so text pairs reach 7:1 (WCAG 1.4.6) and lines 3:1 (1.4.11).
+   src/entry/contrast.test.ts proves the pairs; tests/a11y sweeps every state in real engines. */
+:root {
+  color-scheme: light dark;
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #171717;
+  --primary-hover: #333333;
+  --primary-foreground: #fafafa;
+  --muted: #f0f0f0;
+  --muted-foreground: #484848;
+  --accent: #f0f0f0;
+  --accent-foreground: #0a0a0a;
+  --destructive: #a1150f;
+  --success: #0f5a34;
+  --border: #8a8a8a;
+  --ring: #0a0a0a;
+  --page: #f7f7f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #fafafa;
+    --card: #171717;
+    --card-foreground: #fafafa;
+    --popover: #171717;
+    --popover-foreground: #fafafa;
+    --primary: #e5e5e5;
+    --primary-hover: #d0d0d0;
+    --primary-foreground: #171717;
+    --muted: #262626;
+    --muted-foreground: #c8c8c8;
+    --accent: #333333;
+    --accent-foreground: #fafafa;
+    --destructive: #ffb0a8;
+    --success: #86e3ad;
+    --border: #7c7c7c;
+    --ring: #fafafa;
+    --page: #0a0a0a;
+  }
+}
+
+@theme inline {
+  /* Japanese needs more air than Tailwind's defaults; the text does not feel cramped at 1.7. */
+  --text-xs--line-height: 1.7;
+  --text-sm--line-height: 1.7;
+  --text-base--line-height: 1.7;
+  --text-lg--line-height: 1.6;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+}
+
+html {
+  background: var(--page);
+  color: var(--foreground);
+  font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+  line-height: 1.7;
+}
+
+/* 1.4.8: lines stay readable; 65ch keeps Latin under 80 characters, and 40em caps CJK at 40 in any font. */
+p {
+  max-width: min(65ch, 40em);
+}
+
+p,
+li {
+  line-height: 1.75;
+}
+
+/* 2.4.13: one visible ring everywhere. */
+:focus-visible {
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The range input is visually hidden inside the slider thumb, which draws the ring instead. */
+input[type="range"]:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none;
+    transition: none;
+  }
+}
