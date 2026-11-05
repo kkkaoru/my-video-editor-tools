@@ -99,6 +99,12 @@ bun run help:images                   # redraws the help page's pictures in publ
 bunx tauri dev
 ```
 
+Builds update themselves from the latest GitHub release. Each distribution reads its own manifest
+(`latest-macos.json`, `latest-windows-geforce.json`, `latest-windows-radeon.json`), so a GeForce install never gets the
+Radeon build, and a package is applied only if it matches the public key in `tauri.conf.json`. Applying is refused while
+a job or a model download runs. CI signs tagged builds and manual runs with the `TAURI_SIGNING_PRIVATE_KEY` secret;
+local builds need no key, because `scripts/release/updater-artifacts.json` is passed only there.
+
 To make the release files on a Mac without waiting for GitHub (for example to register them on BOOTH):
 
 ```sh

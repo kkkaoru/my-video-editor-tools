@@ -499,12 +499,16 @@ impl Service {
         self.snapshot()
     }
 
+    /// Whether a job or a model download is queued or running.
+    pub fn is_working(&self) -> AppResult<bool> {
+        Ok(!locked(&self.shared.jobs, "job")?.is_empty()
+            || !locked(&self.shared.downloads, "download")?.is_empty())
+    }
+
     /// Deletes every catalogued model's own folder and nothing else: files put there by hand, folders
     /// the user added, and anything overlapping them, stay. Refused while running work could still be using or writing a model.
     pub fn reset_models(&self) -> AppResult<Snapshot> {
-        if !locked(&self.shared.jobs, "job")?.is_empty()
-            || !locked(&self.shared.downloads, "download")?.is_empty()
-        {
+        if self.is_working()? {
             return Err(UserError::ModelsBusy.into());
         }
         let user_folders = locked(&self.shared.settings, "settings")?

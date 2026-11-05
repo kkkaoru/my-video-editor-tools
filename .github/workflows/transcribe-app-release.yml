@@ -19,6 +19,9 @@ env:
 
 jobs:
   build:
+    # Only what may be published is signed, so other builds never see the key; a manual run tries signing before a tag.
+    env:
+      SIGNED_BUILD: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/transcribe-app-v') }}
     strategy:
       fail-fast: false
       matrix:
@@ -73,19 +76,30 @@ jobs:
           Get-ChildItem "$env:APP_DIR/src-tauri/runtime/whisper-vulkan" | Select-Object -ExpandProperty Name
       - name: Build the app
         working-directory: ${{ env.APP_DIR }}
-        run: bunx tauri build --bundles ${{ matrix.bundles }} ${{ matrix.build_args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.SIGNED_BUILD == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: bunx tauri build --bundles ${{ matrix.bundles }} ${{ matrix.build_args }} ${{ env.SIGNED_BUILD == 'true' && '--config scripts/release/updater-artifacts.json' || '' }}
       - name: Collect the macOS build
         if: matrix.distribution == 'macos'
         shell: bash
         run: |
           mkdir -p out
-          ditto -c -k --norsrc --keepParent "$APP_DIR/src-tauri/target/release/bundle/macos/Transcribe Captions.app" out/Transcribe-Captions-macos-arm64.zip
+          bundle="$APP_DIR/src-tauri/target/release/bundle/macos"
+          ditto -c -k --norsrc --keepParent "$bundle/Transcribe Captions.app" out/Transcribe-Captions-macos-arm64.zip
+          if [ "$SIGNED_BUILD" = true ]; then
+            cp "$bundle/Transcribe Captions.app.tar.gz" out/Transcribe-Captions-macos-arm64.app.tar.gz
+            cp "$bundle/Transcribe Captions.app.tar.gz.sig" out/Transcribe-Captions-macos-arm64.app.tar.gz.sig
+          fi
       - name: Collect the Windows build
         if: matrix.distribution != 'macos'
         shell: bash
         run: |
           mkdir -p out
           cp "$APP_DIR"/src-tauri/target/release/bundle/nsis/*-setup.exe "out/Transcribe-Captions-${{ matrix.distribution }}-x64-setup.exe"
+          if [ "$SIGNED_BUILD" = true ]; then
+            cp "$APP_DIR"/src-tauri/target/release/bundle/nsis/*-setup.exe.sig "out/Transcribe-Captions-${{ matrix.distribution }}-x64-setup.exe.sig"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: transcribe-app-${{ matrix.distribution }}
@@ -98,14 +112,34 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_NOTES: "macOS (Apple silicon), Windows x64 for GeForce, and Windows x64 for Radeon. On Windows pick the installer for your GPU; a PC with neither can use either one on the CPU. Models are downloaded separately in the app."
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: out
           merge-multiple: true
+      - name: Write the update manifests
+        run: |
+          pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          manifest() { # distribution platform asset
+            jq -n \
+              --arg version "${GITHUB_REF_NAME#transcribe-app-v}" \
+              --arg notes "$RELEASE_NOTES" \
+              --arg pub_date "$pub_date" \
+              --arg platform "$2" \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$3" \
+              --rawfile signature "out/$3.sig" \
+              '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {($platform): {signature: ($signature | rtrimstr("\n")), url: $url}}}' \
+              >"out/latest-$1.json"
+          }
+          manifest macos darwin-aarch64 Transcribe-Captions-macos-arm64.app.tar.gz
+          manifest windows-geforce windows-x86_64 Transcribe-Captions-windows-geforce-x64-setup.exe
+          manifest windows-radeon windows-x86_64 Transcribe-Captions-windows-radeon-x64-setup.exe
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+        # --latest: the apps look for their update manifests under the latest release.
         run: |
-          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --notes "macOS (Apple silicon), Windows x64 for GeForce, and Windows x64 for Radeon. On Windows pick the installer for your GPU; a PC with neither can use either one on the CPU. Models are downloaded separately in the app."
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --latest \
+            --notes "$RELEASE_NOTES"

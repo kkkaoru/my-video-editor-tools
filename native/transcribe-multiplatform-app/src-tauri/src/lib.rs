@@ -19,6 +19,7 @@ pub mod service;
 pub mod settings;
 pub mod shell;
 pub mod speakers;
+pub mod updater;
 pub mod whisper_ggml;
 
 use error::AppResult;

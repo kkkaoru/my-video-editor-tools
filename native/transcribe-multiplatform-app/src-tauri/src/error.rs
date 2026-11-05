@@ -39,6 +39,8 @@ pub enum UserError {
     ProfileInvalid { file: String },
     #[error("models cannot be reset while a job or a download is running")]
     ModelsBusy,
+    #[error("an update cannot be applied while a job, a download or another update is running")]
+    UpdateBusy,
 }
 
 /// Every failure the app reports; messages reach the UI, so they name the failed step.

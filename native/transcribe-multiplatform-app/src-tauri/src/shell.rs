@@ -6,13 +6,44 @@ use crate::paths::AppPaths;
 use crate::profiles::CaptionLook;
 use crate::service::{AppEvent, EventSink, Service, Snapshot};
 use crate::settings::Settings;
+use crate::updater::{self, AvailableUpdate, Updates};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::ipc::Invoke;
-use tauri::{Builder, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
 const JOB_EVENT: &str = "job";
 const DOWNLOAD_EVENT: &str = "download";
+const UPDATE_PROGRESS_EVENT: &str = "update-progress";
+
+#[tauri::command]
+async fn check_update<R: Runtime>(
+    app: AppHandle<R>,
+    updates: State<'_, Updates>,
+) -> AppResult<Option<AvailableUpdate>> {
+    updater::check(&app, &updates).await
+}
+
+#[tauri::command]
+async fn install_update<R: Runtime>(
+    app: AppHandle<R>,
+    service: State<'_, Service>,
+    updates: State<'_, Updates>,
+) -> AppResult<()> {
+    let progress = |fraction: f64| {
+        if let Err(error) = app.emit(UPDATE_PROGRESS_EVENT, fraction) {
+            eprintln!("event delivery failed: {error}");
+        }
+    };
+    updater::install(
+        &app,
+        &updates,
+        || service.is_working(),
+        progress,
+        |update, bytes| updater::apply_and_restart(&app, update, bytes),
+    )
+    .await
+}
 
 #[tauri::command]
 fn snapshot(service: State<'_, Service>) -> AppResult<Snapshot> {
@@ -139,7 +170,9 @@ fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
         cancel_job,
         start_download,
         cancel_download,
-        delete_model
+        delete_model,
+        check_update,
+        install_update
     ]
 }
 
@@ -168,6 +201,7 @@ fn start_service<R: Runtime>(app: &tauri::AppHandle<R>, paths: AppPaths) -> AppR
 
 fn manage_service<R: Runtime>(app: &tauri::AppHandle<R>, paths: AppPaths) -> AppResult<()> {
     app.manage(start_service(app, paths)?);
+    app.manage(Updates::new(&updater::endpoint(updater::DISTRIBUTION))?);
     Ok(())
 }
 
@@ -192,7 +226,8 @@ fn launch<R: Runtime>(
 /// Starts the desktop app.
 pub fn run() -> AppResult<()> {
     launch(
-        Builder::default(),
+        // Not in `configure`: the plugin needs the public key of the app's own config.
+        Builder::default().plugin(tauri_plugin_updater::Builder::new().build()),
         tauri::generate_context!(),
         AppPaths::detect()?,
     )
@@ -232,6 +267,36 @@ mod tests {
         (app, window)
     }
 
+    /// A window whose update commands talk to `url` on this computer instead of the real releases.
+    fn update_window(
+        name: &str,
+        url: &str,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        WebviewWindow<tauri::test::MockRuntime>,
+    ) {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("shell-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let app = configure(mock_builder())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(crate::updater::tests::updater_context())
+            .unwrap();
+        // The first one managed stays: `manage_service` cannot replace it with the real address.
+        assert!(app.manage(Updates::new(url).unwrap()));
+        manage_service(app.handle(), paths).unwrap();
+        let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        (app, window)
+    }
+
     fn call(
         window: &WebviewWindow<tauri::test::MockRuntime>,
         command: &str,
@@ -247,6 +312,86 @@ mod tests {
             invoke_key: INVOKE_KEY.to_owned(),
         };
         get_ipc_response(window, request).map(|response| response.deserialize::<Value>().unwrap())
+    }
+
+    #[test]
+    fn the_ui_can_ask_for_a_newer_version() {
+        let url = crate::updater::test_server::answering(|_| {
+            vec![(
+                200,
+                crate::updater::tests::manifest("99.0.0", "http://127.0.0.1:9/p", "signature"),
+            )]
+        });
+        let (_app, window) = update_window("update-check", &url);
+        assert_eq!(
+            call(&window, "check_update", json!({})).unwrap(),
+            json!({ "version": "99.0.0", "notes": "新しい版です" })
+        );
+    }
+
+    #[test]
+    fn no_newer_version_reaches_the_ui_as_null() {
+        let url = crate::updater::test_server::answering(|_| {
+            vec![(
+                200,
+                crate::updater::tests::manifest("0.0.1", "http://127.0.0.1:9/p", "signature"),
+            )]
+        });
+        let (_app, window) = update_window("update-none", &url);
+        assert_eq!(
+            call(&window, "check_update", json!({})).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn a_failed_install_reaches_the_ui_as_an_error() {
+        let url = crate::updater::test_server::answering(|_| {
+            vec![(
+                200,
+                crate::updater::tests::manifest("0.0.1", "http://127.0.0.1:9/p", "signature"),
+            )]
+        });
+        let (_app, window) = update_window("update-install", &url);
+        assert_eq!(
+            call(&window, "install_update", json!({})).unwrap_err()["detail"],
+            "no newer version is available"
+        );
+    }
+
+    #[test]
+    fn a_bad_package_reports_its_progress_and_changes_nothing() {
+        let url = crate::updater::test_server::answering(|base| {
+            let package = format!("{base}/package");
+            vec![
+                (
+                    200,
+                    crate::updater::tests::manifest("99.0.0", &package, "bad signature"),
+                ),
+                (200, b"package".to_vec()),
+            ]
+        });
+        let (app, window) = update_window("update-progress", &url);
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = Arc::clone(&heard);
+        app.listen(UPDATE_PROGRESS_EVENT, move |event| {
+            log.lock().unwrap().push(event.payload().to_owned());
+        });
+        let failed = call(&window, "install_update", json!({})).unwrap_err();
+        assert!(failed["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("update failed:"));
+        assert_eq!(*heard.lock().unwrap(), vec!["1.0".to_owned()]);
+    }
+
+    #[test]
+    fn the_real_address_is_this_distributions_own() {
+        let (app, _window) = app_window("update-address");
+        assert_eq!(
+            app.state::<Updates>().endpoint().as_str(),
+            updater::endpoint(updater::DISTRIBUTION)
+        );
     }
 
     #[test]
