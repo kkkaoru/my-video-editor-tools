@@ -104,6 +104,11 @@ processing path; adapt its parameters to each video's validated characteristics.
 
 ## Workflow
 
+A requested YouTube URL starts with `scripts/youtube-requests.sh`, not hand-run stages:
+see `repo-jobs`. Its intake measures a default `video-config.json`; write the file first to
+choose palette, layout or orientation. It waits for the processed archive unless
+`--accept-provisional` is given, and nothing later replaces an accepted provisional copy.
+
 When the user adds or corrects a requirement, apply the
 [latest-request procedure](../../../docs/blocker-audit.md#latest-user-requests)
 before the next affected step. Update conflicting old plans/agent notes, preserve

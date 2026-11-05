@@ -77,6 +77,13 @@ resubmission; a new instruction is not a reason to duplicate an uncertain job.
 
 ## Observe and resume
 
+- Requested YouTube recordings have one entry point and need no manual polling:
+  `scripts/youtube-requests.sh` ([flow, events, serial and parallel work](../../../docs/operations.md#from-a-youtube-url-to-hls-unattended)).
+  Taking over: run its `status`, read the queue's `.events.jsonl`, confirm the runner
+  still ticks, then run its `watch` as a background command and rerun it after each
+  event. Report `step-ok` in one line. After `finished`, run the completion gate and
+  check `hls/index.json` before calling a video complete. A `held` recording resumes
+  at its failed step after a shared-code fix or `recording_queue unhold ID`.
 - Read bounded log/status/receipt slices for the exact job. Do not expose secret
   environment values, signed URLs or unrelated process arguments in reports.
 - Distinguish running, timed out, failed, interrupted and verified complete.

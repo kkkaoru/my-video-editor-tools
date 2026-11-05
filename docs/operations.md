@@ -380,6 +380,57 @@ New recordings get `voiceJudge` from the pipeline defaults (`DEFAULTS-v1.json` c
 `replay.voice_judge same` against the separated voice (`<work>/voice-repair-v1/judge.json`).
 Measures, limits and the 10/28 evaluation: [voice repair](voice-repair.md#computed-judge).
 
+### From a YouTube URL to HLS, unattended
+
+`scripts/youtube-requests.sh [--accept-provisional] URL [URL ...]` starts all of it; its `status`
+and `watch` subcommands run the two watcher commands below. It runs the
+queue runner (once) and an intake in their own `tmux-job`s, on a queue holding only requested
+recordings, so paused backlog entries are not launched. The intake writes a measured
+`video-config.json` when there is none; write the file first to choose otherwise. The commands:
+
+```bash
+.venv/bin/python -m replay.recording_queue run --queue Q --defaults edits/work/recording-pipeline/DEFAULTS-v1.json
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m replay.volume_resume --volume /Volumes/m.2-ssd -- \
+  .venv/bin/python -m replay.youtube_intake --queue Q --root /Volumes/m.2-ssd/movie/youtube \
+  --ffmpeg-directory "$(brew --prefix ffmpeg-full)/bin" URL [URL ...]
+```
+
+| Runs side by side | Runs in turn |
+| --- | --- |
+| Downloads (up to 3; a video waiting for YouTube's processed archive blocks none) | A video's bind and queueing, after its final original |
+| Queue slots (`slots`, at most 3) | GPU steps (`gpu_lease`) |
+| A pipeline's independent steps (`maxParallel`) | `compose`/`finish`, `youtube-encode`, `web-hls` (`SERIAL_STEPS`) |
+| | Web viewer sync and uploads (`withSyncLock`) |
+
+The runner checks both volumes every 15 minutes. With less than one recording's peak (83 GiB)
+spare above the floor it retires the intermediates of every idle recording whose gate passed
+(`recording_queue.relieve_disk`, `recording_retirement`). `retirementHold` still applies.
+
+The script also keeps `replay.disk_relief --apply --watch` running. Every 15 minutes, while the boot
+disk has under 150 GiB or the SSD under 400 GiB free, it removes files oldest first: media and
+`.build` trees older than 7 days from the recordings' media root, derived-source roots and
+`edits/work` directories nothing names, then deliveries and originals beyond the newest 14 videos
+once `delivery_offload` proves the R2 copy equal. Between the two, idle recordings' own work drops
+to a 1-day window. Running and held recordings, catalogued movies
+and edit configurations' sources stay in the first tier. A removed intermediate means a later
+`run --force` of its producer; `edits/work/disk-relief.jsonl` lists every path.
+
+An agent runs the following as a background command, which exits at the first new events (one JSON
+line each), so it is woken only then, reports them and starts it again. A later session reads
+`<Q>.events.jsonl`. `--status` instead of `--until-event` prints where each recording is now and
+each running step's percentage, naming its basis: accepted chunks, the kernel's read offset of the
+largest input, or a labelled estimate from earlier runs (`recording_progress`):
+
+```bash
+.venv/bin/python -m replay.recording_watch --queue Q --defaults DEFAULTS --jobs edits/work/youtube-intake --until-event
+```
+
+Normal progress is one `step-ok` per finished step (`done` is its place, such as `5/29`). Others:
+`held`, `error`, `launch-refused` (with the launch's log tail), `intake-failed`,
+`runner-stopped`, `disk-low`, `watch-failed` and `finished`. A failed launch is retried once
+without an event. Every launch reuses finished steps' receipts, so it resumes at the failed step;
+a held recording resumes the same way after a shared-code fix or `recording_queue unhold ID`.
+
 ### Per-video config (`video-config.json`)
 
 Each new video is configured by one optional file, `edits/<recording>/video-config.json`

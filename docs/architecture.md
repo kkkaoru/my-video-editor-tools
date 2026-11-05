@@ -21,6 +21,7 @@
 | Notice parsing and API access | `recordings.py`, `tiktok_api.py` | corresponding `test_*.py` |
 | Session reissuance and explicit login | `session_refresh.py`, `web_auth.py` | corresponding `test_*.py` |
 | Acquisition and completion records | `acquire.py`, `jobs.py` | corresponding `test_*.py` |
+| Requested YouTube intake, disk relief, watcher and step progress | `youtube_intake.py`, `disk_relief.py`, `recording_queue.py`, `recording_watch.py`, `recording_progress.py` | corresponding `test_*.py`, `test_youtube_requests.py` |
 | Per-recording edit config and required-stage gate | `edit_completion.py`, `delivery.py` | `test_edit_completion.py`, `test_delivery.py` |
 | Scoped storage and media transfer | `core.py`, `download.py`, `media.py` | corresponding tests and `test_ffmpeg.py` |
 | Optional capture/import | `addon.py`, `api.py`, `android_log.py` | corresponding `test_*.py` |
