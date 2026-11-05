@@ -27,8 +27,8 @@ export interface AppStore {
   applySnapshot: (snapshot: Snapshot) => void;
   /** For a snapshot that is the newest word on the settings: a save still waiting would undo it. */
   replaceSnapshot: (snapshot: Snapshot) => void;
-  dropVideos: (paths: string[]) => void;
-  dropSubtitles: (paths: string[]) => void;
+  /** Videos are transcribed and subtitle files written again; anything else is refused out loud. */
+  dropFiles: (paths: string[]) => void;
 }
 
 const SAVE_DELAY_MS: number = 250;
@@ -41,9 +41,12 @@ export const SUBTITLE_EXTENSIONS: string[] = ["fcpxml", "srt", "ttml", "json"];
 const isBackendError = (error: unknown): error is BackendError =>
   typeof error === "object" && error !== null && "code" in error && typeof error.code === "string";
 
-/** The backend rejects with a translatable code; anything else is shown as its text. */
-const asBackendError = (error: unknown): BackendError =>
-  isBackendError(error) ? error : { code: "internal", detail: String(error) };
+const failureText = (error: unknown): string =>
+  typeof error === "object" && !(error instanceof Error) ? JSON.stringify(error) : String(error);
+
+/** The backend rejects with a translatable code; anything else is shown as readable text. */
+export const asBackendError = (error: unknown): BackendError =>
+  isBackendError(error) ? error : { code: "internal", detail: failureText(error) };
 
 /** Failures of background calls surface in the UI instead of vanishing. */
 export function reportFailure(setState: AppStore["setState"], error: unknown): void {
@@ -55,6 +58,10 @@ export const onlyVideos = (paths: string[]): string[] =>
 
 export const onlySubtitles = (paths: string[]): string[] =>
   paths.filter((path: string): boolean => SUBTITLE_PATTERN.test(path));
+
+/** A drop with no paths at all (dragged text, say) brought no file to refuse. */
+const isAllUnsupported = (paths: string[], videos: string[], subtitles: string[]): boolean =>
+  paths.length > 0 && videos.length === 0 && subtitles.length === 0;
 
 export function useAppStore(initial: Snapshot): AppStore {
   const [state, setState] = useState<AppState>((): AppState => initialState(initial));
@@ -77,12 +84,8 @@ export function useAppStore(initial: Snapshot): AppStore {
   );
 
   /** Nothing starts without its models: the refusal says what is missing and what to do. */
-  const dropVideos = useCallback((paths: string[]): void => {
-    const videos: string[] = onlyVideos(paths);
+  const dropVideos = useCallback((videos: string[]): void => {
     const missing: Role[] = missingModelRoles(latestSnapshot.current);
-    if (videos.length === 0) {
-      return;
-    }
     if (missing.length > 0) {
       reportFailure(setState, { code: "models_missing", roles: missing });
       return;
@@ -90,12 +93,22 @@ export function useAppStore(initial: Snapshot): AppStore {
     addVideos(videos).catch((error: unknown): void => reportFailure(setState, error));
   }, []);
 
-  const dropSubtitles = useCallback((paths: string[]): void => {
-    const subtitles: string[] = onlySubtitles(paths);
-    if (subtitles.length > 0) {
-      reformatFiles(subtitles).catch((error: unknown): void => reportFailure(setState, error));
-    }
-  }, []);
+  const dropFiles = useCallback(
+    (paths: string[]): void => {
+      const videos: string[] = onlyVideos(paths);
+      const subtitles: string[] = onlySubtitles(paths);
+      if (isAllUnsupported(paths, videos, subtitles)) {
+        reportFailure(setState, { code: "no_supported_files" });
+      }
+      if (videos.length > 0) {
+        dropVideos(videos);
+      }
+      if (subtitles.length > 0) {
+        reformatFiles(subtitles).catch((error: unknown): void => reportFailure(setState, error));
+      }
+    },
+    [dropVideos],
+  );
 
   const updateSettings = useCallback((settings: Settings): void => {
     setState((current: AppState): AppState => withSettings(current, settings));
@@ -130,8 +143,7 @@ export function useAppStore(initial: Snapshot): AppStore {
           setState((current: AppState): AppState => ({ ...current, hovering })),
         onDrop: (paths: string[]): void => {
           setState((current: AppState): AppState => ({ ...current, hovering: false }));
-          dropVideos(paths);
-          dropSubtitles(paths);
+          dropFiles(paths);
         },
       }),
     ];
@@ -140,7 +152,7 @@ export function useAppStore(initial: Snapshot): AppStore {
     return (): void => {
       subscriptions.map((subscription) => subscription.then((stop) => stop()).catch(report));
     };
-  }, [applySnapshot, dropVideos, dropSubtitles]);
+  }, [applySnapshot, dropFiles]);
 
-  return { state, setState, updateSettings, applySnapshot, replaceSnapshot, dropVideos, dropSubtitles };
+  return { state, setState, updateSettings, applySnapshot, replaceSnapshot, dropFiles };
 }

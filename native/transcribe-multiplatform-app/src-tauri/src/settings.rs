@@ -26,6 +26,8 @@ const DEFAULT_WIDTH_RATIO: f64 = 0.9;
 /// Whisper detects the language itself unless the user picks one.
 const DEFAULT_LANGUAGE: &str = "auto";
 const MAX_OFFSET_PERCENT: f64 = 50.0;
+/// A font family goes into XML attributes, so a name holding these cannot be used.
+pub const FONT_FAMILY_FORBIDDEN: [char; 3] = ['"', '<', '&'];
 /// `EM_ADVANCE`: the line advance measured for the repository's captions (`caption_layout_file`).
 const DEFAULT_LINE_HEIGHT: f64 = 1.448;
 /// The speaker models separate at most eight voices; more would only be guesswork.
@@ -193,7 +195,7 @@ impl Settings {
             -MAX_OFFSET_PERCENT,
             MAX_OFFSET_PERCENT,
         )?;
-        if self.font_family.trim().is_empty() || self.font_family.contains(['"', '<', '&']) {
+        if self.font_family.trim().is_empty() || self.font_family.contains(FONT_FAMILY_FORBIDDEN) {
             return Err(AppError::Invalid(
                 "font family is empty or has markup characters".into(),
             ));

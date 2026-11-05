@@ -22,7 +22,8 @@ export type StateStep =
   | "open-overwrite-dialog"
   | "open-delete-dialog"
   | "drop-video"
-  | "drop-subtitles";
+  | "drop-subtitles"
+  | "drop-other";
 
 export interface UiState {
   name: string;
@@ -252,6 +253,7 @@ export const UI_STATES: UiState[] = [
   state("jobs speaker help open", "jobs", { steps: ["open-speaker-help"] }),
   state("jobs with a selected profile", "jobs", { snapshot: WITH_PROFILES }),
   state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
+  state("jobs unsupported file dropped", "jobs", { steps: ["drop-other"] }),
   state("jobs video dropped without models", "jobs", {
     snapshot: snapshot({
       models: ALL_MODELS.map((row: ModelStatus): ModelStatus => ({ ...row, found_at: null })),

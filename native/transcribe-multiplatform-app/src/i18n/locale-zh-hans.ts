@@ -159,6 +159,8 @@ export const zhHansMessages: Messages = {
     profile_missing: "配置 {name} 已不存在。",
     models_busy: "有任务或下载正在进行时无法重置模型。请等待完成或取消后再试。",
     models_missing: "由于缺少以下模型,视频未添加:{roles}。请在模型页下载,或添加已有模型的文件夹。",
+    no_supported_files:
+      "不能加入这个文件。请选择视频（.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts）或字幕文件（.fcpxml .srt .ttml .transcript.json）。",
     internal: "{detail}",
     cancelled: "已取消",
   },
@@ -232,7 +234,7 @@ export const zhHansMessages: Messages = {
             notes: [
               "按人数旁边的“?”，可以看到为什么要选人数。",
               "只有一个人说话时，选 1 人会更快。",
-              "可以加入的视频：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。加入其他文件不会有任何反应。",
+              "可以加入的视频：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。字幕文件：.fcpxml .srt .ttml .transcript.json。加入其他文件时，应用会提示不能加入。",
               "加入多个视频时，会一个一个按顺序处理。",
               "第一次做字幕时，应用还要把模型转换成能用的形式。",
               "字幕的语言不对时，在“{tabStyle}”标签页的“{speechLanguage}”中选择语言。",
@@ -334,7 +336,7 @@ export const zhHansMessages: Messages = {
               "框下面的列表会显示进度和结果。",
             ],
             notes: [
-              "列表中视频名称旁边的重新写入按钮，会覆盖同名文件。原来的文件不会保留。",
+              "列表中视频名称旁边的重新写入按钮，会用别的名称生成新文件。原来的文件会保留。",
               "原来的文件会保留。新文件的名称后面会加上 -2 等数字。",
               "同一文件夹里需要有同名的 .transcript.json 文件。",
               "使用配置时，没有保存到这个配置的更改不会被使用。",

@@ -71,9 +71,7 @@ pub struct Snapshot {
 
 enum JobRequest {
     Transcribe(PathBuf),
-    /// Writes a transcript's own files again, by explicit request.
-    Relayout(PathBuf),
-    /// A dropped subtitle file: new files under an unused name, never over the existing ones.
+    /// A transcript or a dropped subtitle file: new files under an unused name, never over the existing ones.
     Reformat {
         dropped: PathBuf,
         look: Option<CaptionLook>,
@@ -151,9 +149,6 @@ fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
             &job.cancel,
             &mut report,
         ),
-        JobRequest::Relayout(file) => {
-            pipeline::relayout(file, &shared.paths, &settings, &job.cancel, &mut report)
-        }
         JobRequest::Reformat { dropped, look } => run_reformat(
             dropped,
             &look
@@ -209,13 +204,17 @@ fn known_entry(id: &str) -> AppResult<&'static ModelEntry> {
     catalog::find_entry(id).ok_or_else(|| AppError::Invalid(format!("unknown model {id}")))
 }
 
-/// Deletes only the app's own copy; files found in other folders belong to the user.
-fn remove_own_copy(entry: &ModelEntry, paths: &AppPaths) -> AppResult<()> {
-    let folder = if entry.id == catalog::GEFORCE_RUNTIME_ID {
+fn own_folder(entry: &ModelEntry, paths: &AppPaths) -> PathBuf {
+    if entry.id == catalog::GEFORCE_RUNTIME_ID {
         paths.downloaded_runtime_dir().join("geforce")
     } else {
         paths.models_dir().join(entry.id)
-    };
+    }
+}
+
+/// Deletes only the app's own copy; files found in other folders belong to the user.
+fn remove_own_copy(entry: &ModelEntry, paths: &AppPaths) -> AppResult<()> {
+    let folder = own_folder(entry, paths);
     if !folder.exists() {
         return Ok(());
     }
@@ -234,26 +233,6 @@ fn overlaps_user_folder(target: &Path, user_folders: &[PathBuf]) -> bool {
         .iter()
         .map(|folder| real_path(folder))
         .any(|folder| folder.starts_with(&target) || target.starts_with(&folder))
-}
-
-fn remove_path(path: &Path) -> AppResult<()> {
-    let removal = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    removal.map_err(io_context(format!("remove {}", path.display())))
-}
-
-/// Everything the app downloaded, one entry per model or runtime, including interrupted downloads.
-fn own_downloads(paths: &AppPaths) -> Vec<PathBuf> {
-    [paths.models_dir(), paths.downloaded_runtime_dir()]
-        .iter()
-        .filter_map(|folder| std::fs::read_dir(folder).ok())
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .collect()
 }
 
 impl Service {
@@ -301,7 +280,8 @@ impl Service {
             settings,
             models,
             models_dir: self.shared.paths.models_dir(),
-            profiles: self.saved_profiles()?,
+            // A damaged file must not stop the app from opening; saving or deleting still reports it.
+            profiles: self.saved_profiles().unwrap_or_default(),
         })
     }
 
@@ -405,7 +385,13 @@ impl Service {
     }
 
     pub fn relayout(&self, transcript: &Path) -> AppResult<u64> {
-        self.enqueue(transcript, JobRequest::Relayout(transcript.to_path_buf()))
+        self.enqueue(
+            transcript,
+            JobRequest::Reformat {
+                dropped: transcript.to_path_buf(),
+                look: None,
+            },
+        )
     }
 
     /// One job per transcript, however many of its files were dropped, with the selected profile's
@@ -465,8 +451,8 @@ impl Service {
         self.snapshot()
     }
 
-    /// Deletes everything the app downloaded and nothing else: folders the user added, and anything
-    /// overlapping them, stay. Refused while running work could still be using or writing a model.
+    /// Deletes every catalogued model's own folder and nothing else: files put there by hand, folders
+    /// the user added, and anything overlapping them, stay. Refused while running work could still be using or writing a model.
     pub fn reset_models(&self) -> AppResult<Snapshot> {
         if !locked(&self.shared.jobs, "job")?.is_empty()
             || !locked(&self.shared.downloads, "download")?.is_empty()
@@ -476,10 +462,14 @@ impl Service {
         let user_folders = locked(&self.shared.settings, "settings")?
             .model_dirs
             .clone();
-        own_downloads(&self.shared.paths)
+        // shortcut: only current catalog IDs are removed, so the folder of an ID since dropped from the
+        // catalog stays on disk; walk the models folder if an ID is ever retired.
+        catalog::CATALOG
             .iter()
-            .filter(|path| !overlaps_user_folder(path, &user_folders))
-            .try_for_each(|path| remove_path(path))?;
+            .filter(|entry| {
+                !overlaps_user_folder(&own_folder(entry, &self.shared.paths), &user_folders)
+            })
+            .try_for_each(|entry| remove_own_copy(entry, &self.shared.paths))?;
         self.snapshot()
     }
 }
@@ -602,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn relayout_of_a_missing_transcript_fails_with_internal_detail() {
+    fn relayout_of_a_missing_transcript_names_the_file() {
         let (service, events) = started(&scratch("relayout"));
         assert_eq!(
             service
@@ -615,8 +605,8 @@ mod tests {
             JobEvent::Queued { id: 1, .. }
         ));
         assert_eq!(
-            serde_json::to_value(next_job_event(&events)).unwrap()["error"]["code"],
-            "internal"
+            serde_json::to_value(next_job_event(&events)).unwrap()["error"],
+            serde_json::json!({ "code": "transcript_missing", "file": "nope.transcript.json" })
         );
     }
 
@@ -1076,14 +1066,26 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_profile_file_is_reported_by_the_snapshot() {
+    fn a_broken_profile_file_does_not_stop_the_app_but_is_not_overwritten() {
         let root = scratch("profile-broken");
         let (service, _events) = started(&root);
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/profiles.json"), b"{").unwrap();
+        assert_eq!(service.snapshot().unwrap().profiles, Vec::<Profile>::new());
         assert_eq!(
-            service.snapshot().unwrap_err().to_string(),
+            service
+                .save_profile("A", Settings::default())
+                .unwrap_err()
+                .to_string(),
             "profiles file: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            service.delete_profile("A").unwrap_err().to_string(),
+            "profiles file: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            std::fs::read(root.join("data/profiles.json")).unwrap(),
+            b"{".to_vec()
         );
     }
 
@@ -1092,14 +1094,15 @@ mod tests {
         let root = scratch("reset");
         let (service, _events) = started(&root);
         let model = root.join("data/models/nemotron-3-diarization/a.gguf");
-        let stray = root.join("data/models/stray.partial");
+        let interrupted = root.join("data/models/whisper-large-v3-turbo/model.safetensors.part");
         let runtime = root.join("data/runtime/geforce/nemo/x.dll");
         let external = root.join("user-models/a.gguf");
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(interrupted.parent().unwrap()).unwrap();
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::create_dir_all(external.parent().unwrap()).unwrap();
         std::fs::write(&model, b"x").unwrap();
-        std::fs::write(&stray, b"x").unwrap();
+        std::fs::write(&interrupted, b"x").unwrap();
         std::fs::write(&runtime, b"x").unwrap();
         std::fs::write(&external, b"x").unwrap();
         service
@@ -1110,25 +1113,57 @@ mod tests {
             .unwrap();
         service.reset_models().unwrap();
         assert!(!model.exists());
-        assert!(!stray.exists());
+        assert!(!interrupted.exists());
         assert!(!runtime.exists());
         assert!(external.exists());
         assert!(root.join("data/settings.json").exists());
     }
 
     #[test]
-    fn resetting_keeps_an_app_folder_the_user_added_as_their_own() {
+    fn resetting_keeps_files_placed_by_hand_in_the_models_folder() {
+        let root = scratch("reset-by-hand");
+        let (service, _events) = started(&root);
+        let loose = root.join("data/models/mine.gguf");
+        let foreign = root.join("data/models/my-own/a.gguf");
+        std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        std::fs::write(&loose, b"x").unwrap();
+        std::fs::write(&foreign, b"x").unwrap();
+        service.reset_models().unwrap();
+        assert!(loose.exists());
+        assert!(foreign.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resetting_never_follows_a_link_out_of_the_models_folder() {
+        let root = scratch("reset-link");
+        let (service, _events) = started(&root);
+        let target = root.join("elsewhere/a.gguf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"x").unwrap();
+        std::fs::create_dir_all(root.join("data/models")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("elsewhere"),
+            root.join("data/models/nemotron-3-diarization"),
+        )
+        .unwrap();
+        service.reset_models().unwrap();
+        assert!(target.exists());
+    }
+
+    #[test]
+    fn resetting_keeps_a_catalog_folder_the_user_added_as_their_own() {
         let root = scratch("reset-overlap");
         let (service, _events) = started(&root);
-        let inside = root.join("data/models/mine/a.gguf");
-        let beside = root.join("data/models/other/a.gguf");
+        let inside = root.join("data/models/nemotron-3-diarization/a.gguf");
+        let beside = root.join("data/models/whisper-large-v3-turbo/a.gguf");
         std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
         std::fs::create_dir_all(beside.parent().unwrap()).unwrap();
         std::fs::write(&inside, b"x").unwrap();
         std::fs::write(&beside, b"x").unwrap();
         service
             .save_settings(Settings {
-                model_dirs: vec![root.join("data/models/mine")],
+                model_dirs: vec![root.join("data/models/nemotron-3-diarization")],
                 ..Settings::default()
             })
             .unwrap();
@@ -1141,7 +1176,7 @@ mod tests {
     fn resetting_keeps_everything_when_the_user_added_a_parent_of_the_app_folder() {
         let root = scratch("reset-parent");
         let (service, _events) = started(&root);
-        let model = root.join("data/models/a/a.gguf");
+        let model = root.join("data/models/nemotron-3-diarization/a.gguf");
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
         std::fs::write(&model, b"x").unwrap();
         service
@@ -1196,14 +1231,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_removal_names_the_path() {
-        assert!(remove_path(Path::new("/nonexistent/file"))
-            .unwrap_err()
-            .to_string()
-            .starts_with("remove /nonexistent/file: "));
-    }
-
-    #[test]
     fn a_finished_download_is_forgotten_and_a_running_one_is_not_started_twice() {
         let (service, events) = started(&scratch("download-twice"));
         service
@@ -1239,5 +1266,57 @@ mod tests {
         service.cancel_download("m").unwrap();
         assert!(job.is_cancelled());
         assert!(download.is_cancelled());
+    }
+
+    #[test]
+    fn writing_a_transcript_again_never_replaces_the_earlier_files() {
+        let root = scratch("relayout-new-name");
+        let (service, events) = started(&root);
+        let info = crate::engines::VideoInfo {
+            width: 1280,
+            height: 720,
+            duration: 2.0,
+            fps_num: 30,
+            fps_den: 1,
+        };
+        let metrics = crate::captions::metrics_for(&info, &Settings::default());
+        let transcript = crate::export::Transcript::new(
+            root.join("clip.mp4"),
+            info,
+            metrics,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let written =
+            crate::export::write_outputs(&root.join("clip"), &transcript, &Settings::default())
+                .unwrap();
+        assert_eq!(written.len(), 4);
+        std::fs::write(root.join("clip.srt"), b"edited by hand").unwrap();
+        let mut bottom = Settings::default();
+        bottom.placement.anchor = crate::settings::Anchor::VideoBottom;
+        service.save_settings(bottom).unwrap();
+        service
+            .relayout(&root.join("clip.transcript.json"))
+            .unwrap();
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 1, .. }
+        ));
+        let finished = std::iter::repeat_with(|| next_job_event(&events))
+            .find(|event| !matches!(event, JobEvent::Running { .. }))
+            .unwrap();
+        let finished = serde_json::to_value(finished).unwrap();
+        assert_eq!(
+            finished["outcome"]["base"]
+                .as_str()
+                .and_then(|base| base.rsplit('/').next()),
+            Some("clip-2"),
+            "{finished}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("clip.srt")).unwrap(),
+            b"edited by hand".to_vec()
+        );
     }
 }

@@ -1,16 +1,15 @@
 //! The font families installed on this computer, read with the pure-Rust `fontdb` on macOS and Windows alike.
 
+use crate::settings::FONT_FAMILY_FORBIDDEN;
 use std::collections::BTreeMap;
 
 /// Hidden system faces start with a dot; they cannot be chosen by name in other apps.
 const HIDDEN_PREFIX: char = '.';
-/// `Settings::validate` refuses these, because the name goes into XML attributes.
-const MARKUP_CHARACTERS: [char; 3] = ['"', '<', '&'];
 
 fn is_choosable(family: &str) -> bool {
     !family.trim().is_empty()
         && !family.starts_with(HIDDEN_PREFIX)
-        && !family.contains(MARKUP_CHARACTERS)
+        && !family.contains(FONT_FAMILY_FORBIDDEN)
 }
 
 /// Sorted without regard to case, one row per family however many faces it has.

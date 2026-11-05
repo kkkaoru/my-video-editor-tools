@@ -159,6 +159,8 @@ export const zhHantMessages: Messages = {
     profile_missing: "設定檔 {name} 已不存在。",
     models_busy: "有工作或下載正在進行時無法重設模型。請等待完成或取消後再試。",
     models_missing: "由於缺少以下模型,影片未新增:{roles}。請在模型頁下載,或新增已有模型的資料夾。",
+    no_supported_files:
+      "不能加入這個檔案。請選擇影片（.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts）或字幕檔（.fcpxml .srt .ttml .transcript.json）。",
     internal: "{detail}",
     cancelled: "已取消",
   },
@@ -232,7 +234,7 @@ export const zhHantMessages: Messages = {
             notes: [
               "按人數旁邊的「?」，可以看到為什麼要選人數。",
               "只有一個人說話時，選 1 人會更快。",
-              "可以加入的影片：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。加入其他檔案不會有任何反應。",
+              "可以加入的影片：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。字幕檔：.fcpxml .srt .ttml .transcript.json。加入其他檔案時，應用程式會提示不能加入。",
               "加入多部影片時，會一部一部依序處理。",
               "第一次做字幕時，應用程式還要把模型轉換成能用的形式。",
               "字幕的語言不對時，在「{tabStyle}」分頁的「{speechLanguage}」中選擇語言。",
@@ -334,7 +336,7 @@ export const zhHantMessages: Messages = {
               "框下面的清單會顯示進度和結果。",
             ],
             notes: [
-              "清單中影片名稱旁邊的重新寫入按鈕，會覆寫同名檔案。原來的檔案不會保留。",
+              "清單中影片名稱旁邊的重新寫入按鈕，會用別的名稱產生新檔案。原來的檔案會保留。",
               "原來的檔案會保留。新檔案的名稱後面會加上 -2 等數字。",
               "同一資料夾裡需要有同名的 .transcript.json 檔案。",
               "使用設定檔時，沒有存到這個設定檔的變更不會被使用。",

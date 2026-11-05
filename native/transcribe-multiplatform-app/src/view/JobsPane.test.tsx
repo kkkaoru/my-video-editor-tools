@@ -81,8 +81,7 @@ const storeWith = (snapshot: Snapshot, jobs: JobRow[], hovering: boolean): AppSt
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
   replaceSnapshot: vi.fn(),
-  dropVideos: vi.fn(),
-  dropSubtitles: vi.fn(),
+  dropFiles: vi.fn(),
 });
 
 function showJob(job: JobRow): AppStore {
@@ -191,7 +190,7 @@ it("adds the chosen videos", async () => {
   render(<JobsPane store={store} snapshot={READY} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   await waitFor((): void => {
-    expect(vi.mocked(store.dropVideos).mock.calls).toStrictEqual([[["/a.mp4"]]]);
+    expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([[["/a.mp4"]]]);
   });
 });
 
@@ -202,7 +201,7 @@ it("adds nothing when the file dialog is dismissed", async () => {
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   });
-  expect(vi.mocked(store.dropVideos).mock.calls).toStrictEqual([]);
+  expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([]);
 });
 
 it("reports a file dialog that fails", async () => {
@@ -448,7 +447,7 @@ it("rewrites the chosen subtitle files", async () => {
   render(<JobsPane store={store} snapshot={READY} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
   await waitFor((): void => {
-    expect(vi.mocked(store.dropSubtitles).mock.calls).toStrictEqual([[["/a.srt"]]]);
+    expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([[["/a.srt"]]]);
   });
   expect(vi.mocked(open).mock.calls[0]?.[0]).toStrictEqual({
     multiple: true,
@@ -463,7 +462,7 @@ it("rewrites nothing when the subtitle dialog is dismissed", async () => {
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
   });
-  expect(vi.mocked(store.dropSubtitles).mock.calls).toStrictEqual([]);
+  expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([]);
 });
 
 it("reports a subtitle dialog that fails", async () => {

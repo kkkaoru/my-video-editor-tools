@@ -179,6 +179,8 @@ export const deMessages: Messages = {
       "Während eine Aufgabe oder ein Download läuft, können Modelle nicht zurückgesetzt werden. Warte das Ende ab oder brich ab und versuche es erneut.",
     models_missing:
       "Die Videos wurden nicht hinzugefügt, weil für Folgendes kein Modell verfügbar ist: {roles}. Lade sie unter Modelle herunter oder füge einen Ordner hinzu, der sie enthält.",
+    no_supported_files:
+      "Diese Datei geht nicht. Wähle ein Video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) oder eine Untertiteldatei (.fcpxml .srt .ttml .transcript.json).",
     internal: "{detail}",
     cancelled: "Abgebrochen",
   },
@@ -268,7 +270,7 @@ export const deMessages: Messages = {
             notes: [
               "Das „?“ neben der Anzahl erklärt, warum sie hilft.",
               "Spricht nur eine Person, wähle 1. Das geht schneller.",
-              "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Bei anderen Dateien passiert nichts.",
+              "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
               "Mehrere Videos werden eines nach dem anderen bearbeitet.",
               "Beim ersten Mal bringt die App außerdem ein Modell in eine Form, die sie nutzen kann.",
               "Stimmt die Sprache der Untertitel nicht, wähle sie im Tab „{tabStyle}“ bei „{speechLanguage}“.",
@@ -382,7 +384,7 @@ export const deMessages: Messages = {
               "Die Liste unter dem Feld zeigt Fortschritt und Ergebnis.",
             ],
             notes: [
-              "Der Knopf zum Neuschreiben neben dem Namen eines Videos in der Liste ersetzt die Dateien mit demselben Namen. Die alten Dateien bleiben nicht erhalten.",
+              "Der Knopf zum Neuschreiben neben dem Namen eines Videos in der Liste macht neue Dateien mit einem anderen Namen. Die alten Dateien bleiben erhalten.",
               "Die alten Dateien bleiben. Die neuen bekommen ein -2 oder eine ähnliche Zahl im Namen.",
               "Die .transcript.json-Datei mit demselben Namen muss im selben Ordner liegen.",
               "Nutzt du ein Profil, werden Änderungen nicht verwendet, die du nicht darin gespeichert hast.",

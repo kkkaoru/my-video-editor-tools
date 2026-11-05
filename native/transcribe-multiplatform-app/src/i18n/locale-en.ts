@@ -171,6 +171,8 @@ export const enMessages: Messages = {
       "Models cannot be reset while a job or a download is running. Wait for it to finish or cancel it, then try again.",
     models_missing:
       "The videos were not added because no model is available for: {roles}. Download them in Models, or add a folder that already has them.",
+    no_supported_files:
+      "This file cannot be added. Choose a video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) or a subtitle file (.fcpxml .srt .ttml .transcript.json).",
     internal: "{detail}",
     cancelled: "Cancelled",
   },
@@ -255,7 +257,7 @@ export const enMessages: Messages = {
             notes: [
               "Press the “?” next to the number to read why it helps.",
               "If only one person speaks, choosing 1 makes it faster.",
-              "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Nothing happens with other files.",
+              "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Subtitle files can be .fcpxml .srt .ttml .transcript.json. With any other file, the app says it cannot be added.",
               "If you add several videos, they are done one at a time.",
               "The first time, the app also changes a model into a form it can use.",
               "If the subtitles are in the wrong language, choose it in “{speechLanguage}” on the “{tabStyle}” tab.",
@@ -369,7 +371,7 @@ export const enMessages: Messages = {
               "The list under the box shows the progress and the result.",
             ],
             notes: [
-              "The write-again button next to a video's name in the list replaces the files of the same name. The old files are not kept.",
+              "The write-again button next to a video's name in the list makes new files with a different name. The old files are kept.",
               "The original files are kept. The new files get -2 or a similar number added to their name.",
               "The .transcript.json file with the same name must be in the same folder.",
               "When you are using a profile, changes you have not saved to it are not used.",

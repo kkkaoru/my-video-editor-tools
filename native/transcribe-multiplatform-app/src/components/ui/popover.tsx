@@ -25,7 +25,13 @@ export const PopoverContent = ({
   ...props
 }: PrimitiveProps<PopoverPrimitive.Popup.Props>): VNode => (
   <PopoverPrimitive.Portal container={MAIN_LANDMARK}>
-    <PopoverPrimitive.Positioner sideOffset={4} collisionPadding={8} className="isolate z-50">
+    <PopoverPrimitive.Positioner
+      side="right"
+      align="start"
+      sideOffset={4}
+      collisionPadding={8}
+      className="isolate z-50"
+    >
       <PopoverPrimitive.Popup
         data-slot="popover-content"
         className={cn(

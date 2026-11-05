@@ -168,6 +168,8 @@ export const koMessages: Messages = {
       "작업이나 다운로드가 진행 중일 때는 모델을 초기화할 수 없습니다. 끝나기를 기다리거나 취소한 뒤 다시 시도하세요.",
     models_missing:
       "다음 모델이 없어 동영상을 추가하지 않았습니다: {roles}. 모델 탭에서 다운로드하거나 모델이 있는 폴더를 추가하세요.",
+    no_supported_files:
+      "이 파일은 넣을 수 없습니다. 동영상(.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts)이나 자막 파일(.fcpxml .srt .ttml .transcript.json)을 고르세요.",
     internal: "{detail}",
     cancelled: "취소됨",
   },
@@ -249,7 +251,7 @@ export const koMessages: Messages = {
             notes: [
               "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
               "한 사람만 말하면 1명을 고르세요. 더 빨리 끝납니다.",
-              "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 다른 파일을 넣으면 아무 일도 일어나지 않습니다.",
+              "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
               "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
               "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",
               "자막의 언어가 다르면 “{tabStyle}” 탭의 “{speechLanguage}”에서 언어를 고릅니다.",
@@ -358,7 +360,7 @@ export const koMessages: Messages = {
               "상자 아래 목록에 진행 상황과 결과가 나옵니다.",
             ],
             notes: [
-              "목록에서 동영상 이름 옆의 다시 만들기 버튼은 같은 이름의 파일을 덮어씁니다. 원래 파일은 남지 않습니다.",
+              "목록에서 동영상 이름 옆의 다시 만들기 버튼은 다른 이름으로 새 파일을 만듭니다. 원래 파일은 남습니다.",
               "원래 파일은 지우지 않습니다. 새 파일 이름에 -2 같은 번호를 붙입니다.",
               "같은 폴더에 이름이 같은 .transcript.json 파일이 있어야 합니다.",
               "프로필을 쓰고 있을 때는 그 프로필에 저장하지 않은 변경을 쓰지 않습니다.",

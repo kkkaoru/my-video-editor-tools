@@ -93,7 +93,7 @@ fn cancel_download(service: State<'_, Service>, id: String) -> AppResult<()> {
     service.cancel_download(&id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_model(service: State<'_, Service>, id: String) -> AppResult<Snapshot> {
     service.delete_model(&id)
 }

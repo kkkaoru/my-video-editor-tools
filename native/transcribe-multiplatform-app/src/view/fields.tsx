@@ -27,7 +27,7 @@ export interface SelectFieldProps {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
-  /** Shown beside the label. */
+  /** Shown beside the control, so a popup opening sideways does not cover it. */
   help?: ComponentChildren;
 }
 
@@ -85,13 +85,13 @@ export const SelectField = ({ label, value, options, onChange, help }: SelectFie
     onValueChange={(next: string | null): void => whenPresent(next, onChange)}
   >
     <div className="grid grid-cols-1 gap-1">
+      <span className="text-sm font-medium">{label}</span>
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">{label}</span>
+        <SelectTrigger aria-label={label} className="min-w-0 flex-1">
+          <SelectValue />
+        </SelectTrigger>
         {help}
       </div>
-      <SelectTrigger aria-label={label}>
-        <SelectValue />
-      </SelectTrigger>
     </div>
     <SelectContent>
       {options.map(

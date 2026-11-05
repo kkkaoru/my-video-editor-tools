@@ -91,3 +91,23 @@ it("shows why the first snapshot failed", async () => {
   await start(host);
   expect(host.textContent).toBe("Startup failed: Error: no backend");
 });
+
+it("reads a backend failure as text instead of an object", () => {
+  const host: HTMLElement = newHost();
+  reportStartupFailure(host, { code: "internal", detail: "settings file: broken" });
+  expect(host.textContent).toBe("Startup failed: settings file: broken");
+});
+
+it("explains a failure with a translatable code", () => {
+  const host: HTMLElement = newHost();
+  reportStartupFailure(host, { code: "models_busy" });
+  expect(host.textContent).toBe(
+    "Startup failed: Models cannot be reset while a job or a download is running. Wait for it to finish or cancel it, then try again.",
+  );
+});
+
+it("shows an unknown object in full", () => {
+  const host: HTMLElement = newHost();
+  reportStartupFailure(host, { reason: "gone" });
+  expect(host.textContent).toBe('Startup failed: {"reason":"gone"}');
+});

@@ -35,6 +35,7 @@ export interface ErrorMessages {
   profile_missing: string;
   models_busy: string;
   models_missing: string;
+  no_supported_files: string;
   too_long_for_model: string;
   internal: string;
   cancelled: string;

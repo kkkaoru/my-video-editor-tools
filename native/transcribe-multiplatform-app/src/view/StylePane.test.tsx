@@ -53,8 +53,7 @@ const storeOf = (): AppStore => ({
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
   replaceSnapshot: vi.fn(),
-  dropVideos: vi.fn(),
-  dropSubtitles: vi.fn(),
+  dropFiles: vi.fn(),
 });
 
 function show(settings: Settings): AppStore {

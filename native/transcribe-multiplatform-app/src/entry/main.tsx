@@ -2,6 +2,9 @@
 import { render } from "preact";
 import { fetchSnapshot } from "../backend/backend.ts";
 import type { Snapshot } from "../backend/types.ts";
+import { enMessages } from "../i18n/locale-en.ts";
+import { errorText } from "../i18n/messages.ts";
+import { asBackendError } from "../state/use-app-store.ts";
 import { App } from "../view/App.tsx";
 import "./styles.css";
 
@@ -12,7 +15,7 @@ export function mount(host: HTMLElement, snapshot: Snapshot): void {
 export function reportStartupFailure(host: HTMLElement, error: unknown): void {
   const message: HTMLElement = document.createElement("p");
   message.setAttribute("role", "alert");
-  message.textContent = `Startup failed: ${String(error)}`;
+  message.textContent = `Startup failed: ${errorText(enMessages, asBackendError(error), "")}`;
   host.replaceChildren(message);
 }
 

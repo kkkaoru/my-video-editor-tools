@@ -41,7 +41,8 @@ export const formatBytes = (bytes: number): string =>
   bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.ceil(bytes / MIB)} MB`;
 
 const isOwnCopy = (model: ModelStatus, snapshot: Snapshot): boolean =>
-  model.found_at?.startsWith(snapshot.models_dir) === true;
+  // The runtime lives outside the models folder, and may be a broken download that has to go.
+  model.role === "runtime" || model.found_at?.startsWith(snapshot.models_dir) === true;
 
 const hasNote = (notes: ModelNotes, id: string): id is keyof ModelNotes => id in notes;
 
@@ -119,14 +120,7 @@ function DownloadButtons({ model, store, snapshot, download }: ModelRowProps): V
   }
   if (canDownload(model)) {
     return (
-      <Button
-        onClick={(): void => {
-          store.setState(
-            (state: AppState): AppState => startedDownload(state, model.id, model.download_bytes),
-          );
-          startDownload(model.id).catch(fail);
-        }}
-      >
+      <Button onClick={(): void => startDownloads(store, [model])}>
         <DownloadIcon aria-hidden="true" />
         {format(messages.download, { name, size: formatBytes(model.download_bytes) })}
       </Button>

@@ -7,7 +7,7 @@ use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::eta::{
     convert_step, export_step, PlannedStage, Progress, RateInputs, Stage, StageRates, Tracker,
 };
-use crate::export::{transcript_base, unused_base, write_outputs, Transcript};
+use crate::export::{unused_base, write_outputs, Transcript};
 use crate::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
@@ -83,15 +83,8 @@ fn check_fits(entry: &ModelEntry, hardware: &Hardware) -> AppResult<()> {
     catalog::blocked_reason(entry, hardware).map_or(Ok(()), |reason| Err(reason.into()))
 }
 
-fn locate_faces(
-    tools: &Tools,
-    paths: &AppPaths,
-    settings: &Settings,
-    video: &Path,
-    info: &VideoInfo,
-    cancel: &CancelToken,
-    report: Report<'_>,
-) -> AppResult<Vec<FaceSample>> {
+/// The face model the settings ask for, found before any long work starts.
+fn face_model(paths: &AppPaths, settings: &Settings) -> AppResult<(PathBuf, FaceModelKind)> {
     let entry = catalog::find_entry(&settings.face_model)
         .ok_or_else(|| AppError::Invalid(format!("unknown face model {}", settings.face_model)))?;
     let model = catalog::locate(entry, paths, &settings.model_dirs).ok_or_else(|| {
@@ -104,7 +97,18 @@ fn locate_faces(
     } else {
         FaceModelKind::Yunet
     };
-    let detector = FaceDetector::load(&model, kind)?;
+    Ok((model, kind))
+}
+
+fn locate_faces(
+    tools: &Tools,
+    (model, kind): &(PathBuf, FaceModelKind),
+    video: &Path,
+    info: &VideoInfo,
+    cancel: &CancelToken,
+    report: Report<'_>,
+) -> AppResult<Vec<FaceSample>> {
+    let detector = FaceDetector::load(model, *kind)?;
     scan_faces(tools, &detector, video, info, cancel, &mut |fraction| {
         report(Stage::Faces, Some(fraction));
     })
@@ -282,6 +286,9 @@ pub fn run_job(
     } else {
         Some(prepare_speaker_model(paths, settings, hardware)?)
     };
+    let faces_from = wants_faces(settings)
+        .then(|| face_model(paths, settings))
+        .transpose()?;
     let tools = Tools::locate(paths, catalog::backend_for(hardware, paths))?;
     if let Some(prepared) = &speaker_model {
         needs_cuda_runtime(prepared.entry, &tools)?;
@@ -366,11 +373,12 @@ pub fn run_job(
     } else {
         words.iter_mut().for_each(|word| word.speaker = Some(1));
     }
-    let faces = if wants_faces(settings) {
-        report(Stage::Faces, Some(0.0));
-        locate_faces(&tools, paths, settings, video, &info, cancel, &mut report)?
-    } else {
-        Vec::new()
+    let faces = match &faces_from {
+        Some(model) => {
+            report(Stage::Faces, Some(0.0));
+            locate_faces(&tools, model, video, &info, cancel, &mut report)?
+        }
+        None => Vec::new(),
     };
     report(Stage::Export, Some(0.0));
     let (cues, faceless) = build_cues(&words, &faces, &info, settings, &Segmenter::for_app(paths))?;
@@ -396,24 +404,6 @@ pub fn run_job(
     })
 }
 
-/// Writes a transcript's own files again, replacing them; the caller asked for exactly that.
-pub fn relayout(
-    transcript_file: &Path,
-    paths: &AppPaths,
-    settings: &Settings,
-    cancel: &CancelToken,
-    sink: &mut dyn FnMut(Progress),
-) -> AppResult<JobOutcome> {
-    relayout_to(
-        transcript_file,
-        &transcript_base(transcript_file),
-        paths,
-        settings,
-        cancel,
-        sink,
-    )
-}
-
 /// Lays out an earlier transcript again with new colours or position, without the speech models.
 /// All outputs go to `base`.
 pub fn relayout_to(
@@ -427,6 +417,9 @@ pub fn relayout_to(
     settings.validate()?;
     let mut transcript = Transcript::load(transcript_file)?;
     let needs_faces = wants_faces(settings) && transcript.faces.is_empty();
+    let faces_from = needs_faces
+        .then(|| face_model(paths, settings))
+        .transpose()?;
     let rates = StageRates::load(&paths.stage_rates_file());
     let inputs = RateInputs {
         accelerated: false,
@@ -442,13 +435,12 @@ pub fn relayout_to(
     let mut tracker = Tracker::new(plan, rates, duration);
     let mut report =
         |stage: Stage, fraction: Option<f64>| sink(tracker.update(stage, fraction, Instant::now()));
-    if needs_faces {
+    if let Some(model) = &faces_from {
         let tools = Tools::locate(paths, Backend::Default)?;
         report(Stage::Faces, Some(0.0));
         transcript.faces = locate_faces(
             &tools,
-            paths,
-            settings,
+            model,
             &transcript.source,
             &transcript.info,
             cancel,

@@ -1,6 +1,8 @@
 //! Resumable, hash-verified downloads of catalogued files.
 
-use crate::catalog::{locate_file, FileSpec, ModelEntry, Role, GEFORCE_RUNTIME_ID};
+use crate::catalog::{
+    locate_file, unpacked_marker, FileSpec, ModelEntry, Role, GEFORCE_RUNTIME_ID,
+};
 use crate::error::{io_context, AppError, AppResult};
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
@@ -8,11 +10,21 @@ use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use ureq::Agent;
 
 const CHUNK_BYTES: usize = 1 << 20;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_PARTIAL: u16 = 206;
+const STATUS_TOO_MANY_REQUESTS: u16 = 429;
+const STATUS_SERVER_ERRORS: u16 = 500;
+/// A stalled server fails here and takes the normal retry; ureq has no limit of its own.
+const STALL_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(30)
+};
 const MAX_RETRIES: u32 = 5;
 const RETRY_WAIT: Duration = if cfg!(test) {
     Duration::ZERO
@@ -26,22 +38,44 @@ pub struct DownloadProgress {
     pub total_bytes: u64,
 }
 
+/// What has reached the partial file so far.
+struct Received {
+    hasher: Sha256,
+    bytes: u64,
+}
+
+fn agent() -> &'static Agent {
+    static AGENT: OnceLock<Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        Agent::config_builder()
+            .timeout_connect(Some(STALL_TIMEOUT))
+            .timeout_recv_response(Some(STALL_TIMEOUT))
+            .timeout_per_read(Some(STALL_TIMEOUT))
+            .build()
+            .new_agent()
+    })
+}
+
 /// Hashes what an interrupted run already saved so the final digest covers the whole file.
-fn hash_existing(path: &Path, hasher: &mut Sha256) -> AppResult<u64> {
+fn hash_existing(path: &Path, cancel: &CancelToken) -> AppResult<Received> {
+    let mut received = Received {
+        hasher: Sha256::new(),
+        bytes: 0,
+    };
     let Ok(mut file) = File::open(path) else {
-        return Ok(0);
+        return Ok(received);
     };
     let mut buffer = vec![0u8; CHUNK_BYTES];
-    let mut total = 0u64;
     loop {
+        cancel.check()?;
         let count = file
             .read(&mut buffer)
             .map_err(io_context("read partial download"))?;
         if count == 0 {
-            return Ok(total);
+            return Ok(received);
         }
-        hasher.update(&buffer[..count]);
-        total += count as u64;
+        received.hasher.update(&buffer[..count]);
+        received.bytes += count as u64;
     }
 }
 
@@ -64,42 +98,68 @@ struct Transfer<'a> {
     entry_bytes: u64,
 }
 
-/// A refusal from the server stays a refusal; anything else is a lost connection worth another try.
+/// A refusal from the server stays a refusal. A busy server or a lost connection is worth another try.
 fn request_failure(url: &str, error: &ureq::Error) -> AppError {
     let detail = format!("{url}: {error}");
     match error {
-        ureq::Error::StatusCode(_) => AppError::Download(detail),
+        ureq::Error::StatusCode(code)
+            if *code < STATUS_SERVER_ERRORS && *code != STATUS_TOO_MANY_REQUESTS =>
+        {
+            AppError::Download(detail)
+        }
         _ => AppError::Interrupted(detail),
     }
 }
 
+/// The first byte a `bytes 6-10/11` reply holds.
+fn content_range_start(value: &str) -> Option<u64> {
+    value
+        .strip_prefix("bytes ")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
 fn stream_to_file(
     transfer: &Transfer<'_>,
-    hasher: &mut Sha256,
+    received: &mut Received,
     cancel: &CancelToken,
     progress: &mut dyn FnMut(DownloadProgress),
 ) -> AppResult<()> {
-    let mut have = hash_existing(transfer.partial, hasher)?;
     // An interrupted run may have saved everything; asking for more would only get a 416.
-    if have >= transfer.size {
+    if received.bytes >= transfer.size {
         return Ok(());
     }
-    let response = ureq::get(transfer.url)
-        .header("Range", &format!("bytes={have}-"))
+    let response = agent()
+        .get(transfer.url)
+        .header("Range", &format!("bytes={}-", received.bytes))
         .call()
         .map_err(|error| request_failure(transfer.url, &error))?;
-    let mut file = if response.status().as_u16() == STATUS_PARTIAL {
+    let resumed = response.status().as_u16() == STATUS_PARTIAL;
+    let start = response
+        .headers()
+        .get("Content-Range")
+        .and_then(|value| value.to_str().ok())
+        .and_then(content_range_start);
+    let mut file = if resumed && start.is_none_or(|start| start == received.bytes) {
         OpenOptions::new()
             .append(true)
             .create(true)
             .open(transfer.partial)
     } else {
-        // The server ignored the range: restart from zero.
-        hasher.reset();
-        have = 0;
+        // The server ignored the range or answered with another one: restart from zero.
+        received.hasher.reset();
+        received.bytes = 0;
         File::create(transfer.partial)
     }
     .map_err(io_context("open partial download"))?;
+    if resumed && start.is_some_and(|start| start != 0) && received.bytes == 0 {
+        return Err(AppError::Interrupted(format!(
+            "{}: the server sent an unexpected range",
+            transfer.url
+        )));
+    }
     let mut body = response.into_body();
     let mut reader = body.as_reader();
     let mut buffer = vec![0u8; CHUNK_BYTES];
@@ -110,16 +170,22 @@ fn stream_to_file(
             .read(&mut buffer)
             .map_err(|error| AppError::Interrupted(error.to_string()))?;
         if count == 0 {
+            if received.bytes < transfer.size {
+                return Err(AppError::Interrupted(format!(
+                    "{}: the connection closed after {} of {} bytes",
+                    transfer.url, received.bytes, transfer.size
+                )));
+            }
             return Ok(());
         }
         file.write_all(&buffer[..count])
             .map_err(io_context("write download"))?;
-        hasher.update(&buffer[..count]);
-        have += count as u64;
+        received.hasher.update(&buffer[..count]);
+        received.bytes += count as u64;
         if last_report.elapsed() >= PROGRESS_INTERVAL {
             last_report = Instant::now();
             progress(DownloadProgress {
-                done_bytes: transfer.earlier_bytes + have.min(transfer.size),
+                done_bytes: transfer.earlier_bytes + received.bytes.min(transfer.size),
                 total_bytes: transfer.entry_bytes,
             });
         }
@@ -205,11 +271,20 @@ fn download_file(
         earlier_bytes,
         entry_bytes,
     };
+    // Kept across retries: hashing a 20 GB partial file again would take minutes each time.
+    let mut received = hash_existing(&partial, cancel)?;
     let mut retries_left = MAX_RETRIES;
     loop {
-        let mut hasher = Sha256::new();
-        match stream_to_file(&transfer, &mut hasher, cancel, progress) {
-            Ok(()) => return verify_and_publish(&partial, destination, transfer_file, hasher),
+        let before = received.bytes;
+        let result = stream_to_file(&transfer, &mut received, cancel, progress);
+        // Only a connection that keeps failing without progress should use up the retries.
+        if received.bytes > before {
+            retries_left = MAX_RETRIES;
+        }
+        match result {
+            Ok(()) => {
+                return verify_and_publish(&partial, destination, transfer_file, received.hasher)
+            }
             Err(AppError::Interrupted(_)) if retries_left > 0 => {
                 retries_left -= 1;
                 std::thread::sleep(RETRY_WAIT);
@@ -218,6 +293,21 @@ fn download_file(
             Err(error) => return Err(error),
         }
     }
+}
+
+/// Unpacks once; a run stopped halfway has no marker, so the next one unpacks the kept archive again.
+fn unpack_once(archive: &Path) -> AppResult<()> {
+    let marker = unpacked_marker(archive);
+    if marker.exists() {
+        return Ok(());
+    }
+    let folder = archive
+        .parent()
+        .ok_or_else(|| AppError::Invalid("archive has no parent".into()))?;
+    unpack_archive(archive, folder)?;
+    File::create(&marker)
+        .map(drop)
+        .map_err(io_context("mark archive unpacked"))
 }
 
 /// Downloads every file of the entry; files already present at the right size are kept.
@@ -246,10 +336,7 @@ pub fn download_entry(
             )?;
         }
         if file.is_archive() {
-            let folder = destination
-                .parent()
-                .ok_or_else(|| AppError::Invalid("archive has no parent".into()))?;
-            unpack_archive(&destination, folder)?;
+            unpack_once(&destination)?;
         }
         earlier_bytes += file.size;
         progress(DownloadProgress {
@@ -336,7 +423,9 @@ mod tests {
                 ("200 OK", body)
             };
             let head = format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\nContent-Range: bytes {offset}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len() - 1,
+                body.len(),
                 rest.len()
             );
             let middle = rest.len() / 2;
@@ -742,5 +831,221 @@ mod tests {
         )]);
         let result = download_entry(entry, &paths, &cancel, &mut |_| {});
         assert!(matches!(result, Err(AppError::Interrupted(_))));
+    }
+
+    #[test]
+    fn a_silent_server_times_out_and_the_retry_reaches_it() {
+        let paths = scratch("silent");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut silent, _) = listener.accept().unwrap();
+            read_request(&mut silent);
+            let (mut second, _) = listener.accept().unwrap();
+            read_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world")
+                .unwrap();
+            drop(silent);
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn busy_servers_are_retried() {
+        let paths = scratch("busy");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            read_request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            read_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let (mut third, _) = listener.accept().unwrap();
+            read_request(&mut third);
+            third
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world")
+                .unwrap();
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn progress_gives_the_retries_back() {
+        let paths = scratch("trickle");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        // One byte per connection: far more drops than MAX_RETRIES, yet always moving forward.
+        std::thread::spawn(move || {
+            (0..HELLO.len()).for_each(|offset| {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\r\n",
+                    HELLO.len() - offset
+                );
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&HELLO[offset..=offset]).unwrap();
+            });
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn an_unexpected_range_restarts_from_zero() {
+        let paths = scratch("wrong-range");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(partial_path(&destination), b"hello ").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let asked_first = read_request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-10/11\r\nContent-Length: 8\r\nConnection: close\r\n\r\nlo world")
+                .unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            let asked_second = read_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-10/11\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world")
+                .unwrap();
+            (asked_first, asked_second)
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        let (asked_first, asked_second) = server.join().unwrap();
+        assert!(asked_first.contains("range: bytes=6-\r\n"), "{asked_first}");
+        assert!(
+            asked_second.contains("range: bytes=0-\r\n"),
+            "{asked_second}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[test]
+    fn a_clean_close_before_the_end_counts_as_lost() {
+        let paths = scratch("short-body");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            read_request(&mut first);
+            first
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nConnection: close\r\n\r\nhello ")
+                .unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let request = read_request(&mut second);
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nConnection: close\r\n\r\nworld")
+                .unwrap();
+            request
+        });
+        let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert!(server.join().unwrap().contains("range: bytes=6-\r\n"));
+    }
+
+    #[test]
+    fn range_replies_are_read_for_their_first_byte() {
+        assert_eq!(content_range_start("bytes 6-10/11"), Some(6));
+        assert_eq!(content_range_start("bytes */11"), None);
+        assert_eq!(content_range_start("items 6-10/11"), None);
+    }
+
+    #[test]
+    fn cancelling_stops_hashing_a_partial_file() {
+        let paths = scratch("cancel-hash");
+        let destination = paths.models_dir().join("test-model/m.bin");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(partial_path(&destination), b"hello ").unwrap();
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "m.bin",
+            11,
+            HELLO_SHA256,
+        )]);
+        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        assert!(matches!(result, Err(AppError::Cancelled)));
+    }
+
+    #[test]
+    fn an_archive_is_unpacked_once_and_marked() {
+        let paths = scratch("zip-marker");
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("a.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"first").unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let folder = paths.models_dir().join("test-model");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("tool.zip"), &archive).unwrap();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "tool.zip",
+            archive.len() as u64,
+            "00",
+        )]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert!(folder.join("tool.zip.unpacked").is_file());
+        std::fs::remove_file(folder.join("a.txt")).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert!(!folder.join("a.txt").exists());
+    }
+
+    #[test]
+    fn an_interrupted_unpack_is_redone_from_the_kept_archive() {
+        let paths = scratch("zip-redo");
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("a.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"first").unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let folder = paths.models_dir().join("test-model");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("tool.zip"), &archive).unwrap();
+        let entry = entry_of(vec![file_spec(
+            NO_SERVER.to_owned(),
+            "tool.zip",
+            archive.len() as u64,
+            "00",
+        )]);
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        std::fs::remove_file(folder.join("a.txt")).unwrap();
+        std::fs::remove_file(folder.join("tool.zip.unpacked")).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        assert_eq!(
+            std::fs::read(folder.join("a.txt")).unwrap(),
+            b"first".to_vec()
+        );
     }
 }

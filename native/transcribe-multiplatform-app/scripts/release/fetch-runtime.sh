@@ -9,12 +9,14 @@ runtime="$app_dir/src-tauri/runtime"
 work="${RUNTIME_WORK_DIR:-$app_dir/src-tauri/target-runtime}"
 NEMO_VERSION=0.3.0
 WHISPER_TAG=v1.9.5
+WHISPER_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 WHISPER_BIN_TAG=b5454
 FFMPEG_MAC_VERSION=8.0.1
 FFMPEG_MAC_SHA256=05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a41
-FFMPEG_WIN_TAG=autobuild-2026-11-04-12-51
-FFMPEG_WIN_ZIP=ffmpeg-n8.1.3-34-ga35157abb9-win64-lgpl-8.1.zip
-FFMPEG_WIN_SHA256=c966229f0b033a1cf93b3fb139a804358a4ec27a53b8a6213fe08301868a7668
+# BtbN keeps daily tags about two weeks but month-end ones for good.
+FFMPEG_WIN_TAG=autobuild-2026-10-31-12-59
+FFMPEG_WIN_ZIP=ffmpeg-n8.1.3-27-g8dca1586f4-win64-lgpl-8.1.zip
+FFMPEG_WIN_SHA256=d4c2a42673917b4a97104a3e9f082729a9730796b98664e37c0b7eba6c6c613d
 mkdir -p "$runtime" "$work"
 
 # Git Bash on Windows has sha256sum but not shasum.
@@ -33,6 +35,11 @@ fetch() { # url sha256 output
   fi
 }
 
+clone_whisper() { # folder
+  git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$1"
+  [ "$(git -C "$1" rev-parse HEAD)" = "$WHISPER_COMMIT" ] || { echo "whisper.cpp $WHISPER_TAG is not the pinned commit" >&2; return 1; }
+}
+
 nemo_url() { echo "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v$NEMO_VERSION/nemo-speech-$NEMO_VERSION-$1"; }
 
 mac_nemo() {
@@ -45,7 +52,7 @@ mac_nemo() {
 }
 
 mac_whisper() {
-  rm -rf "$work/whisper-src" && git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$work/whisper-src"
+  rm -rf "$work/whisper-src" && clone_whisper "$work/whisper-src"
   cmake -S "$work/whisper-src" -B "$work/whisper-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON >/dev/null
   cmake --build "$work/whisper-build" --target whisper-cli -j 8 >/dev/null
   rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper"
@@ -66,7 +73,7 @@ windows_whisper_vulkan() {
   # The shader tool is a nested CMake project; under the deep checkout its paths pass the Windows limit.
   local short="${RUNNER_TEMP:-$work}/wv"
   rm -rf "$short"
-  git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$short/src"
+  clone_whisper "$short/src"
   cmake -S "$short/src" -B "$short/b" -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >/dev/null
   cmake --build "$short/b" --config Release --target whisper-cli -j 8 >"$short/build.log" ||
     { tail -40 "$short/build.log"; return 1; }
@@ -88,6 +95,12 @@ nemo_zip() { # sha256 asset folder
   find "$runtime/$3" \( -name include -o -name cmake -o -name '*.lib' \) -prune -exec rm -rf {} +
 }
 
+# whisper.cpp's builds need the VC++ runtime, which clean Windows installs do not have; nemo-speech ships it.
+# OpenMP's vcomp140.dll stays a separate file even in the statically linked Vulkan build.
+vc_runtime_into() { # folder
+  find "$runtime/nemo" \( -name 'vcruntime140*.dll' -o -name 'msvcp140*.dll' -o -name 'vcomp140.dll' \) -exec cp {} "$1/" \;
+}
+
 # Both Windows distributions: whisper on Vulkan, and CPU builds for machines without a usable GPU.
 windows_common() {
   windows_whisper_vulkan
@@ -95,8 +108,8 @@ windows_common() {
   fetch "https://github.com/ggml-org/whisper.cpp/releases/download/$WHISPER_BIN_TAG/whisper-bin-x64.zip" 6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb "$work/whisper.zip"
   rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper" && unzip -q -o "$work/whisper.zip" -d "$runtime/whisper"
   prune_whisper_bin "$runtime/whisper"
-  # whisper.cpp's archive omits the VC++ runtime, which clean Windows installs do not have; nemo-speech ships it.
-  find "$runtime/nemo" \( -name 'vcruntime140*.dll' -o -name 'msvcp140*.dll' -o -name 'vcomp140.dll' \) -exec cp {} "$runtime/whisper/Release/" \;
+  vc_runtime_into "$runtime/whisper/Release"
+  vc_runtime_into "$runtime/whisper-vulkan"
   fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
   rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg" && unzip -q -o "$work/ffmpeg.zip" -d "$work/ffmpeg"
   find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} "$runtime/ffmpeg/" \;

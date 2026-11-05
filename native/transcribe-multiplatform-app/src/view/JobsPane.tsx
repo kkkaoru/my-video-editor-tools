@@ -260,7 +260,7 @@ function chooseSubtitles(store: AppStore, messages: Messages): void {
   pickFiles(SUBTITLE_EXTENSIONS, messages.subtitleFilterName)
     .then((picked: string[] | null): void => {
       if (picked !== null) {
-        store.dropSubtitles(picked);
+        store.dropFiles(picked);
       }
     })
     .catch((error: unknown): void => reportFailure(store.setState, error));
@@ -275,7 +275,7 @@ function chooseVideos(store: AppStore, messages: Messages): void {
   pickFiles(VIDEO_EXTENSIONS, messages.videoFilterName)
     .then((picked: string[] | null): void => {
       if (picked !== null) {
-        store.dropVideos(picked);
+        store.dropFiles(picked);
       }
     })
     .catch((error: unknown): void => reportFailure(store.setState, error));
@@ -289,7 +289,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
-      <div className="max-w-xs">
+      <div className="max-w-sm">
         <SelectField
           label={messages.speakerCount}
           value={String(snapshot.settings.speaker_count)}

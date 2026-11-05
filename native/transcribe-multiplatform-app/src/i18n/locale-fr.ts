@@ -177,6 +177,8 @@ export const frMessages: Messages = {
       "Les modèles ne peuvent pas être réinitialisés pendant une tâche ou un téléchargement. Attends la fin ou annule, puis réessaie.",
     models_missing:
       "Les vidéos n'ont pas été ajoutées, car aucun modèle n'est disponible pour : {roles}. Télécharge-les dans Modèles ou ajoute un dossier qui les contient.",
+    no_supported_files:
+      "Ce fichier n'est pas accepté. Choisis une vidéo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) ou un fichier de sous-titres (.fcpxml .srt .ttml .transcript.json).",
     internal: "{detail}",
     cancelled: "Annulé",
   },
@@ -266,7 +268,7 @@ export const frMessages: Messages = {
             notes: [
               "Le « ? » à côté du nombre explique à quoi il sert.",
               "Si une seule personne parle, choisis 1. C'est plus rapide.",
-              "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Avec d'autres fichiers, il ne se passe rien.",
+              "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Fichiers de sous-titres : .fcpxml .srt .ttml .transcript.json. Avec un autre fichier, l'application dit qu'il n'est pas accepté.",
               "Si tu ajoutes plusieurs vidéos, elles sont traitées une par une.",
               "La première fois, l'application met aussi un modèle sous une forme qu'elle peut utiliser.",
               "Si la langue des sous-titres n'est pas la bonne, choisis-la dans « {speechLanguage} », dans l'onglet « {tabStyle} ».",
@@ -380,7 +382,7 @@ export const frMessages: Messages = {
               "La liste sous le cadre montre l'avancement et le résultat.",
             ],
             notes: [
-              "Le bouton de réécriture, à côté du nom d'une vidéo dans la liste, remplace les fichiers du même nom. Les anciens ne sont pas gardés.",
+              "Le bouton de réécriture, à côté du nom d'une vidéo dans la liste, crée de nouveaux fichiers avec un autre nom. Les anciens sont gardés.",
               "Les fichiers d'origine sont gardés. Les nouveaux reçoivent -2 ou un autre numéro dans leur nom.",
               "Le fichier .transcript.json du même nom doit être dans le même dossier.",
               "Quand tu utilises un profil, les changements non enregistrés dans ce profil ne sont pas utilisés.",

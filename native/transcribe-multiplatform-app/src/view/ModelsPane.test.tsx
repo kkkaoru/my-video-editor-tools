@@ -58,8 +58,7 @@ const storeWith = (snapshot: Snapshot, downloads: ReadonlyMap<string, DownloadRo
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
   replaceSnapshot: vi.fn(),
-  dropVideos: vi.fn(),
-  dropSubtitles: vi.fn(),
+  dropFiles: vi.fn(),
 });
 
 function showModel(model: ModelStatus, download: DownloadRow | null): AppStore {
@@ -486,4 +485,11 @@ it("reports a bulk download that cannot start", async () => {
   await waitFor((): void => {
     expect(vi.mocked(store.setState).mock.calls.length).toBe(2);
   });
+});
+
+it("can delete a runtime wherever it was found, so a broken one can be replaced", () => {
+  showModel({ ...MODEL, id: "geforce-runtime", role: "runtime", found_at: "/data/runtime/geforce" }, null);
+  expect(screen.getByRole("button", { name: "Delete the downloaded copy of Whisper" }).tagName).toBe(
+    "BUTTON",
+  );
 });

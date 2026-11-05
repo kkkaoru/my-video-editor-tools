@@ -55,6 +55,7 @@ const DIALOG_TRIGGER: string = 'button[aria-haspopup="dialog"]';
 const DROPPED_PATHS: ReadonlyMap<string, string[]> = new Map([
   ["drop-video", ["/a.mp4"]],
   ["drop-subtitles", ["/a.ttml"]],
+  ["drop-other", ["/a.txt"]],
 ]);
 
 async function showState(page: Page, state: UiState, locale: string): Promise<void> {
@@ -283,6 +284,18 @@ test("the sweep detects a low-contrast text, a small target and a missing focus 
   ).toStrictEqual(["color-contrast-enhanced"]);
   expect((await smallTargets(page)).length).toBe(1);
   expect((await focusReport(page)).outlineWidth).toBe(0);
+});
+
+test("the speaker count help does not cover the control it explains", async ({ page }): Promise<void> => {
+  const state: UiState | undefined = UI_STATES.find(({ name }: UiState): boolean => name === "jobs empty");
+  if (state === undefined) {
+    throw new Error("the jobs empty state is missing");
+  }
+  await showState(page, state, "en");
+  const panel = page.getByRole("tabpanel");
+  await panel.locator(DIALOG_TRIGGER).hover();
+  await page.getByRole("dialog").waitFor();
+  await panel.getByRole("combobox").first().hover({ timeout: 2000 });
 });
 
 const brokenSpeakerNames = (page: Page): Promise<string[]> =>

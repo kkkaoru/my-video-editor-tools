@@ -144,3 +144,12 @@ it("keeps the opening text within the readable line length", () => {
     ).className,
   ).toBe("max-w-[min(65ch,40em)] leading-normal");
 });
+
+it("says the write-again button keeps the old files", () => {
+  render(<HelpPane version="1.2.3" />);
+  expect(
+    screen.getByText(
+      "The write-again button next to a video's name in the list makes new files with a different name. The old files are kept.",
+    ).tagName,
+  ).toBe("LI");
+});

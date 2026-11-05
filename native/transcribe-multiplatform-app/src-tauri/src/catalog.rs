@@ -711,12 +711,18 @@ pub fn locate_whisper_source(paths: &AppPaths, extra: &[PathBuf]) -> Option<Path
     locate_whisper_checkpoint(&search_roots(paths, extra), paths.hf_hub.as_deref())
 }
 
-/// The verified archive is published only once complete, so a running or broken download does not count.
+/// Written beside an archive only after all of it is unpacked.
+pub(crate) fn unpacked_marker(archive: &Path) -> PathBuf {
+    let mut name = archive.as_os_str().to_owned();
+    name.push(".unpacked");
+    PathBuf::from(name)
+}
+
+/// A running, stopped or half-unpacked download has no marker, so it does not count as installed.
 fn locate_runtime(paths: &AppPaths) -> Option<PathBuf> {
     let folder = paths.downloaded_runtime_dir().join("geforce");
-    let archive = folder.join(GEFORCE_FILES[0].path);
-    std::fs::metadata(archive)
-        .is_ok_and(|meta| meta.len() == GEFORCE_FILES[0].size)
+    unpacked_marker(&folder.join(GEFORCE_FILES[0].path))
+        .is_file()
         .then_some(folder)
 }
 
@@ -771,7 +777,8 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
             blocked: blocked_reason(entry, hardware),
             recommended: recommended == Some(entry.id)
                 || entry.id == WHISPER_ID
-                || entry.id == YUNET_ID,
+                || entry.id == YUNET_ID
+                || entry.id == GEFORCE_RUNTIME_ID,
         })
         .collect()
 }
@@ -966,15 +973,12 @@ mod tests {
         );
         let archive = root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip");
         std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
-        std::fs::File::create(&archive).unwrap().set_len(5).unwrap();
+        std::fs::write(&archive, b"downloaded but not unpacked yet").unwrap();
         assert_eq!(
             backend_for(&geforce("RTX 4090", 24), &paths),
             Backend::SpeakersOnCpu
         );
-        std::fs::File::create(&archive)
-            .unwrap()
-            .set_len(508_625_181)
-            .unwrap();
+        std::fs::write(unpacked_marker(&archive), b"").unwrap();
         assert_eq!(backend_for(&geforce("RTX 4090", 24), &paths), Backend::Cuda);
         assert_eq!(backend_for(&radeon, &paths), Backend::Vulkan);
         assert_eq!(backend_for(&mac(64), &paths), Backend::Default);
@@ -1176,6 +1180,25 @@ mod tests {
                 required: 4,
                 available: 2
             })
+        );
+    }
+
+    #[test]
+    fn the_runtime_is_recommended_where_it_is_listed() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/catalog-recommended");
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let recommended: Vec<&str> = statuses(&geforce("NVIDIA GeForce RTX 3060", 12), &paths, &[])
+            .iter()
+            .filter(|row| row.recommended)
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(
+            recommended,
+            vec!["whisper-large-v3-turbo", "yunet", "geforce-runtime"]
         );
     }
 }

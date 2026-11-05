@@ -62,8 +62,7 @@ const storeOf = (): AppStore => ({
   updateSettings: vi.fn(),
   applySnapshot: vi.fn(),
   replaceSnapshot: vi.fn(),
-  dropVideos: vi.fn(),
-  dropSubtitles: vi.fn(),
+  dropFiles: vi.fn(),
 });
 
 function show(settings: Settings, profiles: Profile[]): AppStore {
@@ -113,7 +112,9 @@ it("shows a refused name in the banner", async () => {
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Save as a new profile" }));
   });
-  expect(failureOf(store)).toStrictEqual({ code: "profile_exists", name: "A" });
+  await waitFor((): void => {
+    expect(failureOf(store)).toStrictEqual({ code: "profile_exists", name: "A" });
+  });
   expect(vi.mocked(store.replaceSnapshot).mock.calls.length).toBe(0);
 });
 
@@ -165,4 +166,18 @@ it("deletes only after confirming", async () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete A" }));
   });
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([["delete_profile", { name: "A" }]]);
+});
+
+it("keeps the typed name when saving fails", async () => {
+  vi.mocked(invoke).mockRejectedValue({ code: "profile_exists", name: "A" });
+  const store: AppStore = show(SETTINGS, [PROFILE]);
+  const field: HTMLElement = screen.getByRole("textbox", { name: "Profile name" });
+  fireEvent.input(field, { target: { value: "A" } });
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Save as a new profile" }));
+  });
+  await waitFor((): void => {
+    expect(failureOf(store)).toStrictEqual({ code: "profile_exists", name: "A" });
+  });
+  expect(field instanceof HTMLInputElement ? field.value : null).toBe("A");
 });

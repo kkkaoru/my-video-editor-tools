@@ -175,7 +175,7 @@ it("adds only the videos of a drop and stops hovering", () => {
 it("reports videos the backend refuses", async () => {
   const view: HookView = mountedReady();
   vi.mocked(invoke).mockRejectedValue(new Error("refused"));
-  act((): void => view.result.current.dropVideos(["/a.mp4"]));
+  act((): void => view.result.current.dropFiles(["/a.mp4"]));
   await waitFor((): void => {
     expect(view.result.current.state.loadError).toStrictEqual({ code: "internal", detail: "Error: refused" });
   });
@@ -328,7 +328,7 @@ it("reports other rejected objects as text", () => {
   reportFailure(setState, { code: 7 });
   expect(setState.mock.calls[0]?.[0](mounted().result.current.state).loadError).toStrictEqual({
     code: "internal",
-    detail: "[object Object]",
+    detail: '{"code":7}',
   });
 });
 
@@ -360,7 +360,7 @@ it("starts nothing for a drop with neither videos nor subtitles", () => {
 
 it("refuses videos without their models, naming what is missing, and starts nothing", () => {
   const view: HookView = mounted();
-  act((): void => view.result.current.dropVideos(["/a.mp4"]));
+  act((): void => view.result.current.dropFiles(["/a.mp4"]));
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
   expect(view.result.current.state.loadError).toStrictEqual({
     code: "models_missing",
@@ -370,7 +370,7 @@ it("refuses videos without their models, naming what is missing, and starts noth
 
 it("still rewrites subtitle files without any model", () => {
   const view: HookView = mounted();
-  act((): void => view.result.current.dropSubtitles(["/a.srt"]));
+  act((): void => view.result.current.dropFiles(["/a.srt"]));
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reformat_files", { paths: ["/a.srt"] }]]);
   expect(view.result.current.state.loadError).toBe(null);
 });
@@ -378,7 +378,7 @@ it("still rewrites subtitle files without any model", () => {
 it("reports subtitle files the backend refuses", async () => {
   const view: HookView = mounted();
   vi.mocked(invoke).mockRejectedValue(new Error("refused"));
-  act((): void => view.result.current.dropSubtitles(["/a.srt"]));
+  act((): void => view.result.current.dropFiles(["/a.srt"]));
   await waitFor((): void => {
     expect(view.result.current.state.loadError).toStrictEqual({ code: "internal", detail: "Error: refused" });
   });
@@ -402,4 +402,33 @@ it("replaces the snapshot when no save is waiting", () => {
   const view: HookView = mounted();
   act((): void => view.result.current.replaceSnapshot({ ...SNAPSHOT, locale: "de" }));
   expect(view.result.current.state.snapshot.locale).toBe("de");
+});
+
+it("refuses a drop with nothing it can use, once", () => {
+  const view: HookView = mountedReady();
+  act((): void =>
+    onDragDropEvent.mock.calls[0]?.[0]({ payload: { type: "drop", paths: ["/a.txt", "/b.pdf"] } }),
+  );
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(view.result.current.state.loadError).toStrictEqual({ code: "no_supported_files" });
+});
+
+it("refuses a plain .json, because only a transcript can be written again", () => {
+  const view: HookView = mountedReady();
+  act((): void => view.result.current.dropFiles(["/settings.json"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(view.result.current.state.loadError).toStrictEqual({ code: "no_supported_files" });
+});
+
+it("says nothing when a drop brings no file at all", () => {
+  const view: HookView = mountedReady();
+  act((): void => view.result.current.dropFiles([]));
+  expect(view.result.current.state.loadError).toBe(null);
+});
+
+it("does not call a usable file unsupported because another one is", () => {
+  const view: HookView = mountedReady();
+  act((): void => view.result.current.dropFiles(["/a.txt", "/b.srt"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["reformat_files", { paths: ["/b.srt"] }]]);
+  expect(view.result.current.state.loadError).toBe(null);
 });

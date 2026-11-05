@@ -81,7 +81,13 @@ export function ProfilesCard({ store, settings, profiles }: ProfilesCardProps): 
           className="flex flex-wrap items-end gap-2"
           onSubmit={(event: Event): void => {
             event.preventDefault();
-            void apply(saveProfile(name, settings)).then((): void => setName(""));
+            // The field empties only after a success: a refused name stays there to be corrected.
+            void apply(
+              saveProfile(name, settings).then((snapshot: Snapshot): Snapshot => {
+                setName("");
+                return snapshot;
+              }),
+            );
           }}
         >
           <div className="grid min-w-48 flex-1 gap-1">

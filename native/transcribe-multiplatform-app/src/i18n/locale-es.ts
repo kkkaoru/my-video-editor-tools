@@ -174,6 +174,8 @@ export const esMessages: Messages = {
       "No se pueden restablecer los modelos mientras hay una tarea o una descarga en curso. Espera a que termine o cancela e inténtalo de nuevo.",
     models_missing:
       "Los vídeos no se añadieron porque no hay modelo disponible para: {roles}. Descárgalos en Modelos o añade una carpeta que ya los tenga.",
+    no_supported_files:
+      "Este archivo no se puede añadir. Elige un vídeo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) o un archivo de subtítulos (.fcpxml .srt .ttml .transcript.json).",
     internal: "{detail}",
     cancelled: "Cancelado",
   },
@@ -263,7 +265,7 @@ export const esMessages: Messages = {
             notes: [
               "El «?» junto al número explica para qué sirve.",
               "Si solo habla una persona, elige 1. Es más rápido.",
-              "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Con otros archivos no pasa nada.",
+              "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Archivos de subtítulos: .fcpxml .srt .ttml .transcript.json. Con otro archivo, la aplicación dice que no se puede añadir.",
               "Si añades varios vídeos, se hacen uno por uno.",
               "La primera vez, la aplicación también pasa un modelo a una forma que puede usar.",
               "Si el idioma de los subtítulos no es el correcto, elígelo en «{speechLanguage}», en la pestaña «{tabStyle}».",
@@ -377,7 +379,7 @@ export const esMessages: Messages = {
               "La lista bajo el recuadro muestra cómo va y el resultado.",
             ],
             notes: [
-              "El botón de volver a escribir, junto al nombre de un vídeo en la lista, reemplaza los archivos del mismo nombre. Los anteriores no se conservan.",
+              "El botón de volver a escribir, junto al nombre de un vídeo en la lista, crea archivos nuevos con otro nombre. Los anteriores se conservan.",
               "Los archivos originales se conservan. Los nuevos llevan -2 u otro número en el nombre.",
               "El archivo .transcript.json con el mismo nombre debe estar en la misma carpeta.",
               "Cuando usas un perfil, no se usan los cambios que no guardaste en ese perfil.",

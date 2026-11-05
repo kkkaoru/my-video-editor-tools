@@ -25,7 +25,6 @@ const Q2L_BYTES: u64 = 15_547_824_288;
 const ENCODER_FILE: &str =
     "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf";
 const ENCODER_BYTES: u64 = 1_670_410_080;
-const CUDA_ARCHIVE_BYTES: u64 = 508_625_181;
 const GGML_FILE: &str = "models/whisper-large-v3-turbo/ggml-large-v3-turbo.bin";
 const WHISPER_SOURCE_BYTES: u64 = 1_617_824_864;
 const WHISPER_MLX_BYTES: u64 = 1_613_977_612;
@@ -351,10 +350,7 @@ fn a_job_uses_the_downloaded_cuda_tools_on_a_geforce() {
         &geforce.join("nemo/nemo-speech"),
         "echo 'cuda build ran' >&2; exit 7",
     );
-    sparse(
-        &geforce.join("nemo/nemo-speech-cuda.zip"),
-        CUDA_ARCHIVE_BYTES,
-    );
+    sparse(&geforce.join("nemo/nemo-speech-cuda.zip.unpacked"), 0);
     let hardware = Hardware {
         is_mac: false,
         memory_gib: 64,
@@ -649,7 +645,7 @@ fn cancelling_during_transcription_kills_the_tool() {
 }
 
 #[test]
-fn a_job_with_an_unknown_face_model_fails_after_speech() {
+fn a_job_with_an_unknown_face_model_fails_before_any_long_work() {
     let root = scratch("job-unknown-face");
     let paths = ready(&root);
     let settings = Settings {
@@ -723,7 +719,7 @@ fn a_job_loads_the_avatar_model_by_kind() {
 }
 
 #[test]
-fn relayout_rewrites_the_earlier_files_in_place() {
+fn relayout_writes_to_the_base_it_is_given() {
     let root = scratch("relayout");
     let paths = ready(&root);
     pipeline::run_job(
@@ -736,8 +732,9 @@ fn relayout_rewrites_the_earlier_files_in_place() {
     )
     .unwrap();
     let mut stages: Vec<Stage> = Vec::new();
-    let outcome = pipeline::relayout(
+    let outcome = pipeline::relayout_to(
         &root.join("clip.transcript.json"),
+        &root.join("clip"),
         &paths,
         &Settings {
             font_ratio: 0.1,
@@ -774,8 +771,9 @@ fn relayout_scans_faces_the_transcript_does_not_have_yet() {
     )
     .unwrap();
     fs::rename(root.join("clip.transcript.json"), root.join("renamed.json")).unwrap();
-    let outcome = pipeline::relayout(
+    let outcome = pipeline::relayout_to(
         &root.join("renamed.json"),
+        &root.join("renamed"),
         &paths,
         &face_anchored(),
         &CancelToken::default(),
@@ -783,7 +781,7 @@ fn relayout_scans_faces_the_transcript_does_not_have_yet() {
     )
     .unwrap();
     assert!(outcome.faceless);
-    assert_eq!(outcome.base.file_name().unwrap(), "renamed.json");
+    assert_eq!(outcome.base.file_name().unwrap(), "renamed");
 }
 
 #[test]
@@ -794,8 +792,9 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
         language: String::new(),
         ..bottom_anchored()
     };
-    let refused = pipeline::relayout(
+    let refused = pipeline::relayout_to(
         &root.join("a.transcript.json"),
+        &root.join("a"),
         &paths,
         &invalid,
         &CancelToken::default(),
@@ -804,8 +803,9 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
     .unwrap_err()
     .to_string();
     assert_eq!(refused, "language must be a code such as ja, got \"\"");
-    let missing = pipeline::relayout(
+    let missing = pipeline::relayout_to(
         &root.join("a.transcript.json"),
+        &root.join("a"),
         &paths,
         &bottom_anchored(),
         &CancelToken::default(),
@@ -1259,8 +1259,8 @@ fn face_models_and_the_runtime_are_located_by_their_own_rules() {
     assert!(catalog::locate(avatar, &paths, &[]).is_some());
     assert_eq!(catalog::locate(runtime, &paths, &[]), None);
     sparse(
-        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip"),
-        CUDA_ARCHIVE_BYTES,
+        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip.unpacked"),
+        0,
     );
     assert!(catalog::locate(runtime, &paths, &[])
         .unwrap()
@@ -1538,8 +1538,9 @@ fn relayout_reports_a_face_scan_that_cannot_start() {
         &mut |_| {},
     )
     .unwrap();
-    let error = pipeline::relayout(
+    let error = pipeline::relayout_to(
         &root.join("clip.transcript.json"),
+        &root.join("clip"),
         &paths,
         &face_anchored(),
         &CancelToken::default(),
@@ -1917,8 +1918,9 @@ fn relayout_reports_the_requested_speaker_count() {
         &mut |_| {},
     )
     .unwrap();
-    let outcome = pipeline::relayout(
+    let outcome = pipeline::relayout_to(
         &root.join("clip.transcript.json"),
+        &root.join("clip"),
         &paths,
         &Settings {
             speaker_count: 2,
@@ -2034,4 +2036,26 @@ fn only_a_geforce_lists_its_runtime() {
     assert!(listed(&geforce()));
     assert!(!listed(&mac()));
     assert!(!listed(&radeon()));
+}
+
+#[test]
+fn a_missing_face_model_fails_before_any_work_folder_exists() {
+    let root = scratch("job-face-early");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffprobe"),
+        "echo 'probe must not run' >&2; exit 9",
+    );
+    let error = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &face_anchored(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "model yunet is not installed");
+    assert!(!paths.jobs_dir().exists());
 }
