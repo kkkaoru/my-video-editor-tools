@@ -22,6 +22,12 @@ const MILLIS_PER_SECOND: f64 = 1000.0;
 /// needs flash attention off for it, which also makes the text worse (similarity to Nemotron's
 /// 0.82 against 0.87), so one pass gives the text and a second pass only its times.
 const TOKEN_TIMING_ARGS: [&str; 3] = ["-nfa", "-dtw", "large.v3.turbo"];
+/// Speech stays above about five syllables a second: a word after a pause started at most this
+/// long per beat before its end.
+const LONGEST_ONSET_SECONDS_PER_CHARACTER: f64 = 0.2;
+const KANJI_BEATS: usize = 2;
+/// Words on each side that tell how fast the speech around a word is.
+const LOCAL_RATE_WORDS: usize = 5;
 /// How far the two passes' texts may drift apart while being matched, in characters.
 const ALIGNMENT_BAND_CHARACTERS: usize = 200;
 const STEP_MATCH: u8 = 1;
@@ -309,7 +315,7 @@ pub fn parse_whisper_json(bytes: &[u8]) -> AppResult<Vec<Word>> {
     for segment in segments {
         read_segment(segment, &mut merger, &mut words);
     }
-    close_warped_words(&mut words);
+    open_warped_words(&mut words);
     Ok(words)
 }
 
@@ -367,6 +373,63 @@ fn token_times(token: &Value, bounds: Option<(f64, f64)>, previous: Option<f64>)
             end: to,
             warped: false,
         },
+    }
+}
+
+/// About how many beats a text takes: a kanji is usually read in two (今日 is three), a small kana
+/// or long mark adds none of its own to the character before it.
+fn spoken_beats(text: &str) -> usize {
+    text.chars()
+        .map(|c| match c {
+            '\u{3400}'..='\u{9FFF}' => KANJI_BEATS,
+            'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'ゃ' | 'ゅ' | 'ょ' | 'ァ' | 'ィ' | 'ゥ' | 'ェ'
+            | 'ォ' | 'ャ' | 'ュ' | 'ョ' => 0,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// How long a beat takes around word `index`: the median over nearby words said without a pause,
+/// since a word after a pause has no span of its own to measure.
+fn local_character_seconds(spans: &[(f64, usize)], index: usize) -> f64 {
+    let first = index.saturating_sub(LOCAL_RATE_WORDS).max(1);
+    let last = (index + LOCAL_RATE_WORDS + 1).min(spans.len());
+    let mut rates: Vec<f64> = (first..last)
+        .filter(|near| *near != index && spans[*near].1 > 0)
+        .map(|near| (spans[near].0 - spans[near - 1].0) / spans[near].1 as f64)
+        .filter(|rate| *rate > 0.0 && *rate <= LONGEST_ONSET_SECONDS_PER_CHARACTER)
+        .collect();
+    rates.sort_by(f64::total_cmp);
+    rates
+        .get(rates.len() / 2)
+        .copied()
+        .unwrap_or(LONGEST_ONSET_SECONDS_PER_CHARACTER)
+}
+
+/// `t_dtw` marks where a token ends, not where it starts: against Nemotron it sits 0.01 s from a
+/// one-character token's end and 0.13 s after its start, further with each character. So a word
+/// ends there and starts after the word before, or as long before its end as its characters take
+/// at the local rate when a pause comes first. Words read without warping have their own span.
+fn open_warped_words(words: &mut [Word]) {
+    let mut latest = 0.0_f64;
+    let spans: Vec<(f64, usize)> = words
+        .iter()
+        .map(|word| {
+            latest = latest.max(word.end);
+            (latest, spoken_beats(word.text.trim()))
+        })
+        .collect();
+    let mut previous_end = 0.0_f64;
+    for (index, word) in words.iter_mut().enumerate() {
+        if word.end > word.start {
+            previous_end = previous_end.max(word.end);
+            continue;
+        }
+        let end = spans[index].0;
+        let length = spans[index].1 as f64 * local_character_seconds(&spans, index);
+        word.start = (end - length).max(previous_end);
+        word.end = end;
+        previous_end = end;
     }
 }
 
@@ -1166,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn warped_times_give_each_word_its_start_and_a_spoken_length() {
+    fn a_warped_time_is_where_a_word_ends() {
         let json = br#"{"transcription":[{"tokens":[
             {"text":"[_BEG_]","offsets":{"from":0,"to":0},"t_dtw":-1},
             {"text":"\u00e3\u0081\u00af","offsets":{"from":0,"to":5000},"t_dtw":120},
@@ -1179,7 +1242,7 @@ mod tests {
                 .iter()
                 .map(|word| (word.start, word.end))
                 .collect::<Vec<_>>(),
-            vec![(1.2, 1.45), (1.5, 1.75), (6.0, 6.25)]
+            vec![(1.0, 1.2), (1.3, 1.5), (5.8, 6.0)]
         );
     }
 
@@ -1190,7 +1253,10 @@ mod tests {
             {"text":"b","offsets":{"from":100,"to":200},"t_dtw":150}
         ]}]}"#;
         let words = parse_whisper_json(json).unwrap();
-        assert_eq!((words[0].start, words[1].start), (2.0, 2.0));
+        assert_eq!(
+            (words[0].end, words[1].start, words[1].end),
+            (2.0, 2.0, 2.0)
+        );
     }
 
     #[test]
@@ -1226,7 +1292,7 @@ mod tests {
             {"text":"b","offsets":{"from":1100,"to":3000},"t_dtw":900}
         ]}]}"#;
         let words = parse_whisper_json(json).unwrap();
-        assert_eq!(words[1].start, 1.45);
+        assert_eq!(words[1].end, 1.45);
     }
 
     fn timed(start: f64, end: f64, text: &str) -> Word {
@@ -1326,5 +1392,57 @@ mod tests {
         let words = vec![timed(1.0, 2.0, "は")];
         let kept = with_warped_times(words, Ok(vec![timed(5.0, 5.2, "は")])).unwrap();
         assert_eq!((kept[0].start, kept[0].end), (5.0, 5.25));
+    }
+
+    #[test]
+    fn a_long_word_after_a_pause_starts_before_its_end_by_its_length() {
+        let json = br#"{"transcription":[{"tokens":[
+            {"text":" ","offsets":{"from":1900,"to":2100},"t_dtw":190},
+            {"text":"abc","offsets":{"from":2100,"to":3900},"t_dtw":282},
+            {"text":"d","offsets":{"from":3900,"to":4000},"t_dtw":404}
+        ]}]}"#;
+        let words = parse_whisper_json(json).unwrap();
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| ((word.start * 100.0).round(), (word.end * 100.0).round()))
+                .collect::<Vec<_>>(),
+            vec![(190.0, 190.0), (222.0, 282.0), (384.0, 404.0)]
+        );
+    }
+
+    #[test]
+    fn a_kanji_takes_two_beats_and_a_small_kana_none() {
+        assert_eq!(spoken_beats("今日は"), 5);
+        assert_eq!(spoken_beats("ちょっと"), 3);
+        assert_eq!(spoken_beats("abc"), 3);
+    }
+
+    #[test]
+    fn a_word_after_a_pause_opens_at_the_speed_of_the_speech_around_it() {
+        let spans = [(1.0, 1), (1.1, 1), (1.2, 1), (3.0, 2), (3.1, 1)];
+        assert_eq!((local_character_seconds(&spans, 3) * 100.0).round(), 10.0);
+        assert_eq!(local_character_seconds(&[(1.0, 1), (5.0, 2)], 1), 0.2);
+    }
+
+    #[test]
+    fn words_in_steady_speech_start_where_the_last_one_ended() {
+        let json = br#"{"transcription":[{"tokens":[
+            {"text":"a","offsets":{"from":0,"to":100},"t_dtw":100},
+            {"text":"bc","offsets":{"from":100,"to":200},"t_dtw":120}
+        ]}]}"#;
+        let words = parse_whisper_json(json).unwrap();
+        assert_eq!(words[1].start, 1.0);
+    }
+
+    #[test]
+    fn a_plain_word_after_warped_words_keeps_its_span() {
+        let json = br#"{"transcription":[{"tokens":[
+            {"text":"a","offsets":{"from":1000,"to":1500},"t_dtw":-1},
+            {"text":"b","offsets":{"from":1500,"to":1600},"t_dtw":200}
+        ]}]}"#;
+        let words = parse_whisper_json(json).unwrap();
+        assert_eq!((words[0].start, words[0].end), (1.0, 1.5));
+        assert_eq!((words[1].start, words[1].end), (1.8, 2.0));
     }
 }

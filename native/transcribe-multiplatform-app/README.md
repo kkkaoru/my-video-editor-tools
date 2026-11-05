@@ -110,9 +110,11 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 
 - Both full recordings produce all four files. In the FCPXML no captions overlap in time or lane, none is longer than 7 seconds and none is shorter than 5/6 of a second.
 - FCPXML imports as a timeline. Viewed in Resolve: white text with a black edge, a blue speaker colour with a white edge, one and two lines, a larger font, an offset, and positions above the face, below the face, at the top and at the bottom.
-- Caption starts against ffmpeg `silencedetect` at -35 dB, a detector the app does not use: 8 of 638 and 3 of 1775 start more than 200 ms before sound. The largest are near -45 dB, where whispers and background noise look the same.
+- Caption starts against Nemotron 3.5 word times, which the app does not use for timing, measured on the captions that could be matched (50 to 70%): more than 200 ms early on 5 of 362 (landscape) and 32 of 1260 (portrait). Nemotron is not ground truth.
 - A real download of whisper-large-v3-turbo, Nemotron 3 Diarization and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
+
+Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
 
 Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline, the look of the shadow at every strength. The bulk download, the reset and the missing-model error have tests only.
 
