@@ -133,7 +133,7 @@ const SCENES: Scene[] = [
       },
       {
         step: 4,
-        target: (page: Page): Locator => panel(page).locator('input[type="color"]').first().locator(".."),
+        target: (page: Page): Locator => panel(page).locator('[data-slot="accordion-trigger"]').first(),
       },
     ],
   },
@@ -201,7 +201,7 @@ const SCENES: Scene[] = [
         state: "finished",
         id: 1,
         outcome: {
-          outputs: ["/Videos/talk-2.fcpxml"],
+          outputs: ["/Videos/talk-2.drt"],
           base: "/Videos/talk-2",
           speaker_count: 2,
           requested_speakers: 0,

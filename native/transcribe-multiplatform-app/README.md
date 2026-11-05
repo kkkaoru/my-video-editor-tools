@@ -21,11 +21,12 @@ Privacy & Security > Open Anyway; on Windows choose "More info > Run anyway" in 
 
 ## What it writes
 
-Choose the format in the Transcribe tab; FCPXML is the default. Each run writes that one subtitle file plus the
+Choose the format in the Transcribe tab; DRT is the default. Each run writes that one subtitle file plus the
 `.transcript.json`.
 
 | File | Use in Resolve |
 | --- | --- |
+| `<video>.drt` | File > Import > Timeline... Text+ clips with every colour, edge and shadow per speaker. |
 | `<video>.ttml` | Media Pool > Import Subtitle. Holds per-span fill, `tts:textOutline` and position. |
 | `<video>.srt` | Plain subtitle track, for editing text and timing. |
 | `<video>.fcpxml` | File > Import > Timeline. The video plus one title per caption. |
@@ -43,17 +44,17 @@ folder, the Hugging Face cache, and any folder you add. Downloads are pinned to 
 | --- | --- | --- |
 | Transcription | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Same weights everywhere. Converted once to whisper.cpp's ggml format. A local MLX copy converts too. |
 | Speakers | [Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) | NVIDIA publishes safetensors only; GGUF builds come from AtomicChat. Chosen per machine: GeForce ≥ 24 GB IQ4_NL (Blackwell NVFP4), 16 GB GeForce Q2_0_M, Radeon ≥ 48 GB Q8_0, Radeon ≥ 24 GB IQ4_NL, Macs and CPU-only PCs by system memory: 64 GB Q8_0, 32 GB IQ4_NL, 24 GB Q2_0_L. |
-| Speakers (small) | [Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) | 107 MB, runs anywhere. Used when the large model does not fit. |
 | Faces | YuNet (bundled), `avatar-face-caption-v2.onnx` | The same model and engine (`tract`) on both systems. Put the avatar ONNX in a model folder to use it. |
 
 In the GeForce build, on a PC with a GeForce, the model manager offers the CUDA runtime download (509 MB) for speaker
 separation; no other build or machine lists it. NVFP4 and Q2_0_M run only on CUDA. Nemotron speaker models reach eight
-speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened.
+speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened. Without a usable
+Nemotron 3.5 every job is for one speaker; the saved number comes back once one is downloaded.
 
 Models can be downloaded together, each with its own progress bar. Resetting deletes only what the app itself downloaded,
 after a confirmation; folders you added, anything overlapping them and the Hugging Face cache are never touched, and it
-is refused while a job or a download runs. Videos are refused with a message naming what is missing until the models
-for transcription and, unless one speaker is set, speaker separation are present.
+is refused while a job or a download runs. Videos are refused with a message naming what is missing until a model
+for transcription is present.
 
 ## Caption position and size
 
@@ -130,7 +131,7 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 - FCPXML imports as a timeline. Viewed in Resolve: white text with a black edge, a blue speaker colour with a white edge, one and two lines, a larger font, an offset, and positions above the face, below the face, at the top and at the bottom.
 - Caption starts against Nemotron 3.5 word times, which the app does not use, on the captions that could be matched: more than 200 ms early on 7 of 287 (full landscape) and 36 of 1044 (the part of the portrait video measured before the run was stopped). Nemotron is not ground truth.
 - Resolve draws FCPXML text at height / 1080 x 0.974 of `fontSize` (measured at 720x1280, 1280x720, 1920x1080 and 3840x2160) and half of `strokeWidth` in frame pixels. It ignores shadow and `kerning`, so the app offers neither.
-- A real download of whisper-large-v3-turbo, Nemotron 3 Diarization and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
+- A real download of whisper-large-v3-turbo and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
 
 Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
