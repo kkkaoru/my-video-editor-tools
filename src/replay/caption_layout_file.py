@@ -18,6 +18,7 @@ within 150 px (``replay.caption_fixed_y.person_top_with_hold``).
 
 import json
 import math
+from collections.abc import Mapping
 from fractions import Fraction
 from pathlib import Path
 
@@ -143,6 +144,30 @@ def face_tops(
     return tops
 
 
+def estimated_block_width(title: Mapping[str, object], style: Mapping[str, object]) -> float:
+    """``CaptionPlacement.estimatedBlockWidth``: the widest line at 0.6 em per ASCII character,
+    0.5 em per half-width form and 1 em per other character, with the rim on both sides."""
+    widest = max(
+        sum(0.6 if c.isascii() else 0.5 if "\uff61" <= c <= "\uffdc" else 1.0 for c in line)
+        for line in str(title["text"]).split("\n")
+    )
+    return widest * real(style["fontSize"], "fontSize") + 2 * (real(style["rim"], "rim") + 2)
+
+
+def inside_safe_zone(x: float, title: Mapping[str, object], plan: Mapping[str, object]) -> float:
+    """``CaptionPlacement.insideSafeZone``: a centred title's block between the plan's margins,
+    in the middle of them when it is wider than they leave; no margins change nothing."""
+    if "safeLeft" not in plan or "alignment" in title:
+        return x
+    width = real(plan["width"], "width")
+    low = real(plan["safeLeft"], "safeLeft") - width / 2
+    high = width / 2 - real(plan["safeRight"], "safeRight")
+    block = estimated_block_width(title, record(title.get("style", plan["style"])))
+    return (
+        (low + high) / 2 if high - low <= block else max(low + block / 2, min(x, high - block / 2))
+    )
+
+
 def stacked(
     titles: list[dict[str, object]], placed: list[float], boxes: list[float]
 ) -> list[float]:
@@ -234,7 +259,9 @@ def resolve(
                 basis, place = "plan", top
         placed.append(max(0.0, min(place + values["offsetY"], height - box)))
         boxes.append(box)
-        x = max(-width / 2, min(real(title["x"], "x") + values["offsetX"], width / 2))
+        x = inside_safe_zone(
+            max(-width / 2, min(real(title["x"], "x") + values["offsetX"], width / 2)), title, plan
+        )
         resolved.append({"x": x, "basis": basis, "size": size})
     final = stacked(titles, placed, boxes) if lanes else placed
     return [

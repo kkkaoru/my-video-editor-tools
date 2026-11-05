@@ -184,6 +184,22 @@ Rules:
   result before reporting it.
 - Record why the captioned copy was made beside it.
 
+## How a title's text appears
+
+- **Line breaks:** a line does not end on っ or ッ when a kana follows, since the sokuon belongs to
+  the sound after it (`入っ / てない`). An interjection (`えっ / そうなの`) may, and any break is
+  taken when none other fits.
+- **Timing:** with `asrTiming` in the pipeline defaults, the `asr` step writes
+  `labels-dtw-v1.json`: the recognized text, unchanged, on whisper.cpp's `-dtw` times, matched
+  character by character (`replay.asr_dtw_timing`). Every later step reads those labels.
+- **Start:** with `captions.voiceOnset` in the pipeline defaults, the `onsets` step writes
+  `speech-onsets-voice-v1.json`: characters timed into what Silero VAD hears as silence start with
+  the voice, at most 0.6 s later and never earlier (`replay.caption_voice_onset`). This moves
+  `graphemeFrames`, which decide when text appears. `startFrame`, `endFrame` and the SRT stay on the
+  placement, which `chain_failure` still compares within one frame: the title's frames are not
+  what moved, so that gate is unchanged. An SRT player can therefore show a caption up to 0.6 s
+  before a viewer does.
+
 ## Pipeline status
 
 Until the pipeline switch lands, `recording_caption_steps` still renders caption
@@ -337,8 +353,47 @@ y      = H/2 - (placed + 24 + 1.16*size)          # Motion convention again
     1 px.
   - The burned placement read the face over the title's source range, removed footage
     included. This rule reads the delivery window.
-- The horizontal clamp keeps only the anchor inside the canvas. A wide line can still cross an
-  edge after a large `offsetX`.
+- The horizontal clamp above keeps only the anchor inside the canvas. A plan with margins also
+  keeps the block between them ("Safe zone"); an older plan without them can still cross an edge
+  after a large `offsetX`.
+
+### Safe zone
+
+`replay.caption_safe_zone.SAFE_ZONES` is the one table of left and right margins, in pixels per
+frame size:
+
+| Frame | Left | Right |
+| --- | --- | --- |
+| 720x1280 | 36 | 36 |
+| 1080x1920 | 54 | 54 |
+| 1280x720 | 64 | 64 |
+| 1920x1080 | 96 | 96 |
+| 3840x2160 | 192 | 192 |
+
+Another size takes the row nearest in aspect (the smaller on a tie), scaled to its width and
+rounded to whole pixels.
+
+- **Plan:** `safeLeft` and `safeRight` are optional integers that come together: each at least 0,
+  and their sum below `width`. `replay.caption_plan` writes them. Readers accept a plan without
+  them and change nothing for it.
+- **Lines:** a title's line breaks are made once, by paging, at the width the margins leave (972 px
+  at 1080x1920). Readers draw the breaks they are given.
+- **Position:** after the clamp above, a title that is not left-aligned moves so that its block
+  lies between the margins, and a block wider than they leave sits in their middle:
+
+  ```
+  w     = widest line of (0.6 em per ASCII character, 0.5 em per U+FF61-FFDC, 1 em per other
+          character) * size + 2 * (rim + 2)
+  low   = safeLeft - W/2
+  high  = W/2 - safeRight
+  x     = (high - low <= w) ? (low + high) / 2 : max(low + w/2, min(x, high - w/2))
+  ```
+
+  It is an estimate, so every reader gets the same doubles with no font installed. The web viewer,
+  `CaptionPlacement.swift` (TranscriptViewer and `caption-burn`) and `replay.caption_layout_file`
+  implement it alike.
+- Readers built before these keys refuse a plan with them (the native decoder refuses unknown
+  keys), so rebuild TranscriptViewer and `caption-burn` before relying on a new plan.
 
 ### Agent CLI
 

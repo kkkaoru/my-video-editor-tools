@@ -213,6 +213,8 @@ public enum CaptionPlacement {
   }
 
   static let padding = 24.0
+  /// What `MotionCaptionRenderer` draws past the rim on each side.
+  static let rimAntialias = 2.0
   static let emAscent = 1.16
   static let emAdvance = 1.448
   /// One line's native measurement at the style-20 calibration: 150 px at 82.9558 pt.
@@ -304,11 +306,38 @@ public enum CaptionPlacement {
       if plan.version == 2, speaker == nil {
         placed = stacked(placed, box: box, title: title, stack: &stack)
       }
-      let x = max(-width / 2, min(title.x + options.offsetX, width / 2))
+      let x = insideSafeZone(
+        max(-width / 2, min(title.x + options.offsetX, width / 2)), title: title, plan: plan)
       result.append(
         Placement(x: x, y: height / 2 - (placed + padding + emAscent * size), basis: basis))
     }
     return result
+  }
+
+  /// A centred title's position with its estimated block between the plan's margins; a block wider
+  /// than they leave sits in their middle. The estimate needs no installed font, so every reader
+  /// of the plan agrees (`docs/caption-plan.md` "Safe zone").
+  static func insideSafeZone(_ x: Double, title: MotionCaptionTitle, plan: CaptionPlan) -> Double {
+    guard let left = plan.safeLeft, let right = plan.safeRight, title.alignment == nil else {
+      return x
+    }
+    let width = Double(plan.width)
+    let (low, high) = (Double(left) - width / 2, width / 2 - Double(right))
+    let half = estimatedBlockWidth(title, style: title.style ?? plan.style) / 2
+    return high - low <= 2 * half ? (low + high) / 2 : max(low + half, min(x, high - half))
+  }
+
+  /// The widest line at 0.6 em per ASCII character, 0.5 em per half-width form and 1 em per other
+  /// character, with the rim on both sides.
+  static func estimatedBlockWidth(_ title: MotionCaptionTitle, style: MotionCaptionStyle) -> Double {
+    let widest = title.text.split(separator: "\n", omittingEmptySubsequences: false)
+      .map { line in
+        line.unicodeScalars.reduce(0.0) { total, scalar in
+          total + (scalar.isASCII ? 0.6 : (0xFF61...0xFFDC).contains(scalar.value) ? 0.5 : 1.0)
+        }
+      }
+      .max() ?? 0
+    return widest * style.fontSize + 2 * (style.rim + rimAntialias)
   }
 
   /// An unassigned title's top in the lowest free slot among the overlapping unassigned titles

@@ -256,3 +256,34 @@ def test_a_speakers_out_of_range_option_is_refused() -> None:
         caption_layout_file.validate(
             {"version": 2, "mode": "top", "speakers": {"left": {"maxDrift": -1}}}
         )
+
+
+SAFE_PLAN: dict[str, object] = {
+    "width": 1000, "style": {"fontSize": 100.0, "rim": 13.0}, "safeLeft": 50, "safeRight": 150,
+}  # fmt: skip
+
+
+def test_a_block_is_its_widest_line_with_the_rim_on_both_sides() -> None:
+    style = {"fontSize": 100.0, "rim": 13.0}
+    assert caption_layout_file.estimated_block_width({"text": "あい\nab"}, style) == 230.0
+    assert caption_layout_file.estimated_block_width({"text": "ｱa"}, style) == 140.0
+
+
+def test_a_block_stays_between_unequal_margins() -> None:
+    inside = caption_layout_file.inside_safe_zone
+    assert inside(100.0, {"text": "あああああ" + "あ"}, SAFE_PLAN) == 35.0
+    assert inside(-300.0, {"text": "ああ"}, SAFE_PLAN) == -300.0
+    assert inside(-500.0, {"text": "ああ"}, SAFE_PLAN) == -335.0
+    assert inside(500.0, {"text": "ああ"}, SAFE_PLAN) == 235.0
+
+
+def test_a_block_wider_than_the_margins_leave_sits_in_their_middle() -> None:
+    wide = {"text": "あ" * 20}
+    assert caption_layout_file.inside_safe_zone(100.0, wide, SAFE_PLAN) == -50.0
+
+
+def test_a_plan_without_margins_and_a_left_aligned_title_stay() -> None:
+    bare: dict[str, object] = {"width": 1000, "style": {"fontSize": 100.0, "rim": 13.0}}
+    assert caption_layout_file.inside_safe_zone(490.0, {"text": "あ"}, bare) == 490.0
+    left = {"text": "あ", "alignment": "left"}
+    assert caption_layout_file.inside_safe_zone(490.0, left, SAFE_PLAN) == 490.0

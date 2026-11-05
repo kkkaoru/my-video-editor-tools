@@ -11,6 +11,7 @@ from replay.speaker_subtitles import (
     read_cues,
     render_ass,
     render_srt,
+    wrap_text,
     wrap_two_lines,
 )
 
@@ -342,3 +343,7 @@ def test_csv_bad_header_and_bad_body(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("sys.argv", ["speaker_subtitles", str(path), str(tmp_path / "bad.srt")])
     with pytest.raises(ReplayError, match="ASS"):
         main()
+
+
+def test_wrapping_does_not_part_a_sokuon_from_the_kana_it_doubles() -> None:
+    assert wrap_text("あいうえっかきくけ", 5) == "あいう\nえっか\nきくけ"

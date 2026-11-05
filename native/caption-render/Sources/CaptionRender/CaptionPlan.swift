@@ -28,13 +28,17 @@ public struct CaptionPlan: Codable, Equatable, Sendable {
   public let nameplate: CaptionNameplate?
   /// Version 2 only: the speakers in lane order, left to right.
   public let speakers: [CaptionSpeaker]?
+  /// The margins captions keep clear of, in canvas pixels (`replay.caption_safe_zone`). Both or
+  /// neither: a plan without them keeps only each title's anchor inside the canvas.
+  public let safeLeft: Int?
+  public let safeRight: Int?
 
   /// This plan with its titles replaced (a resolved placement), validated like the plan.
   public func replacing(titles: [MotionCaptionTitle]) throws -> CaptionPlan {
     let plan = CaptionPlan(
       version: version, clock: clock, movie: movie, burned: burned, width: width,
       height: height, rate: rate, frames: frames, style: style, titles: titles,
-      nameplate: nameplate, speakers: speakers)
+      nameplate: nameplate, speakers: speakers, safeLeft: safeLeft, safeRight: safeRight)
     try plan.validate()
     return plan
   }
@@ -67,6 +71,7 @@ public struct CaptionPlan: Codable, Equatable, Sendable {
     "version", "clock", "movie", "burned", "width", "height", "rate", "frames", "style",
     "titles", "nameplate",
   ]
+  static let safeKeys: Set<String> = ["safeLeft", "safeRight"]
   static let styleKeys: Set<String> = [
     "fontName", "fontSize", "faceGrow", "keyline", "whiteBorder", "rim", "shadowOpacity",
     "shadowOffsetY", "shadowSigma", "gradientTop", "gradientBottom", "topLocation",
@@ -88,7 +93,8 @@ public struct CaptionPlan: Codable, Equatable, Sendable {
   public static func decode(_ data: Data) throws -> CaptionPlan {
     let shape = try JSONShape.of(data)
     let speakers = shape.has("speakers")
-    try shape.requireKeys(speakers ? keys.union(["speakers"]) : keys, in: "A caption plan")
+    let required = speakers ? keys.union(["speakers"]) : keys
+    try shape.requireKeys(required, allowed: required.union(safeKeys), in: "A caption plan")
     for speaker in shape["speakers"].items {
       try speaker.requireKeys(
         speakerKeys, allowed: speakerKeys.union(speakerOptions), in: "A caption speaker")
@@ -121,7 +127,9 @@ public struct CaptionPlan: Codable, Equatable, Sendable {
     guard Self.versions.contains(version), clock == Self.clock, !movie.isEmpty,
       URL(fileURLWithPath: movie).lastPathComponent == movie,
       (1...Self.maximumSide).contains(width), (1...Self.maximumSide).contains(height), rate > 0,
-      frames > 0, (version == 2) == (speakers != nil)
+      frames > 0, (version == 2) == (speakers != nil),
+      (safeLeft == nil) == (safeRight == nil),
+      (safeLeft ?? 0) >= 0, (safeRight ?? 0) >= 0, (safeLeft ?? 0) + (safeRight ?? 0) < width
     else { throw CaptionRenderError.invalid("Invalid caption plan header") }
     try style.validate()
     let ids = try validateSpeakers()

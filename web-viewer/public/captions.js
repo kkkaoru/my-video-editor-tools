@@ -107,6 +107,11 @@ export function parsePlan(plan) {
   for (const key of ["width", "height", "rate", "frames"]) {
     if (!Number.isInteger(plan[key]) || plan[key] <= 0) fail(`${key} must be a positive integer`);
   }
+  const { safeLeft, safeRight } = plan;
+  if ((safeLeft === undefined) !== (safeRight === undefined)) fail("safeLeft and safeRight come together");
+  if (safeLeft !== undefined && !(Number.isInteger(safeLeft) && Number.isInteger(safeRight) && safeLeft >= 0 && safeRight >= 0 && safeLeft + safeRight < plan.width)) {
+    fail("safeLeft and safeRight must leave part of the width");
+  }
   checkStyle(plan.style);
   if (!Array.isArray(plan.titles)) fail("titles must be a list");
   plan.titles.forEach(checkTitle);
@@ -357,6 +362,7 @@ export const LAYOUT_MODES = ["plan", "aboveFace", "bottom", "top", "center"];
 const LAYOUT_DEFAULTS = { offsetX: 0, offsetY: 0, margin: 120, faceGap: 60, minScore: 0.5, maxDrift: 150 };
 const DEFAULT_LAYOUT = { version: 1, mode: "plan" };
 const PADDING = 24;
+const RIM_ANTIALIAS = 2;
 const EM_ASCENT = 1.16;
 const EM_ADVANCE = 1.448;
 // One line's native measurement at the style-20 calibration: 150 px at 82.95580110497238 pt.
@@ -398,6 +404,30 @@ function stacked(titles, placements) {
   });
 }
 
+// CaptionPlacement.estimatedBlockWidth: the widest line at 0.6 em per ASCII character, 0.5 em per
+// half-width form and 1 em per other character, with the rim on both sides.
+export function estimatedBlockWidth(title, style) {
+  const em = (character) => {
+    const point = character.codePointAt(0);
+    if (point < 0x80) return 0.6;
+    return point >= 0xff61 && point <= 0xffdc ? 0.5 : 1;
+  };
+  const widest = Math.max(
+    ...title.text.split("\n").map((line) => Array.from(line).reduce((total, character) => total + em(character), 0)),
+  );
+  return widest * style.fontSize + 2 * (style.rim + RIM_ANTIALIAS);
+}
+
+// CaptionPlacement.insideSafeZone: a centred title's block between the plan's margins, in the middle
+// of them when it is wider than they leave. A plan without margins keeps only the anchor inside.
+export function insideSafeZone(x, title, plan) {
+  if (plan.safeLeft === undefined || plan.safeRight === undefined || title.alignment) return x;
+  const low = plan.safeLeft - plan.width / 2;
+  const high = plan.width / 2 - plan.safeRight;
+  const half = estimatedBlockWidth(title, title.style ?? plan.style) / 2;
+  return high - low <= 2 * half ? (low + high) / 2 : Math.max(low + half, Math.min(x, high - half));
+}
+
 // Every title's Motion position under `layout` and the basis of its vertical position.
 // `faceTops` (one per title, from the catalog build) is [top, "face"|"held"] or null: the face top
 // replay.caption_layout_file reads with that title's minScore and maxDrift (and, in version 2, its
@@ -426,7 +456,7 @@ export function resolveTitles(plan, layout, faceTops) {
       box,
       size,
       basis,
-      x: Math.max(-width / 2, Math.min(title.x + options.offsetX, width / 2)),
+      x: insideSafeZone(Math.max(-width / 2, Math.min(title.x + options.offsetX, width / 2)), title, plan),
       stack: plan.version === 2 && !title.speaker,
     };
   });

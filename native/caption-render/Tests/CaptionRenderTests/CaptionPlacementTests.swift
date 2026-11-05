@@ -156,3 +156,70 @@ struct CaptionPlacementTests {
     #expect(after.origin.y == before.origin.y - 40 && after.origin.x == before.origin.x)
   }
 }
+
+@Suite struct CaptionSafeZoneTests {
+  /// The shared plan with a 1000 px width, font size 100, rim 13, and these margins.
+  static func plan(left: Int?, right: Int?) throws -> CaptionPlan {
+    var object = try #require(
+      JSONSerialization.jsonObject(with: Data(contentsOf: CaptionPlanTests.fixture)) as? [String: Any])
+    object["width"] = 1000
+    var style = try #require(object["style"] as? [String: Any])
+    style["fontSize"] = 100
+    style["rim"] = 13
+    object["style"] = style
+    if let left { object["safeLeft"] = left }
+    if let right { object["safeRight"] = right }
+    return try CaptionPlan.decode(JSONSerialization.data(withJSONObject: object))
+  }
+
+  static func title(_ text: String) -> MotionCaptionTitle {
+    MotionCaptionTitle(
+      text: text, startFrame: 0, endFrame: 1, x: 0, y: 0,
+      graphemeFrames: Array(repeating: 0, count: text.count))
+  }
+
+  @Test func aBlockIsItsWidestLineWithTheRimOnBothSides() throws {
+    let plan = try Self.plan(left: 50, right: 150)
+    #expect(
+      CaptionPlacement.estimatedBlockWidth(Self.title("あい\nab"), style: plan.style)
+        == 230)
+    #expect(
+      CaptionPlacement.estimatedBlockWidth(Self.title("ｱa"), style: plan.style)
+        == 140)
+  }
+
+  @Test func aBlockStaysBetweenUnequalMargins() throws {
+    let plan = try Self.plan(left: 50, right: 150)
+    #expect(
+      CaptionPlacement.insideSafeZone(100, title: Self.title("ああああああ"), plan: plan)
+        == 35)
+    #expect(
+      CaptionPlacement.insideSafeZone(-300, title: Self.title("ああ"), plan: plan)
+        == -300)
+    #expect(
+      CaptionPlacement.insideSafeZone(-500, title: Self.title("ああ"), plan: plan)
+        == -335)
+    #expect(
+      CaptionPlacement.insideSafeZone(500, title: Self.title("ああ"), plan: plan)
+        == 235)
+  }
+
+  @Test func aBlockWiderThanTheMarginsLeaveSitsInTheirMiddle() throws {
+    let plan = try Self.plan(left: 50, right: 150)
+    let wide = Self.title(String(repeating: "あ", count: 20))
+    #expect(CaptionPlacement.insideSafeZone(100, title: wide, plan: plan) == -50)
+  }
+
+  @Test func aPlanWithoutMarginsLeavesTheTitleAlone() throws {
+    let plan = try Self.plan(left: nil, right: nil)
+    #expect(
+      CaptionPlacement.insideSafeZone(490, title: Self.title("あ"), plan: plan)
+        == 490)
+  }
+
+  @Test func marginsAloneOrLeavingNoWidthAreRefused() throws {
+    #expect(throws: CaptionRenderError.self) { try Self.plan(left: 5, right: nil) }
+    #expect(throws: CaptionRenderError.self) { try Self.plan(left: 1000, right: 0) }
+    #expect(throws: CaptionRenderError.self) { try Self.plan(left: -1, right: 2) }
+  }
+}

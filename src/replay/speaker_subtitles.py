@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from replay.caption_linguistics import splits_sound
 from replay.caption_timing import punctuation_lines
 from replay.core import ReplayError
 
@@ -164,7 +165,11 @@ def wrap_text(text: str, width: int = 12, *, balance: bool = False) -> str:
                 if balance or 0 < len(chunk) % width <= WRAP_ORPHAN_MAXIMUM:
                     # Balance the lines so a short tail such as "よ" is never alone.
                     cut = math.ceil(len(chunk) / math.ceil(len(chunk) / width))
-                while cut > 1 and (chunk[cut] in _NO_LINE_START or chunk[cut - 1] in _NO_LINE_END):
+                while cut > 1 and (
+                    chunk[cut] in _NO_LINE_START
+                    or chunk[cut - 1] in _NO_LINE_END
+                    or splits_sound(chunk, cut)
+                ):
                     cut -= 1
                 lines.append(chunk[:cut])
                 chunk = chunk[cut:]
@@ -185,7 +190,9 @@ def wrap_two_lines(text: str, width: int) -> str:
     cuts = [
         cut
         for cut in range(max(1, len(flat) - width), min(width, len(flat) - 1) + 1)
-        if flat[cut] not in _NO_LINE_START and flat[cut - 1] not in _NO_LINE_END
+        if flat[cut] not in _NO_LINE_START
+        and flat[cut - 1] not in _NO_LINE_END
+        and not splits_sound(flat, cut)
     ]
     if not cuts:
         raise ValueError("Caption cannot fit two lines without a prohibited break")

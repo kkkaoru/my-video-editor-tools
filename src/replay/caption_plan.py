@@ -27,13 +27,13 @@ import math
 import os
 import re
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 
 import regex
 
-from replay import caption_layout, caption_render_native
+from replay import caption_layout, caption_render_native, caption_safe_zone
 from replay.core import ReplayError
 from replay.recordings import record
 
@@ -59,6 +59,7 @@ NAMEPLATE_KEYS = frozenset(
      "name", "nameFont", "nameFontSha256", "nameFontVariation", "nameSize", "nameColour",
      "nameStrokeWidth", "nameStrokeColour", "nameX", "nameY", "nameAnchor"}
 )  # fmt: skip
+SAFE_KEYS = frozenset({"safeLeft", "safeRight"})  # margins, both or neither
 WHITE, BLACK = "#FFFFFF", "#000000"
 SPEAKERS_VERSION = 2  # several speakers (``docs/caption-plan.md`` "Multiple speakers")
 SPEAKER_KEYS = frozenset({"id", "name", "colorTop", "colorBottom", "laneX"})
@@ -191,6 +192,24 @@ def speakers(value: object) -> list[dict[str, object]]:
     return table
 
 
+def safe_margins(plan: Mapping[str, object]) -> None:
+    """Refuse margins that come alone or leave none of the width."""
+    given = set(plan) & SAFE_KEYS
+    if not given:
+        return
+    if given != SAFE_KEYS:
+        raise ReplayError("A plan's safeLeft and safeRight come together")
+    left, right = integer(plan["safeLeft"], "safeLeft"), integer(plan["safeRight"], "safeRight")
+    if left < 0 or right < 0 or left + right >= integer(plan["width"], "width"):
+        raise ReplayError("A plan's margins must leave part of its width")
+
+
+def margins(width: int, height: int) -> dict[str, object]:
+    """The plan keys of this frame size's margins."""
+    left, right = caption_safe_zone.safe_zone(width, height)
+    return {"safeLeft": left, "safeRight": right}
+
+
 def validate(value: object) -> dict[str, object]:
     """A version-1 or version-2 plan, refused unless every title fits the delivery in display
     order: version 1's titles never overlap; version 2's start in order, one speaker's titles
@@ -198,7 +217,11 @@ def validate(value: object) -> dict[str, object]:
     plan = record(value)
     version = plan.get("version")
     keys = PLAN_KEYS | ({"speakers"} if version == SPEAKERS_VERSION else set())
-    if set(plan) != keys or version not in (VERSION, SPEAKERS_VERSION) or plan["clock"] != CLOCK:
+    if (
+        set(plan) - SAFE_KEYS != keys
+        or version not in (VERSION, SPEAKERS_VERSION)
+        or plan["clock"] != CLOCK
+    ):
         raise ReplayError(f"A caption plan has exactly {', '.join(sorted(keys))}, version 1 or 2")
     if not isinstance(plan["movie"], str) or Path(plan["movie"]).name != plan["movie"]:
         raise ReplayError("The plan's movie is the delivery's file name")
@@ -207,6 +230,7 @@ def validate(value: object) -> dict[str, object]:
     for key in ("width", "height", "rate", "frames"):
         if integer(plan[key], key) <= 0:
             raise ReplayError(f"The plan's {key} must be positive")
+    safe_margins(plan)
     style(plan["style"])
     ids = {str(item["id"]) for item in speakers(plan["speakers"])} if "speakers" in plan else set()
     ends: dict[object, int] = {}  # per speaker (version 1: one lane), the last title's end
@@ -443,6 +467,7 @@ def build(
         "burned": burned,
         "width": width, "height": height, "rate": rate, "frames": frames,
         "style": common, "titles": titles, "nameplate": plate,
+        **margins(width, height),
     })  # fmt: skip
     return plan, icon
 

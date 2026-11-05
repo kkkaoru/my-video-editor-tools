@@ -152,6 +152,7 @@ def test_build_puts_every_title_on_the_delivery_clock(
     assert plan == {
         "version": 1, "clock": "delivery", "movie": "d-review.mp4", "burned": True,
         "width": 1080, "height": 1920, "rate": 30, "frames": 40, "style": STYLE,
+        "safeLeft": 54, "safeRight": 54,
         "titles": [
             {"text": "あ\nい", "startFrame": 3, "endFrame": 8, "x": 0, "y": 700.5,
              "graphemeFrames": [3, 3, 5]},
@@ -765,3 +766,15 @@ def test_chain_failure_refuses_titles_that_do_not_grow_into_the_chain(gap: int, 
     assert caption_plan.chain_failure(split_fixture(gap), chains) == (
         f"no title shows the caption {text!r} at frame 40"
     )
+
+
+def test_margins_come_together_and_leave_part_of_the_width() -> None:
+    plan = {"width": 100}
+    caption_plan.safe_margins(plan)
+    caption_plan.safe_margins({**plan, "safeLeft": 10, "safeRight": 20})
+    with pytest.raises(ReplayError, match="come together"):
+        caption_plan.safe_margins({**plan, "safeLeft": 10})
+    with pytest.raises(ReplayError, match="leave part"):
+        caption_plan.safe_margins({**plan, "safeLeft": 50, "safeRight": 50})
+    with pytest.raises(ReplayError, match="leave part"):
+        caption_plan.safe_margins({**plan, "safeLeft": -1, "safeRight": 2})

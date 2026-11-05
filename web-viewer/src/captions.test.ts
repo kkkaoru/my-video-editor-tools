@@ -7,12 +7,14 @@ import {
   anchor,
   applyFill,
   compose,
+  estimatedBlockWidth,
   fitRect,
   fontOf,
   frameAt,
   gradientAt,
   graphemes,
   grow,
+  insideSafeZone,
   layoutTitle,
   linePrefix,
   lineSpans,
@@ -527,4 +529,38 @@ it("makes only the captions unselectable, not the movie player", () => {
   const page = readFileSync(resolve(import.meta.dirname, "../public/index.html"), "utf8");
   expect(page).toMatch(/#captionCanvas \{[^}]*-webkit-user-select:none; user-select:none;/);
   expect(page).not.toMatch(/#videoSlot \{[^}]*user-select/);
+});
+
+const SAFE_STYLE = { fontSize: 100, rim: 8 };
+const SAFE_PLAN = { width: 1000, style: SAFE_STYLE, safeLeft: 50, safeRight: 150 };
+
+it("estimates a block from its widest line and the rim on both sides", () => {
+  expect(estimatedBlockWidth({ text: "あい\nab" }, SAFE_STYLE)).toBe(220);
+  expect(estimatedBlockWidth({ text: "ｱa" }, SAFE_STYLE)).toBe(130);
+});
+
+it("keeps a block between unequal margins", () => {
+  expect(insideSafeZone(100, { text: "あ".repeat(6) }, SAFE_PLAN)).toBe(40);
+  expect(insideSafeZone(-300, { text: "あ".repeat(2) }, SAFE_PLAN)).toBe(-300);
+  expect(insideSafeZone(-500, { text: "あ".repeat(2) }, SAFE_PLAN)).toBe(-340);
+  expect(insideSafeZone(500, { text: "あ".repeat(2) }, SAFE_PLAN)).toBe(240);
+});
+
+it("centres a block wider than the margins leave between them", () => {
+  expect(insideSafeZone(100, { text: "あ".repeat(20) }, SAFE_PLAN)).toBe(-50);
+});
+
+it("leaves a plan without margins and a left-aligned title alone", () => {
+  expect(insideSafeZone(490, { text: "あ" }, { width: 1000, style: SAFE_STYLE })).toBe(490);
+  expect(insideSafeZone(490, { text: "あ", alignment: "left" }, SAFE_PLAN)).toBe(490);
+});
+
+it("refuses margins that come alone or leave no width", () => {
+  const plan = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../../tests/fixtures/caption-plan-v1.json"), "utf8"),
+  );
+  expect(() => parsePlan({ ...plan, safeLeft: 5 })).toThrow();
+  expect(() => parsePlan({ ...plan, safeLeft: plan.width, safeRight: 0 })).toThrow();
+  expect(() => parsePlan({ ...plan, safeLeft: -1, safeRight: 2 })).toThrow();
+  expect(parsePlan({ ...plan, safeLeft: 54, safeRight: 54 }).safeLeft).toBe(54);
 });

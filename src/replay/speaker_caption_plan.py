@@ -197,6 +197,7 @@ def build(
         "version": caption_plan.SPEAKERS_VERSION, "clock": caption_plan.CLOCK,
         "movie": movie.name, "burned": burned, "width": width, "height": height, "rate": rate,
         "frames": frames, "style": common, "titles": titles, "nameplate": None,
+        **caption_plan.margins(width, height),
         "speakers": table_out,
     })  # fmt: skip
     return plan, icons, dropped
