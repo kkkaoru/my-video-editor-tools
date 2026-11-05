@@ -6,6 +6,7 @@ const PREVIEW_URL: string = `http://127.0.0.1:${PREVIEW_PORT}`;
 // A CI runner has 3 slow cores: fewer workers and more time, the same checks and thresholds.
 const ON_CI: boolean = process.env.CI !== undefined;
 const WORKERS: number = ON_CI ? 2 : 4;
+const VITALS_SPEC: RegExp = /web-vitals\.spec\.ts/;
 const TEST_TIMEOUT_MS: number = ON_CI ? 120_000 : 30_000;
 
 const config: PlaywrightTestConfig = defineConfig({
@@ -18,8 +19,10 @@ const config: PlaywrightTestConfig = defineConfig({
   reporter: [["line"]],
   use: { baseURL: PREVIEW_URL },
   projects: [
-    { name: "webkit", use: { ...devices["Desktop Safari"] } },
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "webkit", testIgnore: VITALS_SPEC, use: { ...devices["Desktop Safari"] } },
+    { name: "chromium", testIgnore: VITALS_SPEC, use: { ...devices["Desktop Chrome"] } },
+    // Timings mean nothing beside other work, so `test:vitals` runs this alone, one page at a time.
+    { name: "vitals", testMatch: VITALS_SPEC, workers: 1, use: { ...devices["Desktop Chrome"] } },
   ],
   webServer: {
     // Its own folder: the app rebuild empties dist/ while a long sweep is still loading pages.

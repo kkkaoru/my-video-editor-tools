@@ -26,6 +26,8 @@ export const PopoverContent = ({
 }: PrimitiveProps<PopoverPrimitive.Popup.Props>): VNode => (
   <PopoverPrimitive.Portal container={MAIN_LANDMARK}>
     <PopoverPrimitive.Positioner
+      // Fixed: WebKit keeps counting where an absolute popup used to be in the page's scroll width.
+      positionMethod="fixed"
       side="right"
       align="start"
       sideOffset={4}

@@ -51,11 +51,16 @@ jobs:
           cargo clippy --all-targets --features windows-geforce -- -D warnings
           cargo clippy --all-targets --features windows-radeon -- -D warnings
           bash ../scripts/verify/check-rust-coverage.sh
-      - name: WCAG AAA in every UI state and Core Web Vitals
+      - name: WCAG AAA in every UI state
         working-directory: ${{ env.APP_DIR }}
         run: |
           bunx playwright install --with-deps webkit chromium
           bun run test:a11y
+      # After the sweep and alone, because timings beside thousands of other pages say nothing about the app.
+      - name: Core Web Vitals
+        if: ${{ !cancelled() }}
+        working-directory: ${{ env.APP_DIR }}
+        run: bun run test:vitals
 
   build:
     strategy:

@@ -64,11 +64,7 @@ async function exercise(page: Page): Promise<void> {
 
 MEASURED_STATES.forEach((name: string): void => {
   const state: UiState | undefined = UI_STATES.find((candidate: UiState): boolean => candidate.name === name);
-  test(`core web vitals stay good: ${name}`, async ({ page, browserName }): Promise<void> => {
-    test.skip(
-      browserName !== "chromium",
-      "only Chromium exposes LCP and event timing to PerformanceObserver",
-    );
+  test(`core web vitals stay good: ${name}`, async ({ page }): Promise<void> => {
     await page.addInitScript(observeVitals);
     await page.addInitScript({ path: "tests/a11y/tauri-mock.js" });
     await page.addInitScript((snapshot: UiState["snapshot"] | undefined): void => {

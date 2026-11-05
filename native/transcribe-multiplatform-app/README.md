@@ -83,6 +83,7 @@ bun install --frozen-lockfile
 bash scripts/release/fetch-runtime.sh macos   # or windows-geforce, windows-radeon (both need the Vulkan SDK)
 bun run tsc && bun run lint && bun run test
 bun run test:a11y                     # needs: bunx playwright install webkit chromium
+bun run test:vitals                   # Core Web Vitals, alone: timings beside other work mean nothing
 (cd src-tauri && cargo test && bash ../scripts/verify/check-rust-coverage.sh)
 bunx tauri dev
 ```
@@ -94,3 +95,17 @@ A Windows distribution is chosen when building: `bunx tauri build --bundles nsis
 `TRANSCRIBE_RESOURCE_DIR` override where data and bundled files live.
 
 ## Verification
+
+Evidence levels differ: tests, a real run and a look in DaVinci Resolve are separate claims.
+
+Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-speaker recordings (40 minutes landscape 1920x1080, 85 minutes portrait 720x1280):
+
+- Both full recordings produce all four files. In the FCPXML no captions overlap in time or lane, none is longer than 7 seconds and none is shorter than 5/6 of a second.
+- FCPXML imports as a timeline. Viewed in Resolve: white text with a black edge, a blue speaker colour with a white edge, one and two lines, a larger font, an offset, and positions above the face, below the face, at the top and at the bottom.
+- Caption starts against ffmpeg `silencedetect` at -35 dB, a detector the app does not use: 8 of 638 and 3 of 1775 start more than 200 ms before sound. The largest are near -45 dB, where whispers and background noise look the same.
+- A real download of whisper-large-v3-turbo, Nemotron 3 Diarization and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
+- Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
+
+Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline, the look of the shadow at every strength. The bulk download, the reset and the missing-model error have tests only.
+
+Avatars with hair reaching the top of the frame leave no room above the head. The caption then goes below the face, because not covering the face comes first.

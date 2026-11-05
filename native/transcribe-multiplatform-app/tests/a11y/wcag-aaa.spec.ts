@@ -298,6 +298,18 @@ test("the speaker count help does not cover the control it explains", async ({ p
   await panel.getByRole("combobox").first().hover({ timeout: 2000 });
 });
 
+const popupsOffScreen = (page: Page): Promise<string[]> =>
+  page.$$eval(
+    '[data-slot="popover-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="alert-dialog-content"]',
+    (elements: Element[]): string[] =>
+      elements
+        .filter((element: Element): boolean => {
+          const { left, right } = element.getBoundingClientRect();
+          return left < 0 || right > window.innerWidth;
+        })
+        .map((element: Element): string => element.outerHTML.slice(0, 120)),
+  );
+
 const brokenSpeakerNames = (page: Page): Promise<string[]> =>
   page.$$eval('input[type="color"] ~ span', (elements: Element[]): string[] =>
     elements
@@ -384,6 +396,8 @@ COLOR_SCHEMES.forEach((colorScheme: "light" | "dark"): void => {
         await expect
           .poll(() => page.evaluate((): boolean => document.documentElement.scrollWidth <= window.innerWidth))
           .toBe(true);
+        // A fixed popup is outside the page's scroll width, so its own edges are checked as well.
+        await expect.poll(() => popupsOffScreen(page)).toStrictEqual([]);
       });
     });
   });

@@ -9,7 +9,8 @@
     "tsc": "tsc --noEmit",
     "lint": "biome check .",
     "test": "vitest run --coverage",
-    "test:a11y": "playwright test --config tests/a11y/playwright.config.ts",
+    "test:a11y": "playwright test --config tests/a11y/playwright.config.ts --project=webkit --project=chromium",
+    "test:vitals": "playwright test --config tests/a11y/playwright.config.ts --project=vitals --workers=1",
     "tauri": "tauri",
     "app:watch": "bun scripts/verify/watch-app.ts"
   },
