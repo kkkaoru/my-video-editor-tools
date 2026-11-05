@@ -14,6 +14,7 @@ import pytest
 from replay import recording_steps as steps
 from replay.code_dependency_inventory import capture
 from replay.core import ReplayError
+from replay.recordings import record
 from replay.stages import execution_lock
 
 
@@ -1237,3 +1238,57 @@ def test_asr_moves_a_published_manifest_into_its_chunk_store(tmp_path: Path) -> 
     steps.execute("asr", path, run=Producers(tmp_path))
     moved = prepared / "context-streams/chunks/previous-inputs.manifest"
     assert moved.read_text(encoding="utf-8") == '{"inputs": {}}'
+
+
+TIMING = {"binary": "/b", "binarySha256": "b", "model": "/m", "modelSha256": "m"}
+
+
+def test_asr_timing_settings_are_optional_and_complete() -> None:
+    assert steps.timing_tools({}) is None
+    assert steps.timing_tools({"asrTiming": TIMING}) == TIMING
+    with pytest.raises(ReplayError, match="asrTiming has exactly"):
+        steps.timing_tools({"asrTiming": {"binary": "/b"}})
+    with pytest.raises(ReplayError, match="asrTiming has exactly"):
+        steps.timing_tools({"asrTiming": {**TIMING, "binary": 3}})
+
+
+def test_asr_without_timing_keeps_its_outputs(tmp_path: Path) -> None:
+    path = glossary_pipeline(tmp_path, ["/g/common.json"])
+    producers = Producers(tmp_path)
+    assert steps.warped_times(steps.load(path), producers, {"mono": "m"}) == {"mono": "m"}
+    assert producers.commands == []
+
+
+def timed_pipeline(tmp_path: Path) -> Path:
+    path = glossary_pipeline(tmp_path, ["/g/common.json"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**data, "asrTiming": TIMING}), encoding="utf-8")
+    return path
+
+
+def test_asr_with_timing_moves_the_finished_labels_once(tmp_path: Path) -> None:
+    path = timed_pipeline(tmp_path)
+    prepared = tmp_path / "replay-123/asr-v1/prepared"
+    prepared.mkdir(parents=True)
+    labels = prepared / "labels-dtw-v1.json"
+    outputs = {"labels": {"path": str(prepared / "labels-glossary-v1.json")}}
+    producers = Producers(tmp_path)
+    labels.write_text("{}", encoding="utf-8")
+    moved = steps.warped_times(steps.load(path), producers, outputs)
+    assert record(moved["labels"])["path"] == str(labels)
+    assert producers.commands == []
+    labels.unlink()
+
+    def writes(command: Sequence[str], log: Path) -> None:
+        assert log.name == "asr.log"
+        assert "replay.asr_dtw_timing" in command
+        assert command[-1] == str(labels)
+        labels.write_text("{}", encoding="utf-8")
+
+    steps.warped_times(steps.load(path), writes, outputs)
+    assert labels.exists()
+
+
+def test_a_forced_asr_removes_the_timed_labels_and_their_recognition(tmp_path: Path) -> None:
+    names = {path.name for path in steps.asr_outputs(tmp_path)}
+    assert {"labels-dtw-v1.json", "dtw-timing"} <= names

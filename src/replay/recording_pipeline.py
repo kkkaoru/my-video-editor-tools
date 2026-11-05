@@ -212,9 +212,10 @@ NO_FORCING = Forcing()
 
 def load_defaults(path: Path) -> dict[str, object]:
     data = record(json.loads(path.read_text(encoding="utf-8")))
-    if set(data) - {steps.GLOSSARY} != DEFAULT_KEYS or data["version"] != 1:
+    if set(data) - {steps.GLOSSARY, steps.TIMING} != DEFAULT_KEYS or data["version"] != 1:
         raise ReplayError("Unsupported recording pipeline defaults")
     steps.glossary_files(data)
+    steps.timing_tools(data)
     references, yolo = record(data["references"]), record(data["yolo"])
     if set(references) != steps.REFERENCES or set(yolo) != steps.YOLO_KEYS:
         raise ReplayError("Incomplete pipeline references or detector settings")
@@ -432,6 +433,7 @@ def pipeline_config(
         # Copied only when set (the video's config, else the defaults): a recording prepared
         # before keeps its asr receipt.
         **({steps.GLOSSARY: glossary} if glossary is not None else {}),
+        **({steps.TIMING: defaults[steps.TIMING]} if steps.TIMING in defaults else {}),
     }
 
 
@@ -479,10 +481,13 @@ def prepare(replay_id: str, defaults_path: Path, *, checkout: Path) -> Layout:
 
 
 def write_pipeline(path: Path, config: dict[str, object]) -> None:
-    """``write_once``, except that an existing pipeline.json without ``asrGlossary`` is kept as
-    it is: a recording prepared before the defaults gained the key keeps its asr receipt."""
-    if path.exists() and steps.GLOSSARY not in record(json.loads(path.read_text("utf-8"))):
-        config = {key: value for key, value in config.items() if key != steps.GLOSSARY}
+    """``write_once``, except that an existing pipeline.json without ``asrGlossary`` or
+    ``asrTiming`` is kept as it is: a recording prepared before the defaults gained the key keeps
+    its asr receipt."""
+    if path.exists():
+        existing = record(json.loads(path.read_text("utf-8")))
+        added = {steps.GLOSSARY, steps.TIMING} - set(existing)
+        config = {key: value for key, value in config.items() if key not in added}
     write_once(path, config)
 
 

@@ -85,6 +85,8 @@ def reference_files(tmp_path: Path) -> dict[str, str]:
     code = tmp_path / "code.py"
     code.write_text("x = 1\n", encoding="utf-8")
     closure.write_text(json.dumps({"inputs": {str(code): "0" * 64}}), encoding="utf-8")
+    measurement = tmp_path / "measurement.json"
+    measurement.write_text('{"width": 972}', encoding="utf-8")
     font = tmp_path / "font.json"
     font.write_text("{}", encoding="utf-8")
     paging = {
@@ -92,6 +94,7 @@ def reference_files(tmp_path: Path) -> dict[str, str]:
         "inputs": {
             "source": {"path": "/old.mp4", "sha256": "0"},
             "codeClosure": {"path": str(closure), "sha256": "0"},
+            "measurementReference": {"path": str(measurement), "sha256": "0"},
             "fontReceipt": {"path": str(font), "sha256": steps.sha256(font)},
         },
         "futurePaths": {},
@@ -1586,3 +1589,51 @@ def test_the_caption_plan_step_writes_the_plan_and_faces_beside_the_delivery(
         "titles": 2, "burned": False,
     }  # fmt: skip
     assert captions.step_outputs(pipeline, "caption-plan") == ()
+
+
+def test_paging_refuses_a_line_wider_than_the_frames_margins() -> None:
+    captions.line_width_inside_margins(972.0, (1080, 1920))
+    with pytest.raises(ReplayError, match="crosses the margins"):
+        captions.line_width_inside_margins(973.0, (1080, 1920))
+
+
+def test_the_reveal_reads_the_voice_onsets_once_they_exist(tmp_path: Path) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    assert captions.reveal_tokens_path(pipeline) == pipeline.work / "speech-onsets-v1.json"
+    voiced = pipeline.work / "speech-onsets-voice-v1.json"
+    voiced.parent.mkdir(parents=True, exist_ok=True)
+    voiced.write_text("{}", encoding="utf-8")
+    assert captions.reveal_tokens_path(pipeline) == voiced
+
+
+def test_incomplete_voice_onset_settings_are_refused(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = path.parent / "captions.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    settings.write_text(json.dumps({**data, "voiceOnset": {"binary": "/b"}}), encoding="utf-8")
+    with pytest.raises(ReplayError, match="Incomplete voiceOnset"):
+        captions.load_captions(steps.load(path))
+
+
+def test_onsets_with_voice_onset_settings_move_the_finished_onsets_once(tmp_path: Path) -> None:
+    path = configure(tmp_path)
+    settings = path.parent / "captions.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    tools = {"binary": "/b", "binarySha256": "b", "model": "/m", "modelSha256": "m"}
+    settings.write_text(json.dumps({**data, "voiceOnset": tools}), encoding="utf-8")
+    pipeline = steps.load(path)
+    pipeline.work.mkdir(parents=True, exist_ok=True)
+    (pipeline.work / "speech-onsets-v1.json").write_text("{}", encoding="utf-8")
+    voiced = pipeline.work / "speech-onsets-voice-v1.json"
+    ran: list[Sequence[str]] = []
+
+    def writes(command: Sequence[str], log: Path) -> None:
+        assert log.name == "onsets.log"
+        ran.append(command)
+        voiced.write_text("{}", encoding="utf-8")
+
+    outputs = captions.onsets(pipeline, writes)
+    assert set(outputs) == {"onsets", "voiceOnsets"}
+    assert "replay.caption_voice_onset" in ran[0]
+    captions.onsets(pipeline, writes)
+    assert len(ran) == 1

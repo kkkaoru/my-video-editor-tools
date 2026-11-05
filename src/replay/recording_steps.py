@@ -100,6 +100,9 @@ HALLUCINATION_LABELS = "labels-hallucination-v1.json"  # the asr step's labels
 # Optional pipeline key (new recordings since 2026-10-25): glossary files for replay.asr_kanji_fix,
 # applied to the asr labels without zenz rescoring. Without it the asr step is unchanged.
 GLOSSARY = "asrGlossary"
+TIMING = "asrTiming"  # optional: whisper.cpp binary and model for the token times
+TIMING_KEYS = frozenset({"binary", "binarySha256", "model", "modelSha256"})
+TIMED_LABELS = "labels-dtw-v1.json"
 GLOSSARY_LABELS, GLOSSARY_RECEIPT = "labels-glossary-v1.json", "glossary-receipt-v1.json"
 # Recognition: "context-streams" (pause-cut chunks with previous-text context, one persistent
 # model; replay.asr_context_streams, adopted 2026-10-18) or "windows" (60/30 s windows without
@@ -193,9 +196,10 @@ class Graph:
 def load(path: Path) -> Pipeline:
     data = record(json.loads(path.read_text(encoding="utf-8")))
     references, yolo = record(data.get("references")), record(data.get("yolo"))
-    if set(data) - {GLOSSARY} != KEYS or data["version"] != 1:
+    if set(data) - {GLOSSARY, TIMING} != KEYS or data["version"] != 1:
         raise ReplayError("Unsupported recording pipeline configuration")
     glossary_files(data)
+    timing_tools(data)
     if set(references) != REFERENCES or set(yolo) != YOLO_KEYS:
         raise ReplayError("Incomplete pipeline references or detector settings")
     pipeline = Pipeline(path.resolve(), data)
@@ -280,6 +284,16 @@ def failed_stage_tails(state: Path) -> str:
                     + "".join(f"{line}\n" for line in lines[-FAILED_TAIL_LINES:])
                 )
     return "".join(sections)
+
+
+def timing_tools(data: dict[str, object]) -> dict[str, object] | None:
+    """The optional ``asrTiming`` settings, complete, or None."""
+    if TIMING not in data:
+        return None
+    tools = record(data[TIMING])
+    if set(tools) != TIMING_KEYS or not all(isinstance(value, str) for value in tools.values()):
+        raise ReplayError(f"{TIMING} has exactly {', '.join(sorted(TIMING_KEYS))}")
+    return tools
 
 
 def glossary_files(data: dict[str, object]) -> tuple[str, ...]:
@@ -739,7 +753,11 @@ def asr(pipeline: Pipeline, run: Runner) -> dict[str, object]:
         run(module(pipeline, "metal_asr_config", reference, str(plan), str(config)), log)
     if ASR_METHOD == "context-streams":
         recognized(pipeline, run, config, prepared, log)
-        return glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log))
+        return warped_times(
+            pipeline,
+            run,
+            glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log)),
+        )
     clear_partial(prepared, prepared / "workflow.json")
     if not prepared.exists():
         prepared.mkdir(mode=0o700)
@@ -749,7 +767,11 @@ def asr(pipeline: Pipeline, run: Runner) -> dict[str, object]:
             log,
         )  # fmt: skip
     run(workflow(pipeline, prepared / "workflow.json", prepared / "state", "assemble"), log)
-    return glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log))
+    return warped_times(
+        pipeline,
+        run,
+        glossary_corrected(pipeline, run, silence_excluded(pipeline, run, prepared, log)),
+    )
 
 
 def silence_excluded(
@@ -788,6 +810,27 @@ def glossary_corrected(
                          str(labels), str(receipt), *glossaries)  # fmt: skip
         run(command, pipeline.logs / "asr.log")
     return {**outputs, "labels": pin(labels), "glossary": pin(receipt)}
+
+
+def warped_times(
+    pipeline: Pipeline, run: Runner, outputs: Mapping[str, object]
+) -> dict[str, object]:
+    """With ``asrTiming``, the finished labels on whisper.cpp's warped times
+    (``replay.asr_dtw_timing``); the text stays. Without it, ``outputs`` unchanged."""
+    tools = timing_tools(pipeline.data)
+    if tools is None:
+        return dict(outputs)
+    prepared = pipeline.work / "asr-v1" / "prepared"
+    labels = prepared / TIMED_LABELS
+    if not labels.exists():
+        run(
+            module(pipeline, "asr_dtw_timing", str(Path(str(record(outputs["labels"])["path"]))),
+                   str(prepared / "mono.wav"), str(tools["binary"]), str(tools["binarySha256"]),
+                   str(tools["model"]), str(tools["modelSha256"]), str(prepared / "dtw-timing"),
+                   str(labels)),
+            pipeline.logs / "asr.log",
+        )  # fmt: skip
+    return {**outputs, "labels": pin(labels)}
 
 
 def recognized(pipeline: Pipeline, run: Runner, config: Path, prepared: Path, log: Path) -> None:
@@ -886,7 +929,8 @@ def asr_outputs(work: Path) -> tuple[Path, ...]:
         return (root,)
     prepared = root / "prepared"
     names = ("mono.wav", "mono-receipt.json", "labels.json", "labels-silence-v1.json",
-             HALLUCINATION_LABELS, GLOSSARY_LABELS, GLOSSARY_RECEIPT)  # fmt: skip
+             HALLUCINATION_LABELS, GLOSSARY_LABELS, GLOSSARY_RECEIPT, TIMED_LABELS,
+             "dtw-timing")  # fmt: skip
     return (root / "CONFIG-v1.json", *(prepared / name for name in names),
             prepared / "context-streams" / "labels.json")  # fmt: skip
 

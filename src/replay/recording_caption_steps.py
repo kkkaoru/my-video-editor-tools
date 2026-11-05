@@ -63,6 +63,7 @@ from replay import (
     caption_palette,
     caption_plan,
     caption_readability,
+    caption_safe_zone,
     r2_fetch,
     video_config,
     voice_remux,
@@ -125,11 +126,14 @@ VOICE_LOUDNESS_KEYS = frozenset({"targetLufs", "truePeakDbtp"})
 # Optional, off when absent: ``"voiceJudge": true`` (the per-video ``audio.judge``) rejects a
 # voice-repair voice or a delivery tempo that ``replay.voice_judge`` fails, and delivers the
 # tempo re-rendered by resampling (``replay.voice_tempo``) in the voice-remux step.
+# Optional, off when absent: ``"voiceOnset"`` (``binary``, ``binarySha256``, ``model``,
+# ``modelSha256``) moves characters timed into silence up to Silero VAD's next voice
+# (``replay.caption_voice_onset``).
 # No setting delivers ML resynthesis (Sidon, deleted): on 2026-10-31 the user heard the spans it
 # replaced as unnaturally processed (``replay.voice_judge``'s timbre shift now fails them).
 OPTIONAL = frozenset(
     {"palette", "nativeRender", "voiceLoudness", "layout", "deliveryAudio", "voiceRepair",
-     "voiceDeesser", "voiceJudge"}
+     "voiceDeesser", "voiceJudge", "voiceOnset"}
 )  # fmt: skip
 # Settings the pipeline defaults may carry for every new recording (the intents are per recording).
 UNCAPTIONED_PARTS = "uncaptioned-parts.json"  # compose's empty part list
@@ -183,6 +187,10 @@ class Captions:
         return Path(str(self.data["mediaRoot"])) / front.recording_name(pipeline.text("recording"))
 
 
+PORTRAIT_FRAME = (1080, 1920)  # what a recording without a caption layout is placed on
+VOICE_ONSET_KEYS = frozenset({"binary", "binarySha256", "model", "modelSha256"})
+
+
 def captions_path(pipeline: Pipeline) -> Path:
     return pipeline.path.parent / "captions.json"
 
@@ -200,6 +208,8 @@ def load_captions(pipeline: Pipeline) -> Captions:
         caption_layout.delivery_audio(data["deliveryAudio"])
     if "nativeRender" in data and set(record(data["nativeRender"])) != NATIVE_RENDER_KEYS:
         raise ReplayError("Incomplete nativeRender settings")
+    if "voiceOnset" in data and set(record(data["voiceOnset"])) != VOICE_ONSET_KEYS:
+        raise ReplayError("Incomplete voiceOnset settings")
     for key in ("voiceRepair", "voiceDeesser", "voiceJudge"):
         if data.get(key, True) is not True:
             raise ReplayError(f"{key} takes only true (absent keeps the separated voice)")
@@ -274,9 +284,10 @@ def mono_receipt(prepared: Path) -> Path:
 
 
 def asr_labels(prepared: Path) -> Path:
-    """The asr step's labels: glossary-corrected with ``asrGlossary`` (since 2026-10-25), else
+    """The asr step's labels: on warped times with ``asrTiming`` (since 2026-11-06), else
+    glossary-corrected with ``asrGlossary`` (since 2026-10-25), else
     without stock phrases (since 2026-10-24), else the older ones."""
-    for name in ("labels-glossary-v1.json", "labels-hallucination-v1.json"):
+    for name in ("labels-dtw-v1.json", "labels-glossary-v1.json", "labels-hallucination-v1.json"):
         if (prepared / name).exists():
             return prepared / name
     return prepared / "labels-silence-v1.json"
@@ -404,6 +415,12 @@ def refreshed_closure(reference: Path, output: Path) -> Path:
     return output
 
 
+def line_width_inside_margins(width: float, frame: tuple[int, int]) -> None:
+    """Paging wraps at the calibration's width: it must fit between the frame's margins."""
+    if width > caption_safe_zone.safe_width(*frame):
+        raise ReplayError(f"A {width} px caption line crosses the margins of a {frame} frame")
+
+
 def paging_config(
     pipeline: Pipeline, captions: Captions, closure: Path, cuts: Path, native: Path
 ) -> dict[str, object]:
@@ -485,6 +502,13 @@ def paging(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     if not root.exists():
         root.mkdir(mode=0o700)
         reference = record(read_json(captions.reference("pagingConfig"))["inputs"])
+        measured = read_json(Path(str(record(reference["measurementReference"])["path"])))
+        line_width_inside_margins(
+            float(str(measured["width"])),
+            caption_layout.frame(captions.section("layout"))
+            if "layout" in captions.data
+            else PORTRAIT_FRAME,
+        )
         closure = refreshed_closure(
             Path(str(record(reference["codeClosure"])["path"])), root / "CODE-CLOSURE.json"
         )
@@ -666,11 +690,33 @@ def onsets(pipeline: Pipeline, run: Runner) -> dict[str, object]:
              str(tempo_audio(pipeline)), str(output), "--model", str(checkout / ALIGNER_MODEL)],
             pipeline.logs / "onsets.log",
         )  # fmt: skip
-    return {"onsets": pin(output)}
+    settings = load_captions(pipeline).data.get("voiceOnset")
+    if settings is None:
+        return {"onsets": pin(output)}
+    tools, voiced = record(settings), voice_onsets_path(pipeline)
+    if not voiced.exists():
+        run(
+            module(pipeline, "caption_voice_onset", str(output), str(tempo_audio(pipeline)),
+                   pipeline.text("ffmpeg"), str(tools["binary"]), str(tools["binarySha256"]),
+                   str(tools["model"]), str(tools["modelSha256"]),
+                   str(pipeline.work / "speech-onsets-scratch"), str(voiced)),
+            pipeline.logs / "onsets.log",
+        )  # fmt: skip
+    return {"onsets": pin(output), "voiceOnsets": pin(voiced)}
 
 
 def onsets_path(pipeline: Pipeline) -> Path:
     return pipeline.work / "speech-onsets-v1.json"
+
+
+def voice_onsets_path(pipeline: Pipeline) -> Path:
+    return pipeline.work / "speech-onsets-voice-v1.json"
+
+
+def reveal_tokens_path(pipeline: Pipeline) -> Path:
+    """The onsets the caption reveal reads: moved to the voice when ``voiceOnset`` made them."""
+    voiced = voice_onsets_path(pipeline)
+    return voiced if voiced.exists() else onsets_path(pipeline)
 
 
 def caption_parts_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
@@ -684,7 +730,7 @@ def caption_parts_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
                    str(output), str(captions.media(pipeline) / "alpha"),
                    "--template", str(captions.reference("motionTemplate")),
                    "--preset", str(captions.section("compressor")["preset"]),
-                   "--tokens", str(onsets_path(pipeline)),
+                   "--tokens", str(reveal_tokens_path(pipeline)),
                    *(["--palette", *recoloured] if recoloured else []),
                    *layout_arguments(captions), "--", *finish),
             pipeline.logs / "caption-parts.log",
@@ -1199,7 +1245,11 @@ def step_outputs(pipeline: Pipeline, step: str) -> tuple[Path, ...]:
         ),
         "paging": (work / "paging-v1",),
         "placement": (work / "placement-v1.json",),
-        "onsets": (onsets_path(pipeline), work / "speech-onsets-scratch"),
+        "onsets": (
+            onsets_path(pipeline),
+            voice_onsets_path(pipeline),
+            work / "speech-onsets-scratch",
+        ),
         "caption-parts": (work / "caption-parts-v1", media / "alpha"),
         "compose": (work / "compose-v1", work / DELIVERY_AUDIO, media / "compose", media / "badge"),
         "finish": (media / "final",),
