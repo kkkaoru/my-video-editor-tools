@@ -76,9 +76,13 @@ that conflict. Hold only the affected action and continue independent work.
    Distinguish removed logical allocation from the observed free-space increase;
    hardlinks, APFS clones/snapshots and concurrent jobs can change the result.
 
-There is intentionally no pattern-based or automatic media-deletion script: dependency
-and approval judgment is not encoded by a filename pattern. Two reusable, judgment-free
-tools exist: `python -m replay.disk_budget report|preflight` measures physical use and the
+`python -m replay.disk_relief --apply --watch` is the standing deletion the user ordered on
+2026-11-05 (autonomous, nobody reviews it, new kept over old, R2 is the backup). It removes old
+regenerable media and build trees, then offloads old deliveries and originals after proving their
+R2 copies equal; see [operations](../../../docs/operations.md#from-a-youtube-url-to-hls-unattended).
+Do not ask before running it. Beyond it, deletion still takes the judgment above. It never
+touches `mac-storage-archive`, VMs or anything outside this repository's generated roots. Other
+reusable, judgment-free tools exist: `python -m replay.disk_budget report|preflight` measures physical use and the
 free-space floor, and `python -m replay.leaf_retirement` unlinks only the exact rows an
 owner marked `eligible` in a SHA-pinned disposition file, after per-row identity,
 symlink-target and open-handle checks (dry run by default). See
