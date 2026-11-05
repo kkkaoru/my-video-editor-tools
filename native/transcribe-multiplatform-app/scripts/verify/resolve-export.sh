@@ -149,10 +149,16 @@ go_to_path "$out_dir"
 sleep 3
 
 echo "step: render"
-press "Add to Render Queue"
-sleep 3
-press "Render All"
-for _ in $(seq 1 60); do [ -f "$output" ] && break; sleep 2; done
+# Resolve can ignore these presses while a long timeline settles, so look for the file and press again.
+for attempt in 1 2 3; do
+  press "Add to Render Queue"
+  sleep 5
+  press "Render All"
+  for _ in $(seq 1 30); do [ -f "$output" ] && break; sleep 2; done
+  [ -f "$output" ] && break
+  screencapture -x "$tools/render-not-started-$attempt.png"
+  echo "the render did not start, attempt $attempt; screen in $tools" >&2
+done
 [ -f "$output" ] || { echo "the render did not start" >&2; exit 4; }
 last=-1
 for _ in $(seq 1 2880); do
