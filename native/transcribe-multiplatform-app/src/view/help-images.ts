@@ -10,7 +10,7 @@ export interface HelpImageSize {
 
 export const HELP_IMAGE_SIZES: Record<HelpImageName, HelpImageSize> = {
   models: { width: 1100, height: 920 },
-  transcribe: { width: 1100, height: 510 },
+  transcribe: { width: 1100, height: 630 },
   look: { width: 1100, height: 1400 },
   font: { width: 1100, height: 640 },
   profiles: { width: 1100, height: 400 },

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Caps each Rust build directory, because cargo never removes outdated artifacts by itself. Over the cap, the
-# coverage and debug builds go first (cargo rebuilds them on demand); release keeps the finished app.
+# coverage, debug and Windows builds go first (cargo rebuilds them on demand); release keeps the finished app.
 set -euo pipefail
 app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 shared_target="${CARGO_TARGET_DIR:-$app_dir/../../edits/work/transcribe-app/target}"
@@ -10,7 +10,7 @@ budget_kib="${TARGET_BUDGET_KIB:-8388608}"
 
 cap_target() {
   local target="$1" part
-  for part in llvm-cov-target debug; do
+  for part in llvm-cov-target debug x86_64-pc-windows-msvc; do
     [ -d "$target" ] && [ "$(du -sk "$target" | cut -f1)" -gt "$budget_kib" ] || return 0
     rm -rf "${target:?}/$part"
   done

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
-import type { Profile, Role, Snapshot, Stage } from "../backend/types.ts";
+import type { Profile, Role, Snapshot, Stage, SubtitleFormat } from "../backend/types.ts";
 import { languageFor } from "../i18n/language.ts";
 import { errorText, format, type Messages, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
@@ -46,6 +46,7 @@ interface StepRowProps {
 
 const SECONDS_PER_MINUTE: number = 60;
 const MAX_SPEAKER_COUNT: number = 8;
+const SUBTITLE_FORMATS: SubtitleFormat[] = ["fcpxml", "ttml", "srt"];
 const PERCENT: number = 100;
 const FOLDERS: RegExp = /^.*[\\/]/s;
 const BEFORE_EXTENSION: RegExp = /^.*\./s;
@@ -99,6 +100,15 @@ export const speakerCountOptions = (messages: Messages): SelectOption[] => [
     }),
   ),
 ];
+
+export const subtitleFormatOptions = (): SelectOption[] =>
+  SUBTITLE_FORMATS.map(
+    (format: SubtitleFormat): SelectOption => ({
+      value: format,
+      label: format.toUpperCase(),
+      disabled: false,
+    }),
+  );
 
 export const missingRoles = (snapshot: Snapshot, messages: Messages): string[] =>
   missingModelRoles(snapshot).map((role: Role): string => roleName(messages, role));
@@ -192,6 +202,7 @@ const FinishedJob = ({ job }: { job: FinishedJobRow }): VNode => {
         </p>
       ) : null}
       {job.outcome.faceless ? <p className="text-muted-foreground">{messages.jobFaceless}</p> : null}
+      {job.outcome.font_missing ? <p className="text-muted-foreground">{messages.jobFontMissing}</p> : null}
       <div>
         <h3 className="font-medium">{messages.jobOutputs}</h3>
         <ul className="break-all text-muted-foreground">
@@ -293,16 +304,36 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
-      <div className="max-w-sm">
-        <SelectField
-          label={messages.speakerCount}
-          value={String(snapshot.settings.speaker_count)}
-          options={speakerCountOptions(messages)}
-          help={<HelpTip label={messages.speakerCountHelpLabel}>{messages.speakerCountHelp}</HelpTip>}
-          onChange={(value: string): void =>
-            store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
-          }
-        />
+      {/* One above the other: the speaker count's "?" opens to the right, where a neighbour would be covered. */}
+      <div className="grid max-w-sm grid-cols-1 gap-4">
+        <div>
+          <SelectField
+            label={messages.speakerCount}
+            value={String(snapshot.settings.speaker_count)}
+            options={speakerCountOptions(messages)}
+            help={<HelpTip label={messages.speakerCountHelpLabel}>{messages.speakerCountHelp}</HelpTip>}
+            onChange={(value: string): void =>
+              store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
+            }
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-1">
+          <SelectField
+            label={messages.subtitleFormat}
+            value={snapshot.settings.subtitle_format}
+            options={subtitleFormatOptions()}
+            onChange={(value: string): void =>
+              SUBTITLE_FORMATS.filter((format: SubtitleFormat): boolean => format === value).forEach(
+                (format: SubtitleFormat): void => {
+                  store.updateSettings({ ...snapshot.settings, subtitle_format: format });
+                },
+              )
+            }
+          />
+          <p className="text-muted-foreground">
+            {messages.outputPurposes[snapshot.settings.subtitle_format]}
+          </p>
+        </div>
       </div>
       <section
         aria-label={messages.dropTitle}

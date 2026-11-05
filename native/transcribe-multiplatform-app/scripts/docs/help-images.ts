@@ -93,6 +93,11 @@ const SCENES: Scene[] = [
       },
       {
         step: 3,
+        target: (page: Page, { subtitleFormat }: Messages): Locator =>
+          panel(page).getByRole("combobox", { name: subtitleFormat }),
+      },
+      {
+        step: 4,
         target: (page: Page, { dropTitle }: Messages): Locator =>
           panel(page).getByRole("region", { name: dropTitle }),
       },
@@ -105,7 +110,11 @@ const SCENES: Scene[] = [
       settings: {
         ...snapshot({}).settings,
         palette: snapshot({}).settings.palette.slice(0, 2),
-        placement: { anchor: "face_above", offset_x_percent: 0, offset_y_percent: 0 },
+        placement: {
+          anchor: "face_above",
+          offset_x_percent: 0,
+          offset_y_percent: 0,
+        },
       },
     }),
     jobEvents: [],
@@ -192,17 +201,13 @@ const SCENES: Scene[] = [
         state: "finished",
         id: 1,
         outcome: {
-          outputs: [
-            "/Videos/talk-2.ttml",
-            "/Videos/talk-2.srt",
-            "/Videos/talk-2.fcpxml",
-            "/Videos/talk-2.transcript.json",
-          ],
+          outputs: ["/Videos/talk-2.fcpxml"],
           base: "/Videos/talk-2",
           speaker_count: 2,
           requested_speakers: 0,
           cue_count: 120,
           faceless: false,
+          font_missing: false,
         },
       },
     ],

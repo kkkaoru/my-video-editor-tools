@@ -9,6 +9,7 @@ Bundled in the release builds:
 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | speaker separation runtime (CPU in both Windows builds, Vulkan in the Radeon build, Metal on macOS) | Apache-2.0 |
 | [Vibrato](https://github.com/daac-tools/vibrato) with MeCab IPADIC (`resources/ipadic-*`) | Japanese phrase boundaries for caption breaks | MIT/Apache-2.0; IPADIC license in `resources/ipadic-COPYING` |
 | [fontdb](https://github.com/RazrFalcon/fontdb) | listing the installed font families | MIT |
+| [Silero VAD](https://github.com/snakers4/silero-vad) (ggml conversion from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad)) | when a voice starts, for caption timing | MIT |
 | [YuNet](https://huggingface.co/opencv/face_detection_yunet) | face detection model | MIT |
 | [Whisper tokenizer vocabulary](https://huggingface.co/openai/whisper-large-v3-turbo) | model conversion | MIT |
 

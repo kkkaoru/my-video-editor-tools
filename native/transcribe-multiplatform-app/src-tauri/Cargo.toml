@@ -1,6 +1,6 @@
 [package]
 name = "transcribe-app"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Drop a video, get speaker-coloured outlined subtitles."
@@ -30,6 +30,7 @@ sha2 = "0.10"
 sys-locale = "0.3"
 thiserror = "2"
 tract-onnx = "0.22"
+ttf-parser = "0.25"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 unicode-segmentation = "1"

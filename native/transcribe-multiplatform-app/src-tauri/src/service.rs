@@ -668,6 +668,7 @@ mod tests {
             requested_speakers: 0,
             cue_count: 3,
             faceless: false,
+            font_missing: false,
         };
         assert!(matches!(
             job_result_event(5, Ok(outcome)),
@@ -1014,6 +1015,8 @@ mod tests {
                     offset_y_percent: 0.0,
                 },
                 active_profile: "A".to_owned(),
+                // The format comes from the settings, never from the profile.
+                subtitle_format: crate::settings::SubtitleFormat::Ttml,
                 ..Settings::default()
             })
             .unwrap();
@@ -1028,8 +1031,7 @@ mod tests {
             written.contains("tts:fontFamily=\"Hiragino Sans\""),
             "{written}"
         );
-        let timeline = std::fs::read_to_string(root.join("clip-2.fcpxml")).unwrap();
-        assert!(timeline.contains("font=\"Hiragino Sans\""), "{timeline}");
+        assert!(!root.join("clip-2.fcpxml").exists());
     }
 
     #[test]
@@ -1039,6 +1041,7 @@ mod tests {
         service
             .save_settings(Settings {
                 font_family: "Current Font".to_owned(),
+                subtitle_format: crate::settings::SubtitleFormat::Ttml,
                 placement: crate::settings::Placement {
                     anchor: crate::settings::Anchor::VideoTop,
                     offset_x_percent: 0.0,
@@ -1329,7 +1332,7 @@ mod tests {
         let written =
             crate::export::write_outputs(&root.join("clip"), &transcript, &Settings::default())
                 .unwrap();
-        assert_eq!(written.len(), 4);
+        assert_eq!(written.len(), 1);
         std::fs::write(root.join("clip.srt"), b"edited by hand").unwrap();
         let mut bottom = Settings::default();
         bottom.placement.anchor = crate::settings::Anchor::VideoBottom;

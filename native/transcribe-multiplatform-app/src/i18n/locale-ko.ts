@@ -75,8 +75,10 @@ export const koMessages: Messages = {
   jobDone: "완료: 자막 {cues}개, 화자 {speakers}명",
   jobDoneOneSpeaker: "완료: 자막 {cues}개, 화자 1명",
   jobFaceless: "얼굴이 없는 구간의 자막은 동영상 아래쪽에 배치했습니다.",
+  jobFontMissing: "고른 글꼴이 이 컴퓨터에 없어 자막 폭을 어림으로 계산했습니다.",
   jobNoPercent: "이 모델은 진행률을 알려 주지 않습니다",
   speakerCount: "화자 수",
+  subtitleFormat: "자막 파일 형식",
   speakerCountAuto: "자동 판별",
   speakerCountValue: "{count}명",
   speakerCountOne: "1명",
@@ -111,6 +113,9 @@ export const koMessages: Messages = {
   anchorVideoBottom: "동영상 아래쪽",
   offsetX: "좌우 미세 조정 (너비 대비 퍼센트)",
   offsetY: "상하 미세 조정 (높이 대비 퍼센트)",
+  safeZoneHint: "동영상 좌우 끝에 자막을 두지 않을 폭을 정합니다. 미리 보기에 어두운 띠로 표시됩니다.",
+  safeLeft: "왼쪽 안전 영역 (너비 대비 퍼센트)",
+  safeRight: "오른쪽 안전 영역 (너비 대비 퍼센트)",
   faceModel: "얼굴 감지 모델",
   speechLanguage: "말하는 언어",
   languageAuto: "자동 감지",
@@ -124,8 +129,6 @@ export const koMessages: Messages = {
   unknownSpeaker: "알 수 없는 화자",
   contrastWarning:
     "{name}: 채우기와 윤곽선의 대비가 {ratio}:1로 WCAG AA 기준 4.5:1보다 낮습니다. 명암 차이가 큰 색을 선택하세요.",
-  shadowEnabled: "그림자 추가",
-  shadowStrength: "그림자 강도(%)",
   previewHeading: "미리보기",
   previewFrameLabel: "미리보기 크기",
   previewDescription: "미리보기 자막은 {size} 화면에서 가로 {x}%, 세로 {y}% 위치에 있습니다.",
@@ -262,6 +265,7 @@ export const koMessages: Messages = {
             steps: [
               "“{tabJobs}” 탭을 엽니다.",
               "“{speakerCount}” 값은 처음에 1명입니다. 더 많은 사람이 말하면 인원수를 고릅니다. 잘 모르면 “{speakerCountAuto}” 항목을 고릅니다.",
+              "“{subtitleFormat}” 항목에서 만들 파일 형식을 고릅니다. 처음에는 FCPXML입니다. 아래에 그 형식의 쓰임새가 나옵니다.",
               "동영상을 상자 안으로 끌어다 놓습니다. 끌기는 누른 채로 움직이는 것입니다. “{pickVideos}” 버튼을 눌러도 됩니다.",
             ],
             notes: [
@@ -287,7 +291,7 @@ export const koMessages: Messages = {
           {
             heading: "만들어지는 파일",
             intro:
-              "동영상과 같은 폴더에 파일 4개가 생깁니다. 전에 만든 파일은 지우지 않습니다. 이름이 같으면 새 파일 이름에 -2를 붙입니다.",
+              "동영상과 같은 폴더에 고른 형식의 자막 파일과 .transcript.json 파일, 모두 2개가 생깁니다. 전에 만든 파일은 지우지 않습니다. 이름이 같으면 새 파일 이름에 -2를 붙입니다.",
             steps: [],
             notes: [
               ".fcpxml: 동영상 편집 프로그램에서 읽을 수 있는, 자막과 동영상이 함께 든 파일입니다.",
@@ -302,9 +306,9 @@ export const koMessages: Messages = {
         heading: "동영상 편집 프로그램으로 가져오기",
         parts: [
           {
-            heading: "먼저 FCPXML 가져오기",
+            heading: "FCPXML 가져오기",
             intro:
-              "FCPXML 파일은 동영상과 자막을 한 번에 가져옵니다. 자막의 색, 테두리, 위치도 함께 들어옵니다. 그래서 먼저 이 파일을 씁니다.",
+              "FCPXML 파일은 동영상과 자막을 한 번에 가져옵니다. 자막의 색, 테두리, 위치도 함께 들어옵니다. 그래서 처음에는 이 형식으로 되어 있습니다.",
             steps: [
               "동영상 편집 프로그램에서 프로젝트를 엽니다. 프로젝트는 편집 작업을 모아 둔 것입니다.",
               "메뉴에서 타임라인을 가져옵니다 (예: File > Import > Timeline).",
@@ -314,8 +318,8 @@ export const koMessages: Messages = {
             notes: ["자막은 2~3겹으로 겹쳐 있습니다. 글자를 고칠 때는 모든 겹을 고칩니다."],
           },
           {
-            heading: "다른 파일을 쓸 때",
-            intro: "다른 파일은 필요할 때만 씁니다.",
+            heading: "다른 형식을 쓸 때",
+            intro: "다른 형식은 동영상을 넣기 전에 “{subtitleFormat}” 항목에서 고릅니다.",
             steps: [],
             notes: [
               ".ttml 파일은 Media Pool에서 Import Subtitle을 골라 가져옵니다. Media Pool은 동영상과 자막을 넣어 두는 곳입니다.",
@@ -340,6 +344,7 @@ export const koMessages: Messages = {
             ],
             notes: [
               "미리보기는 넓은 화면에서는 오른쪽에, 좁은 화면에서는 위에 나옵니다. 아래로 내려도 계속 보입니다.",
+              "자막을 동영상 좌우 끝에 두고 싶지 않으면 “{positionHeading}” 항목의 안전 영역에서 폭을 정합니다. 미리 보기의 어두운 띠가 그 폭입니다.",
             ],
           },
           {
@@ -403,6 +408,7 @@ export const koMessages: Messages = {
             notes: [
               "목록에서 동영상 이름 옆의 다시 만들기 버튼은 다른 이름으로 새 파일을 만듭니다. 원래 파일은 남습니다.",
               "원래 파일은 지우지 않습니다. 새 파일 이름에 -2 같은 번호를 붙입니다.",
+              "새 파일의 형식은 넣은 파일과 상관없이 “{subtitleFormat}” 항목에서 정해집니다.",
               "같은 폴더에 이름이 같은 .transcript.json 파일이 있어야 합니다.",
               "프로필을 쓰고 있을 때는 그 프로필에 저장하지 않은 변경을 쓰지 않습니다.",
             ],
@@ -472,7 +478,8 @@ export const koMessages: Messages = {
     imageFolder: "ko",
     images: {
       models: "모델 탭 화면입니다. 1은 탭, 2는 내려받기 버튼, 3은 모델마다 있는 막대입니다.",
-      transcribe: "자막 만들기 탭 화면입니다. 1은 탭, 2는 화자 수, 3은 동영상을 넣는 상자입니다.",
+      transcribe:
+        "자막 만들기 탭 화면입니다. 1은 탭, 2는 화자 수, 3은 자막 파일 형식, 4는 동영상을 넣는 상자입니다.",
       look: "자막 모양과 위치 탭 화면입니다. 1은 탭, 2는 자막을 둘 곳, 3은 슬라이더, 4는 사람마다 쓰는 색입니다.",
       font: "글꼴 목록을 연 화면입니다. 1은 글꼴 이름이 나온 곳, 2는 입력하는 곳, 3은 고를 글꼴입니다.",
       profiles: "프로필 영역 화면입니다. 1은 이름을 입력하는 곳, 2는 저장 버튼, 3은 불러오기 버튼입니다.",

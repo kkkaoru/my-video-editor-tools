@@ -9,9 +9,14 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
-  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
-  placement: { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY },
+  safe_left_percent: 0,
+  safe_right_percent: 0,
+  placement: {
+    anchor,
+    offset_x_percent: offsetX,
+    offset_y_percent: offsetY,
+  },
   language: "auto",
   diarize_model: "b",
   face_model: "c",
@@ -20,6 +25,7 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
+  subtitle_format: "fcpxml",
 });
 
 it("derives the metrics from the short edge and the width", () => {
@@ -29,7 +35,7 @@ it("derives the metrics from the short edge and the width", () => {
   );
   expect(metrics.fontPx).toBe(54);
   expect(metrics.outlinePx).toBeCloseTo(5.4);
-  expect(metrics.maxLinePx).toBeCloseTo(1521.53, 1);
+  expect(metrics.maxLinePx).toBe(1509);
 });
 
 it("keeps the metrics at their minimums on a tiny frame", () => {
@@ -39,24 +45,24 @@ it("keeps the metrics at their minimums on a tiny frame", () => {
   );
   expect(metrics.fontPx).toBe(1);
   expect(metrics.outlinePx).toBe(1);
-  expect(metrics.maxLinePx).toBeCloseTo(1.132);
+  expect(metrics.maxLinePx).toBe(1);
 });
 
 it("never lets a line be shorter than one character", () => {
   expect(
-    metricsFor({ width: 100, height: 100 }, { ...settingsWith("video_top", 0, 0), width_ratio: 0.01 }),
-  ).toStrictEqual({
-    fontPx: 5,
-    outlinePx: 1,
-    maxLinePx: 5,
-  });
+    metricsFor({ width: 100, height: 100 }, { ...settingsWith("video_top", 0, 0), width_ratio: 0.01 })
+      .maxLinePx,
+  ).toBe(1);
 });
 
 it("shares a Japanese line evenly between two lines", () => {
-  expect(wrapText("話者ごとに色が変わる袋文字の字幕です", { fontPx: 1, maxLinePx: 17 })).toStrictEqual([
-    "話者ごとに色が変わ",
-    "る袋文字の字幕です",
-  ]);
+  expect(
+    wrapText("話者ごとに色が変わる袋文字の字幕です", {
+      fontPx: 1,
+      scale: 1,
+      maxLinePx: 17,
+    }),
+  ).toStrictEqual(["話者ごとに色が変わ", "る袋文字の字幕です"]);
 });
 
 it("keeps the Japanese sample in two even lines on a vertical frame", () => {
@@ -64,84 +70,96 @@ it("keeps the Japanese sample in two even lines on a vertical frame", () => {
     previewLayout(
       "話者ごとに色が変わる袋文字の字幕です",
       { width: 1080, height: 1920 },
-      settingsWith("video_top", 0, 0),
+      { ...settingsWith("video_top", 0, 0), font_ratio: 0.03 },
     ).lines,
   ).toStrictEqual(["話者ごとに色が変わ", "る袋文字の字幕です"]);
 });
 
 it("runs on to more lines when two cannot hold it", () => {
-  expect(wrapText("話者ごとに色が変わる袋文字の字幕です", { fontPx: 1, maxLinePx: 7 })).toStrictEqual([
-    "話者ごとに色が",
-    "変わる袋文",
-    "字の字幕です",
-  ]);
+  expect(
+    wrapText("話者ごとに色が変わる袋文字の字幕です", {
+      fontPx: 1,
+      scale: 1,
+      maxLinePx: 7,
+    }),
+  ).toStrictEqual(["話者ごとに色が", "変わる袋文", "字の字幕です"]);
 });
 
 it("keeps a line that fits whole", () => {
-  expect(wrapText("abc", { fontPx: 1, maxLinePx: 10 })).toStrictEqual(["abc"]);
+  expect(wrapText("abc", { fontPx: 1, scale: 1, maxLinePx: 10 })).toStrictEqual(["abc"]);
 });
 
 it("never cuts a Latin word, and drops the space at the break", () => {
   expect(
-    wrapText("Untertitel mit Kontur wechseln die Farbe je Sprecher", { fontPx: 10, maxLinePx: 200 }),
+    wrapText("Untertitel mit Kontur wechseln die Farbe je Sprecher", {
+      fontPx: 10,
+      scale: 1,
+      maxLinePx: 200,
+    }),
   ).toStrictEqual(["Untertitel mit Kontur", "wechseln die Farbe je Sprecher"]);
 });
 
 it("splits Latin text at the evenest space", () => {
-  expect(wrapText("one two three four five", { fontPx: 10, maxLinePx: 90 })).toStrictEqual([
+  expect(wrapText("one two three four five", { fontPx: 10, scale: 1, maxLinePx: 90 })).toStrictEqual([
     "one two three",
     "four five",
   ]);
 });
 
 it("measures Latin glyphs as narrower than Japanese ones", () => {
-  expect(wrapText("abcdefghij", { fontPx: 10, maxLinePx: 60 })).toStrictEqual(["abcdefghij"]);
-  expect(wrapText("かきくけこさしすせそ", { fontPx: 10, maxLinePx: 60 })).toStrictEqual([
+  expect(wrapText("abcdefghij", { fontPx: 10, scale: 1, maxLinePx: 60 })).toStrictEqual(["abcdefghij"]);
+  expect(wrapText("かきくけこさしすせそ", { fontPx: 10, scale: 1, maxLinePx: 60 })).toStrictEqual([
     "かきくけこ",
     "さしすせそ",
   ]);
 });
 
 it("measures half-width katakana at half an em", () => {
-  expect(wrapText("ｱｲｳｴｵｶｷｸ", { fontPx: 10, maxLinePx: 40 })).toStrictEqual(["ｱｲｳｴｵｶｷｸ"]);
+  expect(wrapText("ｱｲｳｴｵｶｷｸ", { fontPx: 10, scale: 1, maxLinePx: 40 })).toStrictEqual(["ｱｲｳｴｵｶｷｸ"]);
 });
 
 it("cuts a word only when it is too long for a line by itself", () => {
-  expect(wrapText("abcdefghijkl", { fontPx: 10, maxLinePx: 36 })).toStrictEqual(["abcdef", "ghijkl"]);
+  expect(wrapText("abcdefghijkl", { fontPx: 10, scale: 1, maxLinePx: 36 })).toStrictEqual([
+    "abcdef",
+    "ghijkl",
+  ]);
 });
 
 it("keeps a katakana word whole", () => {
-  expect(wrapText("これはプレビューです", { fontPx: 10, maxLinePx: 70 })).toStrictEqual([
+  expect(wrapText("これはプレビューです", { fontPx: 10, scale: 1, maxLinePx: 70 })).toStrictEqual([
     "これは",
     "プレビューです",
   ]);
 });
 
 it("does not start a line with closing punctuation or a small kana", () => {
-  expect(wrapText("ああああ、いいいい", { fontPx: 10, maxLinePx: 60 })).toStrictEqual([
+  expect(wrapText("ああああ、いいいい", { fontPx: 10, scale: 1, maxLinePx: 60 })).toStrictEqual([
     "ああああ、",
     "いいいい",
   ]);
-  expect(wrapText("かかかっきき", { fontPx: 10, maxLinePx: 40 })).toStrictEqual(["かか", "かっきき"]);
+  expect(wrapText("かかかっきき", { fontPx: 10, scale: 1, maxLinePx: 40 })).toStrictEqual([
+    "かか",
+    "かっきき",
+  ]);
 });
 
 it("does not end a line with an opening bracket", () => {
-  expect(wrapText("ああああ「いいいい", { fontPx: 10, maxLinePx: 60 })).toStrictEqual([
+  expect(wrapText("ああああ「いいいい", { fontPx: 10, scale: 1, maxLinePx: 60 })).toStrictEqual([
     "ああああ",
     "「いいいい",
   ]);
 });
 
 it("leaves text with no legal break on one line", () => {
-  expect(wrapText("、、、、、、", { fontPx: 10, maxLinePx: 30 })).toStrictEqual(["、、、、、、"]);
+  expect(wrapText("、、、、、、", { fontPx: 10, scale: 1, maxLinePx: 30 })).toStrictEqual(["、、、、、、"]);
 });
 
 it("gives nothing for only spaces", () => {
-  expect(wrapText("   ", { fontPx: 10, maxLinePx: 30 })).toStrictEqual([]);
+  expect(wrapText("   ", { fontPx: 10, scale: 1, maxLinePx: 30 })).toStrictEqual([]);
 });
 
 it("wraps empty text to no lines", () => {
-  expect(wrapText("", { fontPx: 10, maxLinePx: 30 })).toStrictEqual([]);
+  expect(wrapText("", { fontPx: 10, scale: 1, maxLinePx: 30 })).toStrictEqual([]);
 });
 
 it("places the block at the bottom of the video", () => {
@@ -152,7 +170,7 @@ it("places the block at the bottom of the video", () => {
   );
   expect(layout.lines).toStrictEqual(["abcd"]);
   expect(layout.x).toBe(960);
-  expect(layout.y).toBeCloseTo(911.18, 1);
+  expect(layout.y).toBeCloseTo(912.45, 1);
   expect(layout.face).toBe(null);
 });
 
@@ -162,7 +180,7 @@ it("places the block at the top of the video", () => {
     { width: 1920, height: 1080 },
     settingsWith("video_top", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(168.82, 1);
+  expect(layout.y).toBeCloseTo(167.55, 1);
   expect(layout.face).toBe(null);
 });
 
@@ -172,7 +190,7 @@ it("places the block above the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_above", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(161.18, 1);
+  expect(layout.y).toBeCloseTo(162.45, 1);
   expect(layout.face?.centerX).toBe(960);
 });
 
@@ -182,7 +200,7 @@ it("places the block below the face", () => {
     { width: 1920, height: 1080 },
     settingsWith("face_below", 0, 0),
   );
-  expect(layout.y).toBeCloseTo(864.82, 1);
+  expect(layout.y).toBeCloseTo(863.55, 1);
   expect(layout.face?.centerX).toBe(960);
 });
 
@@ -193,7 +211,7 @@ it("applies the percentage offsets", () => {
     settingsWith("video_top", 10, 20),
   );
   expect(layout.x).toBe(600);
-  expect(layout.y).toBeCloseTo(356.32, 1);
+  expect(layout.y).toBeCloseTo(351.88, 1);
 });
 
 it("keeps the block inside the frame when the offset pushes it out", () => {
@@ -202,17 +220,101 @@ it("keeps the block inside the frame when the offset pushes it out", () => {
     { width: 1000, height: 1000 },
     settingsWith("video_bottom", -50, 50),
   );
-  expect(layout.x).toBeCloseTo(66.7);
-  expect(layout.y).toBeCloseTo(954.8, 1);
+  expect(layout.x).toBeCloseTo(67.51, 1);
+  expect(layout.y).toBeCloseTo(959.23, 1);
 });
 
 it("centres a block wider than the frame", () => {
   const layout: PreviewLayout = previewLayout(
     "かきくけこさしす",
-    { width: 100, height: 100 },
+    { width: 100, height: 1080 },
     { ...settingsWith("video_top", 40, 0), font_ratio: 1, width_ratio: 0.1 },
   );
   expect(layout.lines).toStrictEqual(["か", "き", "く", "け", "こ", "さ", "し", "す"]);
   expect(layout.x).toBe(50);
-  expect(layout.y).toBe(50);
+  expect(layout.y).toBe(540);
+});
+
+const safeSettings = (left: number, right: number): Settings => ({
+  ...settingsWith("video_bottom", 0, 0),
+  safe_left_percent: left,
+  safe_right_percent: right,
+});
+
+it("gives the width the safe zones leave when that is less than the width setting", () => {
+  expect(metricsFor({ width: 1000, height: 1000 }, safeSettings(30, 20)).maxLinePx).toBe(473);
+});
+
+it("keeps the width setting when the safe zones leave more than that", () => {
+  expect(metricsFor({ width: 1000, height: 1000 }, safeSettings(5, 5)).maxLinePx).toBe(773);
+});
+
+it("wraps sooner between wide safe zones", () => {
+  expect(
+    previewLayout("あいうえおかきくけこ", { width: 1000, height: 1000 }, safeSettings(30, 30)).lines,
+  ).toStrictEqual(["あいうえお", "かきくけこ"]);
+});
+
+it("reports the safe zones in pixels", () => {
+  const layout: PreviewLayout = previewLayout("あ", { width: 1000, height: 1000 }, safeSettings(30, 10));
+  expect([layout.safeLeftPx, layout.safeRightPx]).toStrictEqual([300, 100]);
+});
+
+it("moves a centred block out of a wide left safe zone", () => {
+  const layout: PreviewLayout = previewLayout("あ", { width: 1000, height: 1000 }, safeSettings(60, 0));
+  expect(layout.x).toBeCloseTo(635.95, 1);
+});
+
+it("stops an offset at the right safe zone", () => {
+  const settings: Settings = safeSettings(0, 20);
+  const layout: PreviewLayout = previewLayout(
+    "あ",
+    { width: 1000, height: 1000 },
+    { ...settings, placement: { ...settings.placement, offset_x_percent: 50 } },
+  );
+  expect(layout.x).toBeCloseTo(764.05, 1);
+});
+
+it("centres a block wider than the space between the safe zones in that space", () => {
+  const layout: PreviewLayout = previewLayout("あ", { width: 100, height: 1000 }, safeSettings(40, 40));
+  expect(layout.x).toBeCloseTo(50, 5);
+});
+
+it("draws glyphs by the frame's height, as the editor does", () => {
+  const layout: PreviewLayout = previewLayout(
+    "あ",
+    { width: 1080, height: 1920 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect(layout.fontPx).toBe(54);
+  expect(layout.renderedFontPx).toBeCloseTo(93.504, 3);
+  expect(layout.lineHeightPx).toBeCloseTo(135.39, 2);
+});
+
+it("scales a landscape frame by its height too", () => {
+  const layout: PreviewLayout = previewLayout(
+    "あ",
+    { width: 1920, height: 1080 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect(layout.renderedFontPx).toBeCloseTo(52.596, 3);
+});
+
+it("draws the outline in frame pixels, whatever the frame's size", () => {
+  const small: PreviewLayout = previewLayout(
+    "あ",
+    { width: 1280, height: 720 },
+    settingsWith("video_top", 0, 0),
+  );
+  const large: PreviewLayout = previewLayout(
+    "あ",
+    { width: 3840, height: 2160 },
+    settingsWith("video_top", 0, 0),
+  );
+  expect([small.outlinePx, small.rimPx]).toStrictEqual([10, 3.4000000000000004]);
+  expect([large.outlinePx, large.rimPx]).toStrictEqual([10, 3.4000000000000004]);
+});
+
+it("keeps a sokuon with the kana after it", () => {
+  expect(wrapText("あっかかか", { fontPx: 10, scale: 1, maxLinePx: 30 })).toStrictEqual(["あっか", "かか"]);
 });

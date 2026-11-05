@@ -143,7 +143,8 @@ async function applyStep(page: Page, step: string): Promise<void> {
     await page.getByRole("dialog").waitFor();
     return;
   }
-  const comboboxIndex: number = COMBOBOX_ORDER.indexOf(step);
+  // The Jobs tab has the speaker count first and the format second; the speaker count has its own help step.
+  const comboboxIndex: number = step === "open-subtitle-format" ? 1 : COMBOBOX_ORDER.indexOf(step);
   await panel.getByRole("combobox").nth(comboboxIndex).click();
   await page.getByRole("listbox").waitFor();
 }

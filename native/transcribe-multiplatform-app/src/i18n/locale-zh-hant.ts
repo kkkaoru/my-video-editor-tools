@@ -71,8 +71,10 @@ export const zhHantMessages: Messages = {
   jobDone: "已完成：{cues} 則字幕，{speakers} 位說話者",
   jobDoneOneSpeaker: "已完成：{cues} 則字幕，1 位說話者",
   jobFaceless: "未偵測到人臉的字幕已放在影片底部。",
+  jobFontMissing: "所選字型不在這台電腦上，因此字幕寬度是估算的。",
   jobNoPercent: "此模型不回報進度百分比",
   speakerCount: "說話者人數",
+  subtitleFormat: "字幕檔格式",
   speakerCountAuto: "自動判斷",
   speakerCountValue: "{count} 人",
   speakerCountOne: "1 人",
@@ -106,6 +108,9 @@ export const zhHantMessages: Messages = {
   anchorVideoBottom: "影片底部",
   offsetX: "左右微調（占寬度的百分比）",
   offsetY: "上下微調（占高度的百分比）",
+  safeZoneHint: "設定影片左右兩端不放字幕的寬度。預覽中以深色帶顯示。",
+  safeLeft: "左側安全區（占寬度的百分比）",
+  safeRight: "右側安全區（占寬度的百分比）",
   faceModel: "人臉偵測模型",
   speechLanguage: "語音語言",
   languageAuto: "自動偵測",
@@ -119,8 +124,6 @@ export const zhHantMessages: Messages = {
   unknownSpeaker: "未知說話者",
   contrastWarning:
     "{name}：填色與描邊的對比度為 {ratio}:1，低於 WCAG AA 標準 4.5:1。請選擇明暗差更大的顏色。",
-  shadowEnabled: "加上陰影",
-  shadowStrength: "陰影強度（%）",
   previewHeading: "預覽",
   previewFrameLabel: "預覽大小",
   previewDescription: "預覽字幕位於 {size} 畫面中橫向 {x}%、縱向 {y}% 的位置。",
@@ -243,6 +246,7 @@ export const zhHantMessages: Messages = {
             steps: [
               "開啟「{tabJobs}」分頁。",
               "「{speakerCount}」一開始是 1 人。有更多人說話時，選擇人數。不確定時，選「{speakerCountAuto}」。",
+              "在「{subtitleFormat}」中選擇要產生的檔案格式。一開始是 FCPXML。下方會顯示該格式的用途。",
               "把影片拖到框裡再放開。拖就是按住不放並移動。也可以按「{pickVideos}」。",
             ],
             notes: [
@@ -268,7 +272,7 @@ export const zhHantMessages: Messages = {
           {
             heading: "產生的檔案",
             intro:
-              "影片所在的資料夾裡會多出 4 個檔案。以前的檔案會保留。名稱重複時，新檔案的名稱後面會加上 -2。",
+              "影片所在的資料夾裡會多出 2 個檔案：所選格式的字幕檔和 .transcript.json。以前的檔案會保留。名稱重複時，新檔案的名稱後面會加上 -2。",
             steps: [],
             notes: [
               ".fcpxml：影片剪輯軟體能讀取的檔案，字幕和影片在一起。",
@@ -283,8 +287,9 @@ export const zhHantMessages: Messages = {
         heading: "匯入影片剪輯軟體",
         parts: [
           {
-            heading: "先匯入 FCPXML",
-            intro: "FCPXML 檔案能一次匯入影片和字幕，字幕的顏色、外框和位置也一起帶進去。所以請先用它。",
+            heading: "匯入 FCPXML",
+            intro:
+              "FCPXML 檔案能一次匯入影片和字幕，字幕的顏色、外框和位置也一起帶進去。所以預設選擇這個格式。",
             steps: [
               "在影片剪輯軟體中開啟專案。專案就是保存全部剪輯工作的地方。",
               "從選單匯入時間軸（例如 File > Import > Timeline）。",
@@ -294,8 +299,8 @@ export const zhHantMessages: Messages = {
             notes: ["每條字幕由 2 到 3 層疊成。修改文字時，要改每一層。"],
           },
           {
-            heading: "什麼時候用其他檔案",
-            intro: "其他檔案只在需要時使用。",
+            heading: "什麼時候用其他格式",
+            intro: "要產生其他格式，請在加入影片前於「{subtitleFormat}」中選擇。",
             steps: [],
             notes: [
               "匯入 .ttml 檔案時，在 Media Pool 中選擇 Import Subtitle。Media Pool 是存放影片和字幕的地方。",
@@ -317,7 +322,10 @@ export const zhHantMessages: Messages = {
               "用滑桿設定文字大小和外框粗細。滑桿是可以左右移動的把手。也可以輸入數字。",
               "為每個人選擇文字顏色和外框顏色。",
             ],
-            notes: ["預覽在寬螢幕上顯示在右邊，在窄螢幕上顯示在上面。向下捲動時也能一直看到。"],
+            notes: [
+              "預覽在寬螢幕上顯示在右邊，在窄螢幕上顯示在上面。向下捲動時也能一直看到。",
+              "不想讓字幕靠近影片左右兩端時，在「{positionHeading}」的安全區中設定寬度。預覽中的深色帶就是這個寬度。",
+            ],
           },
           {
             heading: "選擇字型",
@@ -368,6 +376,7 @@ export const zhHantMessages: Messages = {
             notes: [
               "清單中影片名稱旁邊的重新寫入按鈕，會用別的名稱產生新檔案。原來的檔案會保留。",
               "原來的檔案會保留。新檔案的名稱後面會加上 -2 等數字。",
+              "新檔案的格式由「{subtitleFormat}」決定，與放入的檔案無關。",
               "同一資料夾裡需要有同名的 .transcript.json 檔案。",
               "使用設定檔時，沒有存到這個設定檔的變更不會被使用。",
             ],
@@ -427,7 +436,7 @@ export const zhHantMessages: Messages = {
     imageFolder: "zh-hant",
     images: {
       models: "模型分頁的畫面。1 是分頁，2 是下載按鈕，3 是每個模型的進度列。",
-      transcribe: "字幕製作分頁的畫面。1 是分頁，2 是說話者人數，3 是放入影片的框。",
+      transcribe: "字幕製作分頁的畫面。1 是分頁，2 是說話者人數，3 是字幕檔格式，4 是放入影片的框。",
       look: "字幕外觀和位置分頁的畫面。1 是分頁，2 是字幕的位置，3 是滑桿，4 是每個人的顏色。",
       font: "開啟字型清單的畫面。1 是顯示字型名稱的地方，2 是輸入的地方，3 是要選的字型。",
       profiles: "設定檔區域的畫面。1 是輸入名稱的地方，2 是儲存按鈕，3 是載入按鈕。",

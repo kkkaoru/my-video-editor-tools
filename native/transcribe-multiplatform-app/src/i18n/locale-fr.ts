@@ -81,8 +81,11 @@ export const frMessages: Messages = {
   jobDone: "Terminé : {cues} sous-titres, {speakers} intervenants",
   jobDoneOneSpeaker: "Terminé : {cues} sous-titres, 1 intervenant",
   jobFaceless: "Les sous-titres sans visage détecté ont été placés en bas de la vidéo.",
+  jobFontMissing:
+    "La police choisie n’est pas sur cet ordinateur : la largeur des sous-titres est donc estimée.",
   jobNoPercent: "ce modèle n’indique pas de pourcentage",
   speakerCount: "Nombre de locuteurs",
+  subtitleFormat: "Format du fichier de sous-titres",
   speakerCountAuto: "Détection automatique",
   speakerCountValue: "{count} locuteurs",
   speakerCountOne: "1 locuteur",
@@ -117,6 +120,10 @@ export const frMessages: Messages = {
   anchorVideoBottom: "En bas de la vidéo",
   offsetX: "Ajustement gauche-droite (pourcentage de la largeur)",
   offsetY: "Ajustement haut-bas (pourcentage de la hauteur)",
+  safeZoneHint:
+    "Définit la largeur des bords gauche et droit où aucun sous-titre n'est placé. L'aperçu les montre en bandes sombres.",
+  safeLeft: "Zone de sécurité gauche (pourcentage de la largeur)",
+  safeRight: "Zone de sécurité droite (pourcentage de la largeur)",
   faceModel: "Modèle de détection des visages",
   speechLanguage: "Langue parlée",
   languageAuto: "Détecter automatiquement",
@@ -131,8 +138,6 @@ export const frMessages: Messages = {
   unknownSpeaker: "Locuteur inconnu",
   contrastWarning:
     "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisis des couleurs plus éloignées.",
-  shadowEnabled: "Ajouter une ombre",
-  shadowStrength: "Intensité de l'ombre (pourcentage)",
   previewHeading: "Aperçu",
   previewFrameLabel: "Taille de l’aperçu",
   previewDescription:
@@ -280,6 +285,7 @@ export const frMessages: Messages = {
             steps: [
               "Ouvre l'onglet « {tabJobs} ».",
               "« {speakerCount} » est réglé sur 1 au départ. Si plus de personnes parlent, choisis leur nombre. Si tu ne sais pas, choisis « {speakerCountAuto} ».",
+              "Dans « {subtitleFormat} », choisis le type de fichier. Au départ, c'est FCPXML. La ligne en dessous dit à quoi il sert.",
               "Fais glisser la vidéo dans le cadre et lâche-la. Faire glisser, c'est garder appuyé en bougeant. Tu peux aussi appuyer sur « {pickVideos} ».",
             ],
             notes: [
@@ -305,7 +311,7 @@ export const frMessages: Messages = {
           {
             heading: "Les fichiers créés",
             intro:
-              "Quatre fichiers apparaissent dans le dossier de la vidéo. Les anciens sont gardés. Si le nom est déjà pris, les nouveaux reçoivent -2 dans leur nom.",
+              "Deux fichiers apparaissent dans le dossier de la vidéo : le fichier de sous-titres du type choisi et un fichier .transcript.json. Les anciens sont gardés. Si le nom est déjà pris, les nouveaux reçoivent -2 dans leur nom.",
             steps: [],
             notes: [
               ".fcpxml : les sous-titres avec la vidéo, pour logiciel de montage.",
@@ -320,9 +326,9 @@ export const frMessages: Messages = {
         heading: "Ouvrir dans le logiciel de montage",
         parts: [
           {
-            heading: "Commence par le fichier FCPXML",
+            heading: "Importer un fichier FCPXML",
             intro:
-              "Un fichier FCPXML apporte la vidéo et les sous-titres d'un coup, avec leurs couleurs, contours et positions. C'est pour cela qu'on l'utilise d'abord.",
+              "Un fichier FCPXML apporte la vidéo et les sous-titres d'un coup, avec leurs couleurs, contours et positions. C'est pour cela qu'il est choisi au départ.",
             steps: [
               "Ouvre un projet dans ton logiciel de montage. Un projet contient tout ton travail de montage.",
               "Dans le menu, importe la timeline (par exemple File > Import > Timeline).",
@@ -334,8 +340,8 @@ export const frMessages: Messages = {
             ],
           },
           {
-            heading: "Quand utiliser les autres fichiers",
-            intro: "Les autres fichiers servent seulement au besoin.",
+            heading: "Quand utiliser les autres types",
+            intro: "Pour un autre type, choisis-le dans « {subtitleFormat} » avant d'ajouter la vidéo.",
             steps: [],
             notes: [
               "Pour un fichier .ttml, choisis Import Subtitle dans le Media Pool. Le Media Pool, c'est l'endroit où sont rangés tes vidéos et sous-titres.",
@@ -360,6 +366,7 @@ export const frMessages: Messages = {
             ],
             notes: [
               "L'aperçu est à droite sur un grand écran et en haut sur un petit. Il reste visible quand tu fais défiler.",
+              "Pour éloigner les sous-titres des bords gauche et droit, règle les zones de sécurité dans « {positionHeading} ». Les bandes sombres de l'aperçu les montrent.",
             ],
           },
           {
@@ -430,6 +437,7 @@ export const frMessages: Messages = {
             notes: [
               "Le bouton de réécriture, à côté du nom d'une vidéo dans la liste, crée de nouveaux fichiers avec un autre nom. Les anciens sont gardés.",
               "Les fichiers d'origine sont gardés. Les nouveaux reçoivent -2 ou un autre numéro dans leur nom.",
+              "Le type du nouveau fichier dépend de « {subtitleFormat} », pas du fichier ajouté.",
               "Le fichier .transcript.json du même nom doit être dans le même dossier.",
               "Quand tu utilises un profil, les changements non enregistrés dans ce profil ne sont pas utilisés.",
             ],
@@ -503,7 +511,7 @@ export const frMessages: Messages = {
     images: {
       models: "L'onglet Modèles. 1 est l'onglet, 2 le bouton de téléchargement, 3 la barre de chaque modèle.",
       transcribe:
-        "L'onglet des sous-titres. 1 est l'onglet, 2 le nombre de locuteurs, 3 le cadre pour les vidéos.",
+        "L'onglet des sous-titres. 1 est l'onglet, 2 le nombre de locuteurs, 3 le type de fichier, 4 le cadre pour les vidéos.",
       look: "L'onglet d'aspect et de position. 1 est l'onglet, 2 la place des sous-titres, 3 un curseur, 4 les couleurs d'une personne.",
       font: "La liste des polices ouverte. 1 montre le nom de la police, 2 est l'endroit où taper, 3 la police à choisir.",
       profiles:

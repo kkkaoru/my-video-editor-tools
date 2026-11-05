@@ -69,7 +69,7 @@ it("opens with the version, then the six topics as second-level headings", () =>
     "Give finished subtitles a new look",
     "If something goes wrong",
   ]);
-  expect(screen.getByRole("heading", { level: 3, name: "Start with the FCPXML file" }).tagName).toBe("H3");
+  expect(screen.getByRole("heading", { level: 3, name: "Bring in an FCPXML file" }).tagName).toBe("H3");
 });
 
 it("numbers the steps and quotes the real button names", () => {
@@ -125,7 +125,7 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 3/6 0/4 0/4 4/1 0/3 4/1 3/0 3/2 3/2 3/2 4/4 3/0 0/2 3/2 3/3 2/0"]),
+    new Set(["3/6 3/4 3/1 4/6 0/4 0/4 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 0/2 3/2 3/3 2/0"]),
   );
 });
 

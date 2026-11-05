@@ -163,8 +163,9 @@ const lookFields = ({
   outline_ratio,
   rim_ratio,
   line_height,
-  shadow,
   width_ratio,
+  safe_left_percent,
+  safe_right_percent,
   placement,
 }: CaptionLook): CaptionLook => ({
   palette,
@@ -174,8 +175,9 @@ const lookFields = ({
   outline_ratio,
   rim_ratio,
   line_height,
-  shadow,
   width_ratio,
+  safe_left_percent,
+  safe_right_percent,
   placement,
 });
 

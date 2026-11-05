@@ -1,12 +1,12 @@
 # Transcribe Captions
 
 Drop a video; subtitle files for DaVinci Resolve 21 appear next to it, coloured per speaker and outlined (袋文字).
-A desktop app for macOS (Apple silicon) and Windows (x64). Download it from the
+A desktop app for macOS (Apple Silicon) and Windows (x64). Download it from the
 [GitHub releases](https://github.com/kkkaoru/my-video-editor-tools/releases) tagged `transcribe-app-v*`:
 
 | Your machine | Download | Transcription | Speakers |
 | --- | --- | --- | --- |
-| Mac (Apple silicon) | `Transcribe-Captions-macos-arm64.zip` | Metal | Metal |
+| Mac (Apple Silicon) | `Transcribe-Captions-macos-arm64.zip` | Metal | Metal |
 | Windows with a GeForce | `Transcribe-Captions-windows-geforce-x64-setup.exe` | Vulkan | CUDA once its runtime is downloaded in the app, the CPU until then |
 | Windows with a Radeon | `Transcribe-Captions-windows-radeon-x64-setup.exe` | Vulkan | Vulkan |
 | Windows with neither | Either Windows download | CPU | CPU |
@@ -19,6 +19,9 @@ The builds are not notarized or code-signed with a paid certificate: on macOS op
 Privacy & Security > Open Anyway; on Windows choose "More info > Run anyway" in SmartScreen.
 
 ## What it writes
+
+Choose the format in the Transcribe tab; FCPXML is the default. Each run writes that one subtitle file plus the
+`.transcript.json`.
 
 | File | Use in Resolve |
 | --- | --- |
@@ -44,7 +47,7 @@ folder, the Hugging Face cache, and any folder you add. Downloads are pinned to 
 
 In the GeForce build, on a PC with a GeForce, the model manager offers the CUDA runtime download (509 MB) for speaker
 separation; no other build or machine lists it. NVFP4 and Q2_0_M run only on CUDA. Nemotron speaker models reach eight
-speakers at most; the palette has ten editable slots by default and can be resized.
+speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened.
 
 Models can be downloaded together, each with its own progress bar. Resetting deletes only what the app itself downloaded,
 after a confirmation; folders you added, anything overlapping them and the Hugging Face cache are never touched, and it
@@ -54,7 +57,8 @@ for transcription and, unless one speaker is set, speaker separation are present
 ## Caption position and size
 
 Above or below the face, or the top or bottom of the video, each with horizontal and vertical fine-tuning in percent of
-the frame. Font size and maximum line width follow each video's resolution, so vertical and 4K need no extra settings.
+the frame. Safe zones (5% on each side by default, up to 40%) keep captions off the left and right edges. Font size and maximum line width follow each video's resolution, so vertical and 4K
+need no extra settings.
 
 ## Profiles, fonts and rewriting subtitle files
 
@@ -89,6 +93,17 @@ bun run help:images                   # redraws the help page's pictures in publ
 bunx tauri dev
 ```
 
+To make the release files on a Mac without waiting for GitHub (for example to register them on BOOTH):
+
+```sh
+bash scripts/release/build-local.sh all   # or macos, windows-geforce, windows-radeon
+```
+
+They land in `edits/work/transcribe-app/dist-local/` under the same names CI gives them. The Windows builds cross-compile
+with `cargo-xwin` and need `brew install llvm lld nsis shaderc vulkan-headers spirv-headers`, plus
+`XWIN_ACCEPT_LICENSE=true` once you have read and accepted Microsoft's CRT and SDK license. Runtimes, cargo-xwin and the
+SDK stay under `edits/work/transcribe-app/`; only the Rust target and the Homebrew packages sit elsewhere.
+
 A Windows distribution is chosen when building: `bunx tauri build --bundles nsis --features windows-geforce` or
 `--features windows-radeon`, after fetching the matching runtime. macOS builds use neither feature.
 
@@ -102,6 +117,8 @@ git config --local hook.transcribe-app.event pre-commit
 git config --local hook.transcribe-app.command "bash native/transcribe-multiplatform-app/scripts/verify/pre-commit.sh"
 ```
 
+To see captions in DaVinci Resolve, `scripts/verify/resolve-export.sh <file.fcpxml> <out.mp4>` imports the FCPXML into a temporary project and writes an MP4 through the Deliver page's YouTube preset, without uploading. It needs Resolve closed and works only while the Mac is idle. It is a development tool and is not shipped.
+
 ## Verification
 
 Evidence levels differ: tests, a real run and a look in DaVinci Resolve are separate claims.
@@ -110,12 +127,13 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 
 - Both full recordings produce all four files. In the FCPXML no captions overlap in time or lane, none is longer than 7 seconds and none is shorter than 5/6 of a second.
 - FCPXML imports as a timeline. Viewed in Resolve: white text with a black edge, a blue speaker colour with a white edge, one and two lines, a larger font, an offset, and positions above the face, below the face, at the top and at the bottom.
-- Caption starts against Nemotron 3.5 word times, which the app does not use for timing, measured on the captions that could be matched (50 to 70%): more than 200 ms early on 5 of 362 (landscape) and 32 of 1260 (portrait). Nemotron is not ground truth.
+- Caption starts against Nemotron 3.5 word times, which the app does not use, on the captions that could be matched: more than 200 ms early on 7 of 287 (full landscape) and 36 of 1044 (the part of the portrait video measured before the run was stopped). Nemotron is not ground truth.
+- Resolve draws FCPXML text at height / 1080 x 0.974 of `fontSize` (measured at 720x1280, 1280x720, 1920x1080 and 3840x2160) and half of `strokeWidth` in frame pixels. It ignores shadow and `kerning`, so the app offers neither.
 - A real download of whisper-large-v3-turbo, Nemotron 3 Diarization and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
 
 Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
 
-Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline, the look of the shadow at every strength. The bulk download, the reset and the missing-model error have tests only.
+Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline. The bulk download, the reset and the missing-model error have tests only.
 
 Avatars with hair reaching the top of the frame leave no room above the head. The caption then goes below the face, because not covering the face comes first.

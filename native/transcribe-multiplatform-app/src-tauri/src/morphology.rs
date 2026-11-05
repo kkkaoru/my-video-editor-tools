@@ -96,6 +96,10 @@ impl Morpheme {
     }
 }
 
+pub(crate) fn is_kana(c: char) -> bool {
+    is_hiragana(c) || is_katakana(c)
+}
+
 fn is_hiragana(c: char) -> bool {
     matches!(c, '\u{3041}'..='\u{3096}' | '\u{309D}'..='\u{309F}')
 }

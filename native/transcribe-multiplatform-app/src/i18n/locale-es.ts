@@ -81,8 +81,11 @@ export const esMessages: Messages = {
   jobDone: "Terminado: {cues} subtítulos, {speakers} hablantes",
   jobDoneOneSpeaker: "Terminado: {cues} subtítulos, 1 hablante",
   jobFaceless: "Los subtítulos sin cara detectada se colocaron en la parte inferior del vídeo.",
+  jobFontMissing:
+    "La fuente elegida no está en este ordenador, así que el ancho de los subtítulos es una estimación.",
   jobNoPercent: "este modelo no indica un porcentaje",
   speakerCount: "Número de hablantes",
+  subtitleFormat: "Formato del archivo de subtítulos",
   speakerCountAuto: "Detectar automáticamente",
   speakerCountValue: "{count} hablantes",
   speakerCountOne: "1 hablante",
@@ -117,6 +120,10 @@ export const esMessages: Messages = {
   anchorVideoBottom: "Parte inferior del vídeo",
   offsetX: "Ajuste fino izquierda-derecha (porcentaje del ancho)",
   offsetY: "Ajuste fino arriba-abajo (porcentaje del alto)",
+  safeZoneHint:
+    "Define el ancho de los bordes izquierdo y derecho donde no se colocan subtítulos. La vista previa los muestra como bandas oscuras.",
+  safeLeft: "Zona segura izquierda (porcentaje del ancho)",
+  safeRight: "Zona segura derecha (porcentaje del ancho)",
   faceModel: "Modelo de detección de caras",
   speechLanguage: "Idioma hablado",
   languageAuto: "Detectar automáticamente",
@@ -130,8 +137,6 @@ export const esMessages: Messages = {
   unknownSpeaker: "Hablante desconocido",
   contrastWarning:
     "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elige colores más distintos.",
-  shadowEnabled: "Añadir sombra",
-  shadowStrength: "Intensidad de la sombra (porcentaje)",
   previewHeading: "Vista previa",
   previewFrameLabel: "Tamaño de la vista previa",
   previewDescription:
@@ -278,6 +283,7 @@ export const esMessages: Messages = {
             steps: [
               "Abre la pestaña «{tabJobs}».",
               "«{speakerCount}» empieza en 1. Si hablan más personas, elige cuántas. Si no lo sabes, elige «{speakerCountAuto}».",
+              "En «{subtitleFormat}», elige el tipo de archivo. Al principio es FCPXML. Debajo se indica para qué sirve.",
               "Arrastra el vídeo al recuadro y suéltalo. Arrastrar es mantener pulsado mientras mueves. También puedes pulsar «{pickVideos}».",
             ],
             notes: [
@@ -303,7 +309,7 @@ export const esMessages: Messages = {
           {
             heading: "Los archivos que se crean",
             intro:
-              "Aparecen cuatro archivos en la carpeta del vídeo. Los anteriores se conservan. Si el nombre ya existe, los nuevos llevan -2 en el nombre.",
+              "Aparecen dos archivos en la carpeta del vídeo: el de subtítulos del tipo elegido y un archivo .transcript.json. Los anteriores se conservan. Si el nombre ya existe, los nuevos llevan -2 en el nombre.",
             steps: [],
             notes: [
               ".fcpxml: los subtítulos junto con el vídeo, para programas de edición.",
@@ -318,9 +324,9 @@ export const esMessages: Messages = {
         heading: "Abrir en el programa de edición",
         parts: [
           {
-            heading: "Empieza por el archivo FCPXML",
+            heading: "Importar un archivo FCPXML",
             intro:
-              "Un archivo FCPXML trae el vídeo y los subtítulos a la vez, con sus colores, bordes y posiciones. Por eso se usa primero.",
+              "Un archivo FCPXML trae el vídeo y los subtítulos a la vez, con sus colores, bordes y posiciones. Por eso es la opción inicial.",
             steps: [
               "Abre un proyecto en tu programa de edición. Un proyecto guarda todo tu trabajo de edición.",
               "En el menú, importa la línea de tiempo (por ejemplo, File > Import > Timeline).",
@@ -332,8 +338,8 @@ export const esMessages: Messages = {
             ],
           },
           {
-            heading: "Cuándo usar los otros archivos",
-            intro: "Los otros archivos solo se usan cuando hacen falta.",
+            heading: "Cuándo usar los otros tipos",
+            intro: "Para otro tipo, elígelo en «{subtitleFormat}» antes de añadir el vídeo.",
             steps: [],
             notes: [
               "Para traer un archivo .ttml, elige Import Subtitle en el Media Pool. El Media Pool es donde se guardan tus vídeos y subtítulos.",
@@ -358,6 +364,7 @@ export const esMessages: Messages = {
             ],
             notes: [
               "La vista previa está a la derecha en una pantalla ancha y arriba en una estrecha. Sigue visible al desplazarte.",
+              "Para alejar los subtítulos de los bordes izquierdo y derecho, ajusta las zonas seguras en «{positionHeading}». Las bandas oscuras de la vista previa las muestran.",
             ],
           },
           {
@@ -424,6 +431,7 @@ export const esMessages: Messages = {
             notes: [
               "El botón de volver a escribir, junto al nombre de un vídeo en la lista, crea archivos nuevos con otro nombre. Los anteriores se conservan.",
               "Los archivos originales se conservan. Los nuevos llevan -2 u otro número en el nombre.",
+              "El tipo del archivo nuevo depende de «{subtitleFormat}», no del archivo añadido.",
               "El archivo .transcript.json con el mismo nombre debe estar en la misma carpeta.",
               "Cuando usas un perfil, no se usan los cambios que no guardaste en ese perfil.",
             ],
@@ -493,7 +501,7 @@ export const esMessages: Messages = {
     images: {
       models: "La pestaña Modelos. 1 es la pestaña, 2 el botón de descarga, 3 la barra de cada modelo.",
       transcribe:
-        "La pestaña de subtítulos. 1 es la pestaña, 2 el número de hablantes, 3 el recuadro para vídeos.",
+        "La pestaña de subtítulos. 1 es la pestaña, 2 el número de hablantes, 3 el tipo de archivo, 4 el recuadro para vídeos.",
       look: "La pestaña de aspecto y lugar. 1 es la pestaña, 2 el lugar de los subtítulos, 3 un control deslizante, 4 los colores de una persona.",
       font: "La lista de fuentes abierta. 1 muestra el nombre de la fuente, 2 es donde escribes, 3 la fuente que eliges.",
       profiles:

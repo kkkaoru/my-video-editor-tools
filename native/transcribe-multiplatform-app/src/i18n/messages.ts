@@ -149,8 +149,10 @@ export interface Messages {
   jobDone: string;
   jobDoneOneSpeaker: string;
   jobFaceless: string;
+  jobFontMissing: string;
   jobNoPercent: string;
   speakerCount: string;
+  subtitleFormat: string;
   speakerCountAuto: string;
   speakerCountValue: string;
   speakerCountOne: string;
@@ -172,6 +174,9 @@ export interface Messages {
   anchorVideoBottom: string;
   offsetX: string;
   offsetY: string;
+  safeZoneHint: string;
+  safeLeft: string;
+  safeRight: string;
   faceModel: string;
   speechLanguage: string;
   languageAuto: string;
@@ -184,8 +189,6 @@ export interface Messages {
   rimWidth: string;
   unknownSpeaker: string;
   contrastWarning: string;
-  shadowEnabled: string;
-  shadowStrength: string;
   previewHeading: string;
   previewFrameLabel: string;
   previewDescription: string;

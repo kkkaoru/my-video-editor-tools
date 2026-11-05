@@ -15,6 +15,7 @@ export type Tab = "jobs" | "style" | "models" | "help";
 export type StateStep =
   | "open-face-select"
   | "open-language-select"
+  | "open-subtitle-format"
   | "hover-drop"
   | "open-speaker-help"
   | "open-font-list"
@@ -61,8 +62,6 @@ const FIRST_FILL: string[] = [
   "#8A4500",
   "#7A1D7A",
   "#006262",
-  "#3A3AA8",
-  "#5C5C00",
 ];
 
 const model = (
@@ -124,12 +123,18 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
     outline_ratio: 0.115,
     rim_ratio: 0.034,
     line_height: 1.448,
-    shadow: { enabled: true, strength: 0.8 },
     width_ratio: 0.9,
-    placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
+    safe_left_percent: 5,
+    safe_right_percent: 5,
+    placement: {
+      anchor: "video_bottom",
+      offset_x_percent: 0,
+      offset_y_percent: 0,
+    },
     language: "auto",
     diarize_model: "nemotron-3-diarization",
     speaker_count: 1,
+    subtitle_format: "fcpxml",
     face_model: "yunet",
     model_dirs: ["/user/models"],
     active_profile: "",
@@ -148,9 +153,14 @@ const profile = (name: string): Profile => ({
     outline_ratio: 0.115,
     rim_ratio: 0.034,
     line_height: 1.448,
-    shadow: { enabled: true, strength: 0.8 },
     width_ratio: 0.9,
-    placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
+    safe_left_percent: 5,
+    safe_right_percent: 5,
+    placement: {
+      anchor: "video_bottom",
+      offset_x_percent: 0,
+      offset_y_percent: 0,
+    },
   },
 });
 
@@ -254,6 +264,13 @@ export const UI_STATES: UiState[] = [
   }),
   state("jobs speaker help open", "jobs", { steps: ["open-speaker-help"] }),
   state("jobs with a selected profile", "jobs", { snapshot: WITH_PROFILES }),
+  state("jobs subtitle format ttml", "jobs", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "ttml" } }),
+  }),
+  state("jobs subtitle format srt", "jobs", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
+  }),
+  state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
   state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
   state("jobs unsupported file dropped", "jobs", { steps: ["drop-other"] }),
   state("jobs video dropped without models", "jobs", {
@@ -284,6 +301,7 @@ export const UI_STATES: UiState[] = [
           requested_speakers: 0,
           cue_count: 120,
           faceless: false,
+          font_missing: false,
         },
       },
     ],
@@ -301,6 +319,7 @@ export const UI_STATES: UiState[] = [
           requested_speakers: 4,
           cue_count: 20,
           faceless: false,
+          font_missing: false,
         },
       },
     ],
@@ -311,6 +330,24 @@ export const UI_STATES: UiState[] = [
         (row: ModelStatus): ModelStatus => (row.role === "diarize" ? { ...row, found_at: null } : row),
       ),
     }),
+  }),
+  state("job finished with a missing font", "jobs", {
+    jobEvents: [
+      queued(1),
+      {
+        state: "finished",
+        id: 1,
+        outcome: {
+          outputs: [`${LONG_PATH}.fcpxml`],
+          base: LONG_PATH,
+          speaker_count: 1,
+          requested_speakers: 0,
+          cue_count: 20,
+          faceless: false,
+          font_missing: true,
+        },
+      },
+    ],
   }),
   state("job finished without faces", "jobs", {
     jobEvents: [
@@ -325,6 +362,7 @@ export const UI_STATES: UiState[] = [
           requested_speakers: 0,
           cue_count: 2,
           faceless: true,
+          font_missing: false,
         },
       },
     ],
@@ -349,9 +387,31 @@ export const UI_STATES: UiState[] = [
   ...ANCHORS.flatMap((anchor: string): UiState[] =>
     FRAMES.map((frame: string): UiState => state(`style ${anchor} ${frame}`, "style", { anchor, frame })),
   ),
-  state("style without shadow", "style", {
+  state("style with wide safe zones", "style", {
     snapshot: snapshot({
-      settings: { ...snapshot({}).settings, shadow: { enabled: false, strength: 0.5 } },
+      settings: {
+        ...snapshot({}).settings,
+        safe_left_percent: 30,
+        safe_right_percent: 10,
+      },
+    }),
+  }),
+  state("style with the widest safe zones", "style", {
+    snapshot: snapshot({
+      settings: {
+        ...snapshot({}).settings,
+        safe_left_percent: 40,
+        safe_right_percent: 40,
+      },
+    }),
+  }),
+  state("style without safe zones", "style", {
+    snapshot: snapshot({
+      settings: {
+        ...snapshot({}).settings,
+        safe_left_percent: 0,
+        safe_right_percent: 0,
+      },
     }),
   }),
   state("style with low contrast colours", "style", {

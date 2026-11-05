@@ -9,9 +9,8 @@ const DEFAULT_WHITE: &str = "#FFFFFF";
 /// fill at 7:1 or better against the white band, with the black rim keeping it readable on any video.
 const FIRST_SPEAKER_FILL: &str = "#FFFFFF";
 const FIRST_SPEAKER_OUTLINE: &str = "#000000";
-const OTHER_FILLS: [&str; 9] = [
-    "#005A9C", "#6A1FA8", "#0B672C", "#A3123A", "#8A4500", "#7A1D7A", "#006262", "#3A3AA8",
-    "#5C5C00",
+const OTHER_FILLS: [&str; MAX_SPEAKER_COLORS - 1] = [
+    "#005A9C", "#6A1FA8", "#0B672C", "#A3123A", "#8A4500", "#7A1D7A", "#006262",
 ];
 /// Speaker-less words stay grey instead of borrowing someone's identity.
 const UNASSIGNED_FILL: &str = "#595959";
@@ -23,6 +22,9 @@ const DEFAULT_OUTLINE_RATIO: f64 = 0.115;
 /// Style 20's rim: 3 units per side at font size 88, outside the band.
 const DEFAULT_RIM_RATIO: f64 = 3.0 / 88.0;
 const DEFAULT_WIDTH_RATIO: f64 = 0.9;
+const DEFAULT_SAFE_PERCENT: f64 = 5.0;
+const MAX_SAFE_PERCENT: f64 = 40.0;
+const MAX_SAFE_TOTAL_PERCENT: f64 = 80.0;
 /// Whisper detects the language itself unless the user picks one.
 const DEFAULT_LANGUAGE: &str = "auto";
 const MAX_OFFSET_PERCENT: f64 = 50.0;
@@ -32,10 +34,10 @@ pub const FONT_FAMILY_FORBIDDEN: [char; 3] = ['"', '<', '&'];
 const DEFAULT_LINE_HEIGHT: f64 = 1.448;
 /// The speaker models separate at most eight voices; more would only be guesswork.
 const MAX_SPEAKER_COUNT: u32 = 8;
+/// One colour per speaker the models can tell apart.
+pub const MAX_SPEAKER_COLORS: usize = MAX_SPEAKER_COUNT as usize;
 /// Most recordings have one voice; 0 (automatic) stays available and is kept once saved.
 const DEFAULT_SPEAKER_COUNT: u32 = 1;
-/// Style 20: a shadow past the rim that is clearly visible.
-const DEFAULT_SHADOW_STRENGTH: f64 = 0.8;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SpeakerColor {
@@ -60,18 +62,21 @@ pub struct Placement {
     pub offset_y_percent: f64,
 }
 
-/// Drop shadow behind caption text; `strength` is its opacity, 0 to 1.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
-pub struct CaptionShadow {
-    pub enabled: bool,
-    pub strength: f64,
+/// Which subtitle file a job writes, beside the transcript that is always written.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SubtitleFormat {
+    #[default]
+    Fcpxml,
+    Ttml,
+    Srt,
 }
 
 /// `default` lets settings saved by an older version gain newer fields.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// One entry per speaker slot; ten by default and editable in the app.
+    /// One entry per speaker slot, editable in the app; only the first `MAX_SPEAKER_COLORS` are used.
     pub palette: Vec<SpeakerColor>,
     pub unassigned: SpeakerColor,
     pub font_family: String,
@@ -83,10 +88,13 @@ pub struct Settings {
     pub rim_ratio: f64,
     /// Distance between caption lines as a multiple of the font size.
     pub line_height: f64,
-    pub shadow: CaptionShadow,
     /// Longest caption line as a fraction of the frame width.
     pub width_ratio: f64,
+    /// Left and right margins captions keep clear of, as percent of the frame width.
+    pub safe_left_percent: f64,
+    pub safe_right_percent: f64,
     pub placement: Placement,
+    pub subtitle_format: SubtitleFormat,
     pub language: String,
     pub diarize_model: String,
     /// How many people speak: 0 lets the model decide, 1 skips speaker separation altogether.
@@ -119,16 +127,15 @@ impl Default for Settings {
             outline_ratio: DEFAULT_OUTLINE_RATIO,
             rim_ratio: DEFAULT_RIM_RATIO,
             line_height: DEFAULT_LINE_HEIGHT,
-            shadow: CaptionShadow {
-                enabled: true,
-                strength: DEFAULT_SHADOW_STRENGTH,
-            },
             width_ratio: DEFAULT_WIDTH_RATIO,
+            safe_left_percent: DEFAULT_SAFE_PERCENT,
+            safe_right_percent: DEFAULT_SAFE_PERCENT,
             placement: Placement {
                 anchor: Anchor::FaceAbove,
                 offset_x_percent: 0.0,
                 offset_y_percent: 0.0,
             },
+            subtitle_format: SubtitleFormat::default(),
             language: DEFAULT_LANGUAGE.to_owned(),
             diarize_model: String::new(),
             speaker_count: DEFAULT_SPEAKER_COUNT,
@@ -183,8 +190,26 @@ impl Settings {
         validate_ratio("outline_ratio", self.outline_ratio, 0.01, 0.5)?;
         validate_ratio("rim_ratio", self.rim_ratio, 0.0, 0.2)?;
         validate_ratio("line_height", self.line_height, 1.0, 3.0)?;
-        validate_ratio("shadow.strength", self.shadow.strength, 0.0, 1.0)?;
         validate_ratio("width_ratio", self.width_ratio, 0.2, 1.0)?;
+        validate_ratio(
+            "safe_left_percent",
+            self.safe_left_percent,
+            0.0,
+            MAX_SAFE_PERCENT,
+        )?;
+        validate_ratio(
+            "safe_right_percent",
+            self.safe_right_percent,
+            0.0,
+            MAX_SAFE_PERCENT,
+        )?;
+        // Two values at their limit pass only when their sum still leaves a line to draw on.
+        validate_ratio(
+            "safe_left_percent + safe_right_percent",
+            self.safe_left_percent + self.safe_right_percent,
+            0.0,
+            MAX_SAFE_TOTAL_PERCENT,
+        )?;
         validate_ratio(
             "offset_x_percent",
             self.placement.offset_x_percent,
@@ -218,7 +243,7 @@ impl Settings {
         let Some(number) = speaker.filter(|number| *number > 0) else {
             return &self.unassigned;
         };
-        let slot = (number as usize - 1) % self.palette.len();
+        let slot = (number as usize - 1) % self.palette.len().min(MAX_SPEAKER_COLORS);
         &self.palette[slot]
     }
 
@@ -227,8 +252,10 @@ impl Settings {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(path).map_err(io_context("read settings"))?;
-        let settings: Self = serde_json::from_str(&text)
+        let mut settings: Self = serde_json::from_str(&text)
             .map_err(|error| AppError::Invalid(format!("settings file: {error}")))?;
+        // Earlier versions saved ten colours; a surplus one must not stop the app from opening.
+        settings.palette.truncate(MAX_SPEAKER_COLORS);
         settings.validate()?;
         Ok(settings)
     }
@@ -264,14 +291,14 @@ mod tests {
     }
 
     #[test]
-    fn defaults_have_ten_distinct_speaker_colours() {
+    fn defaults_have_one_colour_per_possible_speaker() {
         let settings = Settings::default();
-        assert_eq!(settings.palette.len(), 10);
+        assert_eq!(settings.palette.len(), 8);
         assert_eq!(settings.palette[0].fill, "#FFFFFF");
         assert_eq!(settings.palette[0].outline, "#000000");
         assert_eq!(settings.palette[1].fill, "#005A9C");
         assert_eq!(settings.palette[1].outline, "#FFFFFF");
-        assert_eq!(settings.palette[9].fill, "#5C5C00");
+        assert_eq!(settings.palette[7].fill, "#006262");
         settings.validate().unwrap();
     }
 
@@ -280,7 +307,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.color_for(Some(1)).fill, "#FFFFFF");
         assert_eq!(settings.color_for(Some(2)).fill, "#005A9C");
-        assert_eq!(settings.color_for(Some(11)).fill, "#FFFFFF");
+        assert_eq!(settings.color_for(Some(9)).fill, "#FFFFFF");
         assert_eq!(settings.color_for(None).fill, "#595959");
         assert_eq!(settings.color_for(Some(0)).fill, "#595959");
     }
@@ -414,16 +441,6 @@ mod tests {
     }
 
     #[test]
-    fn a_shadow_stronger_than_opaque_is_rejected() {
-        let mut settings = Settings::default();
-        settings.shadow.strength = 1.5;
-        assert_eq!(
-            settings.validate().unwrap_err().to_string(),
-            "shadow.strength must be between 0 and 1, got 1.5"
-        );
-    }
-
-    #[test]
     fn settings_from_an_older_version_gain_the_new_fields() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-older");
         let _ = std::fs::remove_dir_all(&root);
@@ -433,13 +450,6 @@ mod tests {
         let settings = Settings::load(&file).unwrap();
         assert_eq!(settings.language, "ja");
         assert_eq!(settings.active_profile, "");
-        assert_eq!(
-            settings.shadow,
-            CaptionShadow {
-                enabled: true,
-                strength: 0.8
-            }
-        );
     }
 
     #[test]
@@ -526,5 +536,139 @@ mod tests {
         assert_eq!(Settings::load(&file).unwrap().speaker_count, 1);
         std::fs::write(&file, br#"{"speaker_count":0}"#).unwrap();
         assert_eq!(Settings::load(&file).unwrap().speaker_count, 0);
+    }
+
+    #[test]
+    fn colours_stop_at_the_most_speakers_a_model_can_separate() {
+        let settings = Settings::default();
+        let distinct: std::collections::HashSet<&str> = settings
+            .palette
+            .iter()
+            .map(|color| color.fill.as_str())
+            .collect();
+        assert_eq!(distinct.len(), 8);
+        assert_eq!(MAX_SPEAKER_COUNT as usize, settings.palette.len());
+    }
+
+    #[test]
+    fn colours_saved_by_an_earlier_version_load_up_to_the_limit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-ten-colours");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        let first_eight: Vec<String> = (1..=8)
+            .map(|n| format!(r##"{{"fill":"#00000{n}","outline":"#FFFFFF"}}"##))
+            .collect();
+        // The ninth colour is not even valid: it is dropped before anything reads it.
+        std::fs::write(
+            &file,
+            format!(
+                r##"{{"palette":[{},{{"fill":"red","outline":"red"}},{{"fill":"#111111","outline":"#FFFFFF"}}]}}"##,
+                first_eight.join(",")
+            ),
+        )
+        .unwrap();
+        let settings = Settings::load(&file).unwrap();
+        assert_eq!(settings.palette.len(), 8);
+        assert_eq!(settings.palette[7].fill, "#000008");
+    }
+
+    #[test]
+    fn a_longer_palette_in_memory_still_uses_only_the_first_colours() {
+        let mut settings = Settings::default();
+        settings.palette.push(SpeakerColor {
+            fill: "#123456".to_owned(),
+            outline: "#FFFFFF".to_owned(),
+        });
+        assert_eq!(settings.color_for(Some(8)).fill, "#006262");
+        assert_eq!(settings.color_for(Some(9)).fill, "#FFFFFF");
+    }
+
+    #[test]
+    fn the_subtitle_format_defaults_to_fcpxml_and_reads_its_lowercase_names() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-format");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(&file, br#"{"language":"ja"}"#).unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().subtitle_format,
+            SubtitleFormat::Fcpxml
+        );
+        std::fs::write(&file, br#"{"subtitle_format":"ttml"}"#).unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().subtitle_format,
+            SubtitleFormat::Ttml
+        );
+        std::fs::write(&file, br#"{"subtitle_format":"srt"}"#).unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().subtitle_format,
+            SubtitleFormat::Srt
+        );
+        std::fs::write(&file, br#"{"subtitle_format":"vtt"}"#).unwrap();
+        assert!(Settings::load(&file).is_err());
+    }
+
+    #[test]
+    fn safe_zones_default_to_five_percent_and_old_settings_gain_them() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!((old.safe_left_percent, old.safe_right_percent), (5.0, 5.0));
+    }
+
+    #[test]
+    fn a_safe_zone_out_of_range_is_refused() {
+        let wide = Settings {
+            safe_left_percent: 41.0,
+            ..Settings::default()
+        };
+        assert_eq!(
+            wide.validate().unwrap_err().to_string(),
+            "safe_left_percent must be between 0 and 40, got 41"
+        );
+        let negative = Settings {
+            safe_right_percent: -1.0,
+            ..Settings::default()
+        };
+        assert_eq!(
+            negative.validate().unwrap_err().to_string(),
+            "safe_right_percent must be between 0 and 40, got -1"
+        );
+    }
+
+    #[test]
+    fn safe_zones_together_must_leave_room() {
+        let settings = Settings {
+            safe_left_percent: 40.0,
+            safe_right_percent: 40.5,
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "safe_right_percent must be between 0 and 40, got 40.5"
+        );
+        let exact = Settings {
+            safe_left_percent: 40.0,
+            safe_right_percent: 40.0,
+            ..Settings::default()
+        };
+        assert!(exact.validate().is_ok());
+    }
+
+    #[test]
+    fn a_shadow_saved_by_an_earlier_version_is_ignored() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-old-shadow");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        // Even a value the old validation refused must not stop the app from opening.
+        std::fs::write(
+            &file,
+            br#"{"language":"ja","shadow":{"enabled":true,"strength":9.0}}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(&file).unwrap();
+        assert_eq!(settings.language, "ja");
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved.get("shadow"), None);
     }
 }

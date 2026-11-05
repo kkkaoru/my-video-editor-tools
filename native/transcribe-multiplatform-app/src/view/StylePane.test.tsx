@@ -19,9 +19,14 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
-  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
-  placement: { anchor: "video_bottom", offset_x_percent: 1, offset_y_percent: 2 },
+  safe_left_percent: 5,
+  safe_right_percent: 5,
+  placement: {
+    anchor: "video_bottom",
+    offset_x_percent: 1,
+    offset_y_percent: 2,
+  },
   language: "auto",
   diarize_model: "b",
   face_model: "yunet",
@@ -30,6 +35,7 @@ const SETTINGS: Settings = {
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
+  subtitle_format: "fcpxml",
 };
 const SNAPSHOT: Snapshot = {
   version: "1.2.3",
@@ -101,24 +107,7 @@ it("starts speaker 1 white on black and the others in colour on white", () => {
     { fill: "#8A4500", outline: "#FFFFFF" },
     { fill: "#7A1D7A", outline: "#FFFFFF" },
     { fill: "#006262", outline: "#FFFFFF" },
-    { fill: "#3A3AA8", outline: "#FFFFFF" },
-    { fill: "#5C5C00", outline: "#FFFFFF" },
   ]);
-});
-
-it("turns the shadow on", () => {
-  const store: AppStore = show(SETTINGS);
-  expect(screen.queryByRole("slider", { name: "Shadow strength (percent)" })).toBe(null);
-  fireEvent.click(screen.getByRole("switch", { name: "Add a shadow" }));
-  expect(lastSaved(store)?.shadow).toStrictEqual({ enabled: true, strength: 0.5 });
-});
-
-it("converts the shadow strength to a ratio", () => {
-  const store: AppStore = show({ ...SETTINGS, shadow: { enabled: true, strength: 0.5 } });
-  fireEvent.keyDown(screen.getByLabelText("Shadow strength (percent)", SLIDER_INPUT), {
-    key: "ArrowRight",
-  });
-  expect(lastSaved(store)?.shadow).toStrictEqual({ enabled: true, strength: 0.55 });
 });
 
 it("moves the captions to another anchor", () => {
@@ -217,7 +206,7 @@ it("shows the vertical frame narrower", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Vertical 1080×1920" }));
   expect(descriptionText()).toBe(
-    "Preview caption at 51% across and 91% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
+    "Preview caption at 51% across and 77% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
   );
 });
 
@@ -225,7 +214,7 @@ it("shows the 4K frame", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "4K" }));
   expect(descriptionText()).toBe(
-    "Preview caption at 51% across and 83% down the 4K frame. Text size at this resolution: 108 px.",
+    "Preview caption at 51% across and 75% down the 4K frame. Text size at this resolution: 108 px.",
   );
 });
 
@@ -324,10 +313,15 @@ it("keeps at least one speaker", () => {
   expect(screen.queryByRole("button", { name: "Remove a speaker" })).toBe(null);
 });
 
+it("stops adding speakers at the eight the speaker models can tell apart", () => {
+  show({ ...SETTINGS, palette: defaultPalette() });
+  expect(screen.queryByRole("button", { name: "Add a speaker" })).toBe(null);
+});
+
 it("restores the first colours", () => {
   const store: AppStore = show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Restore the first colours" }));
-  expect(lastSaved(store)?.palette.length).toBe(10);
+  expect(lastSaved(store)?.palette.length).toBe(8);
 });
 
 it("lists the unknown speaker after every numbered speaker", () => {
@@ -434,4 +428,35 @@ it("puts the preview before the controls, so a narrow window shows it on top", (
       ? preview.compareDocumentPosition(firstSlider) & Node.DOCUMENT_POSITION_FOLLOWING
       : 0,
   ).toBe(4);
+});
+
+it("saves the left and right safe zones", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.input(screen.getByRole("spinbutton", { name: "Left safe zone (percent of width)" }), {
+    target: { value: "12" },
+  });
+  expect(lastSaved(store)?.safe_left_percent).toBe(12);
+  fireEvent.input(screen.getByRole("spinbutton", { name: "Right safe zone (percent of width)" }), {
+    target: { value: "7.5" },
+  });
+  expect(lastSaved(store)?.safe_right_percent).toBe(7.5);
+});
+
+it("marks both safe zones on the preview", () => {
+  const { container } = render(
+    <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+  );
+  expect(container.querySelectorAll('[data-slot="safe-zone"]').length).toBe(2);
+});
+
+it("draws nothing for a safe zone of no width", () => {
+  const settings: Settings = {
+    ...SETTINGS,
+    safe_left_percent: 0,
+    safe_right_percent: 5,
+  };
+  const { container } = render(
+    <StylePane store={storeOf()} settings={settings} profiles={[]} faceOptions={[]} />,
+  );
+  expect(container.querySelectorAll('[data-slot="safe-zone"]').length).toBe(1);
 });

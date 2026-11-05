@@ -1,6 +1,6 @@
 //! One dropped video to finished subtitle files, with staged progress.
 
-use crate::captions::{assign_speakers, build_cues, metrics_for, SpeakerTurn};
+use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn};
 use crate::catalog::{self, Backend, DiarizeKind, Hardware, ModelEntry};
 use crate::engines::{self, DiarizeModel, Tools, VideoInfo};
 use crate::error::{io_context, AppError, AppResult, UserError};
@@ -9,6 +9,7 @@ use crate::eta::{
 };
 use crate::export::{unused_base, write_outputs, Transcript};
 use crate::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
+use crate::fonts::bold_widths;
 use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
@@ -36,6 +37,8 @@ pub struct JobOutcome {
     pub requested_speakers: u32,
     pub cue_count: usize,
     pub faceless: bool,
+    /// The chosen font is not on this computer, so line widths were estimated.
+    pub font_missing: bool,
 }
 
 /// Removes the job's working folder (its large WAV) however the job ends.
@@ -346,6 +349,7 @@ pub fn run_job(
     if words.is_empty() {
         return Err(UserError::NoWords.into());
     }
+    let voice = engines::voice_spans(&tools, &wav)?;
     let turns = match &speaker_model {
         Some(prepared) => {
             report(Stage::Diarize, None);
@@ -377,8 +381,20 @@ pub fn run_job(
         None => Vec::new(),
     };
     report(Stage::Export, Some(0.0));
-    let (cues, faceless) = build_cues(&words, &faces, &info, settings, &Segmenter::for_app(paths))?;
-    let transcript = Transcript::new(
+    let glyphs = bold_widths(&settings.font_family);
+    let (cues, faceless) = build_cues(
+        &words,
+        &faces,
+        &voice,
+        &info,
+        &Metrics {
+            glyphs,
+            ..metrics_for(&info, settings)
+        },
+        settings,
+        &Segmenter::for_app(paths),
+    )?;
+    let mut transcript = Transcript::new(
         video.to_path_buf(),
         info,
         metrics_for(&info, settings),
@@ -386,6 +402,7 @@ pub fn run_job(
         faces,
         cues,
     );
+    transcript.voice = voice;
     let base = unused_base(video);
     let outputs = write_outputs(&base, &transcript, settings)?;
     report(Stage::Export, Some(1.0));
@@ -397,6 +414,7 @@ pub fn run_job(
         requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),
         faceless,
+        font_missing: glyphs.is_none(),
     })
 }
 
@@ -444,10 +462,16 @@ pub fn relayout_to(
         )?;
     }
     report(Stage::Export, Some(0.0));
+    let glyphs = bold_widths(&settings.font_family);
     let (cues, faceless) = build_cues(
         &transcript.words,
         &transcript.faces,
+        &transcript.voice,
         &transcript.info,
+        &Metrics {
+            glyphs,
+            ..metrics_for(&transcript.info, settings)
+        },
         settings,
         &Segmenter::for_app(paths),
     )?;
@@ -463,6 +487,7 @@ pub fn relayout_to(
         requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),
         faceless,
+        font_missing: glyphs.is_none(),
     })
 }
 

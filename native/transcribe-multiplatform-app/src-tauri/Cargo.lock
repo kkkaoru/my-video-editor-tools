@@ -4493,7 +4493,7 @@ dependencies = [
 
 [[package]]
 name = "transcribe-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fontdb",
  "ruzstd",
@@ -4506,6 +4506,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "thiserror 2.0.21",
  "tract-onnx",
+ "ttf-parser",
  "unicode-segmentation",
  "ureq",
  "vibrato",

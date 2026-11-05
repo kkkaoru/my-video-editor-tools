@@ -16,6 +16,7 @@ import {
   remainingText,
   slowProcessingNotice,
   speakerCountOptions,
+  subtitleFormatOptions,
   subtitleTargetText,
 } from "./JobsPane.tsx";
 
@@ -25,9 +26,14 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
-  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
-  placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+  safe_left_percent: 5,
+  safe_right_percent: 5,
+  placement: {
+    anchor: "video_top",
+    offset_x_percent: 0,
+    offset_y_percent: 0,
+  },
   language: "auto",
   diarize_model: "b",
   face_model: "c",
@@ -36,6 +42,7 @@ const SETTINGS: Settings = {
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
+  subtitle_format: "fcpxml",
 };
 const WHISPER: ModelStatus = {
   id: "whisper",
@@ -302,6 +309,26 @@ it("shows a cancelled job with no action", () => {
   expect(screen.queryByRole("button", { name: "Cancel talk.mp4" })).toBe(null);
 });
 
+it("warns when the chosen font was missing", () => {
+  showJob({
+    ...QUEUED_JOB,
+    state: "finished",
+    outcome: {
+      outputs: ["/a.fcpxml"],
+      base: "/videos/talk",
+      speaker_count: 1,
+      cue_count: 9,
+      faceless: false,
+      font_missing: true,
+      requested_speakers: 0,
+    },
+  });
+  expect(
+    screen.getByText("The chosen font is not on this computer, so the caption widths are an estimate.")
+      .tagName,
+  ).toBe("P");
+});
+
 it("says speaker, not speakers, when a finished job found one", () => {
   showJob({
     ...QUEUED_JOB,
@@ -312,10 +339,46 @@ it("says speaker, not speakers, when a finished job found one", () => {
       speaker_count: 1,
       cue_count: 9,
       faceless: false,
+      font_missing: false,
       requested_speakers: 0,
     },
   });
   expect(screen.getByRole("status").textContent).toBe("Finished: 9 captions, 1 speaker");
+});
+
+it("offers the three subtitle formats by their names", () => {
+  expect(subtitleFormatOptions()).toStrictEqual([
+    { value: "fcpxml", label: "FCPXML", disabled: false },
+    { value: "ttml", label: "TTML", disabled: false },
+    { value: "srt", label: "SRT", disabled: false },
+  ]);
+});
+
+it("says what the chosen subtitle format is for", () => {
+  const srt: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "srt" } };
+  render(<JobsPane store={storeWith(srt, [], false)} snapshot={srt} />);
+  expect(screen.getByRole("combobox", { name: "Subtitle file format" }).textContent).toBe("SRT");
+  expect(
+    screen.getByText("Subtitles with words and times (colours may not show; no outlines or positions)")
+      .tagName,
+  ).toBe("P");
+});
+
+it("saves the chosen subtitle format", async () => {
+  const store: AppStore = storeWith(READY, [], false);
+  render(
+    <main>
+      <JobsPane store={store} snapshot={READY} />
+    </main>,
+  );
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Subtitle file format" }));
+  });
+  await act(async (): Promise<void> => {
+    fireEvent.pointerDown(screen.getByRole("option", { name: "TTML" }));
+    fireEvent.click(screen.getByRole("option", { name: "TTML" }));
+  });
+  expect(vi.mocked(store.updateSettings).mock.calls.at(-1)?.[0].subtitle_format).toBe("ttml");
 });
 
 it("offers one speaker in the singular and more in the plural", () => {
@@ -336,6 +399,7 @@ it("shows the results of a finished job and can write it again", () => {
       speaker_count: 2,
       cue_count: 9,
       faceless: false,
+      font_missing: false,
       requested_speakers: 0,
     },
   });
@@ -370,6 +434,7 @@ it("mentions captions placed without a face", () => {
       speaker_count: 1,
       cue_count: 1,
       faceless: true,
+      font_missing: false,
       requested_speakers: 0,
     },
   });
@@ -389,6 +454,7 @@ it("reports a rewrite that fails", async () => {
       speaker_count: 1,
       cue_count: 1,
       faceless: false,
+      font_missing: false,
       requested_speakers: 0,
     },
   });
@@ -422,9 +488,14 @@ it("says subtitle files follow the selected profile", () => {
               outline_ratio: 0.1,
               rim_ratio: 0.03,
               line_height: 1.4,
-              shadow: { enabled: false, strength: 0.5 },
               width_ratio: 0.8,
-              placement: { anchor: "video_top", offset_x_percent: 0, offset_y_percent: 0 },
+              safe_left_percent: 5,
+              safe_right_percent: 5,
+              placement: {
+                anchor: "video_top",
+                offset_x_percent: 0,
+                offset_y_percent: 0,
+              },
             },
           },
         ],

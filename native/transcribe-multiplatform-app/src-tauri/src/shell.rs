@@ -250,13 +250,10 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_reaches_the_ui_with_a_locale_and_ten_colours() {
+    fn snapshot_reaches_the_ui_with_a_locale_and_eight_colours() {
         let (_app, window) = app_window("snapshot");
         let snapshot = call(&window, "snapshot", json!({})).unwrap();
-        assert_eq!(
-            snapshot["settings"]["palette"].as_array().unwrap().len(),
-            10
-        );
+        assert_eq!(snapshot["settings"]["palette"].as_array().unwrap().len(), 8);
         assert!(snapshot["locale"].is_string());
     }
 

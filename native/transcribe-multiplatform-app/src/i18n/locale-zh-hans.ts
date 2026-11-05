@@ -71,8 +71,10 @@ export const zhHansMessages: Messages = {
   jobDone: "已完成：{cues} 条字幕，{speakers} 位说话人",
   jobDoneOneSpeaker: "已完成：{cues} 条字幕，1 位说话人",
   jobFaceless: "未检测到人脸的字幕已放在视频底部。",
+  jobFontMissing: "所选字体不在这台电脑上，因此字幕宽度是估算的。",
   jobNoPercent: "此模型不报告进度百分比",
   speakerCount: "说话人数",
+  subtitleFormat: "字幕文件格式",
   speakerCountAuto: "自动判断",
   speakerCountValue: "{count} 人",
   speakerCountOne: "1 人",
@@ -106,6 +108,9 @@ export const zhHansMessages: Messages = {
   anchorVideoBottom: "视频底部",
   offsetX: "左右微调（占宽度的百分比）",
   offsetY: "上下微调（占高度的百分比）",
+  safeZoneHint: "设置视频左右两端不放字幕的宽度。预览中以深色带显示。",
+  safeLeft: "左侧安全区（占宽度的百分比）",
+  safeRight: "右侧安全区（占宽度的百分比）",
   faceModel: "人脸检测模型",
   speechLanguage: "语音语言",
   languageAuto: "自动检测",
@@ -119,8 +124,6 @@ export const zhHansMessages: Messages = {
   unknownSpeaker: "未知说话人",
   contrastWarning:
     "{name}：填充与描边的对比度为 {ratio}:1，低于 WCAG AA 标准 4.5:1。请选择明暗差更大的颜色。",
-  shadowEnabled: "添加阴影",
-  shadowStrength: "阴影强度（%）",
   previewHeading: "预览",
   previewFrameLabel: "预览大小",
   previewDescription: "预览字幕位于 {size} 画面中横向 {x}%、纵向 {y}% 的位置。",
@@ -243,6 +246,7 @@ export const zhHansMessages: Messages = {
             steps: [
               "打开“{tabJobs}”标签页。",
               "“{speakerCount}”一开始是 1 人。有更多人说话时，选择人数。不确定时，选“{speakerCountAuto}”。",
+              "在“{subtitleFormat}”中选择要生成的文件格式。一开始是 FCPXML。下方会显示该格式的用途。",
               "把视频拖到框里再松开。拖就是按住不放并移动。也可以按“{pickVideos}”。",
             ],
             notes: [
@@ -268,7 +272,7 @@ export const zhHansMessages: Messages = {
           {
             heading: "生成的文件",
             intro:
-              "视频所在的文件夹里会多出 4 个文件。以前的文件会保留。名称重复时，新文件的名称后面会加上 -2。",
+              "视频所在的文件夹里会多出 2 个文件：所选格式的字幕文件和 .transcript.json。以前的文件会保留。名称重复时，新文件的名称后面会加上 -2。",
             steps: [],
             notes: [
               ".fcpxml：视频剪辑软件能读取的文件，字幕和视频在一起。",
@@ -283,8 +287,9 @@ export const zhHansMessages: Messages = {
         heading: "导入视频剪辑软件",
         parts: [
           {
-            heading: "先导入 FCPXML",
-            intro: "FCPXML 文件能一次导入视频和字幕，字幕的颜色、描边和位置也一起带进去。所以请先用它。",
+            heading: "导入 FCPXML",
+            intro:
+              "FCPXML 文件能一次导入视频和字幕，字幕的颜色、描边和位置也一起带进去。所以默认选择这个格式。",
             steps: [
               "在视频剪辑软件中打开项目。项目就是保存全部剪辑工作的地方。",
               "从菜单导入时间线（例如 File > Import > Timeline）。",
@@ -294,8 +299,8 @@ export const zhHansMessages: Messages = {
             notes: ["每条字幕由 2 到 3 层叠成。修改文字时，要改每一层。"],
           },
           {
-            heading: "什么时候用其他文件",
-            intro: "其他文件只在需要时使用。",
+            heading: "什么时候用其他格式",
+            intro: "要生成其他格式，请在加入视频前在“{subtitleFormat}”中选择。",
             steps: [],
             notes: [
               "导入 .ttml 文件时，在 Media Pool 中选择 Import Subtitle。Media Pool 是存放视频和字幕的地方。",
@@ -317,7 +322,10 @@ export const zhHansMessages: Messages = {
               "用滑块设置文字大小和描边粗细。滑块是可以左右移动的手柄。也可以输入数字。",
               "为每个人选择文字颜色和描边颜色。",
             ],
-            notes: ["预览在宽屏幕上显示在右边，在窄屏幕上显示在上面。向下滚动时也能一直看到。"],
+            notes: [
+              "预览在宽屏幕上显示在右边，在窄屏幕上显示在上面。向下滚动时也能一直看到。",
+              "不想让字幕靠近视频左右两端时，在“{positionHeading}”的安全区中设置宽度。预览中的深色带就是这个宽度。",
+            ],
           },
           {
             heading: "选择字体",
@@ -368,6 +376,7 @@ export const zhHansMessages: Messages = {
             notes: [
               "列表中视频名称旁边的重新写入按钮，会用别的名称生成新文件。原来的文件会保留。",
               "原来的文件会保留。新文件的名称后面会加上 -2 等数字。",
+              "新文件的格式由“{subtitleFormat}”决定，与放入的文件无关。",
               "同一文件夹里需要有同名的 .transcript.json 文件。",
               "使用配置时，没有保存到这个配置的更改不会被使用。",
             ],
@@ -427,7 +436,7 @@ export const zhHansMessages: Messages = {
     imageFolder: "zh-hans",
     images: {
       models: "模型标签页的画面。1 是标签页，2 是下载按钮，3 是每个模型的进度条。",
-      transcribe: "字幕制作标签页的画面。1 是标签页，2 是说话人数，3 是放入视频的框。",
+      transcribe: "字幕制作标签页的画面。1 是标签页，2 是说话人数，3 是字幕文件格式，4 是放入视频的框。",
       look: "字幕外观和位置标签页的画面。1 是标签页，2 是字幕的位置，3 是滑块，4 是每个人的颜色。",
       font: "打开字体列表的画面。1 是显示字体名称的地方，2 是输入的地方，3 是要选的字体。",
       profiles: "配置区域的画面。1 是输入名称的地方，2 是保存按钮，3 是加载按钮。",

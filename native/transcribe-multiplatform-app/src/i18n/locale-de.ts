@@ -81,8 +81,11 @@ export const deMessages: Messages = {
   jobDone: "Fertig: {cues} Untertitel, {speakers} Sprecher",
   jobDoneOneSpeaker: "Fertig: {cues} Untertitel, 1 Sprecher",
   jobFaceless: "Untertitel an Stellen ohne erkanntes Gesicht wurden unten im Video platziert.",
+  jobFontMissing:
+    "Die gewählte Schrift fehlt auf diesem Computer, darum ist die Breite der Untertitel geschätzt.",
   jobNoPercent: "Dieses Modell meldet keinen Prozentwert",
   speakerCount: "Anzahl der Sprecher",
+  subtitleFormat: "Format der Untertiteldatei",
   speakerCountAuto: "Automatisch erkennen",
   speakerCountValue: "{count} Sprecher",
   speakerCountOne: "1 Sprecher",
@@ -117,6 +120,10 @@ export const deMessages: Messages = {
   anchorVideoBottom: "Unten im Video",
   offsetX: "Feinabstimmung links und rechts (Prozent der Breite)",
   offsetY: "Feinabstimmung oben und unten (Prozent der Höhe)",
+  safeZoneHint:
+    "Hier legst du fest, wie breit die Ränder links und rechts sind, auf denen keine Untertitel stehen. Die Vorschau zeigt sie als dunkle Streifen.",
+  safeLeft: "Sicherheitszone links (Prozent der Breite)",
+  safeRight: "Sicherheitszone rechts (Prozent der Breite)",
   faceModel: "Modell für die Gesichtserkennung",
   speechLanguage: "Gesprochene Sprache",
   languageAuto: "Automatisch erkennen",
@@ -131,8 +138,6 @@ export const deMessages: Messages = {
   unknownSpeaker: "Unbekannter Sprecher",
   contrastWarning:
     "{name}: Der Kontrast zwischen Füllung und Kontur beträgt {ratio}:1 und liegt unter dem WCAG-AA-Mindestwert von 4,5:1. Wähle Farben mit größerem Helligkeitsunterschied.",
-  shadowEnabled: "Schatten hinzufügen",
-  shadowStrength: "Schattenstärke (Prozent)",
   previewHeading: "Vorschau",
   previewFrameLabel: "Vorschaugröße",
   previewDescription: "Vorschau-Untertitel bei {x} % von links und {y} % von oben im {size}-Bild.",
@@ -282,6 +287,7 @@ export const deMessages: Messages = {
             steps: [
               "Öffne den Tab „{tabJobs}“.",
               "„{speakerCount}“ steht am Anfang auf 1. Sprechen mehr Menschen, wähle ihre Anzahl. Bist du nicht sicher, wähle „{speakerCountAuto}“.",
+              "Wähle bei „{subtitleFormat}“ die Dateiart. Am Anfang steht dort FCPXML. Darunter steht, wofür sie gut ist.",
               "Ziehe das Video in das Feld und lass es los. Ziehen heißt: gedrückt halten und bewegen. Du kannst auch „{pickVideos}“ drücken.",
             ],
             notes: [
@@ -307,7 +313,7 @@ export const deMessages: Messages = {
           {
             heading: "Die fertigen Dateien",
             intro:
-              "Im Ordner des Videos erscheinen vier Dateien. Ältere Dateien bleiben. Ist der Name schon vergeben, bekommen die neuen Dateien ein -2 im Namen.",
+              "Im Ordner des Videos erscheinen zwei Dateien: die Untertiteldatei in der gewählten Art und eine .transcript.json-Datei. Ältere Dateien bleiben. Ist der Name schon vergeben, bekommen die neuen Dateien ein -2 im Namen.",
             steps: [],
             notes: [
               ".fcpxml: Untertitel und Video zusammen, für Videoschnittprogramme.",
@@ -322,9 +328,9 @@ export const deMessages: Messages = {
         heading: "Im Videoschnittprogramm öffnen",
         parts: [
           {
-            heading: "Zuerst die FCPXML-Datei",
+            heading: "Eine FCPXML-Datei holen",
             intro:
-              "Eine FCPXML-Datei holt Video und Untertitel auf einmal, mit Farben, Rändern und Positionen. Darum nimmst du sie zuerst.",
+              "Eine FCPXML-Datei holt Video und Untertitel auf einmal, mit Farben, Rändern und Positionen. Darum ist sie am Anfang eingestellt.",
             steps: [
               "Öffne ein Projekt in deinem Videoschnittprogramm. Ein Projekt enthält deine ganze Schnittarbeit.",
               "Hole die Timeline über das Menü (zum Beispiel File > Import > Timeline).",
@@ -336,8 +342,8 @@ export const deMessages: Messages = {
             ],
           },
           {
-            heading: "Wann die anderen Dateien nützen",
-            intro: "Die anderen Dateien brauchst du nur manchmal.",
+            heading: "Wann die anderen Arten nützen",
+            intro: "Eine andere Art wählst du bei „{subtitleFormat}“, bevor du das Video hinzufügst.",
             steps: [],
             notes: [
               "Eine .ttml-Datei holst du im Media Pool mit Import Subtitle. Im Media Pool liegen deine Videos und Untertitel.",
@@ -362,6 +368,7 @@ export const deMessages: Messages = {
             ],
             notes: [
               "Die Vorschau steht auf einem breiten Bildschirm rechts und auf einem schmalen oben. Sie bleibt beim Scrollen sichtbar.",
+              "Sollen Untertitel nicht an den Rändern links und rechts stehen, stelle unter „{positionHeading}“ die Sicherheitszonen ein. Die dunklen Streifen in der Vorschau zeigen sie.",
             ],
           },
           {
@@ -432,6 +439,7 @@ export const deMessages: Messages = {
             notes: [
               "Der Knopf zum Neuschreiben neben dem Namen eines Videos in der Liste macht neue Dateien mit einem anderen Namen. Die alten Dateien bleiben erhalten.",
               "Die alten Dateien bleiben. Die neuen bekommen ein -2 oder eine ähnliche Zahl im Namen.",
+              "Die Art der neuen Datei richtet sich nach „{subtitleFormat}“, nicht nach der hinzugefügten Datei.",
               "Die .transcript.json-Datei mit demselben Namen muss im selben Ordner liegen.",
               "Nutzt du ein Profil, werden Änderungen nicht verwendet, die du nicht darin gespeichert hast.",
             ],
@@ -504,7 +512,8 @@ export const deMessages: Messages = {
     imageFolder: "de",
     images: {
       models: "Der Tab Modelle. 1 ist der Tab, 2 der Knopf zum Herunterladen, 3 der Balken jedes Modells.",
-      transcribe: "Der Tab für Untertitel. 1 ist der Tab, 2 die Anzahl der Sprecher, 3 das Feld für Videos.",
+      transcribe:
+        "Der Tab für Untertitel. 1 ist der Tab, 2 die Anzahl der Sprecher, 3 die Dateiart, 4 das Feld für Videos.",
       look: "Der Tab für Aussehen und Position. 1 ist der Tab, 2 der Platz der Untertitel, 3 ein Regler, 4 die Farben einer Person.",
       font: "Die offene Schriftenliste. 1 zeigt den Namen der Schrift, 2 ist das Eingabefeld, 3 die Schrift zum Wählen.",
       profiles:

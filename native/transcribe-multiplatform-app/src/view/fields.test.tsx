@@ -1,7 +1,7 @@
 // Runs with bun: labelled fields report what the user changed, and keep the saved value otherwise.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, expect, it, type Mock, vi } from "vitest";
-import { AdjustField, SelectField, SwitchField } from "./fields.tsx";
+import { AdjustField, SelectField } from "./fields.tsx";
 
 // The edge-aligned thumb stays visibility:hidden until measured and happy-dom measures nothing,
 // which also empties its accessible name, so its input is found by the label attribute.
@@ -74,13 +74,4 @@ it("shows the chosen option and reports another", async () => {
     fireEvent.click(screen.getByRole("option", { name: "English" }));
   });
   expect(onChange.mock.calls).toStrictEqual([["en"]]);
-});
-
-it("names the switch and reports a change", () => {
-  const onChange: Mock<(checked: boolean) => void> = vi.fn();
-  render(<SwitchField label="Shadow" checked={false} onChange={onChange} />);
-  const toggle: HTMLElement = screen.getByRole("switch", { name: "Shadow" });
-  expect(toggle.getAttribute("aria-checked")).toBe("false");
-  fireEvent.click(toggle);
-  expect(onChange.mock.calls[0]?.[0]).toBe(true);
 });

@@ -1,7 +1,7 @@
 // Runs with bun: the preview paints the same layers, in the same order, as the subtitle files.
 import { cleanup, render } from "@testing-library/preact";
 import { afterEach, expect, it } from "vitest";
-import { captionLayers, fontStack, LayeredText, shadowFilter } from "./LayeredText.tsx";
+import { captionLayers, fontStack, LayeredText } from "./LayeredText.tsx";
 
 afterEach(cleanup);
 
@@ -27,14 +27,6 @@ it("draws no rim when its width is zero", () => {
   ]);
 });
 
-it("has no shadow when it is off", () => {
-  expect(shadowFilter({ enabled: false, strength: 0.5 }, 88)).toBe("none");
-});
-
-it("casts the shadow straight down at its strength, scaled to the text", () => {
-  expect(shadowFilter({ enabled: true, strength: 0.5 }, 88)).toBe("drop-shadow(0 16px 8px rgb(0 0 0 / 0.5))");
-});
-
 it("centres the lines on the block, one line height apart", () => {
   const { container } = render(
     <svg aria-hidden="true">
@@ -48,7 +40,6 @@ it("centres the lines on the block, one line height apart", () => {
         color={{ fill: "#FFFFFF", outline: "#000000" }}
         outlinePx={2}
         rimPx={1}
-        shadow={{ enabled: false, strength: 0 }}
       />
     </svg>,
   );

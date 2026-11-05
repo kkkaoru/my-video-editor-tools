@@ -1,12 +1,12 @@
 //! Writes one transcript as the subtitle formats DaVinci Resolve reads. No Resolve API is involved:
 //! the JSON is the source of truth (report §7.1), the others are generated from it.
 
-use crate::captions::{Cue, Metrics, Word};
+use crate::captions::{Cue, Metrics, VoiceSpan, Word};
 use crate::engines::VideoInfo;
 use crate::error::{AppError, AppResult, UserError};
 use crate::face::FaceSample;
 use crate::paths::write_atomic;
-use crate::settings::{CaptionShadow, Settings, SpeakerColor};
+use crate::settings::{Settings, SpeakerColor, SubtitleFormat};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -23,15 +23,9 @@ const BASIC_TITLE_UID: &str =
 const PERCENT: f64 = 100.0;
 const STROKE_SIDES: f64 = 2.0;
 const FCPXML_VERSION: &str = "1.10";
-/// Style 20's shadow straight down, relative to the font size; the UI preview uses the same values.
-const SHADOW_OFFSET_EM: f64 = 16.0 / 88.0;
-const SHADOW_BLUR_EM: f64 = 8.0 / 88.0;
-/// FCPXML's shadow direction in degrees for straight down.
-const SHADOW_ANGLE_DOWN: u32 = 270;
 const BLACK: &str = "#000000";
 /// `lineSpacing` in FCPXML is added to the title's own line height.
 const FCP_NATURAL_LINE_HEIGHT: f64 = 1.2;
-const BYTE_MAX: f64 = 255.0;
 
 /// One stacked title of a caption.
 struct TitleLayer {
@@ -64,6 +58,9 @@ pub struct Transcript {
     pub speaker_count: u32,
     pub words: Vec<Word>,
     pub faces: Vec<FaceSample>,
+    /// Kept so laying a transcript out again times cues alike; an older transcript has none.
+    #[serde(default)]
+    pub voice: Vec<VoiceSpan>,
     pub cues: Vec<Cue>,
 }
 
@@ -90,6 +87,7 @@ impl Transcript {
             speaker_count,
             words,
             faces,
+            voice: Vec::new(),
             cues,
         }
     }
@@ -157,23 +155,9 @@ pub fn render_srt(cues: &[Cue], settings: &Settings) -> String {
     out
 }
 
-/// TTML2 `tts:textShadow`, or nothing when shadows are off.
-fn ttml_shadow(metrics: &Metrics, settings: &Settings) -> String {
-    let CaptionShadow { enabled, strength } = settings.shadow;
-    if !enabled {
-        return String::new();
-    }
-    let offset = metrics.font_px * SHADOW_OFFSET_EM;
+fn ttml_span(line: &str, color: &SpeakerColor, outline_px: f64) -> String {
     format!(
-        " tts:textShadow=\"0px {offset:.1}px {blur:.1}px rgba(0,0,0,{alpha})\"",
-        blur = metrics.font_px * SHADOW_BLUR_EM,
-        alpha = (strength * BYTE_MAX).round() as u8,
-    )
-}
-
-fn ttml_span(line: &str, color: &SpeakerColor, outline_px: f64, shadow: &str) -> String {
-    format!(
-        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline} {outline_px:.1}px 0px\"{shadow}>{text}</span>",
+        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline} {outline_px:.1}px 0px\">{text}</span>",
         fill = color.fill,
         outline = color.outline,
         text = escape_xml(line),
@@ -195,7 +179,6 @@ pub fn render_ttml(
     let mut regions = String::new();
     let mut body = String::new();
     let region_height = metrics.font_px * 3.0;
-    let shadow = ttml_shadow(metrics, settings);
     for (index, cue) in cues.iter().enumerate() {
         let width = metrics.max_line_px + 2.0 * metrics.outline_px;
         let left = (cue.x - width / 2.0).clamp(0.0, (f64::from(info.width) - width).max(0.0));
@@ -213,7 +196,7 @@ pub fn render_ttml(
         let spans: Vec<String> = cue
             .lines
             .iter()
-            .map(|line| ttml_span(line, color, metrics.outline_px, &shadow))
+            .map(|line| ttml_span(line, color, metrics.outline_px))
             .collect();
         let _ = writeln!(
             body,
@@ -264,18 +247,6 @@ fn fcp_span(start: f64, end: f64, info: &VideoInfo) -> (String, String) {
     let first = frame_at(start, info);
     let frames = frame_at(end, info).saturating_sub(first).max(1);
     (fcp_frames(first, info), fcp_frames(frames, info))
-}
-
-fn fcp_shadow(metrics: &Metrics, settings: &Settings) -> String {
-    let CaptionShadow { enabled, strength } = settings.shadow;
-    if !enabled {
-        return String::new();
-    }
-    format!(
-        " shadowColor=\"0 0 0 {strength:.2}\" shadowOffset=\"{offset:.1} {SHADOW_ANGLE_DOWN}\" shadowBlurRadius=\"{blur:.1}\"",
-        offset = metrics.font_px * SHADOW_OFFSET_EM,
-        blur = metrics.font_px * SHADOW_BLUR_EM,
-    )
 }
 
 /// RGB in the 0-1 floats FCPXML text styles use.
@@ -336,7 +307,7 @@ fn title_layers(color: &SpeakerColor, metrics: &Metrics, settings: &Settings) ->
         .collect()
 }
 
-/// A negative `strokeWidth` is percent of the font size for the stroke centred on the glyph edge.
+/// FCPXML calls a negative `strokeWidth` percent of the font size; Resolve draws half of it in frame pixels.
 fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics) -> String {
     layer
         .stroke
@@ -350,13 +321,7 @@ fn fcp_stroke(layer: &TitleLayer, metrics: &Metrics) -> String {
         })
 }
 
-fn fcp_layer(
-    id: &str,
-    lane: usize,
-    layer: &TitleLayer,
-    shadow: &str,
-    cue_markup: &CueMarkup<'_>,
-) -> String {
+fn fcp_layer(id: &str, lane: usize, layer: &TitleLayer, cue_markup: &CueMarkup<'_>) -> String {
     let CueMarkup {
         label,
         offset,
@@ -375,7 +340,7 @@ fn fcp_layer(
             "              <adjust-transform position=\"{x:.3} {y:.3}\"/>\n",
             "              <text><text-style ref=\"{id}\">{text}</text-style></text>\n",
             "              <text-style-def id=\"{id}\"><text-style font=\"{font}\" fontSize=\"{size}\" fontFace=\"Bold\" lineSpacing=\"{spacing:.1}\" ",
-            "fontColor=\"{fill}\"{stroke} alignment=\"center\"{shadow}/></text-style-def>\n",
+            "fontColor=\"{fill}\"{stroke} alignment=\"center\"/></text-style-def>\n",
             "            </title>\n",
         ),
         lane = lane,
@@ -391,7 +356,6 @@ fn fcp_layer(
         spacing = *size * (*line_height - FCP_NATURAL_LINE_HEIGHT),
         fill = fcp_color(&layer.fill),
         stroke = fcp_stroke(layer, metrics),
-        shadow = shadow,
     )
 }
 
@@ -418,22 +382,14 @@ fn fcp_title(
         line_height: settings.line_height,
         metrics,
     };
-    let shadow = fcp_shadow(metrics, settings);
     title_layers(settings.color_for(cue.speaker), metrics, settings)
         .iter()
         .enumerate()
         .map(|(layer_index, layer)| {
-            // Only the bottom layer casts the shadow; a shadow per layer would darken the band.
-            let layer_shadow = if layer_index == 0 {
-                shadow.as_str()
-            } else {
-                ""
-            };
             fcp_layer(
                 &format!("ts{index}-{layer_index}"),
                 layer_index + 1,
                 layer,
-                layer_shadow,
                 &markup,
             )
         })
@@ -548,7 +504,25 @@ pub fn transcript_beside(dropped: &Path) -> AppResult<PathBuf> {
     .into())
 }
 
-/// Writes all formats next to `base`; each file is replaced atomically.
+/// The chosen subtitle file, as its extension and contents.
+fn subtitle_file(transcript: &Transcript, settings: &Settings) -> (&'static str, String) {
+    match settings.subtitle_format {
+        SubtitleFormat::Fcpxml => (".fcpxml", render_fcpxml(transcript, settings)),
+        SubtitleFormat::Ttml => (
+            ".ttml",
+            render_ttml(
+                &transcript.cues,
+                &transcript.info,
+                &transcript.metrics,
+                settings,
+            ),
+        ),
+        SubtitleFormat::Srt => (".srt", render_srt(&transcript.cues, settings)),
+    }
+}
+
+/// Writes the chosen subtitle format next to `base` and returns its path, plus the transcript that
+/// laying captions out again needs; each file is replaced atomically.
 pub fn write_outputs(
     base: &Path,
     transcript: &Transcript,
@@ -556,28 +530,11 @@ pub fn write_outputs(
 ) -> AppResult<Vec<PathBuf>> {
     let json = serde_json::to_vec_pretty(transcript)
         .map_err(|error| AppError::Invalid(error.to_string()))?;
-    let outputs = [
-        (
-            ".ttml",
-            render_ttml(
-                &transcript.cues,
-                &transcript.info,
-                &transcript.metrics,
-                settings,
-            )
-            .into_bytes(),
-        ),
-        (".srt", render_srt(&transcript.cues, settings).into_bytes()),
-        (".fcpxml", render_fcpxml(transcript, settings).into_bytes()),
-        (".transcript.json", json),
-    ];
-    let mut written = Vec::with_capacity(outputs.len());
-    for (extension, bytes) in outputs {
-        let path = sibling(base, extension);
-        write_atomic(&path, &bytes)?;
-        written.push(path);
-    }
-    Ok(written)
+    write_atomic(&sibling(base, TRANSCRIPT_EXTENSION), &json)?;
+    let (extension, contents) = subtitle_file(transcript, settings);
+    let path = sibling(base, extension);
+    write_atomic(&path, contents.as_bytes())?;
+    Ok(vec![path])
 }
 
 #[cfg(test)]
@@ -650,6 +607,8 @@ mod tests {
         font_px: 52.0,
         outline_px: 6.0,
         max_line_px: 1716.0,
+        glyphs: None,
+        rendered_scale: 1.0,
     };
 
     fn cue(speaker: Option<u32>, text: &str) -> Cue {
@@ -688,7 +647,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "<span tts:color=\"#FFFFFF\" tts:textOutline=\"#000000 6.0px 0px\" tts:textShadow=\"0px 9.5px 4.7px rgba(0,0,0,204)\">はい</span>"
+                "<span tts:color=\"#FFFFFF\" tts:textOutline=\"#000000 6.0px 0px\">はい</span>"
             ),
             "{out}"
         );
@@ -793,14 +752,8 @@ mod tests {
     }
 
     #[test]
-    fn captions_without_a_shadow_have_no_shadow_attributes() {
-        let settings = Settings {
-            shadow: crate::settings::CaptionShadow {
-                enabled: false,
-                strength: 0.5,
-            },
-            ..Settings::default()
-        };
+    fn neither_format_writes_a_shadow() {
+        let settings = Settings::default();
         let ttml = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &settings);
         assert!(!ttml.contains("textShadow"), "{ttml}");
         let transcript = Transcript::new(
@@ -812,26 +765,7 @@ mod tests {
             vec![cue(None, "x")],
         );
         let fcpxml = render_fcpxml(&transcript, &settings);
-        assert!(!fcpxml.contains("shadowColor"), "{fcpxml}");
-    }
-
-    #[test]
-    fn fcpxml_titles_carry_the_shadow() {
-        let transcript = Transcript::new(
-            PathBuf::from("/v/a.mp4"),
-            INFO,
-            METRICS,
-            Vec::new(),
-            Vec::new(),
-            vec![cue(None, "x")],
-        );
-        let out = render_fcpxml(&transcript, &Settings::default());
-        assert!(
-            out.contains(
-                "shadowColor=\"0 0 0 0.80\" shadowOffset=\"9.5 270\" shadowBlurRadius=\"4.7\""
-            ),
-            "{out}"
-        );
+        assert!(!fcpxml.contains("shadow"), "{fcpxml}");
     }
 
     #[test]
@@ -868,7 +802,7 @@ mod tests {
                 "            <title ref=\"r2\" lane=\"1\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
                 "              <adjust-transform position=\"0.000 -40.741\"/>\n",
                 "              <text><text-style ref=\"ts0-0\">A&amp;B</text-style></text>\n",
-                "              <text-style-def id=\"ts0-0\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.0000 0.0000 1\" strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-29.9\" alignment=\"center\" shadowColor=\"0 0 0 0.80\" shadowOffset=\"9.5 270\" shadowBlurRadius=\"4.7\"/></text-style-def>\n",
+                "              <text-style-def id=\"ts0-0\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.0000 0.0000 1\" strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-29.9\" alignment=\"center\"/></text-style-def>\n",
                 "            </title>\n",
                 "            <title ref=\"r2\" lane=\"2\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
                 "              <adjust-transform position=\"0.000 -40.741\"/>\n",
@@ -914,5 +848,73 @@ mod tests {
         assert!(ttml.contains("tts:lineHeight=\"104.0px\""), "{ttml}");
         let title = fcp_title(0, &cue(None, "x"), &INFO, &METRICS, &settings);
         assert!(title.contains("lineSpacing=\"41.6\""), "{title}");
+    }
+
+    fn written_names(format: SubtitleFormat, name: &str) -> (Vec<String>, Vec<String>) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target-test")
+            .join(format!("export-format-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let settings = Settings {
+            subtitle_format: format,
+            ..Settings::default()
+        };
+        let transcript = Transcript::new(
+            root.join("a.mp4"),
+            INFO,
+            METRICS,
+            Vec::new(),
+            Vec::new(),
+            vec![cue(Some(1), "x")],
+        );
+        let outputs = write_outputs(&root.join("a"), &transcript, &settings).unwrap();
+        let mut on_disk: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+        let returned = outputs
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        (returned, on_disk)
+    }
+
+    #[test]
+    fn only_the_chosen_format_and_the_transcript_are_written() {
+        assert_eq!(
+            written_names(SubtitleFormat::Fcpxml, "fcpxml"),
+            (
+                vec!["a.fcpxml".to_owned()],
+                vec!["a.fcpxml".to_owned(), "a.transcript.json".to_owned()]
+            )
+        );
+        assert_eq!(
+            written_names(SubtitleFormat::Ttml, "ttml"),
+            (
+                vec!["a.ttml".to_owned()],
+                vec!["a.transcript.json".to_owned(), "a.ttml".to_owned()]
+            )
+        );
+        assert_eq!(
+            written_names(SubtitleFormat::Srt, "srt"),
+            (
+                vec!["a.srt".to_owned()],
+                vec!["a.srt".to_owned(), "a.transcript.json".to_owned()]
+            )
+        );
+    }
+
+    #[test]
+    fn a_name_used_by_any_format_is_not_reused_by_another() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/export-any-format");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("clip.ttml"), b"x").unwrap();
+        assert_eq!(
+            unused_base(&root.join("clip.mp4")).file_name().unwrap(),
+            "clip-2"
+        );
     }
 }

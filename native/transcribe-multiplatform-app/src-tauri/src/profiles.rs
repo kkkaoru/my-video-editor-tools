@@ -1,7 +1,7 @@
 //! Named caption looks the user saves and restores, kept together in one JSON file in the app data folder.
 
 use crate::error::{io_context, AppError, AppResult, UserError};
-use crate::settings::{CaptionShadow, Placement, Settings, SpeakerColor};
+use crate::settings::{Placement, Settings, SpeakerColor, MAX_SPEAKER_COLORS};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -23,8 +23,9 @@ pub struct CaptionLook {
     pub outline_ratio: f64,
     pub rim_ratio: f64,
     pub line_height: f64,
-    pub shadow: CaptionShadow,
     pub width_ratio: f64,
+    pub safe_left_percent: f64,
+    pub safe_right_percent: f64,
     pub placement: Placement,
 }
 
@@ -51,8 +52,9 @@ impl CaptionLook {
             outline_ratio: settings.outline_ratio,
             rim_ratio: settings.rim_ratio,
             line_height: settings.line_height,
-            shadow: settings.shadow,
             width_ratio: settings.width_ratio,
+            safe_left_percent: settings.safe_left_percent,
+            safe_right_percent: settings.safe_right_percent,
             placement: settings.placement,
         }
     }
@@ -61,15 +63,17 @@ impl CaptionLook {
     #[must_use]
     pub fn applied_to(self, settings: &Settings) -> Settings {
         Settings {
-            palette: self.palette,
+            // A profile saved by an earlier version may hold more colours than can be used.
+            palette: self.palette.into_iter().take(MAX_SPEAKER_COLORS).collect(),
             unassigned: self.unassigned,
             font_family: self.font_family,
             font_ratio: self.font_ratio,
             outline_ratio: self.outline_ratio,
             rim_ratio: self.rim_ratio,
             line_height: self.line_height,
-            shadow: self.shadow,
             width_ratio: self.width_ratio,
+            safe_left_percent: self.safe_left_percent,
+            safe_right_percent: self.safe_right_percent,
             placement: self.placement,
             ..settings.clone()
         }
@@ -508,5 +512,53 @@ mod tests {
         let numbered = unused_name(&[named(&long)], &long);
         assert_eq!(numbered.chars().count(), 80);
         assert!(numbered.ends_with(" (2)"), "{numbered}");
+    }
+
+    #[test]
+    fn surplus_colours_in_a_profile_are_dropped_when_it_is_applied() {
+        let mut look = CaptionLook::default();
+        look.palette.extend(CaptionLook::default().palette);
+        assert_eq!(look.palette.len(), 16);
+        assert_eq!(look.applied_to(&Settings::default()).palette.len(), 8);
+    }
+
+    #[test]
+    fn the_subtitle_format_is_not_part_of_a_look() {
+        let settings = Settings {
+            subtitle_format: crate::settings::SubtitleFormat::Srt,
+            ..Settings::default()
+        };
+        let look = serde_json::to_value(CaptionLook::from_settings(&settings)).unwrap();
+        assert_eq!(look.get("subtitle_format"), None);
+        assert_eq!(
+            CaptionLook::default().applied_to(&settings).subtitle_format,
+            crate::settings::SubtitleFormat::Srt
+        );
+    }
+
+    #[test]
+    fn a_profile_with_a_shadow_from_an_earlier_version_still_reads() {
+        let root = import_scratch("old-shadow");
+        let saved = root.join("profiles.json");
+        std::fs::write(
+            &saved,
+            br#"{"profiles":[{"name":"A","look":{"font_ratio":0.05,"shadow":{"enabled":true,"strength":0.5}}}]}"#,
+        )
+        .unwrap();
+        let rows = load(&saved).unwrap();
+        assert_eq!(rows[0].look.font_ratio, 0.05);
+        let file = root.join("exported.json");
+        std::fs::write(
+            &file,
+            br#"{"name":"B","look":{"shadow":{"enabled":true,"strength":9.0}}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_import(&file).unwrap().name, "B");
+        assert_eq!(
+            serde_json::to_value(CaptionLook::default())
+                .unwrap()
+                .get("shadow"),
+            None
+        );
     }
 }

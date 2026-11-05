@@ -15,7 +15,7 @@ use transcribe_app::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use transcribe_app::paths::AppPaths;
 use transcribe_app::pipeline;
 use transcribe_app::process::CancelToken;
-use transcribe_app::settings::{Anchor, Placement, Settings};
+use transcribe_app::settings::{Anchor, Placement, Settings, SubtitleFormat};
 
 const DIARIZATION_FILE: &str = "models/nemotron-3-diarization/Nemotron-3-Diarization.q8_0.gguf";
 /// Only ever used when selected, so jobs that need any speaker model name it.
@@ -97,6 +97,8 @@ fn sparse(path: &Path, bytes: u64) {
     File::create(path).unwrap().set_len(bytes).unwrap();
 }
 
+const VOICE_DETECTOR: &str = "echo 'Speech segment 0: start = 0.00, end = 6000.00'\n";
+
 /// Paths under `root` with every tool faked and no model installed.
 fn with_tools(root: &Path) -> AppPaths {
     let paths = AppPaths {
@@ -108,6 +110,10 @@ fn with_tools(root: &Path) -> AppPaths {
     write_tool(&runtime.join("ffmpeg/ffmpeg"), FFMPEG);
     write_tool(&runtime.join("ffmpeg/ffprobe"), FFPROBE);
     write_tool(&runtime.join("whisper/whisper-cli"), WHISPER);
+    write_tool(
+        &runtime.join("whisper/whisper-vad-speech-segments"),
+        VOICE_DETECTOR,
+    );
     write_tool(&runtime.join("nemo/bin/nemo-speech"), NEMO);
     install_ipadic(&paths);
     paths
@@ -220,14 +226,17 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn a_job_with_the_default_model_writes_every_format() {
+fn a_job_with_the_default_model_writes_the_chosen_format_and_the_transcript() {
     let root = scratch("job-default");
     let paths = ready(&root);
     let mut stages: Vec<Stage> = Vec::new();
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
-        &bottom_anchored(),
+        &Settings {
+            subtitle_format: SubtitleFormat::Srt,
+            ..bottom_anchored()
+        },
         &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
@@ -243,15 +252,10 @@ fn a_job_with_the_default_model_writes_every_format() {
             Stage::Export
         ]
     );
-    assert_eq!(
-        names(&outcome.outputs),
-        vec![
-            "clip.ttml",
-            "clip.srt",
-            "clip.fcpxml",
-            "clip.transcript.json"
-        ]
-    );
+    assert_eq!(names(&outcome.outputs), vec!["clip.srt"]);
+    assert!(root.join("clip.transcript.json").exists());
+    assert!(!root.join("clip.ttml").exists());
+    assert!(!root.join("clip.fcpxml").exists());
     assert_eq!(outcome.speaker_count, 2);
     assert_eq!(outcome.cue_count, 2);
     assert!(!outcome.faceless);
@@ -775,12 +779,14 @@ fn relayout_writes_to_the_base_it_is_given() {
     assert_eq!(stages, vec![Stage::Export, Stage::Export]);
     assert_eq!(outcome.base.file_name().unwrap(), "clip");
     assert_eq!(outcome.cue_count, 2);
+    let saved = Transcript::load(&root.join("clip.transcript.json")).unwrap();
+    assert_eq!(saved.metrics.font_px, 72.0);
     assert_eq!(
-        Transcript::load(&root.join("clip.transcript.json"))
-            .unwrap()
-            .metrics
-            .font_px,
-        72.0
+        saved.voice,
+        vec![transcribe_app::captions::VoiceSpan {
+            start: 0.0,
+            end: 60.0
+        }]
     );
 }
 
@@ -1386,7 +1392,7 @@ fn outputs_land_beside_the_video_and_load_back() {
     let root = scratch("export-round-trip");
     let settings = bottom_anchored();
     let metrics = transcribe_app::captions::metrics_for(&VIDEO, &settings);
-    let transcript = Transcript::new(
+    let mut transcript = Transcript::new(
         root.join("a.mp4"),
         VIDEO,
         metrics,
@@ -1394,11 +1400,12 @@ fn outputs_land_beside_the_video_and_load_back() {
         Vec::new(),
         Vec::new(),
     );
+    transcript.voice = vec![transcribe_app::captions::VoiceSpan {
+        start: 1.0,
+        end: 2.0,
+    }];
     let outputs = export::write_outputs(&root.join("a"), &transcript, &settings).unwrap();
-    assert_eq!(
-        names(&outputs),
-        vec!["a.ttml", "a.srt", "a.fcpxml", "a.transcript.json"]
-    );
+    assert_eq!(names(&outputs), vec!["a.fcpxml"]);
     assert_eq!(
         Transcript::load(&root.join("a.transcript.json")).unwrap(),
         transcript
@@ -2110,4 +2117,126 @@ fn a_missing_face_model_fails_before_any_work_folder_exists() {
     .to_string();
     assert_eq!(error, "model yunet is not installed");
     assert!(!paths.jobs_dir().exists());
+}
+
+#[test]
+fn a_job_writes_fcpxml_when_nothing_was_chosen() {
+    let root = scratch("job-default-format");
+    let paths = ready(&root);
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &bottom_anchored(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(names(&outcome.outputs), vec!["clip.fcpxml"]);
+    assert!(!root.join("clip.srt").exists());
+    assert!(!root.join("clip.ttml").exists());
+}
+
+#[test]
+fn a_second_job_in_another_format_still_takes_a_new_name() {
+    let root = scratch("job-other-format");
+    let paths = ready(&root);
+    let run = |format: SubtitleFormat| {
+        pipeline::run_job(
+            &root.join("clip.mp4"),
+            &paths,
+            &Settings {
+                subtitle_format: format,
+                ..bottom_anchored()
+            },
+            &mac(),
+            &CancelToken::default(),
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    assert_eq!(names(&run(SubtitleFormat::Srt).outputs), vec!["clip.srt"]);
+    assert_eq!(
+        names(&run(SubtitleFormat::Ttml).outputs),
+        vec!["clip-2.ttml"]
+    );
+    assert!(root.join("clip-2.transcript.json").exists());
+}
+
+#[test]
+fn writing_captions_again_follows_the_chosen_format() {
+    let root = scratch("relayout-format");
+    let paths = ready(&root);
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &bottom_anchored(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let outcome = pipeline::relayout_to(
+        &root.join("clip.transcript.json"),
+        &root.join("clip-2"),
+        &paths,
+        &Settings {
+            subtitle_format: SubtitleFormat::Ttml,
+            ..bottom_anchored()
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(names(&outcome.outputs), vec!["clip-2.ttml"]);
+    assert!(!root.join("clip-2.fcpxml").exists());
+    assert!(root.join("clip-2.transcript.json").exists());
+}
+
+#[test]
+fn the_cli_writes_the_format_in_its_settings() {
+    let root = scratch("cli-format");
+    ready(&root);
+    fs::write(
+        root.join("data/settings.json"),
+        serde_json::to_vec(&Settings {
+            subtitle_format: SubtitleFormat::Srt,
+            ..bottom_anchored()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
+    assert_eq!(stderr(&output), "");
+    assert!(root.join("clip.srt").exists());
+    assert!(root.join("clip.transcript.json").exists());
+    assert!(!root.join("clip.fcpxml").exists());
+    assert!(!root.join("clip.ttml").exists());
+}
+
+#[test]
+fn voice_spans_are_read_from_the_tool() {
+    let root = scratch("voice-spans");
+    let paths = with_tools(&root);
+    let voice = engines::voice_spans(&tools_in(&paths), &root.join("a.wav")).unwrap();
+    assert_eq!(
+        voice,
+        vec![transcribe_app::captions::VoiceSpan {
+            start: 0.0,
+            end: 60.0
+        }]
+    );
+}
+
+#[test]
+fn a_voice_detector_that_fails_stops_the_job() {
+    let root = scratch("voice-spans-failing");
+    let paths = with_tools(&root);
+    write_tool(
+        &paths
+            .bundled_runtime_dir()
+            .join("whisper/whisper-vad-speech-segments"),
+        "exit 3\n",
+    );
+    assert!(engines::voice_spans(&tools_in(&paths), &root.join("a.wav")).is_err());
 }

@@ -15,12 +15,16 @@ export interface FaceBox {
 
 export interface PreviewLayout {
   fontPx: number;
+  /** The size the editor shows `fontPx` at; the sizes below are drawn as they are, in frame pixels. */
+  renderedFontPx: number;
   outlinePx: number;
   rimPx: number;
   lineHeightPx: number;
   lines: string[];
   x: number;
   y: number;
+  safeLeftPx: number;
+  safeRightPx: number;
   face: FaceBox | null;
 }
 
@@ -33,6 +37,17 @@ interface Metrics {
   fontPx: number;
   outlinePx: number;
   maxLinePx: number;
+  scale: number;
+}
+
+/** What one glyph's width depends on. */
+type GlyphSizing = Pick<Metrics, "fontPx" | "scale">;
+
+interface CenterClamp {
+  center: number;
+  block: number;
+  start: number;
+  end: number;
 }
 
 interface WordRun {
@@ -67,6 +82,9 @@ const MARGIN_PX: number = 120;
 const FACE_GAP_PX: number = 60;
 const PERCENT: number = 100;
 /** `caption_safe_wrap` in captions.rs: a conservative estimate, so real glyphs fit. */
+/** Measured in the editor's FCPXML renders: glyphs grow with the frame's height, whatever its orientation. */
+const RENDERED_SCALE_HEIGHT: number = 1080;
+const RENDERED_SCALE_RATIO: number = 0.974;
 const NARROW_GLYPH_EM: number = 0.6;
 const HALF_WIDTH_GLYPH_EM: number = 0.5;
 const LAST_ASCII: string = "\u007f";
@@ -78,25 +96,51 @@ const NO_LINE_START: ReadonlySet<string> = new Set(
   Array.from("、。！？!?.,;:…」』）)]｝〜～ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶーﾞﾟ々ゝゞヽヾ"),
 );
 const NO_LINE_END: ReadonlySet<string> = new Set(Array.from("「『（([｛"));
+/** `GEMINATES`: a sokuon belongs to the kana after it. */
+const GEMINATES: ReadonlySet<string> = new Set(Array.from("っッ"));
+const KANA: RegExp = /^[\p{Script=Hiragana}\p{Script=Katakana}]$/u;
 const FACE_ANCHORS: ReadonlySet<string> = new Set(["face_above", "face_below"]);
 
-export const metricsFor = ({ width, height }: FrameSize, settings: Settings): Metrics => {
+const renderedScale = ({ height }: FrameSize): number =>
+  (height / RENDERED_SCALE_HEIGHT) * RENDERED_SCALE_RATIO;
+
+/** The editor draws half of `strokeWidth` in frame pixels, whatever the font size: percent of the text, as pixels. */
+const strokePx = (ratio: number): number => ratio * PERCENT;
+
+const blockEdge = (fontPx: number, outlinePx: number, settings: Settings): number =>
+  strokePx(outlinePx / fontPx + settings.rim_ratio);
+
+export const metricsFor = (frame: FrameSize, settings: Settings): Metrics => {
+  const { width, height } = frame;
   const fontPx: number = Math.max(1, Math.round(Math.min(width, height) * settings.font_ratio));
   const outlinePx: number = Math.max(1, fontPx * settings.outline_ratio);
-  const edgePx: number = outlinePx + fontPx * settings.rim_ratio;
-  return { fontPx, outlinePx, maxLinePx: Math.max(fontPx, width * settings.width_ratio - 2 * edgePx) };
+  const scale: number = renderedScale(frame);
+  const usable: number =
+    width *
+    Math.min(settings.width_ratio, 1 - (settings.safe_left_percent + settings.safe_right_percent) / PERCENT);
+  return {
+    fontPx,
+    outlinePx,
+    scale,
+    maxLinePx: Math.max(
+      Math.ceil(fontPx * scale),
+      Math.floor(usable - 2 * blockEdge(fontPx, outlinePx, settings)),
+    ),
+  };
 };
 
-const glyphWidth = (glyph: string, fontPx: number): number => {
+const glyphEm = (glyph: string): number => {
   if (glyph <= LAST_ASCII) {
-    return fontPx * NARROW_GLYPH_EM;
+    return NARROW_GLYPH_EM;
   }
-  return HALF_WIDTH.test(glyph) ? fontPx * HALF_WIDTH_GLYPH_EM : fontPx;
+  return HALF_WIDTH.test(glyph) ? HALF_WIDTH_GLYPH_EM : 1;
 };
 
-const measureLine = (line: string, fontPx: number): number => {
+const glyphWidth = (glyph: string, { fontPx, scale }: GlyphSizing): number => fontPx * glyphEm(glyph) * scale;
+
+const measureLine = (line: string, sizing: GlyphSizing): number => {
   const [first, ...rest] = Array.from(line);
-  return first === undefined ? 0 : glyphWidth(first, fontPx) + measureLine(rest.join(""), fontPx);
+  return first === undefined ? 0 : glyphWidth(first, sizing) + measureLine(rest.join(""), sizing);
 };
 
 const textWidth = ({ widths }: WrapText, start: number, end: number): number => widths[end] - widths[start];
@@ -117,7 +161,8 @@ function mayBreakLine(text: WrapText, point: number): boolean {
     before < after &&
     head < last &&
     !NO_LINE_START.has(text.glyphs[before]) &&
-    !NO_LINE_END.has(text.glyphs[last - 1])
+    !NO_LINE_END.has(text.glyphs[last - 1]) &&
+    !(GEMINATES.has(text.glyphs[last - 1]) && KANA.test(text.glyphs[before]))
   );
 }
 
@@ -193,14 +238,12 @@ function wrapSpan(text: WrapText, start: number, end: number): string[] {
  * The same glyph widths, whole words, kinsoku and even two-line split as captions.rs. Its phrase ends need the
  * morphological dictionary, which the window does not have, so Japanese may break elsewhere within a line pair.
  */
-export function wrapText(
-  line: string,
-  { fontPx, maxLinePx }: Pick<Metrics, "fontPx" | "maxLinePx">,
-): string[] {
+export function wrapText(line: string, sizing: GlyphSizing & Pick<Metrics, "maxLinePx">): string[] {
+  const { maxLinePx } = sizing;
   const glyphs: string[] = Array.from(line);
   const widths: number[] = [0];
   glyphs.forEach((glyph: string, index: number): void => {
-    widths.push(widths[index] + glyphWidth(glyph, fontPx));
+    widths.push(widths[index] + glyphWidth(glyph, sizing));
   });
   const wordRuns: WordRun[] = wordRunsOf(
     glyphs,
@@ -210,8 +253,8 @@ export function wrapText(
   return wrapSpan({ glyphs, widths, wordRuns, maxLinePx }, 0, glyphs.length);
 }
 
-const clampCenter = (center: number, block: number, frame: number): number =>
-  block >= frame ? frame / 2 : Math.min(frame - block / 2, Math.max(block / 2, center));
+const clampCenter = ({ center, block, start, end }: CenterClamp): number =>
+  block >= end - start ? (start + end) / 2 : Math.min(end - block / 2, Math.max(start + block / 2, center));
 
 export const sampleFace = ({ width, height }: FrameSize): FaceBox => {
   const faceHeight: number = Math.min(width, height) * FACE_HEIGHT_RATIO;
@@ -241,27 +284,39 @@ const anchorY = (anchor: Settings["placement"]["anchor"], block: BlockSize, fram
 };
 
 export function previewLayout(text: string, frame: FrameSize, settings: Settings): PreviewLayout {
-  const { fontPx, outlinePx, maxLinePx } = metricsFor(frame, settings);
-  const lines: string[] = wrapText(text, { fontPx, maxLinePx });
+  const metrics: Metrics = metricsFor(frame, settings);
+  const { fontPx, outlinePx, scale } = metrics;
+  const lines: string[] = wrapText(text, metrics);
   const block: BlockSize = {
     width:
-      Math.max(...lines.map((line: string): number => measureLine(line, fontPx))) +
-      2 * (outlinePx + fontPx * settings.rim_ratio),
-    height: fontPx * (EM_LINE_HEIGHT + (lines.length - 1) * settings.line_height),
+      Math.max(...lines.map((line: string): number => measureLine(line, metrics))) +
+      2 * blockEdge(fontPx, outlinePx, settings),
+    height: fontPx * scale * (EM_LINE_HEIGHT + (lines.length - 1) * settings.line_height),
   };
   const { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY } = settings.placement;
+  const safeLeftPx: number = (settings.safe_left_percent / PERCENT) * frame.width;
+  const safeRightPx: number = (settings.safe_right_percent / PERCENT) * frame.width;
   return {
     fontPx,
-    outlinePx,
-    rimPx: fontPx * settings.rim_ratio,
-    lineHeightPx: fontPx * settings.line_height,
+    renderedFontPx: fontPx * scale,
+    outlinePx: strokePx(outlinePx / fontPx),
+    rimPx: strokePx(settings.rim_ratio),
+    lineHeightPx: fontPx * settings.line_height * scale,
     lines,
-    x: clampCenter(frame.width / 2 + (offsetX / PERCENT) * frame.width, block.width, frame.width),
-    y: clampCenter(
-      anchorY(anchor, block, frame) + (offsetY / PERCENT) * frame.height,
-      block.height,
-      frame.height,
-    ),
+    x: clampCenter({
+      center: frame.width / 2 + (offsetX / PERCENT) * frame.width,
+      block: block.width,
+      start: safeLeftPx,
+      end: frame.width - safeRightPx,
+    }),
+    y: clampCenter({
+      center: anchorY(anchor, block, frame) + (offsetY / PERCENT) * frame.height,
+      block: block.height,
+      start: 0,
+      end: frame.height,
+    }),
+    safeLeftPx,
+    safeRightPx,
     face: FACE_ANCHORS.has(anchor) ? sampleFace(frame) : null,
   };
 }

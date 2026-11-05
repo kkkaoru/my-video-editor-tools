@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Slider } from "@/components/ui/slider.tsx";
-import { Switch } from "@/components/ui/switch.tsx";
 
 export interface AdjustFieldProps {
   label: string;
@@ -29,12 +28,6 @@ export interface SelectFieldProps {
   onChange: (value: string) => void;
   /** Shown beside the control, so a popup opening sideways does not cover it. */
   help?: ComponentChildren;
-}
-
-export interface SwitchFieldProps {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
 }
 
 /** A half-typed or out-of-range number leaves the saved value as it is. */
@@ -106,14 +99,3 @@ export const SelectField = ({ label, value, options, onChange, help }: SelectFie
 );
 
 /** The whole row is the 44 px target. */
-export function SwitchField({ label, checked, onChange }: SwitchFieldProps): VNode {
-  const labelId: string = useId();
-  return (
-    <div className="flex min-h-11 items-center justify-between gap-3">
-      <span id={labelId} className="text-sm font-medium">
-        {label}
-      </span>
-      <Switch aria-labelledby={labelId} checked={checked} onCheckedChange={onChange} />
-    </div>
-  );
-}

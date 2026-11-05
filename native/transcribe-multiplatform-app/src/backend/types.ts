@@ -15,12 +15,6 @@ export interface Placement {
   offset_y_percent: number;
 }
 
-export interface CaptionShadow {
-  enabled: boolean;
-  /** 0 to 1. */
-  strength: number;
-}
-
 /** What a profile saves and restores. */
 export interface CaptionLook {
   palette: SpeakerColor[];
@@ -30,8 +24,10 @@ export interface CaptionLook {
   outline_ratio: number;
   rim_ratio: number;
   line_height: number;
-  shadow: CaptionShadow;
   width_ratio: number;
+  /** Strips at the sides of the width that captions keep out of. */
+  safe_left_percent: number;
+  safe_right_percent: number;
   placement: Placement;
 }
 
@@ -40,10 +36,13 @@ export interface Profile {
   look: CaptionLook;
 }
 
+export type SubtitleFormat = "fcpxml" | "ttml" | "srt";
+
 export interface Settings extends CaptionLook {
   language: string;
   diarize_model: string;
   speaker_count: number;
+  subtitle_format: SubtitleFormat;
   face_model: string;
   model_dirs: string[];
   /** The profile dropped subtitle files follow; empty for the settings above. */
@@ -120,6 +119,8 @@ export interface JobOutcome {
   requested_speakers: number;
   cue_count: number;
   faceless: boolean;
+  /** The chosen font is not installed, so caption widths were estimated. */
+  font_missing: boolean;
 }
 
 export interface JobQueuedEvent {

@@ -16,9 +16,14 @@ const SETTINGS: Settings = {
   font_family: "Sans",
   font_ratio: 0.05,
   outline_ratio: 0.1,
-  shadow: { enabled: false, strength: 0.5 },
   width_ratio: 0.8,
-  placement: { anchor: "video_bottom", offset_x_percent: 0, offset_y_percent: 0 },
+  safe_left_percent: 5,
+  safe_right_percent: 5,
+  placement: {
+    anchor: "video_bottom",
+    offset_x_percent: 0,
+    offset_y_percent: 0,
+  },
   language: "auto",
   diarize_model: "b",
   face_model: "here",
@@ -27,6 +32,7 @@ const SETTINGS: Settings = {
   rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
+  subtitle_format: "fcpxml",
 };
 const SNAPSHOT: Snapshot = {
   version: "1.2.3",

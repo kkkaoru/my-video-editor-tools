@@ -1,6 +1,6 @@
 //! Drives the bundled tools: ffmpeg/ffprobe for media, whisper.cpp for words, nemo-speech for speakers.
 
-use crate::captions::{SpeakerTurn, Word};
+use crate::captions::{SpeakerTurn, VoiceSpan, Word};
 use crate::catalog::{Backend, DiarizeKind, ModelEntry};
 use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::paths::AppPaths;
@@ -35,6 +35,8 @@ const STEP_UP: u8 = 2;
 const STEP_LEFT: u8 = 3;
 /// `t_dtw` counts in hundredths of a second.
 const DTW_TICKS_PER_SECOND: f64 = 100.0;
+const CENTISECONDS_PER_SECOND: f64 = 100.0;
+const VOICE_MODEL: &str = "ggml-silero-v6.2.0.bin";
 /// A word timed by warping has only a start; it is said in at most this much per character, so the
 /// last word before a pause does not last through the pause.
 const LONGEST_SPOKEN_CHARACTER_SECONDS: f64 = 0.25;
@@ -47,6 +49,8 @@ pub struct Tools {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
     pub whisper: PathBuf,
+    /// Always the CPU build: Silero needs no GPU, and it takes a fraction of a percent of the audio's length.
+    pub voice_detector: PathBuf,
     pub nemo: PathBuf,
     /// The build `nemo` and `whisper` actually came from.
     pub backend: Backend,
@@ -110,6 +114,7 @@ impl Tools {
             ffmpeg: plain("ffmpeg", "ffmpeg")?,
             ffprobe: plain("ffmpeg", "ffprobe")?,
             whisper: whisper.map_or_else(|| plain("whisper", "whisper-cli"), Ok)?,
+            voice_detector: plain("whisper", "whisper-vad-speech-segments")?,
             nemo: nemo.map_or_else(|| plain("nemo", "nemo-speech"), Ok)?,
         })
     }
@@ -479,6 +484,36 @@ fn run_whisper(
     let json =
         std::fs::read(base.with_extension("json")).map_err(io_context("read whisper output"))?;
     parse_whisper_json(&json)
+}
+
+fn parse_voice_spans(output: &str) -> Vec<VoiceSpan> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (_, times) = line
+                .strip_prefix("Speech segment ")?
+                .split_once(": start = ")?;
+            let (start, end) = times.split_once(", end = ")?;
+            Some(VoiceSpan {
+                start: start.trim().parse::<f64>().ok()? / CENTISECONDS_PER_SECOND,
+                end: end.trim().parse::<f64>().ok()? / CENTISECONDS_PER_SECOND,
+            })
+        })
+        .collect()
+}
+
+/// Where Silero hears a voice; its model lies beside the tool. `run_capture` cannot be cancelled,
+/// which is fine at about 13 s for a 40-minute video.
+pub fn voice_spans(tools: &Tools, wav: &Path) -> AppResult<Vec<VoiceSpan>> {
+    let mut command = background_command(&tools.voice_detector);
+    command
+        .arg("-f")
+        .arg(wav)
+        .arg("-vm")
+        .arg(tools.voice_detector.with_file_name(VOICE_MODEL))
+        .arg("-np");
+    let output = run_capture(command, "whisper-vad-speech-segments")?;
+    Ok(parse_voice_spans(&String::from_utf8_lossy(&output)))
 }
 
 /// Runs whisper.cpp twice: the text from its best decoding, the times from warping.
@@ -1020,6 +1055,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
         };
@@ -1054,6 +1090,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
         };
@@ -1114,6 +1151,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
         };
@@ -1158,6 +1196,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
         };
@@ -1192,6 +1231,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
         };
@@ -1433,6 +1473,27 @@ mod tests {
         ]}]}"#;
         let words = parse_whisper_json(json).unwrap();
         assert_eq!(words[1].start, 1.0);
+    }
+
+    #[test]
+    fn voice_spans_read_the_tools_centiseconds() {
+        assert_eq!(
+            parse_voice_spans(
+                "\nDetected 2 speech segments:\nSpeech segment 0: start = 0.00, end = 80.00\nSpeech segment 1: start = 211.00, end = 349.50\n\n"
+            ),
+            vec![
+                VoiceSpan { start: 0.0, end: 0.8 },
+                VoiceSpan { start: 2.11, end: 3.495 },
+            ]
+        );
+    }
+
+    #[test]
+    fn voice_span_lines_that_do_not_parse_are_left_out() {
+        assert_eq!(
+            parse_voice_spans("Speech segment 0: start = x, end = 1.00\nSpeech segment 1: start = 1.00, end = y\nother\nSpeech segment 2: nothing"),
+            vec![]
+        );
     }
 
     #[test]

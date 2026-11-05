@@ -13,7 +13,7 @@ import { type AppStore, reportFailure } from "../state/use-app-store.ts";
 import { contrastRatio, meetsAa } from "../styling/contrast.ts";
 import { FaceSilhouette } from "./FaceSilhouette.tsx";
 import { FontField } from "./FontField.tsx";
-import { AdjustField, SelectField, type SelectOption, SwitchField } from "./fields.tsx";
+import { AdjustField, SelectField, type SelectOption } from "./fields.tsx";
 import { LayeredText } from "./LayeredText.tsx";
 import { ProfilesCard } from "./ProfilesCard.tsx";
 
@@ -44,6 +44,12 @@ interface FrameChoice {
   label: (messages: Messages) => string;
 }
 
+interface SafeZoneBandProps {
+  band: { x: number; width: number };
+  edge: number;
+  size: FrameSize;
+}
+
 interface PaletteProps {
   palette: SpeakerColor[];
   unassigned: SpeakerColor;
@@ -59,9 +65,16 @@ interface ColorSlotProps {
   onChange: (color: SpeakerColor) => void;
 }
 
+/** What the speaker models can tell apart; a further colour would never be used. */
+const MAX_PALETTE_SIZE: number = 8;
 const PERCENT: number = 100;
 const OFFSET_LIMIT: number = 50;
 const OFFSET_STEP: number = 0.5;
+const SAFE_ZONE_LIMIT: number = 40;
+/** Over the preview's bright and dark halves alike: black under white dashes holds 3:1 on both (WCAG 1.4.11). */
+const SAFE_ZONE_FILL: string = "rgb(0 0 0 / 0.3)";
+const SAFE_ZONE_LINE_RATIO: number = 0.005;
+const SAFE_ZONE_DASH_RATIO: number = 0.02;
 const PERCENT_DECIMALS_SCALE: number = 10;
 const PREVIEW_MAX_WIDTH_PX: number = 560;
 const PREVIEW_VERTICAL_WIDTH_PX: number = 200;
@@ -78,17 +91,7 @@ const LINE_HEIGHT_STEP: number = 0.001;
 const RIM_PERCENT_MAX: number = 10;
 const RIM_PERCENT_STEP: number = 0.5;
 const COLOR_INPUT_CLASS: string = "size-11 cursor-pointer rounded-md border border-border bg-background p-1";
-const FIRST_COLOURS: string[] = [
-  "#005A9C",
-  "#6A1FA8",
-  "#0B672C",
-  "#A3123A",
-  "#8A4500",
-  "#7A1D7A",
-  "#006262",
-  "#3A3AA8",
-  "#5C5C00",
-];
+const FIRST_COLOURS: string[] = ["#005A9C", "#6A1FA8", "#0B672C", "#A3123A", "#8A4500", "#7A1D7A", "#006262"];
 const SPEECH_LANGUAGES: ToggleChoice<string>[] = [
   { value: "ja", label: "日本語" },
   { value: "en", label: "English" },
@@ -151,6 +154,22 @@ const ChoiceGroup = <Value extends string>({
   </ToggleGroup>
 );
 
+/** One edge's strip and the line at its inner side; a zone of no width draws nothing. */
+const SafeZoneBand = ({ band, edge, size }: SafeZoneBandProps): VNode | null => {
+  if (band.width <= 0) {
+    return null;
+  }
+  const shortEdge: number = Math.min(size.width, size.height);
+  const line = { x1: edge, x2: edge, y1: 0, y2: size.height, strokeWidth: shortEdge * SAFE_ZONE_LINE_RATIO };
+  return (
+    <g data-slot="safe-zone">
+      <rect x={band.x} y={0} width={band.width} height={size.height} fill={SAFE_ZONE_FILL} />
+      <line {...line} stroke="#000000" />
+      <line {...line} stroke="#ffffff" strokeDasharray={String(shortEdge * SAFE_ZONE_DASH_RATIO)} />
+    </g>
+  );
+};
+
 const CaptionPreview = ({ settings, frame }: { settings: Settings; frame: FrameChoice }): VNode => {
   const messages: Messages = useMessages();
   const { width, height } = frame.size;
@@ -172,17 +191,26 @@ const CaptionPreview = ({ settings, frame }: { settings: Settings; frame: FrameC
           style={{ width: `min(${widest}px, 100%, calc(var(--preview-most) * ${width} / ${height}))` }}
         >
           {layout.face === null ? null : <FaceSilhouette face={layout.face} frame={frame.size} />}
+          <SafeZoneBand
+            band={{ x: 0, width: layout.safeLeftPx }}
+            edge={layout.safeLeftPx}
+            size={frame.size}
+          />
+          <SafeZoneBand
+            band={{ x: width - layout.safeRightPx, width: layout.safeRightPx }}
+            edge={width - layout.safeRightPx}
+            size={frame.size}
+          />
           <LayeredText
             lines={layout.lines}
             x={layout.x}
             y={layout.y}
             fontFamily={settings.font_family}
-            fontPx={layout.fontPx}
+            fontPx={layout.renderedFontPx}
             lineHeightPx={layout.lineHeightPx}
             color={color ?? FIRST_SPEAKER}
             outlinePx={layout.outlinePx}
             rimPx={layout.rimPx}
-            shadow={settings.shadow}
           />
         </svg>
       </div>
@@ -241,7 +269,6 @@ function ColorSlot({ color, name, fontFamily, onChange }: ColorSlotProps): VNode
             color={color}
             outlinePx={SAMPLE_FONT_PX * SAMPLE_OUTLINE_RATIO}
             rimPx={SAMPLE_FONT_PX * SAMPLE_RIM_RATIO}
-            shadow={{ enabled: false, strength: 0 }}
           />
         </svg>
       </div>
@@ -294,12 +321,14 @@ function PaletteEditor({
           />
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            onClick={(): void => onChange([...palette, { fill: NEW_SLOT_FILL, outline: DEFAULT_OUTLINE }])}
-          >
-            {messages.addSpeaker}
-          </Button>
+          {palette.length < MAX_PALETTE_SIZE ? (
+            <Button
+              variant="outline"
+              onClick={(): void => onChange([...palette, { fill: NEW_SLOT_FILL, outline: DEFAULT_OUTLINE }])}
+            >
+              {messages.addSpeaker}
+            </Button>
+          ) : null}
           {palette.length > 1 ? (
             <Button variant="outline" onClick={(): void => onChange(palette.slice(0, -1))}>
               {messages.removeSpeaker}
@@ -382,6 +411,23 @@ export function StylePane({ store, settings, profiles, faceOptions }: StylePaneP
                 step={OFFSET_STEP}
                 onChange={(offset_y_percent: number): void => place({ offset_y_percent })}
               />
+              <p className="text-muted-foreground">{messages.safeZoneHint}</p>
+              <AdjustField
+                label={messages.safeLeft}
+                value={settings.safe_left_percent}
+                min={0}
+                max={SAFE_ZONE_LIMIT}
+                step={OFFSET_STEP}
+                onChange={(safe_left_percent: number): void => update({ safe_left_percent })}
+              />
+              <AdjustField
+                label={messages.safeRight}
+                value={settings.safe_right_percent}
+                min={0}
+                max={SAFE_ZONE_LIMIT}
+                step={OFFSET_STEP}
+                onChange={(safe_right_percent: number): void => update({ safe_right_percent })}
+              />
               <SelectField
                 label={messages.faceModel}
                 value={settings.face_model}
@@ -460,23 +506,6 @@ export function StylePane({ store, settings, profiles, faceOptions }: StylePaneP
                 step={RIM_PERCENT_STEP}
                 onChange={(percent: number): void => update({ rim_ratio: percent / PERCENT })}
               />
-              <SwitchField
-                label={messages.shadowEnabled}
-                checked={settings.shadow.enabled}
-                onChange={(enabled: boolean): void => update({ shadow: { ...settings.shadow, enabled } })}
-              />
-              {settings.shadow.enabled ? (
-                <AdjustField
-                  label={messages.shadowStrength}
-                  value={Math.round(settings.shadow.strength * PERCENT)}
-                  min={0}
-                  max={100}
-                  step={5}
-                  onChange={(percent: number): void =>
-                    update({ shadow: { ...settings.shadow, strength: percent / PERCENT } })
-                  }
-                />
-              ) : null}
             </CardContent>
           </Card>
         </div>

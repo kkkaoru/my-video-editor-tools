@@ -77,8 +77,10 @@ export const enMessages: Messages = {
   jobDone: "Finished: {cues} captions, {speakers} speakers",
   jobDoneOneSpeaker: "Finished: {cues} captions, 1 speaker",
   jobFaceless: "Captions where no face was found were placed at the bottom of the video.",
+  jobFontMissing: "The chosen font is not on this computer, so the caption widths are an estimate.",
   jobNoPercent: "this model reports no percentage",
   speakerCount: "Number of speakers",
+  subtitleFormat: "Subtitle file format",
   speakerCountAuto: "Detect automatically",
   speakerCountValue: "{count} speakers",
   speakerCountOne: "1 speaker",
@@ -113,6 +115,10 @@ export const enMessages: Messages = {
   anchorVideoBottom: "Bottom of the video",
   offsetX: "Fine-tune left and right (percent of width)",
   offsetY: "Fine-tune up and down (percent of height)",
+  safeZoneHint:
+    "The strip at each side of the video where subtitles are not placed. The preview shows it as a dark band.",
+  safeLeft: "Left safe zone (percent of width)",
+  safeRight: "Right safe zone (percent of width)",
   faceModel: "Face detection model",
   speechLanguage: "Spoken language",
   languageAuto: "Detect automatically",
@@ -126,8 +132,6 @@ export const enMessages: Messages = {
   unknownSpeaker: "Unknown speaker",
   contrastWarning:
     "{name}: the fill and outline contrast is {ratio}:1, below the WCAG AA minimum of 4.5:1. Choose colours further apart.",
-  shadowEnabled: "Add a shadow",
-  shadowStrength: "Shadow strength (percent)",
   previewHeading: "Preview",
   previewFrameLabel: "Preview size",
   previewDescription: "Preview caption at {x}% across and {y}% down the {size} frame.",
@@ -268,6 +272,7 @@ export const enMessages: Messages = {
             steps: [
               "Open the “{tabJobs}” tab.",
               "“{speakerCount}” starts at 1. If more people speak, choose how many. If you are not sure, choose “{speakerCountAuto}”.",
+              "Choose the file type in “{subtitleFormat}”. It starts at FCPXML. The line under it says what each type is for.",
               "Drag the video into the box and let go. To drag means to hold it down while you move it. You can also press “{pickVideos}”.",
             ],
             notes: [
@@ -293,7 +298,7 @@ export const enMessages: Messages = {
           {
             heading: "The files you get",
             intro:
-              "Four files appear in the same folder as the video. Older files are kept. If the name is taken, the new files get -2 added to their name.",
+              "Two files appear in the same folder as the video: the subtitle file in the type you chose, and a .transcript.json file. Older files are kept. If the name is taken, the new files get -2 added to their name.",
             steps: [],
             notes: [
               ".fcpxml: subtitles video editing software can read, together with the video.",
@@ -308,9 +313,9 @@ export const enMessages: Messages = {
         heading: "Open the subtitles in your video editor",
         parts: [
           {
-            heading: "Start with the FCPXML file",
+            heading: "Bring in an FCPXML file",
             intro:
-              "An FCPXML file brings in the video and the subtitles at once, with their colours, outlines and positions. That is why you should use it first.",
+              "An FCPXML file brings in the video and the subtitles at once, with their colours, outlines and positions. That is why it is the first setting.",
             steps: [
               "Open a project in your video editor. A project holds all your editing work.",
               "Bring in the timeline from the menu (for example, File > Import > Timeline).",
@@ -322,8 +327,8 @@ export const enMessages: Messages = {
             ],
           },
           {
-            heading: "When to use the other files",
-            intro: "Use the other files only when you need them.",
+            heading: "When to use the other types",
+            intro: "To make another type, choose it in “{subtitleFormat}” before you add the video.",
             steps: [],
             notes: [
               "To bring in a .ttml file, choose Import Subtitle in the Media Pool. The Media Pool is where your videos and subtitles are kept.",
@@ -348,6 +353,7 @@ export const enMessages: Messages = {
             ],
             notes: [
               "The preview is on the right on a wide screen and at the top on a narrow one. It stays in view as you scroll.",
+              "To keep subtitles off the left and right edges, set the safe zones under “{positionHeading}”. The dark bands in the preview show them.",
             ],
           },
           {
@@ -414,6 +420,7 @@ export const enMessages: Messages = {
             notes: [
               "The write-again button next to a video's name in the list makes new files with a different name. The old files are kept.",
               "The original files are kept. The new files get -2 or a similar number added to their name.",
+              "The new file uses the type chosen in “{subtitleFormat}”, whatever file you added.",
               "The .transcript.json file with the same name must be in the same folder.",
               "When you are using a profile, changes you have not saved to it are not used.",
             ],
@@ -482,7 +489,8 @@ export const enMessages: Messages = {
     imageFolder: "en",
     images: {
       models: "The Models tab. 1 is the tab, 2 is the download button, 3 is the bar for each model.",
-      transcribe: "The Transcribe tab. 1 is the tab, 2 is the number of speakers, 3 is the box for videos.",
+      transcribe:
+        "The Transcribe tab. 1 is the tab, 2 is the number of speakers, 3 is the file type, 4 is the box for videos.",
       look: "The caption look tab. 1 is the tab, 2 is where the subtitles go, 3 is a slider, 4 is a person's colours.",
       font: "The open font list. 1 shows the font's name, 2 is where you type, 3 is the font to choose.",
       profiles: "The profiles area. 1 is where you type a name, 2 is the save button, 3 is the load button.",

@@ -47,7 +47,12 @@ export const SelectContent = ({
   ...props
 }: PrimitiveProps<SelectPrimitive.Popup.Props>): VNode => (
   <SelectPrimitive.Portal container={MAIN_LANDMARK}>
-    <SelectPrimitive.Positioner sideOffset={4} alignItemWithTrigger={false} className="isolate z-50">
+    <SelectPrimitive.Positioner
+      positionMethod="fixed"
+      sideOffset={4}
+      alignItemWithTrigger={false}
+      className="isolate z-50"
+    >
       <SelectPrimitive.Popup
         data-slot="select-content"
         className={cn(

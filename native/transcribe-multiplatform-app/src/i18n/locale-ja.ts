@@ -77,8 +77,10 @@ export const jaMessages: Messages = {
   jobDone: "できました: 字幕 {cues} 個、話す人 {speakers} 人",
   jobDoneOneSpeaker: "できました: 字幕 {cues} 個、話す人 1 人",
   jobFaceless: "顔が見つからない場面の字幕は、動画の下に置きました。",
+  jobFontMissing: "選んだフォントがこのパソコンにないので、字幕の幅はおおよその値で計算しました。",
   jobNoPercent: "このモデルは進み具合を数字で出せません",
   speakerCount: "話す人の数",
+  subtitleFormat: "字幕ファイルの形式",
   speakerCountAuto: "自動で決める",
   speakerCountValue: "{count} 人",
   speakerCountOne: "1 人",
@@ -113,6 +115,9 @@ export const jaMessages: Messages = {
   anchorVideoBottom: "動画の下",
   offsetX: "左右の細かい調整 (動画の横はばに対する %)",
   offsetY: "上下の細かい調整 (動画の高さに対する %)",
+  safeZoneHint: "動画の左右の端に、字幕を置かない幅を決めます。プレビューでは暗い帯で出ます。",
+  safeLeft: "左のセーフゾーン (動画の横はばに対する %)",
+  safeRight: "右のセーフゾーン (動画の横はばに対する %)",
   faceModel: "顔を見つけるモデル",
   speechLanguage: "話している言葉",
   languageAuto: "自動で決める",
@@ -126,8 +131,6 @@ export const jaMessages: Messages = {
   unknownSpeaker: "不明な人",
   contrastWarning:
     "{name}: 文字とふちの色が近くて、読みにくいです (色の差は {ratio}:1、目安は 4.5:1 以上)。明るさのちがう色を選んでください。",
-  shadowEnabled: "影を付ける",
-  shadowStrength: "影の強さ (%)",
   previewHeading: "プレビュー",
   previewFrameLabel: "プレビューの大きさ",
   previewDescription: "プレビューの字幕は {size} の画面で、横 {x}%、縦 {y}% の位置にあります。",
@@ -274,6 +277,7 @@ export const jaMessages: Messages = {
             steps: [
               "「{tabJobs}」のタブを開きます。",
               "「{speakerCount}」は、最初は 1 人です。2 人以上が話す動画は、人数を選びます。分からないときは「{speakerCountAuto}」を選びます。",
+              "「{subtitleFormat}」で、作るファイルの形式を選びます。最初は FCPXML です。下に、その形式の使い道が出ます。",
               "動画を枠の中までドラッグして、指を離します。ドラッグは、押したまま動かすことです。「{pickVideos}」のボタンで選ぶこともできます。",
             ],
             notes: [
@@ -299,7 +303,7 @@ export const jaMessages: Messages = {
           {
             heading: "できるファイル",
             intro:
-              "動画と同じフォルダに、4 つのファイルができます。前に作ったファイルは消しません。同じ名前があるときは、新しいファイルの名前に -2 を付けます。",
+              "動画と同じフォルダに、選んだ形式の字幕ファイルと .transcript.json の 2 つができます。前に作ったファイルは消しません。同じ名前があるときは、新しいファイルの名前に -2 を付けます。",
             steps: [],
             notes: [
               ".fcpxml: 動画編集ソフトで読める、字幕入りのファイルです。",
@@ -314,9 +318,9 @@ export const jaMessages: Messages = {
         heading: "動画編集ソフトに読み込む",
         parts: [
           {
-            heading: "まず FCPXML を読み込む",
+            heading: "FCPXML を読み込む",
             intro:
-              "FCPXML は、動画と字幕を一度に読み込めるファイルです。字幕の色、ふち、位置も一緒に入ります。だから、まずこのファイルを使います。",
+              "FCPXML は、動画と字幕を一度に読み込めるファイルです。字幕の色、ふち、位置も一緒に入ります。だから、最初はこの形式になっています。",
             steps: [
               "動画編集ソフトでプロジェクトを開きます。プロジェクトは、編集の作業をまとめたものです。",
               "メニューからタイムラインを読み込みます (例: File > Import > Timeline)。",
@@ -326,8 +330,8 @@ export const jaMessages: Messages = {
             notes: ["字幕は 2〜3 段に重なっています。文字を直すときは、全部の段を直します。"],
           },
           {
-            heading: "ほかのファイルを使うとき",
-            intro: "ほかのファイルは、必要なときだけ使います。",
+            heading: "ほかの形式を使うとき",
+            intro: "ほかの形式は、動画を入れる前に「{subtitleFormat}」で選びます。",
             steps: [],
             notes: [
               ".ttml は、Media Pool で Import Subtitle を選んで読み込みます。Media Pool は、動画や字幕を入れておく場所です。",
@@ -352,6 +356,7 @@ export const jaMessages: Messages = {
             ],
             notes: [
               "プレビューは、広い画面では右に、せまい画面では上に出ます。下に動かしても見えたままです。",
+              "字幕を動画の左右の端に置きたくないときは、「{positionHeading}」のセーフゾーンで幅を決めます。プレビューの暗い帯がその幅です。",
             ],
           },
           {
@@ -422,6 +427,7 @@ export const jaMessages: Messages = {
             notes: [
               "一覧の、動画の名前の横にある作り直すボタンは、別の名前で新しいファイルを作ります。元のファイルは残ります。",
               "元のファイルは消しません。新しいファイルの名前に -2 などを付けます。",
+              "新しいファイルの形式は、入れたファイルではなく「{subtitleFormat}」で決まります。",
               "同じフォルダに、同じ名前の .transcript.json が必要です。",
               "プロファイルを使っているときは、そのプロファイルに保存していない変更を使いません。",
             ],
@@ -491,7 +497,8 @@ export const jaMessages: Messages = {
     imageFolder: "ja",
     images: {
       models: "「モデル」のタブの画面です。1 はタブ、2 はダウンロードのボタン、3 はモデルごとのバーです。",
-      transcribe: "「字幕を作る」のタブの画面です。1 はタブ、2 は話す人の数、3 は動画を入れる枠です。",
+      transcribe:
+        "「字幕を作る」のタブの画面です。1 はタブ、2 は話す人の数、3 は字幕ファイルの形式、4 は動画を入れる枠です。",
       look: "「字幕の見た目と位置」のタブの画面です。1 はタブ、2 は字幕を置く場所、3 はスライダー、4 は話す人の色です。",
       font: "フォントの一覧を開いた画面です。1 はフォントの名前が出ているところ、2 は名前を入力するところ、3 は選ぶフォントです。",
       profiles:
