@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from replay import caption_faces, caption_position
+from replay.caption_plan import rows
 from replay.core import ReplayError
+from replay.recordings import record
 
 FIXTURE = Path(__file__).parent / "fixtures" / "caption-faces-v1.json"
 VIDEO = {
@@ -155,6 +157,32 @@ def test_build_refuses_another_length(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_build_refuses_another_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     work, movie = recording(tmp_path)
     ffprobe(monkeypatch, {**VIDEO, "height": 1080})
+    with pytest.raises(ReplayError, match="not the delivery canvas's shape"):
+        caption_faces.build(work, movie)
+
+
+def test_an_even_crop_width_fits_the_canvas_as_composition_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, movie = recording(tmp_path)
+    track = json.loads((work / "yolo-track-v2.json").read_text(encoding="utf-8"))
+    pin(work.parent, "yolo-track", "track",
+        put(work / "yolo-track-v2.json", {**track, "width": 608, "height": 1080}))  # fmt: skip
+    ffprobe(monkeypatch, VIDEO)
+    faces = caption_faces.build(work, movie)
+    assert record(rows(faces["samples"], "samples")[0]["box"]) == {
+        "x": 17.76, "y": 36.32, "w": 177.63, "h": 355.26, "score": 0.9123,
+    }  # fmt: skip
+
+
+def test_a_shape_two_source_pixels_off_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, movie = recording(tmp_path)
+    track = json.loads((work / "yolo-track-v2.json").read_text(encoding="utf-8"))
+    pin(work.parent, "yolo-track", "track",
+        put(work / "yolo-track-v2.json", {**track, "width": 610, "height": 1080}))  # fmt: skip
+    ffprobe(monkeypatch, VIDEO)
     with pytest.raises(ReplayError, match="not the delivery canvas's shape"):
         caption_faces.build(work, movie)
 

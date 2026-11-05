@@ -12,8 +12,8 @@ pinned pipeline evidence:
 - the cut plan the ``cut-plan`` step pinned: a slot inside a kept cut lands on delivery frame
   ``output_start_frame + slot - source_start_frame``; samples in removed footage are dropped.
 
-Boxes are scaled from the tracked source's pixels to the delivery canvas; no sample is thinned,
-moved or invented.
+Boxes are placed from the tracked source's pixels on the delivery canvas exactly as composition
+fits and centres the source (``resizeMode: fit``); no sample is thinned, moved or invented.
 """
 
 import json
@@ -133,9 +133,12 @@ def build(work: Path, movie: Path) -> dict[str, object]:
     if total != frames or integer(cuts["fps"], "fps") != rate:
         raise ReplayError(f"{movie} is not the cut plan's length and rate")
     tracked = integer(track["width"], "width"), integer(track["height"], "height")
-    scale = width / tracked[0]
-    if abs(tracked[1] * scale - height) >= 1:
+    # An even crop width (608 for 9:16 of 1080, ``source_vertical``) may miss the canvas's shape
+    # by up to one source pixel; anything more is another shape.
+    if abs(tracked[0] * height - width * tracked[1]) > height:
         raise ReplayError("The YOLO track's frame is not the delivery canvas's shape")
+    scale = min(width / tracked[0], height / tracked[1])
+    origin = (width - tracked[0] * scale) / 2, (height - tracked[1] * scale) / 2
     slots = frame_slots.first_slots(clock.pts, clock.time_base, rate)
     every = track["protocol"] == yolo_track.PROTOCOL  # a v3 track keeps every face
     samples: list[dict[str, object]] = []
@@ -148,12 +151,12 @@ def build(work: Path, movie: Path) -> dict[str, object]:
         if frame is None:
             continue  # never shown, or cut from the delivery
         if every:
-            boxes = [scaled(face, scale) for face in rows_of_faces(row["faces"])]
+            boxes = [scaled(face, scale, origin) for face in rows_of_faces(row["faces"])]
             samples.append({"frame": frame, "boxes": boxes})
             continue
         face = row["face"]
         samples.append({"frame": frame, "faceCount": integer(row["faceCount"], "faceCount"),
-                        "box": None if face is None else scaled(face, scale)})  # fmt: skip
+                        "box": None if face is None else scaled(face, scale, origin)})  # fmt: skip
     weights = record(track["weights"])
     return validate({
         "version": ALL_FACES_VERSION if every else VERSION, "clock": "delivery", "rate": rate,
@@ -164,11 +167,12 @@ def build(work: Path, movie: Path) -> dict[str, object]:
     })  # fmt: skip
 
 
-def scaled(face: object, scale: float) -> dict[str, object]:
+def scaled(face: object, scale: float, origin: tuple[float, float]) -> dict[str, object]:
     """A YOLO face ``[x1, y1, x2, y2, score]`` as a canvas box."""
     values = [real(item, "face") for item in rows_of(face)]
     return {
-        "x": round(values[0] * scale, PIXEL_DIGITS), "y": round(values[1] * scale, PIXEL_DIGITS),
+        "x": round(origin[0] + values[0] * scale, PIXEL_DIGITS),
+        "y": round(origin[1] + values[1] * scale, PIXEL_DIGITS),
         "w": round((values[2] - values[0]) * scale, PIXEL_DIGITS),
         "h": round((values[3] - values[1]) * scale, PIXEL_DIGITS),
         "score": round(values[4], SCORE_DIGITS),
