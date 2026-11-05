@@ -86,7 +86,8 @@ windows_whisper_vulkan() {
   local short="${RUNNER_TEMP:-$work}/wv"
   rm -rf "$short"
   clone_whisper "$short/src"
-  cmake -S "$short/src" -B "$short/b" -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >/dev/null
+  # GGML_NATIVE would target the build machine: a runner with AVX-512 makes a binary that crashes on PCs without it.
+  cmake -S "$short/src" -B "$short/b" -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >/dev/null
   cmake --build "$short/b" --config Release --target whisper-cli -j 8 >"$short/build.log" ||
     { tail -40 "$short/build.log"; return 1; }
   rm -rf "$runtime/whisper-vulkan" && mkdir -p "$runtime/whisper-vulkan"
