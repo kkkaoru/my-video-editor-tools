@@ -48,10 +48,11 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
-from replay import gpu_lease, memory_admission
+from replay import disk_budget, gpu_lease, memory_admission
 from replay import recording_pipeline as pipelines
 from replay import recording_priority as priority
 from replay import recording_redo as redo
+from replay import recording_retirement as retirement
 from replay import recording_steps as steps
 from replay.core import ReplayError
 from replay.recording_steps import recording_name
@@ -70,6 +71,9 @@ BROADCASTS = Path("edits/work/recording-pipeline/broadcasts.json")
 POLL_SECONDS = 60.0
 QUEUE_KEYS = frozenset({"version", "slots", "paused", "recordings"})
 DISK_FLOOR_EXIT = 4  # scripts/tmux-job.sh refuses a launch below the free-space floor
+# One full recording's measured peak (2026-10): less than this spare and finished work is retired.
+RELIEF_SPARE_BYTES = 83 * disk_budget.GIB
+RELIEF_SECONDS = 900.0
 STEP_NAMES = (*pipelines.ORDER, "retire-intermediates")
 # A failure of one recording or tick is reported and retried; it never stops the runner.
 FAILURES = (ReplayError, StageError, OSError, ValueError)
@@ -264,6 +268,30 @@ def volume_retries(layouts: Sequence[pipelines.Layout], day: str) -> int:
                 continue
             count += row.get("class") == "volume" and row.get("retried") is True
     return count
+
+
+def relieve_disk(*, defaults_path: Path, defaults: dict[str, object], checkout: Path) -> int:
+    """Below ``RELIEF_SPARE_BYTES`` on either volume, retire every finished recording's
+    intermediates; ``retire`` keeps what evidence names and honours retirementHold. Returns bytes.
+    """
+    volumes = (checkout, Path(str(defaults["deliveryRoot"])))
+    if all(disk_budget.measure(path).spare >= RELIEF_SPARE_BYTES for path in volumes):
+        return 0
+    settings = pipelines.retirement_settings(defaults_path)
+    freed = 0
+    for found in sorted(Path(str(defaults["root"])).glob("*/pipeline.json")):
+        try:
+            layout = pipelines.layout_of(
+                found.parent.name.removeprefix("replay-"), defaults, checkout
+            )
+            # Not done(): recordings older than a newer step never hold its receipt, yet their
+            # gate passed; retire itself waits for the gate and the viewer's copy.
+            if not running(layout):
+                outcome = retirement.retire(steps.load(found), settings)
+                freed += int(str(outcome.get("bytes", 0)))
+        except FAILURES as error:
+            print(f"Relief skipped {found.parent.name}: {error}", file=sys.stderr)
+    return freed
 
 
 def newest_broadcast(row: dict[str, object]) -> int:
@@ -633,7 +661,13 @@ def main(argv: Sequence[str] | None = None, *, sleep: Callable[[float], None] = 
         return 1
     launch = launcher(args.defaults, defaults, checkout)
     relaunch = relauncher(args.defaults, defaults, checkout)
+    relieved = time.monotonic() - RELIEF_SECONDS  # a first check at once
     while True:
+        if time.monotonic() - relieved >= RELIEF_SECONDS:
+            relieved = time.monotonic()
+            freed = relieve_disk(defaults_path=args.defaults, defaults=defaults, checkout=checkout)
+            if freed:
+                print(json.dumps({"reliefBytes": freed}), flush=True)
         try:
             rows = tick(args.queue, defaults, checkout=checkout, launch=launch, relaunch=relaunch)
         except FAILURES as error:  # e.g. a queue file caught mid-edit: retried next tick

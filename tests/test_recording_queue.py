@@ -8,17 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from replay import gpu_lease, memory_admission
+from replay import disk_budget, gpu_lease, memory_admission
 from replay import recording_pipeline as pipelines
 from replay import recording_priority as priority
 from replay import recording_queue as queue
 from replay import recording_redo as redo
+from replay import recording_retirement as retirement
 from replay import recording_steps as steps
 from replay.core import ReplayError
 from replay.stages import execution_lock
 
 BROADCASTS = {"3": 3_000, "2": 2_000, "1": 1_000}
 WINDOW_ALIVE = queue.window_alive  # the autouse fixture replaces it
+RELIEVE_DISK = queue.relieve_disk  # likewise
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +36,7 @@ def recordings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipelines, "broadcast", lambda root: BROADCASTS[root.name[7:]])
     monkeypatch.setattr(queue, "window_alive", lambda _directory, _name: False)
     monkeypatch.setattr(queue, "swap_thrashing", lambda: False)  # no real paging measurement
+    monkeypatch.setattr(queue, "relieve_disk", lambda **_arguments: 0)  # no real volume measured
 
 
 def checkout(tmp_path: Path) -> Path:
@@ -782,3 +785,57 @@ def test_a_redo_waits_for_a_slot_and_refuses_an_unqueued_recording(
     with pytest.raises(SystemExit):
         queue.main(["redo", str(path), "3", "--from", "cleanup", "--chunks", "a"])
     assert queue.main(["redo", str(path), "3", "--from", "compos"]) == 1
+
+
+def test_relief_retires_only_finished_idle_recordings_when_a_volume_runs_low(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values = {**defaults(tmp_path), "deliveryRoot": str(tmp_path)}
+    root = Path(str(values["root"]))
+    (root / "replay-3").mkdir(parents=True)
+    (root / "replay-2").mkdir()
+    (root / "replay-1").mkdir()
+    (root / "replay-3/pipeline.json").write_text("{}", encoding="utf-8")
+    (root / "replay-2/pipeline.json").write_text("{}", encoding="utf-8")
+    (root / "replay-1/pipeline.json").write_text("{}", encoding="utf-8")
+    spare = [queue.RELIEF_SPARE_BYTES]
+    monkeypatch.setattr(
+        disk_budget,
+        "measure",
+        lambda path: type("Room", (), {"spare": spare[0]})(),
+    )
+    monkeypatch.setattr(pipelines, "retirement_settings", lambda _path: "settings")
+    monkeypatch.setattr(queue, "running", lambda layout: layout.directory.name == "replay-2")
+    monkeypatch.setattr(steps, "load", lambda path: path.parent.name)
+    retired: list[object] = []
+
+    def retire(pipeline: object, settings: object) -> dict[str, object]:
+        retired.append((pipeline, settings))
+        return {"bytes": 5, "removed": []}
+
+    monkeypatch.setattr(retirement, "retire", retire)
+    assert RELIEVE_DISK(defaults_path=Path("d.json"), defaults=values, checkout=tmp_path) == 0
+    assert retired == []
+    spare[0] -= 1
+    assert RELIEVE_DISK(defaults_path=Path("d.json"), defaults=values, checkout=tmp_path) == 10
+    assert retired == [("replay-1", "settings"), ("replay-3", "settings")]
+
+    def broken(_pipeline: object, _settings: object) -> dict[str, object]:
+        raise ReplayError("unreadable evidence")
+
+    monkeypatch.setattr(retirement, "retire", broken)
+    assert RELIEVE_DISK(defaults_path=Path("d.json"), defaults=values, checkout=tmp_path) == 0
+    assert capsys.readouterr().err == (
+        "Relief skipped replay-1: unreadable evidence\n"
+        "Relief skipped replay-3: unreadable evidence\n"
+    )
+
+
+def test_the_runner_reports_what_relief_freed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(pipelines, "load_defaults", lambda _path: defaults(tmp_path))
+    monkeypatch.setattr(queue, "relieve_disk", lambda **_arguments: 7)
+    path = queue_file(tmp_path)
+    assert queue.main(["run", "--queue", str(path), "--defaults", "d.json", "--once"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[0]) == {"reliefBytes": 7}
