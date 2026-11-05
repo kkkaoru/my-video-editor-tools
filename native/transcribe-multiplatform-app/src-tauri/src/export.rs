@@ -10,6 +10,7 @@ use crate::settings::{Settings, SpeakerColor, SubtitleFormat};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const FORMAT_VERSION: u32 = 1;
 const MILLIS_PER_HOUR: u64 = 3_600_000;
@@ -23,15 +24,22 @@ const BASIC_TITLE_UID: &str =
 const PERCENT: f64 = 100.0;
 const STROKE_SIDES: f64 = 2.0;
 const FCPXML_VERSION: &str = "1.10";
-const BLACK: &str = "#000000";
 /// `lineSpacing` in FCPXML is added to the title's own line height.
 const FCP_NATURAL_LINE_HEIGHT: f64 = 1.2;
 
 /// One stacked title of a caption.
-struct TitleLayer {
-    fill: String,
+pub(crate) struct TitleLayer {
+    pub(crate) kind: LayerKind,
+    pub(crate) fill: String,
     /// Colour and width per side in pixels.
-    stroke: Option<(String, f64)>,
+    pub(crate) stroke: Option<(String, f64)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LayerKind {
+    Rim,
+    Outline,
+    Fill,
 }
 
 /// What every layer of one caption shares.
@@ -100,7 +108,7 @@ impl Transcript {
     }
 }
 
-fn escape_xml(text: &str) -> String {
+pub(crate) fn escape_xml(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -155,11 +163,27 @@ pub fn render_srt(cues: &[Cue], settings: &Settings) -> String {
     out
 }
 
-fn ttml_span(line: &str, color: &SpeakerColor, outline_px: f64) -> String {
+/// TTML has one `tts:textOutline`, so the rim is left out: the fill's thickness joins the outline, or
+/// becomes an outline in the fill's own colour when there is no other.
+fn ttml_outline(color: &SpeakerColor, font_px: f64) -> String {
+    let width = (color.fill_width + color.outline_width) * font_px;
+    let outline_color = if color.outline_width > 0.0 {
+        &color.outline
+    } else {
+        &color.fill
+    };
+    if width > 0.0 {
+        format!("{outline_color} {width:.1}px 0px")
+    } else {
+        "none".to_owned()
+    }
+}
+
+fn ttml_span(line: &str, color: &SpeakerColor, font_px: f64) -> String {
     format!(
-        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline} {outline_px:.1}px 0px\">{text}</span>",
+        "<span tts:color=\"{fill}\" tts:textOutline=\"{outline}\">{text}</span>",
         fill = color.fill,
-        outline = color.outline,
+        outline = ttml_outline(color, font_px),
         text = escape_xml(line),
     )
 }
@@ -196,7 +220,7 @@ pub fn render_ttml(
         let spans: Vec<String> = cue
             .lines
             .iter()
-            .map(|line| ttml_span(line, color, metrics.outline_px))
+            .map(|line| ttml_span(line, color, metrics.font_px))
             .collect();
         let _ = writeln!(
             body,
@@ -233,7 +257,7 @@ fn fcp_time(seconds: f64, info: &VideoInfo) -> String {
     format!("{}/{}s", frames * u64::from(info.fps_den), info.fps_num)
 }
 
-fn frame_at(seconds: f64, info: &VideoInfo) -> u64 {
+pub(crate) fn frame_at(seconds: f64, info: &VideoInfo) -> u64 {
     (seconds.max(0.0) * f64::from(info.fps_num) / f64::from(info.fps_den)).round() as u64
 }
 
@@ -243,9 +267,13 @@ fn fcp_frames(frames: u64, info: &VideoInfo) -> String {
 
 /// Offset and duration on the frame grid: ends are rounded the same way as starts, so a title can
 /// never run into the next one, and it always lasts at least one frame.
-fn fcp_span(start: f64, end: f64, info: &VideoInfo) -> (String, String) {
+pub(crate) fn frame_span(start: f64, end: f64, info: &VideoInfo) -> (u64, u64) {
     let first = frame_at(start, info);
-    let frames = frame_at(end, info).saturating_sub(first).max(1);
+    (first, frame_at(end, info).saturating_sub(first).max(1))
+}
+
+fn fcp_span(start: f64, end: f64, info: &VideoInfo) -> (String, String) {
+    let (first, frames) = frame_span(start, end, info);
     (fcp_frames(first, info), fcp_frames(frames, info))
 }
 
@@ -282,28 +310,36 @@ fn file_url(path: &Path) -> String {
     }
 }
 
-/// Bottom to top, as the repository's captions are drawn: black rim, outline band, then the fill with
-/// no stroke at all, so one glyph's outline can never paint over its neighbour's fill.
-fn title_layers(color: &SpeakerColor, metrics: &Metrics, settings: &Settings) -> Vec<TitleLayer> {
-    let band = metrics.outline_px;
-    let rim = settings.rim_ratio * metrics.font_px;
-    let needs_rim = rim > 0.0 && !color.outline.eq_ignore_ascii_case(BLACK);
-    let rim_layer = needs_rim.then(|| TitleLayer {
-        fill: BLACK.to_owned(),
-        stroke: Some((BLACK.to_owned(), band + rim)),
+/// One caption's stacked layers, bottom to top, from that speaker's values: rim, outline, then the fill, each
+/// reaching past the one above. Only a layer that thickens the letters strokes them, so with no fill width
+/// one glyph's outline can never paint over its neighbour's fill. Every format that stacks layers builds on this.
+pub(crate) fn title_layers(color: &SpeakerColor, font_px: f64) -> Vec<TitleLayer> {
+    let fill = color.fill_width * font_px;
+    let outline = fill + color.outline_width * font_px;
+    let rim = outline + color.rim_width * font_px;
+    let rim_layer = color
+        .rim
+        .as_ref()
+        .filter(|_| color.rim_width > 0.0)
+        .map(|rim_color| TitleLayer {
+            kind: LayerKind::Rim,
+            fill: rim_color.clone(),
+            stroke: Some((rim_color.clone(), rim)),
+        });
+    let outline_layer = (color.outline_width > 0.0).then(|| TitleLayer {
+        kind: LayerKind::Outline,
+        fill: color.outline.clone(),
+        stroke: Some((color.outline.clone(), outline)),
     });
+    let fill_layer = TitleLayer {
+        kind: LayerKind::Fill,
+        fill: color.fill.clone(),
+        stroke: (color.fill_width > 0.0).then(|| (color.fill.clone(), fill)),
+    };
     rim_layer
         .into_iter()
-        .chain([
-            TitleLayer {
-                fill: color.outline.clone(),
-                stroke: Some((color.outline.clone(), band)),
-            },
-            TitleLayer {
-                fill: color.fill.clone(),
-                stroke: None,
-            },
-        ])
+        .chain(outline_layer)
+        .chain([fill_layer])
         .collect()
 }
 
@@ -382,7 +418,7 @@ fn fcp_title(
         line_height: settings.line_height,
         metrics,
     };
-    title_layers(settings.color_for(cue.speaker), metrics, settings)
+    title_layers(settings.color_for(cue.speaker), metrics.font_px)
         .iter()
         .enumerate()
         .map(|(layer_index, layer)| {
@@ -444,7 +480,7 @@ fn sibling(base: &Path, extension: &str) -> PathBuf {
 }
 
 const TRANSCRIPT_EXTENSION: &str = ".transcript.json";
-const OUTPUT_EXTENSIONS: [&str; 4] = [".ttml", ".srt", ".fcpxml", TRANSCRIPT_EXTENSION];
+const OUTPUT_EXTENSIONS: [&str; 5] = [".drt", ".ttml", ".srt", ".fcpxml", TRANSCRIPT_EXTENSION];
 
 /// A base path beside the video that clobbers none of an earlier run's files.
 #[must_use]
@@ -505,9 +541,16 @@ pub fn transcript_beside(dropped: &Path) -> AppResult<PathBuf> {
 }
 
 /// The chosen subtitle file, as its extension and contents.
-fn subtitle_file(transcript: &Transcript, settings: &Settings) -> (&'static str, String) {
-    match settings.subtitle_format {
-        SubtitleFormat::Fcpxml => (".fcpxml", render_fcpxml(transcript, settings)),
+fn subtitle_file(
+    transcript: &Transcript,
+    settings: &Settings,
+) -> AppResult<(&'static str, Vec<u8>)> {
+    Ok(match settings.subtitle_format {
+        SubtitleFormat::Drt => (
+            ".drt",
+            crate::drt::render(transcript, settings, &id_seed())?,
+        ),
+        SubtitleFormat::Fcpxml => (".fcpxml", render_fcpxml(transcript, settings).into_bytes()),
         SubtitleFormat::Ttml => (
             ".ttml",
             render_ttml(
@@ -515,10 +558,19 @@ fn subtitle_file(transcript: &Transcript, settings: &Settings) -> (&'static str,
                 &transcript.info,
                 &transcript.metrics,
                 settings,
-            ),
+            )
+            .into_bytes(),
         ),
-        SubtitleFormat::Srt => (".srt", render_srt(&transcript.cues, settings)),
-    }
+        SubtitleFormat::Srt => (".srt", render_srt(&transcript.cues, settings).into_bytes()),
+    })
+}
+
+/// Different every export: Resolve reuses a pool clip it already holds under the same id.
+fn id_seed() -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{}-{stamp}", std::process::id())
 }
 
 /// Writes the chosen subtitle format next to `base` and returns its path, plus the transcript that
@@ -531,9 +583,9 @@ pub fn write_outputs(
     let json = serde_json::to_vec_pretty(transcript)
         .map_err(|error| AppError::Invalid(error.to_string()))?;
     write_atomic(&sibling(base, TRANSCRIPT_EXTENSION), &json)?;
-    let (extension, contents) = subtitle_file(transcript, settings);
+    let (extension, contents) = subtitle_file(transcript, settings)?;
     let path = sibling(base, extension);
-    write_atomic(&path, contents.as_bytes())?;
+    write_atomic(&path, &contents)?;
     Ok(vec![path])
 }
 
@@ -602,6 +654,7 @@ mod tests {
         duration: 10.0,
         fps_num: 30000,
         fps_den: 1001,
+        audio: None,
     };
     const METRICS: Metrics = Metrics {
         font_px: 52.0,
@@ -710,7 +763,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-23.1\""),
+            out.contains("strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-23.0\""),
             "{out}"
         );
         assert!(out.contains("src=\"file:///v/a.mp4\""), "{out}");
@@ -793,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn a_white_band_stacks_rim_band_and_fill_titles() {
+    fn a_white_band_stacks_band_and_fill_titles_without_a_rim() {
         let settings = Settings::default();
         let out = fcp_title(0, &cue(Some(2), "A&B"), &INFO, &METRICS, &settings);
         assert_eq!(
@@ -802,34 +855,101 @@ mod tests {
                 "            <title ref=\"r2\" lane=\"1\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
                 "              <adjust-transform position=\"0.000 -40.741\"/>\n",
                 "              <text><text-style ref=\"ts0-0\">A&amp;B</text-style></text>\n",
-                "              <text-style-def id=\"ts0-0\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.0000 0.0000 1\" strokeColor=\"0.0000 0.0000 0.0000 1\" strokeWidth=\"-29.9\" alignment=\"center\"/></text-style-def>\n",
+                "              <text-style-def id=\"ts0-0\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"1.0000 1.0000 1.0000 1\" strokeColor=\"1.0000 1.0000 1.0000 1\" strokeWidth=\"-23.0\" alignment=\"center\"/></text-style-def>\n",
                 "            </title>\n",
                 "            <title ref=\"r2\" lane=\"2\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
                 "              <adjust-transform position=\"0.000 -40.741\"/>\n",
                 "              <text><text-style ref=\"ts0-1\">A&amp;B</text-style></text>\n",
-                "              <text-style-def id=\"ts0-1\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"1.0000 1.0000 1.0000 1\" strokeColor=\"1.0000 1.0000 1.0000 1\" strokeWidth=\"-23.1\" alignment=\"center\"/></text-style-def>\n",
-                "            </title>\n",
-                "            <title ref=\"r2\" lane=\"3\" name=\"A&amp;B\" offset=\"45045/30000s\" start=\"0s\" duration=\"52052/30000s\">\n",
-                "              <adjust-transform position=\"0.000 -40.741\"/>\n",
-                "              <text><text-style ref=\"ts0-2\">A&amp;B</text-style></text>\n",
-                "              <text-style-def id=\"ts0-2\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.3529 0.6118 1\" alignment=\"center\"/></text-style-def>\n",
+                "              <text-style-def id=\"ts0-1\"><text-style font=\"Noto Sans JP\" fontSize=\"52\" fontFace=\"Bold\" lineSpacing=\"12.9\" fontColor=\"0.0000 0.3529 0.6118 1\" alignment=\"center\"/></text-style-def>\n",
                 "            </title>\n",
             )
         );
     }
 
+    fn colour(
+        fill_width: f64,
+        outline_width: f64,
+        rim: Option<&str>,
+        rim_width: f64,
+    ) -> SpeakerColor {
+        SpeakerColor {
+            fill: "#111111".to_owned(),
+            fill_width,
+            outline: "#222222".to_owned(),
+            outline_width,
+            rim: rim.map(str::to_owned),
+            rim_width,
+            shadow: None,
+            shadow_x: 0.0,
+            shadow_y: 0.0,
+            shadow_blur: 0.0,
+        }
+    }
+
+    /// Fill and stroke of each layer, bottom first.
+    fn layer_values(color: &SpeakerColor) -> Vec<(String, Option<(String, f64)>)> {
+        title_layers(color, 100.0)
+            .into_iter()
+            .map(|layer| (layer.fill, layer.stroke))
+            .collect()
+    }
+
     #[test]
-    fn a_black_outline_or_no_rim_needs_no_rim_title() {
-        let settings = Settings::default();
+    fn three_layers_each_reach_past_the_one_above() {
         assert_eq!(
-            title_layers(&settings.palette[0], &METRICS, &settings).len(),
-            2
+            layer_values(&colour(0.01, 0.1, Some("#333333"), 0.02)),
+            vec![
+                ("#333333".to_owned(), Some(("#333333".to_owned(), 13.0))),
+                ("#222222".to_owned(), Some(("#222222".to_owned(), 11.0))),
+                ("#111111".to_owned(), Some(("#111111".to_owned(), 1.0))),
+            ]
         );
-        let no_rim = Settings {
-            rim_ratio: 0.0,
-            ..Settings::default()
-        };
-        assert_eq!(title_layers(&no_rim.palette[1], &METRICS, &no_rim).len(), 2);
+    }
+
+    #[test]
+    fn a_transparent_rim_makes_no_layer_whatever_its_width() {
+        assert_eq!(
+            layer_values(&colour(0.0, 0.1, None, 0.5)),
+            vec![
+                ("#222222".to_owned(), Some(("#222222".to_owned(), 10.0))),
+                ("#111111".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_layer_with_no_width_is_left_out() {
+        assert_eq!(
+            layer_values(&colour(0.0, 0.0, Some("#333333"), 0.0)),
+            vec![("#111111".to_owned(), None)]
+        );
+        assert_eq!(
+            layer_values(&colour(0.0, 0.0, Some("#333333"), 0.1)),
+            vec![
+                ("#333333".to_owned(), Some(("#333333".to_owned(), 10.0))),
+                ("#111111".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_defaults_stack_two_layers_with_a_white_band_or_a_black_one() {
+        let settings = Settings::default();
+        assert_eq!(title_layers(&settings.palette[0], 52.0).len(), 2);
+        assert_eq!(title_layers(&settings.palette[1], 52.0).len(), 2);
+    }
+
+    #[test]
+    fn ttml_has_one_outline_so_the_rim_is_left_out_and_the_fill_width_joins_it() {
+        assert_eq!(
+            ttml_outline(&colour(0.01, 0.1, Some("#333333"), 0.5), 100.0),
+            "#222222 11.0px 0px"
+        );
+        assert_eq!(
+            ttml_outline(&colour(0.05, 0.0, None, 0.0), 100.0),
+            "#111111 5.0px 0px"
+        );
+        assert_eq!(ttml_outline(&colour(0.0, 0.0, None, 0.0), 100.0), "none");
     }
 
     #[test]
@@ -883,6 +1003,13 @@ mod tests {
 
     #[test]
     fn only_the_chosen_format_and_the_transcript_are_written() {
+        assert_eq!(
+            written_names(SubtitleFormat::Drt, "drt"),
+            (
+                vec!["a.drt".to_owned()],
+                vec!["a.drt".to_owned(), "a.transcript.json".to_owned()]
+            )
+        );
         assert_eq!(
             written_names(SubtitleFormat::Fcpxml, "fcpxml"),
             (

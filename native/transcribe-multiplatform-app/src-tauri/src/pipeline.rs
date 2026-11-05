@@ -1,7 +1,7 @@
 //! One dropped video to finished subtitle files, with staged progress.
 
 use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn};
-use crate::catalog::{self, Backend, DiarizeKind, Hardware, ModelEntry};
+use crate::catalog::{self, Backend, Hardware, ModelEntry};
 use crate::engines::{self, DiarizeModel, Tools, VideoInfo};
 use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::eta::{
@@ -13,15 +13,13 @@ use crate::fonts::bold_widths;
 use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
-use crate::settings::{Anchor, Settings};
-use crate::speakers::{limit_speakers, speaker_total};
+use crate::settings::{Anchor, Settings, SubtitleFormat};
+use crate::speakers::limit_speakers;
 use crate::whisper_ggml;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Sortformer's activation threshold for the retry: below its default, so quieter voices count.
-const RETRY_ONSET: f64 = 0.3;
 /// A job folder untouched this long was left by a killed process; no step is silent for a day.
 const ABANDONED_JOB_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -194,6 +192,11 @@ struct SpeakerRun<'a> {
     cancel: &'a CancelToken,
 }
 
+fn speakers_for(paths: &AppPaths, settings: &Settings, hardware: &Hardware) -> u32 {
+    let rows = catalog::statuses(hardware, paths, &settings.model_dirs);
+    catalog::effective_speaker_count(settings.speaker_count, &rows)
+}
+
 fn prepare_speaker_model(
     paths: &AppPaths,
     settings: &Settings,
@@ -218,10 +221,10 @@ fn prepare_speaker_model(
     })
 }
 
-fn run_speaker_model(
+/// Extra voices are merged. Whatever is still missing is reported, never invented.
+fn separate_speakers(
     prepared: &PreparedSpeakerModel,
     run: &SpeakerRun<'_>,
-    onset: Option<f64>,
     on_tick: &mut dyn FnMut(),
 ) -> AppResult<Vec<SpeakerTurn>> {
     let model = DiarizeModel {
@@ -230,9 +233,8 @@ fn run_speaker_model(
         encoder: prepared.encoder.as_deref(),
         device: catalog::device_for(prepared.entry, run.hardware, run.tools.backend),
         speaker_count: run.settings.speaker_count,
-        onset,
     };
-    engines::diarize(
+    let turns = engines::diarize(
         run.tools,
         &model,
         run.wav,
@@ -240,25 +242,8 @@ fn run_speaker_model(
         run.work,
         run.cancel,
         on_tick,
-    )
-}
-
-/// With a known count, a run that finds too few voices is repeated once with a lower activation
-/// threshold; extra voices are then merged. Whatever is still missing is reported, never invented.
-fn separate_speakers(
-    prepared: &PreparedSpeakerModel,
-    run: &SpeakerRun<'_>,
-    on_tick: &mut dyn FnMut(),
-) -> AppResult<Vec<SpeakerTurn>> {
-    let wanted = run.settings.speaker_count;
-    let first = run_speaker_model(prepared, run, None, on_tick)?;
-    let can_retry = prepared.entry.diarize_kind == Some(DiarizeKind::Sortformer);
-    let turns = if can_retry && speaker_total(&first) < wanted {
-        run_speaker_model(prepared, run, Some(RETRY_ONSET), on_tick)?
-    } else {
-        first
-    };
-    Ok(limit_speakers(&turns, wanted))
+    )?;
+    Ok(limit_speakers(&turns, run.settings.speaker_count))
 }
 
 fn needs_cuda_runtime(entry: &ModelEntry, tools: &Tools) -> AppResult<()> {
@@ -282,8 +267,9 @@ pub fn run_job(
     sink: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     settings.validate()?;
-    // One known speaker needs no separation at all: no model, no memory, no time.
-    let speaker_model = if settings.speaker_count == 1 {
+    let speakers = speakers_for(paths, settings, hardware);
+    // One speaker needs no separation at all: no model, no memory, no time.
+    let speaker_model = if speakers == 1 {
         None
     } else {
         Some(prepare_speaker_model(paths, settings, hardware)?)
@@ -411,7 +397,7 @@ pub fn run_job(
         outputs,
         base,
         speaker_count: transcript.speaker_count,
-        requested_speakers: settings.speaker_count,
+        requested_speakers: speakers,
         cue_count: transcript.cues.len(),
         faceless,
         font_missing: glyphs.is_none(),
@@ -425,11 +411,21 @@ pub fn relayout_to(
     base: &Path,
     paths: &AppPaths,
     settings: &Settings,
+    hardware: &Hardware,
     cancel: &CancelToken,
     sink: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     settings.validate()?;
     let mut transcript = Transcript::load(transcript_file)?;
+    // A timeline needs the audio's details, which transcripts of earlier versions do not hold.
+    if settings.subtitle_format == SubtitleFormat::Drt && transcript.info.audio.is_none() {
+        if let Some(info) = Tools::locate(paths, Backend::Default)
+            .ok()
+            .and_then(|tools| engines::probe(&tools, &transcript.source).ok())
+        {
+            transcript.info = info;
+        }
+    }
     let needs_faces = wants_faces(settings) && transcript.faces.is_empty();
     let faces_from = needs_faces
         .then(|| face_model(paths, settings))
@@ -484,7 +480,7 @@ pub fn relayout_to(
         outputs,
         base: base.to_path_buf(),
         speaker_count: transcript.speaker_count,
-        requested_speakers: settings.speaker_count,
+        requested_speakers: speakers_for(paths, settings, hardware),
         cue_count: transcript.cues.len(),
         faceless,
         font_missing: glyphs.is_none(),

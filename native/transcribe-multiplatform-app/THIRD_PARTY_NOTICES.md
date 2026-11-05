@@ -14,6 +14,6 @@ Bundled in the release builds:
 | [Whisper tokenizer vocabulary](https://huggingface.co/openai/whisper-large-v3-turbo) | model conversion | MIT |
 
 Downloaded by the user in the app, never bundled: the CUDA build of NeMo-Speech.cpp (Apache-2.0; GeForce build only,
-which also fetches the NVIDIA CUDA libraries it ships with under NVIDIA's own license), Whisper large-v3-turbo (MIT), Nemotron 3 Diarization and
+which also fetches the NVIDIA CUDA libraries it ships with under NVIDIA's own license), Whisper large-v3-turbo (MIT) and
 Nemotron 3.5 Transcribe 30B-A4B (OpenMDW-1.1; the GGUF conversions come from the third-party repository
 AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF because NVIDIA publishes only safetensors checkpoints).

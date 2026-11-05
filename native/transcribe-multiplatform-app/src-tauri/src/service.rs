@@ -74,7 +74,7 @@ enum JobRequest {
     /// A transcript or a dropped subtitle file: new files under an unused name, never over the existing ones.
     Reformat {
         dropped: PathBuf,
-        look: Option<CaptionLook>,
+        look: Option<Box<CaptionLook>>,
     },
 }
 
@@ -127,12 +127,21 @@ fn run_reformat(
     dropped: &Path,
     settings: &Settings,
     paths: &AppPaths,
+    hardware: &Hardware,
     cancel: &CancelToken,
     report: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     let transcript = transcript_beside(dropped)?;
     let base = unused_stem(&transcript_base(&transcript));
-    pipeline::relayout_to(&transcript, &base, paths, settings, cancel, report)
+    pipeline::relayout_to(
+        &transcript,
+        &base,
+        paths,
+        settings,
+        hardware,
+        cancel,
+        report,
+    )
 }
 
 fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
@@ -155,6 +164,7 @@ fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
                 .clone()
                 .map_or_else(|| settings.clone(), |look| look.applied_to(&settings)),
             &shared.paths,
+            &shared.hardware,
             &job.cancel,
             &mut report,
         ),
@@ -274,7 +284,11 @@ impl Service {
         );
         Ok(Snapshot {
             version: env!("CARGO_PKG_VERSION"),
-            locale: self.locale.clone(),
+            locale: if settings.ui_language.is_empty() {
+                self.locale.clone()
+            } else {
+                settings.ui_language.clone()
+            },
             hardware: self.shared.hardware.clone(),
             backend: catalog::backend_for(&self.shared.hardware, &self.shared.paths),
             settings,
@@ -432,7 +446,9 @@ impl Service {
         let selected = locked(&self.shared.settings, "settings")?
             .active_profile
             .clone();
-        let look = profiles::look_named(&self.saved_profiles()?, &selected).ok();
+        let look = profiles::look_named(&self.saved_profiles()?, &selected)
+            .ok()
+            .map(Box::new);
         let mut seen = HashSet::new();
         dropped
             .iter()
@@ -560,6 +576,20 @@ mod tests {
     }
 
     #[test]
+    fn the_chosen_ui_language_wins_over_the_system_locale() {
+        let (service, _events) = started(&scratch("ui-language"));
+        let chosen = service
+            .save_settings(Settings {
+                ui_language: "de".to_owned(),
+                ..Settings::default()
+            })
+            .unwrap();
+        assert_eq!(chosen.locale, "de");
+        let system = service.save_settings(Settings::default()).unwrap();
+        assert_eq!(system.locale, "en");
+    }
+
+    #[test]
     fn a_missing_locale_falls_back_to_english() {
         let (service, _events) = started(&scratch("locale"));
         assert_eq!(service.snapshot().unwrap().locale, "en");
@@ -624,7 +654,7 @@ mod tests {
             serde_json::json!({
                 "state": "failed",
                 "id": 1,
-                "error": { "code": "no_model_for_role", "role": "diarize" }
+                "error": { "code": "model_missing", "model": "yunet" }
             })
         );
     }
@@ -707,16 +737,16 @@ mod tests {
     fn deleting_removes_only_the_apps_copy() {
         let root = scratch("delete");
         let (service, _events) = started(&root);
-        let owned = root.join("data/models/nemotron-3-diarization/a.gguf");
+        let owned = root.join("data/models/whisper-large-v3-turbo/a.gguf");
         std::fs::create_dir_all(owned.parent().unwrap()).unwrap();
         std::fs::write(&owned, b"x").unwrap();
         let elsewhere = root.join("user-models/a.gguf");
         std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
         std::fs::write(&elsewhere, b"x").unwrap();
-        service.delete_model("nemotron-3-diarization").unwrap();
+        service.delete_model("whisper-large-v3-turbo").unwrap();
         assert!(!owned.exists());
         assert!(elsewhere.exists());
-        assert!(service.delete_model("nemotron-3-diarization").is_ok());
+        assert!(service.delete_model("whisper-large-v3-turbo").is_ok());
     }
 
     #[test]
@@ -789,7 +819,6 @@ mod tests {
                 sha256: "00",
             }])),
             min_memory_gib: 0,
-            diarize_kind: None,
             needs_cuda: false,
             extra_args: &[],
             max_audio_seconds: None,
@@ -821,6 +850,7 @@ mod tests {
                 duration: 10.0,
                 fps_num: 30,
                 fps_den: 1,
+                audio: None,
             },
             crate::captions::metrics_for(
                 &crate::engines::VideoInfo {
@@ -829,6 +859,7 @@ mod tests {
                     duration: 10.0,
                     fps_num: 30,
                     fps_den: 1,
+                    audio: None,
                 },
                 &Settings::default(),
             ),
@@ -1134,7 +1165,7 @@ mod tests {
     fn resetting_deletes_downloads_and_interrupted_files_but_no_user_folder() {
         let root = scratch("reset");
         let (service, _events) = started(&root);
-        let model = root.join("data/models/nemotron-3-diarization/a.gguf");
+        let model = root.join("data/models/whisper-large-v3-turbo/a.gguf");
         let interrupted = root.join("data/models/whisper-large-v3-turbo/model.safetensors.part");
         let runtime = root.join("data/runtime/geforce/nemo/x.dll");
         let external = root.join("user-models/a.gguf");
@@ -1185,7 +1216,7 @@ mod tests {
         std::fs::create_dir_all(root.join("data/models")).unwrap();
         std::os::unix::fs::symlink(
             root.join("elsewhere"),
-            root.join("data/models/nemotron-3-diarization"),
+            root.join("data/models/whisper-large-v3-turbo"),
         )
         .unwrap();
         service.reset_models().unwrap();
@@ -1196,15 +1227,15 @@ mod tests {
     fn resetting_keeps_a_catalog_folder_the_user_added_as_their_own() {
         let root = scratch("reset-overlap");
         let (service, _events) = started(&root);
-        let inside = root.join("data/models/nemotron-3-diarization/a.gguf");
-        let beside = root.join("data/models/whisper-large-v3-turbo/a.gguf");
+        let inside = root.join("data/models/whisper-large-v3-turbo/a.gguf");
+        let beside = root.join("data/models/nemotron-3.5-transcribe-q2l/a.gguf");
         std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
         std::fs::create_dir_all(beside.parent().unwrap()).unwrap();
         std::fs::write(&inside, b"x").unwrap();
         std::fs::write(&beside, b"x").unwrap();
         service
             .save_settings(Settings {
-                model_dirs: vec![root.join("data/models/nemotron-3-diarization")],
+                model_dirs: vec![root.join("data/models/whisper-large-v3-turbo")],
                 ..Settings::default()
             })
             .unwrap();
@@ -1217,7 +1248,7 @@ mod tests {
     fn resetting_keeps_everything_when_the_user_added_a_parent_of_the_app_folder() {
         let root = scratch("reset-parent");
         let (service, _events) = started(&root);
-        let model = root.join("data/models/nemotron-3-diarization/a.gguf");
+        let model = root.join("data/models/whisper-large-v3-turbo/a.gguf");
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
         std::fs::write(&model, b"x").unwrap();
         service
@@ -1319,6 +1350,7 @@ mod tests {
             duration: 2.0,
             fps_num: 30,
             fps_den: 1,
+            audio: None,
         };
         let metrics = crate::captions::metrics_for(&info, &Settings::default());
         let transcript = crate::export::Transcript::new(
@@ -1373,7 +1405,7 @@ mod tests {
             font_family: "Hiragino Sans".to_owned(),
             speaker_count: 3,
             language: "ja".to_owned(),
-            diarize_model: "nemotron-3-diarization".to_owned(),
+            diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
             ..Settings::default()
         };
         service.save_profile("A", custom.clone()).unwrap();
@@ -1383,7 +1415,10 @@ mod tests {
         assert_eq!(snapshot.settings.active_profile, "B");
         assert_eq!(snapshot.settings.speaker_count, 3);
         assert_eq!(snapshot.settings.language, "ja");
-        assert_eq!(snapshot.settings.diarize_model, "nemotron-3-diarization");
+        assert_eq!(
+            snapshot.settings.diarize_model,
+            "nemotron-3.5-transcribe-q2l"
+        );
         assert_eq!(profile_look(&service, "B"), CaptionLook::default());
         assert_eq!(profile_look(&service, "A").font_family, "Hiragino Sans");
         assert_eq!(

@@ -277,12 +277,13 @@ fn fcpxml_title_scale(info: &VideoInfo) -> f64 {
 pub fn metrics_for(info: &VideoInfo, settings: &Settings) -> Metrics {
     let short_edge = f64::from(info.width.min(info.height));
     let font_px = (short_edge * settings.font_ratio).round().max(1.0);
-    let outline_px = (font_px * settings.outline_ratio).max(1.0);
+    let outline_px = (font_px * settings.widest_edge_ratio()).max(1.0);
     let frame_w = f64::from(info.width);
     let safe_share = 1.0 - (settings.safe_left_percent + settings.safe_right_percent) / PERCENT;
     let usable = (frame_w * settings.width_ratio).min(frame_w * safe_share);
     let rendered_scale = match settings.subtitle_format {
-        SubtitleFormat::Fcpxml => fcpxml_title_scale(info),
+        // A timeline is drawn at FCPXML's measured size, so the two formats look the same.
+        SubtitleFormat::Drt | SubtitleFormat::Fcpxml => fcpxml_title_scale(info),
         SubtitleFormat::Ttml | SubtitleFormat::Srt => 1.0,
     };
     // Whole pixels: the transcript stores this, and a whole number reads back exactly.
@@ -404,11 +405,9 @@ fn glyph_width(c: char, metrics: &Metrics) -> f64 {
 /// `strokeWidth` in frame pixels on every frame and font size, whatever percent of the font it says,
 /// and draws no FCPXML shadow at all.
 fn block_edge(font_px: f64, outline_px: f64, settings: &Settings) -> f64 {
-    let outline = outline_px + settings.rim_ratio * font_px;
-    if settings.subtitle_format == SubtitleFormat::Fcpxml {
-        outline / font_px * PERCENT
-    } else {
-        outline
+    match settings.subtitle_format {
+        SubtitleFormat::Drt | SubtitleFormat::Fcpxml => outline_px / font_px * PERCENT,
+        SubtitleFormat::Ttml | SubtitleFormat::Srt => outline_px,
     }
 }
 
@@ -1599,6 +1598,14 @@ pub fn build_cues(
 mod tests {
     use super::*;
 
+    /// The layout expectations below were calibrated on FCPXML, which scales titles and strokes itself.
+    fn fcpxml_settings() -> Settings {
+        Settings {
+            subtitle_format: SubtitleFormat::Fcpxml,
+            ..Settings::default()
+        }
+    }
+
     /// Lays out with estimated widths, so what these tests pin holds whichever fonts a computer has.
     fn build_cues(
         words: &[Word],
@@ -1645,6 +1652,7 @@ mod tests {
         duration: 60.0,
         fps_num: 30,
         fps_den: 1,
+        audio: None,
     };
     const VERTICAL: VideoInfo = VideoInfo {
         width: 1080,
@@ -1652,6 +1660,7 @@ mod tests {
         duration: 60.0,
         fps_num: 30,
         fps_den: 1,
+        audio: None,
     };
     const VERTICAL_SMALL: VideoInfo = VideoInfo {
         width: 720,
@@ -1659,6 +1668,7 @@ mod tests {
         duration: 60.0,
         fps_num: 30,
         fps_den: 1,
+        audio: None,
     };
     const UHD: VideoInfo = VideoInfo {
         width: 3840,
@@ -1666,6 +1676,7 @@ mod tests {
         duration: 60.0,
         fps_num: 30,
         fps_den: 1,
+        audio: None,
     };
 
     fn at(anchor: Anchor, x: f64, y: f64) -> Settings {
@@ -1675,22 +1686,22 @@ mod tests {
                 offset_x_percent: x,
                 offset_y_percent: y,
             },
-            ..Settings::default()
+            ..fcpxml_settings()
         }
     }
 
     #[test]
     fn caption_size_and_line_width_follow_the_resolution() {
-        let settings = Settings::default();
+        let settings = fcpxml_settings();
         assert_eq!(metrics_for(&FULL_HD, &settings).font_px, 52.0);
         assert_eq!(metrics_for(&UHD, &settings).font_px, 104.0);
         assert_eq!(metrics_for(&VERTICAL, &settings).font_px, 52.0);
-        assert_eq!(metrics_for(&FULL_HD, &settings).max_line_px.round(), 1698.0);
-        assert_eq!(metrics_for(&UHD, &settings).max_line_px.round(), 3426.0);
-        assert_eq!(metrics_for(&VERTICAL, &settings).max_line_px.round(), 942.0);
+        assert_eq!(metrics_for(&FULL_HD, &settings).max_line_px.round(), 1705.0);
+        assert_eq!(metrics_for(&UHD, &settings).max_line_px.round(), 3433.0);
+        assert_eq!(metrics_for(&VERTICAL, &settings).max_line_px.round(), 949.0);
         assert_eq!(
             metrics_for(&VERTICAL_SMALL, &settings).max_line_px.round(),
-            618.0
+            625.0
         );
     }
 
@@ -1840,14 +1851,8 @@ mod tests {
     #[test]
     fn speaker_changes_start_a_new_cue() {
         let words = [spoken(0.0, 1.0, "はい", 1), spoken(1.1, 2.0, "いいえ", 2)];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 2);
         assert_eq!(cues[0].speaker, Some(1));
         assert_eq!(cues[1].speaker, Some(2));
@@ -1860,14 +1865,8 @@ mod tests {
             spoken(4.5, 5.5, "そう。", 1),
             spoken(5.6, 6.5, "次", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| cue.lines.join(""))
@@ -1882,14 +1881,8 @@ mod tests {
             spoken(0.0, 2.0, "今日は公園へ行きました", 1),
             spoken(6.0, 8.0, "楽しかったです", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].end, 2.12);
         assert_eq!(cues[1].start, 6.0);
     }
@@ -1897,14 +1890,8 @@ mod tests {
     #[test]
     fn a_short_cue_grows_only_after_its_speech() {
         let words = [spoken(1.0, 1.2, "はい", 1)];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].start, 1.0);
         assert_eq!((cues[0].end * 1000.0).round(), 1833.0);
     }
@@ -1915,14 +1902,8 @@ mod tests {
             spoken(0.0, 1.0, "うーん頑", 1),
             spoken(1.8, 3.0, "張るよ", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["うーん頑張るよ"]);
     }
 
@@ -1953,14 +1934,8 @@ mod tests {
     #[test]
     fn a_short_cue_gets_its_minimum_time_before_a_late_next_cue() {
         let words = [spoken(0.0, 0.3, "はい。", 1), spoken(0.4, 2.0, "いいえ", 2)];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| ((cue.start * 1000.0).round(), (cue.end * 1000.0).round()))
@@ -1972,14 +1947,8 @@ mod tests {
     #[test]
     fn the_minimum_time_stops_at_the_end_of_the_video() {
         let words = [spoken(59.8, 59.9, "はい", 1)];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].end, 60.0);
     }
 
@@ -1993,7 +1962,7 @@ mod tests {
             &words,
             &[],
             &VERTICAL_SMALL,
-            &Settings::default(),
+            &fcpxml_settings(),
             test_segmenter(),
         )
         .unwrap();
@@ -2014,14 +1983,8 @@ mod tests {
             spoken(0.0, 1.0, "今日は雨", 1),
             spoken(3.0, 4.0, "ですね", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 2);
     }
 
@@ -2032,14 +1995,8 @@ mod tests {
             spoken(1.0, 3.0, "明", 1),
             spoken(3.0, 3.5, "日", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| (cue.lines.join(""), cue.start))
@@ -2106,14 +2063,8 @@ mod tests {
     #[test]
     fn punctuation_stays_with_its_sentence() {
         let words = [spoken(0.0, 1.0, "はい", 1), spoken(5.0, 5.1, "。", 2)];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["はい。"]);
     }
 
@@ -2155,18 +2106,12 @@ mod tests {
 
     #[test]
     fn a_second_line_grows_by_the_line_height_setting() {
-        let metrics = metrics_for(&FULL_HD, &Settings::default());
-        assert_eq!(
-            block_height(1, &metrics, &Settings::default()).round(),
-            92.0
-        );
-        assert_eq!(
-            block_height(2, &metrics, &Settings::default()).round(),
-            165.0
-        );
+        let metrics = metrics_for(&FULL_HD, &fcpxml_settings());
+        assert_eq!(block_height(1, &metrics, &fcpxml_settings()).round(), 92.0);
+        assert_eq!(block_height(2, &metrics, &fcpxml_settings()).round(), 165.0);
         let settings = Settings {
             line_height: 2.0,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
         assert_eq!(block_height(2, &metrics, &settings).round(), 193.0);
     }
@@ -2175,15 +2120,12 @@ mod tests {
     fn a_block_is_as_wide_as_its_longest_line_with_the_outline_and_rim() {
         let metrics = Metrics {
             font_px: 10.0,
-            outline_px: 1.0,
+            outline_px: 6.0,
             max_line_px: 500.0,
             glyphs: None,
             rendered_scale: 1.0,
         };
-        let settings = Settings {
-            rim_ratio: 0.5,
-            ..Settings::default()
-        };
+        let settings = fcpxml_settings();
         let width = block_width(&["あい".to_owned(), "a".to_owned()], &metrics, &settings);
         assert_eq!((width * 100.0).round(), 14000.0);
     }
@@ -2273,8 +2215,8 @@ mod tests {
         let placer = FacePlacer::new(
             &[sample(0.0, 100.0, 200.0), sample(10.0, 500.0, 600.0)],
             &FULL_HD,
-            &metrics_for(&FULL_HD, &Settings::default()),
-            &Settings::default(),
+            &metrics_for(&FULL_HD, &fcpxml_settings()),
+            &fcpxml_settings(),
         );
         let zone = placer.zone_during(4.0, 5.0).unwrap();
         assert_eq!((zone.top, zone.bottom), (100.0, 600.0));
@@ -2556,7 +2498,7 @@ mod tests {
 
     #[test]
     fn with_no_room_a_block_goes_beside_the_face_on_its_wider_side() {
-        let settings = Settings::default();
+        let settings = fcpxml_settings();
         let metrics = metrics_for(&FULL_HD, &settings);
         let placer = FacePlacer::new(&[], &FULL_HD, &metrics, &settings);
         let zone = |left: f64, right: f64| FaceZone {
@@ -2584,7 +2526,7 @@ mod tests {
 
     #[test]
     fn a_block_too_wide_for_the_side_may_use_the_top_above_the_face_box() {
-        let settings = Settings::default();
+        let settings = fcpxml_settings();
         let metrics = metrics_for(&FULL_HD, &settings);
         let placer = FacePlacer::new(&[], &FULL_HD, &metrics, &settings);
         let zone = FaceZone {
@@ -2604,7 +2546,7 @@ mod tests {
 
     #[test]
     fn a_face_that_only_visits_during_a_shot_still_lets_a_cue_use_its_own_moment() {
-        let settings = Settings::default();
+        let settings = fcpxml_settings();
         let metrics = metrics_for(&FULL_HD, &settings);
         let sample = |time: f64, top: f64, bottom: f64| FaceSample {
             time,
@@ -2676,15 +2618,9 @@ mod tests {
             ),
             spoken(16.0, 16.1, "ん", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
-        let metrics = metrics_for(&FULL_HD, &Settings::default());
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
+        let metrics = metrics_for(&FULL_HD, &fcpxml_settings());
         assert!(cues
             .iter()
             .flat_map(|cue| cue.lines.iter())
@@ -2787,14 +2723,8 @@ mod tests {
             spoken(2.3, 2.6, "なんだ", 1),
             spoken(2.6, 2.9, "けど", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["結構お腹いっぱいなんだけど"]);
         assert_eq!(cues.len(), 1);
     }
@@ -2807,14 +2737,8 @@ mod tests {
             spoken(1.0, 1.3, "で", 1),
             spoken(1.4, 1.7, "す", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].lines, vec!["これは字幕です"]);
     }
@@ -2893,7 +2817,7 @@ mod tests {
     #[test]
     fn a_line_never_breaks_between_a_sokuon_and_the_kana_it_doubles() {
         let group = vec![word(0.0, 4.0, "怒られなくってって")];
-        let metrics = metrics_for(&VERTICAL_SMALL, &Settings::default());
+        let metrics = metrics_for(&VERTICAL_SMALL, &fcpxml_settings());
         let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         let sokuon = "怒られなくっ".chars().count();
         assert!(!run.may_break_line(sokuon));
@@ -2903,7 +2827,7 @@ mod tests {
     #[test]
     fn a_sokuon_before_a_kanji_may_end_a_line() {
         let group = vec![word(0.0, 4.0, "あっ今日")];
-        let metrics = metrics_for(&VERTICAL_SMALL, &Settings::default());
+        let metrics = metrics_for(&VERTICAL_SMALL, &fcpxml_settings());
         let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert!(run.may_break_line(2));
     }
@@ -2921,7 +2845,7 @@ mod tests {
     fn narrow_settings() -> Settings {
         Settings {
             width_ratio: 0.5,
-            ..Settings::default()
+            ..fcpxml_settings()
         }
     }
 
@@ -2983,10 +2907,10 @@ mod tests {
 
     #[test]
     fn a_portrait_fcpxml_title_is_measured_larger_and_other_formats_are_not() {
-        let fcpxml = Settings::default();
+        let fcpxml = fcpxml_settings();
         let ttml = Settings {
             subtitle_format: SubtitleFormat::Ttml,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
         assert_eq!(
             metrics_for(&VERTICAL_SMALL, &fcpxml).rendered_scale.round(),
@@ -3002,10 +2926,7 @@ mod tests {
 
     #[test]
     fn a_blocks_edge_follows_how_the_format_draws_its_outline() {
-        let fcpxml = Settings {
-            rim_ratio: 0.0,
-            ..Settings::default()
-        };
+        let fcpxml = fcpxml_settings();
         let srt = Settings {
             subtitle_format: SubtitleFormat::Srt,
             ..fcpxml.clone()
@@ -3046,7 +2967,7 @@ mod tests {
         let settings = Settings {
             safe_left_percent: 20.0,
             safe_right_percent: 5.0,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
         assert_eq!(inside_safe_zone(100.0, 100.0, 1000.0, &settings), 250.0);
         assert_eq!(inside_safe_zone(990.0, 100.0, 1000.0, &settings), 900.0);
@@ -3054,7 +2975,7 @@ mod tests {
         assert_eq!(inside_safe_zone(500.0, 900.0, 1000.0, &settings), 575.0);
         assert!(
             metrics_for(&FULL_HD, &settings).max_line_px
-                < metrics_for(&FULL_HD, &Settings::default()).max_line_px
+                < metrics_for(&FULL_HD, &fcpxml_settings()).max_line_px
         );
     }
 
@@ -3077,7 +2998,7 @@ mod tests {
         let settings = Settings {
             safe_left_percent: 12.0,
             safe_right_percent: 3.0,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
         let (narrow, _) =
             build_cues(&words, &[], &VERTICAL_SMALL, &settings, test_segmenter()).unwrap();
@@ -3105,8 +3026,8 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        let metrics = metrics_for(&FULL_HD, &Settings::default());
-        let half = block_width(&cues[0].lines, &metrics, &Settings::default()) / 2.0;
+        let metrics = metrics_for(&FULL_HD, &fcpxml_settings());
+        let half = block_width(&cues[0].lines, &metrics, &fcpxml_settings()) / 2.0;
         assert_eq!((cues[0].x + half).round(), 1824.0);
     }
 
@@ -3115,7 +3036,7 @@ mod tests {
         let settings = Settings {
             safe_left_percent: 10.0,
             safe_right_percent: 20.0,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
         let metrics = metrics_for(&FULL_HD, &settings);
         let placer = FacePlacer::new(&[], &FULL_HD, &metrics, &settings);
@@ -3145,14 +3066,8 @@ mod tests {
             spoken(3.0, 5.0, "みんなで公園に行って", 1),
             spoken(5.0, 7.0, "お弁当を食べました", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &VERTICAL,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &VERTICAL, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter().map(|cue| cue.lines.clone()).collect::<Vec<_>>(),
             vec![
@@ -3173,7 +3088,7 @@ mod tests {
                 spoken(seconds * 3.0, seconds * 4.0, "遊びました", 1),
             ]
         };
-        let settings = Settings::default();
+        let settings = fcpxml_settings();
         let (fast, _) =
             build_cues(&timed(0.6), &[], &FULL_HD, &settings, test_segmenter()).unwrap();
         let (slow, _) =
@@ -3192,16 +3107,10 @@ mod tests {
         )];
         let large = Settings {
             font_ratio: 0.09,
-            ..Settings::default()
+            ..fcpxml_settings()
         };
-        let (normal, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (normal, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         let (big, _) = build_cues(&words, &[], &FULL_HD, &large, test_segmenter()).unwrap();
         assert_eq!(normal[0].lines.len(), 1);
         assert_eq!(big[0].lines.len(), 2);
@@ -3214,14 +3123,8 @@ mod tests {
             spoken(0.5, 0.6, "よ", 1),
             spoken(0.7, 1.5, "ね", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].lines, vec!["そうですよね"]);
     }
@@ -3234,19 +3137,13 @@ mod tests {
             "あのねお茶漬けをいろんな人に食べてもらいました",
             1,
         )];
-        let (wide, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (wide, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         let (tall, _) = build_cues(
             &words,
             &[],
             &VERTICAL_SMALL,
-            &Settings::default(),
+            &fcpxml_settings(),
             test_segmenter(),
         )
         .unwrap();
@@ -3316,7 +3213,7 @@ mod tests {
             spoken(2.5, 3.0, " caption", 1),
         ];
         let missing = Segmenter::new(PathBuf::from("/nonexistent/dictionary"));
-        let (cues, _) = build_cues(&words, &[], &FULL_HD, &Settings::default(), &missing).unwrap();
+        let (cues, _) = build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), &missing).unwrap();
         assert_eq!(cues[0].lines, vec!["Hello world, this is a caption"]);
     }
 
@@ -3338,7 +3235,7 @@ mod tests {
     fn a_missing_dictionary_is_an_error_for_japanese() {
         let missing = Segmenter::new(PathBuf::from("/nonexistent/dictionary"));
         let words = [spoken(0.0, 1.0, "はい", 1)];
-        let error = build_cues(&words, &[], &FULL_HD, &Settings::default(), &missing).unwrap_err();
+        let error = build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), &missing).unwrap_err();
         assert!(error
             .to_string()
             .starts_with("read the caption dictionary: "));
@@ -3350,14 +3247,8 @@ mod tests {
             spoken(0.0, 12.0, "今日は公園へ行きました", 1),
             spoken(12.0, 14.0, "とても楽しかったです", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| cue.lines.join(""))
@@ -3376,14 +3267,8 @@ mod tests {
             spoken(4.8, 5.8, "公園へ", 1),
             spoken(6.4, 7.4, "行きました", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| cue.lines.join(""))
@@ -3399,14 +3284,8 @@ mod tests {
             spoken(6.0, 12.0, "しい", 1),
             spoken(12.0, 14.0, "すごいこれ", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| (cue.start, cue.end, cue.lines.join("")))
@@ -3424,14 +3303,8 @@ mod tests {
             spoken(0.0, 1.0, "今日は雨", 1),
             spoken(2.0, 3.0, "ですね", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].lines, vec!["今日は雨ですね"]);
     }
@@ -3442,14 +3315,8 @@ mod tests {
             spoken(0.0, 1.0, "公園に行く", 1),
             spoken(2.0, 3.0, "今日は暑い", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 2);
     }
 
@@ -3469,7 +3336,7 @@ mod tests {
             spoken(2.3, 3.3, "公園に", 1),
         ];
         let group = group_words(&words);
-        let metrics = metrics_for(&FULL_HD, &Settings::default());
+        let metrics = metrics_for(&FULL_HD, &fcpxml_settings());
         let run = Run::new(&group[0], f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(
             run.phrase_cost(&PhraseEnd {
@@ -3483,7 +3350,7 @@ mod tests {
     #[test]
     fn a_break_inside_a_token_costs_more_than_one_at_its_edge() {
         let group = [spoken(0.0, 1.0, "公園に", 1), spoken(1.0, 2.0, "行く人", 1)];
-        let metrics = metrics_for(&FULL_HD, &Settings::default());
+        let metrics = metrics_for(&FULL_HD, &fcpxml_settings());
         let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(
             run.phrase_cost(&PhraseEnd {
@@ -3529,14 +3396,8 @@ mod tests {
             word(0.5, 0.7, "ら"),
             spoken(0.7, 1.0, "しで", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["二人暮らしで"]);
         assert_eq!(cues[0].speaker, Some(1));
         assert_eq!(words[1].speaker, None);
@@ -3549,14 +3410,8 @@ mod tests {
             word(0.5, 0.7, "ん"),
             spoken(0.7, 1.0, "いいえ", 2),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| (cue.lines.join(""), cue.speaker))
@@ -3574,14 +3429,8 @@ mod tests {
             spoken(0.0, 1.0, "はいそうです", 1),
             word(1.0, 2.0, "いろいろあります"),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter().map(|cue| cue.speaker).collect::<Vec<_>>(),
             vec![Some(1), None]
@@ -3600,14 +3449,8 @@ mod tests {
             spoken(0.0, 0.3, "え?", 1),
             spoken(0.3, 2.0, "色々あります", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["え?色々あります"]);
     }
 
@@ -3617,14 +3460,8 @@ mod tests {
             spoken(0.0, 1.0, "うん。", 1),
             spoken(1.0, 2.0, "っていう", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues[0].lines, vec!["うん。っていう"]);
     }
 
@@ -3795,14 +3632,8 @@ mod tests {
             spoken(0.3, 2.0, "い", 2),
             spoken(2.0, 2.1, "う", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| (cue.start, (cue.end * 1000.0).round()))
@@ -3855,7 +3686,7 @@ mod tests {
             &[word(0.0, 1.0, " ")],
             &[],
             &FULL_HD,
-            &Settings::default(),
+            &fcpxml_settings(),
             test_segmenter(),
         )
         .unwrap();
@@ -3877,7 +3708,7 @@ mod tests {
             &words,
             &[],
             &VERTICAL_SMALL,
-            &Settings::default(),
+            &fcpxml_settings(),
             test_segmenter(),
         )
         .unwrap();
@@ -3908,7 +3739,7 @@ mod tests {
             &FULL_HD,
             &Settings {
                 width_ratio: 0.75,
-                ..Settings::default()
+                ..fcpxml_settings()
             },
             test_segmenter(),
         )
@@ -3933,14 +3764,8 @@ mod tests {
             spoken(4.1, 4.3, "パ", 1),
             spoken(4.3, 7.0, "がチャッパがあります", 1),
         ];
-        let (cues, _) = build_cues(
-            &words,
-            &[],
-            &FULL_HD,
-            &Settings::default(),
-            test_segmenter(),
-        )
-        .unwrap();
+        let (cues, _) =
+            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
             cues.iter()
                 .map(|cue| cue.lines.join("/"))
@@ -3964,5 +3789,37 @@ mod tests {
         let group = [spoken(0.0, 3.0, "今日は天気がいいので、みんなで公園へ", 1)];
         let run = Run::new(&group, f64::INFINITY, &metrics, test_segmenter()).unwrap();
         assert_eq!(run.lay_out(0, 18).unwrap().split, Some(11));
+    }
+
+    #[test]
+    fn a_timeline_is_laid_out_exactly_as_fcpxml() {
+        let drt = Settings {
+            subtitle_format: SubtitleFormat::Drt,
+            ..fcpxml_settings()
+        };
+        assert_eq!(
+            metrics_for(&VERTICAL_SMALL, &drt),
+            metrics_for(&VERTICAL_SMALL, &fcpxml_settings())
+        );
+        assert_eq!(
+            metrics_for(&FULL_HD, &drt),
+            metrics_for(&FULL_HD, &fcpxml_settings())
+        );
+        assert_eq!(
+            block_edge(50.0, 6.0, &drt),
+            block_edge(50.0, 6.0, &fcpxml_settings())
+        );
+        let words = [spoken(0.0, 1.0, "はい", 1), spoken(1.2, 2.0, "どうも", 2)];
+        let (with_drt, _) =
+            build_cues(&words, &[], &VERTICAL_SMALL, &drt, test_segmenter()).unwrap();
+        let (with_fcpxml, _) = build_cues(
+            &words,
+            &[],
+            &VERTICAL_SMALL,
+            &fcpxml_settings(),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(with_drt, with_fcpxml);
     }
 }

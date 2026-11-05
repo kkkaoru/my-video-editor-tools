@@ -392,7 +392,6 @@ mod tests {
             source_url: "",
             files: Box::leak(files.into_boxed_slice()),
             min_memory_gib: 0,
-            diarize_kind: None,
             needs_cuda: false,
             extra_args: &[],
             max_audio_seconds: None,
@@ -458,11 +457,11 @@ mod tests {
             resources: PathBuf::from("/r"),
             hf_hub: None,
         };
-        let model = crate::catalog::find_entry("nemotron-3-diarization").unwrap();
+        let model = crate::catalog::find_entry("whisper-large-v3-turbo").unwrap();
         let runtime = crate::catalog::find_entry("geforce-runtime").unwrap();
         assert_eq!(
             destination_for(model, &model.files[0], &paths),
-            PathBuf::from("/d/models/nemotron-3-diarization/Nemotron-3-Diarization.q8_0.gguf")
+            PathBuf::from("/d/models/whisper-large-v3-turbo/model.safetensors")
         );
         assert_eq!(
             destination_for(runtime, &runtime.files[0], &paths),

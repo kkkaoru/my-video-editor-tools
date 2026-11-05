@@ -1,8 +1,9 @@
 //! Named caption looks the user saves and restores, kept together in one JSON file in the app data folder.
 
 use crate::error::{io_context, AppError, AppResult, UserError};
-use crate::settings::{Placement, Settings, SpeakerColor, MAX_SPEAKER_COLORS};
+use crate::settings::{migrate_look, Placement, Settings, SpeakerColor, MAX_SPEAKER_COLORS};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
 
@@ -20,8 +21,6 @@ pub struct CaptionLook {
     pub unassigned: SpeakerColor,
     pub font_family: String,
     pub font_ratio: f64,
-    pub outline_ratio: f64,
-    pub rim_ratio: f64,
     pub line_height: f64,
     pub width_ratio: f64,
     pub safe_left_percent: f64,
@@ -49,8 +48,6 @@ impl CaptionLook {
             unassigned: settings.unassigned.clone(),
             font_family: settings.font_family.clone(),
             font_ratio: settings.font_ratio,
-            outline_ratio: settings.outline_ratio,
-            rim_ratio: settings.rim_ratio,
             line_height: settings.line_height,
             width_ratio: settings.width_ratio,
             safe_left_percent: settings.safe_left_percent,
@@ -68,8 +65,6 @@ impl CaptionLook {
             unassigned: self.unassigned,
             font_family: self.font_family,
             font_ratio: self.font_ratio,
-            outline_ratio: self.outline_ratio,
-            rim_ratio: self.rim_ratio,
             line_height: self.line_height,
             width_ratio: self.width_ratio,
             safe_left_percent: self.safe_left_percent,
@@ -86,12 +81,30 @@ impl Default for CaptionLook {
     }
 }
 
+fn parse_profile_file(text: &str) -> serde_json::Result<ProfileFile> {
+    let mut value: Value = serde_json::from_str(text)?;
+    let rows = value.get_mut("profiles").and_then(Value::as_array_mut);
+    rows.into_iter()
+        .flatten()
+        .filter_map(|row| row.get_mut("look"))
+        .for_each(migrate_look);
+    serde_json::from_value(value)
+}
+
+fn parse_import(bytes: &[u8]) -> serde_json::Result<Profile> {
+    let mut value: Value = serde_json::from_slice(bytes)?;
+    if let Some(look) = value.get_mut("look") {
+        migrate_look(look);
+    }
+    serde_json::from_value(value)
+}
+
 pub fn load(path: &Path) -> AppResult<Vec<Profile>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let text = std::fs::read_to_string(path).map_err(io_context("read profiles"))?;
-    let file: ProfileFile = serde_json::from_str(&text)
+    let file: ProfileFile = parse_profile_file(&text)
         .map_err(|error| AppError::Invalid(format!("profiles file: {error}")))?;
     Ok(file.profiles)
 }
@@ -188,7 +201,7 @@ pub fn read_import(path: &Path) -> AppResult<Profile> {
     if bytes.len() as u64 > MAX_IMPORT_BYTES {
         return Err(invalid());
     }
-    let profile: Profile = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let profile = parse_import(&bytes).map_err(|_| invalid())?;
     let name = clean_name(&profile.name).map_err(|_| invalid())?;
     profile
         .look
@@ -523,6 +536,21 @@ mod tests {
     }
 
     #[test]
+    fn the_ui_language_and_theme_are_not_part_of_a_look() {
+        let settings = Settings {
+            ui_language: "ja".to_owned(),
+            ui_theme: crate::settings::UiTheme::Dark,
+            ..Settings::default()
+        };
+        let look = serde_json::to_value(CaptionLook::from_settings(&settings)).unwrap();
+        assert_eq!(look.get("ui_language"), None);
+        assert_eq!(look.get("ui_theme"), None);
+        let applied = CaptionLook::default().applied_to(&settings);
+        assert_eq!(applied.ui_language, "ja");
+        assert_eq!(applied.ui_theme, crate::settings::UiTheme::Dark);
+    }
+
+    #[test]
     fn the_subtitle_format_is_not_part_of_a_look() {
         let settings = Settings {
             subtitle_format: crate::settings::SubtitleFormat::Srt,
@@ -560,5 +588,41 @@ mod tests {
                 .get("shadow"),
             None
         );
+    }
+
+    #[test]
+    fn saved_and_imported_profiles_from_before_per_speaker_widths_keep_their_look() {
+        let root = import_scratch("old-widths");
+        let saved = root.join("profiles.json");
+        std::fs::write(
+            &saved,
+            br##"{"profiles":[{"name":"A","look":{"outline_ratio":0.2,"rim_ratio":0.05,
+                "palette":[{"fill":"#005A9C","outline":"#FFFFFF"}]}}]}"##,
+        )
+        .unwrap();
+        let rows = load(&saved).unwrap();
+        assert_eq!(rows[0].look.palette[0].outline_width, 0.2);
+        assert_eq!(rows[0].look.palette[0].rim, Some("#000000".to_owned()));
+        assert_eq!(rows[0].look.palette[0].rim_width, 0.05);
+        let file = root.join("old.json");
+        std::fs::write(
+            &file,
+            br##"{"name":"B","look":{"outline_ratio":0.2,
+                "palette":[{"fill":"#005A9C","outline":"#FFFFFF"}]}}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            read_import(&file).unwrap().look.palette[0].outline_width,
+            0.2
+        );
+    }
+
+    #[test]
+    fn a_profile_file_without_a_look_still_fails_clearly() {
+        let root = import_scratch("no-look");
+        let file = root.join("p.json");
+        std::fs::write(&file, br#"{"name":"A"}"#).unwrap();
+        assert!(read_import(&file).is_err());
+        assert!(parse_profile_file(r#"{"profiles":[{"name":"A"}]}"#).is_err());
     }
 }

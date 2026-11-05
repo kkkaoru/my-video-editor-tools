@@ -1,6 +1,6 @@
 [package]
 name = "transcribe-app"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Drop a video, get speaker-coloured outlined subtitles."
@@ -22,6 +22,7 @@ windows-geforce = []
 windows-radeon = []
 
 [dependencies]
+flate2 = "1"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 ruzstd = "0.9"
 serde = { version = "1", features = ["derive"] }

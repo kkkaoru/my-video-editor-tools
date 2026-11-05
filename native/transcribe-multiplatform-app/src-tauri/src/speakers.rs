@@ -93,12 +93,6 @@ pub fn limit_speakers(turns: &[SpeakerTurn], wanted: u32) -> Vec<SpeakerTurn> {
         .collect()
 }
 
-/// How many speakers a set of turns holds.
-#[must_use]
-pub fn speaker_total(turns: &[SpeakerTurn]) -> u32 {
-    u32::try_from(first_appearance(turns).len()).unwrap_or(u32::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,14 +152,5 @@ mod tests {
     #[test]
     fn no_turns_stay_no_turns() {
         assert_eq!(limit_speakers(&[], 0), Vec::<SpeakerTurn>::new());
-        assert_eq!(speaker_total(&[]), 0);
-    }
-
-    #[test]
-    fn speakers_are_counted_once_each() {
-        assert_eq!(
-            speaker_total(&[turn(0.0, 1.0, 1), turn(1.0, 2.0, 2), turn(2.0, 3.0, 1)]),
-            2
-        );
     }
 }

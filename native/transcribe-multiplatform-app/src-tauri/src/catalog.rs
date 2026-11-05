@@ -52,8 +52,6 @@ const NEMOTRON_REPO: &str = "AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-G
 const NEMOTRON_REVISION: &str = "dbd06c5cad7a2f33c8e06be2fb3ef814dbd9aa59";
 const NEMOTRON_SOURCE: &str =
     "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B";
-const DIARIZATION_REPO: &str = "nvidia/Nemotron-3-Diarization";
-const DIARIZATION_REVISION: &str = "f667ed73aee57d40cc39428eb768b4fd87a0a29e";
 const ENCODER: FileSpec = FileSpec {
     url_kind: UrlKind::HuggingFace {
         repo: NEMOTRON_REPO,
@@ -79,7 +77,7 @@ pub const YUNET_ID: &str = "yunet";
 pub const AVATAR_YOLO_ID: &str = "avatar-face-yolo";
 const AVATAR_YOLO_NAME: &str = "avatar-face-caption-v2.onnx";
 pub const GEFORCE_RUNTIME_ID: &str = "geforce-runtime";
-const NEMO_DIARIZATION_ID: &str = "nemotron-3-diarization";
+const SPEECH_LLM_ID_PREFIX: &str = "nemotron-3.5-transcribe-";
 const IQ4_ID: &str = "nemotron-3.5-transcribe-iq4";
 const NVFP4_ID: &str = "nemotron-3.5-transcribe-nvfp4";
 const Q2M_ID: &str = "nemotron-3.5-transcribe-q2m";
@@ -114,16 +112,6 @@ pub enum Role {
     Diarize,
     Face,
     Runtime,
-}
-
-/// How `nemo-speech` must be driven for a diarization model.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DiarizeKind {
-    /// Standalone Sortformer-family model: `nemo-speech diarize`.
-    Sortformer,
-    /// Speech-LLM with a speaker branch: `nemo-speech transcribe --diarize`.
-    SpeechLlm,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,7 +166,6 @@ pub struct ModelEntry {
     pub files: &'static [FileSpec],
     /// Memory the model needs: GPU memory under CUDA, otherwise system memory.
     pub min_memory_gib: u64,
-    pub diarize_kind: Option<DiarizeKind>,
     pub needs_cuda: bool,
     pub extra_args: &'static [&'static str],
     /// The longest recording the model takes, if it has a limit.
@@ -210,7 +197,6 @@ const fn nemotron(
         source_url: NEMOTRON_SOURCE,
         files,
         min_memory_gib,
-        diarize_kind: Some(DiarizeKind::SpeechLlm),
         needs_cuda: false,
         extra_args: &[],
         max_audio_seconds: Some(SPEECH_LLM_MAX_SECONDS),
@@ -266,15 +252,6 @@ const WHISPER_FILES: [FileSpec; 1] = [FileSpec {
     size: 1_617_824_864,
     sha256: "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
 }];
-const DIARIZATION_FILES: [FileSpec; 1] = [FileSpec {
-    url_kind: UrlKind::HuggingFace {
-        repo: DIARIZATION_REPO,
-        revision: DIARIZATION_REVISION,
-    },
-    path: "Nemotron-3-Diarization.q8_0.gguf",
-    size: 107_012_128,
-    sha256: "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1",
-}];
 const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
     url_kind: UrlKind::Direct(NEMO_CUDA_URL),
     path: "nemo/nemo-speech-cuda.zip",
@@ -283,7 +260,7 @@ const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
 }];
 
 /// Every model and runtime the app knows.
-pub const CATALOG: [ModelEntry; 10] = [
+pub const CATALOG: [ModelEntry; 9] = [
     ModelEntry {
         id: WHISPER_ID,
         role: Role::Transcribe,
@@ -291,7 +268,6 @@ pub const CATALOG: [ModelEntry; 10] = [
         source_url: "https://huggingface.co/openai/whisper-large-v3-turbo",
         files: &WHISPER_FILES,
         min_memory_gib: 4,
-        diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
         max_audio_seconds: None,
@@ -335,25 +311,12 @@ pub const CATALOG: [ModelEntry; 10] = [
         48,
     ),
     ModelEntry {
-        id: NEMO_DIARIZATION_ID,
-        role: Role::Diarize,
-        label: "Nemotron 3 Diarization (Q8)",
-        source_url: "https://huggingface.co/nvidia/Nemotron-3-Diarization",
-        files: &DIARIZATION_FILES,
-        min_memory_gib: 2,
-        diarize_kind: Some(DiarizeKind::Sortformer),
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
-    },
-    ModelEntry {
         id: YUNET_ID,
         role: Role::Face,
         label: "YuNet",
         source_url: "https://huggingface.co/opencv/face_detection_yunet",
         files: &[],
         min_memory_gib: 1,
-        diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
         max_audio_seconds: None,
@@ -365,7 +328,6 @@ pub const CATALOG: [ModelEntry; 10] = [
         source_url: "",
         files: &[],
         min_memory_gib: 1,
-        diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
         max_audio_seconds: None,
@@ -377,7 +339,6 @@ pub const CATALOG: [ModelEntry; 10] = [
         source_url: "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/tag/v0.3.0",
         files: &GEFORCE_FILES,
         min_memory_gib: 0,
-        diarize_kind: None,
         needs_cuda: false,
         extra_args: &[],
         max_audio_seconds: None,
@@ -783,15 +744,26 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
         .collect()
 }
 
-/// The diarization model to use when none is chosen: an installed Nemotron 3.5, the recommended build
-/// first, so nothing downloads silently. The small model runs only when the user selects it.
+/// How many speakers a job separates. Speaker separation needs a Nemotron 3.5 this machine can run;
+/// without one every job has one speaker, whatever is saved, and the saved value returns with the model.
+#[must_use]
+pub fn effective_speaker_count(saved: u32, rows: &[ModelStatus]) -> u32 {
+    let usable = rows.iter().any(|row| {
+        row.id.starts_with(SPEECH_LLM_ID_PREFIX) && row.found_at.is_some() && row.blocked.is_none()
+    });
+    if usable {
+        saved
+    } else {
+        1
+    }
+}
+
+/// The diarization model to use when none is chosen: an installed one, the recommended build first, so
+/// nothing downloads silently.
 #[must_use]
 pub fn default_diarize_model(hardware: &Hardware, rows: &[ModelStatus]) -> Option<&'static str> {
     let usable = |row: &&ModelStatus| {
-        row.role == Role::Diarize
-            && row.id != NEMO_DIARIZATION_ID
-            && row.found_at.is_some()
-            && row.blocked.is_none()
+        row.role == Role::Diarize && row.found_at.is_some() && row.blocked.is_none()
     };
     let recommended = recommended_speech_llm(hardware);
     rows.iter()
@@ -1004,7 +976,7 @@ mod tests {
 
     #[test]
     fn only_a_model_with_a_limit_can_be_too_long() {
-        let unlimited = find_entry("nemotron-3-diarization").unwrap();
+        let unlimited = find_entry("yunet").unwrap();
         assert_eq!(too_long(unlimited, 1e9), None);
         let limited = ModelEntry {
             max_audio_seconds: Some(600),
@@ -1014,7 +986,7 @@ mod tests {
         assert_eq!(
             too_long(&limited, 601.0),
             Some(UserError::TooLongForModel {
-                model: "nemotron-3-diarization".to_owned(),
+                model: "yunet".to_owned(),
                 limit_minutes: 10
             })
         );
@@ -1065,7 +1037,7 @@ mod tests {
             gpu: None,
         };
         let large = find_entry("nemotron-3.5-transcribe-iq4").unwrap();
-        let small = find_entry("nemotron-3-diarization").unwrap();
+        let small = find_entry("whisper-large-v3-turbo").unwrap();
         assert_eq!(
             blocked_reason(large, &vm).unwrap(),
             UserError::NeedsMemory {
@@ -1127,7 +1099,6 @@ mod tests {
             "https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/resolve/dbd06c5cad7a2f33c8e06be2fb3ef814dbd9aa59/a.gguf"
         );
         let entry = nemotron("id", "label", &[], 3);
-        assert_eq!(entry.diarize_kind, Some(DiarizeKind::SpeechLlm));
         assert_eq!(entry.min_memory_gib, 3);
     }
 
@@ -1203,6 +1174,43 @@ mod tests {
         assert_eq!(
             recommended,
             vec!["whisper-large-v3-turbo", "yunet", "geforce-runtime"]
+        );
+    }
+
+    fn row(id: &'static str, found: bool, blocked: bool) -> ModelStatus {
+        ModelStatus {
+            id,
+            role: Role::Diarize,
+            label: "",
+            source_url: "",
+            download_bytes: 0,
+            found_at: found.then(|| PathBuf::from("/m")),
+            blocked: blocked.then_some(UserError::NoWords),
+            recommended: false,
+        }
+    }
+
+    #[test]
+    fn a_usable_nemotron_3_5_keeps_the_saved_speaker_count() {
+        let rows = [row("nemotron-3.5-transcribe-q2l", true, false)];
+        assert_eq!(effective_speaker_count(0, &rows), 0);
+        assert_eq!(effective_speaker_count(3, &rows), 3);
+    }
+
+    #[test]
+    fn anything_else_means_one_speaker() {
+        assert_eq!(effective_speaker_count(3, &[]), 1);
+        assert_eq!(
+            effective_speaker_count(3, &[row("nemotron-3.5-transcribe-q2l", false, false)]),
+            1
+        );
+        assert_eq!(
+            effective_speaker_count(0, &[row("nemotron-3.5-transcribe-q8", true, true)]),
+            1
+        );
+        assert_eq!(
+            effective_speaker_count(2, &[row("whisper-large-v3-turbo", true, false)]),
+            1
         );
     }
 }

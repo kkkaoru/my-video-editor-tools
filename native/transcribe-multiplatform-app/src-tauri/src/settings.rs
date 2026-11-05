@@ -1,10 +1,23 @@
 //! User-editable preferences, stored as JSON in the app data directory.
 
 use crate::error::{io_context, AppError, AppResult};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_WHITE: &str = "#FFFFFF";
+const BLACK: &str = "#000000";
+const MAX_FILL_WIDTH: f64 = 0.2;
+const MAX_OUTLINE_WIDTH: f64 = 0.5;
+const MAX_RIM_WIDTH: f64 = 0.2;
+const MAX_SHADOW_OFFSET: f64 = 0.2;
+const MAX_SHADOW_BLUR: f64 = 50.0;
+const DEFAULT_SHADOW_OFFSET: f64 = 0.03;
+const DEFAULT_SHADOW_BLUR: f64 = 5.0;
+/// 1: `.drt` became the default subtitle format, for people who already had settings too.
+/// 2: a rim of no width became transparent, as it is by default.
+const SETTINGS_VERSION: u64 = 2;
+const UI_LANGUAGES: [&str; 8] = ["en", "ja", "zh-Hans", "zh-Hant", "ko", "de", "fr", "es"];
 /// Speaker 1 is white on a black outline. The others follow the repository's `SINGLE_FILL` rule: a dark
 /// fill at 7:1 or better against the white band, with the black rim keeping it readable on any video.
 const FIRST_SPEAKER_FILL: &str = "#FFFFFF";
@@ -32,6 +45,8 @@ const MAX_OFFSET_PERCENT: f64 = 50.0;
 pub const FONT_FAMILY_FORBIDDEN: [char; 3] = ['"', '<', '&'];
 /// `EM_ADVANCE`: the line advance measured for the repository's captions (`caption_layout_file`).
 const DEFAULT_LINE_HEIGHT: f64 = 1.448;
+/// A speaker model the catalog no longer has: a saved selection of it reads as no selection.
+const RETIRED_DIARIZE_MODEL: &str = "nemotron-3-diarization";
 /// The speaker models separate at most eight voices; more would only be guesswork.
 const MAX_SPEAKER_COUNT: u32 = 8;
 /// One colour per speaker the models can tell apart.
@@ -39,10 +54,31 @@ pub const MAX_SPEAKER_COLORS: usize = MAX_SPEAKER_COUNT as usize;
 /// Most recordings have one voice; 0 (automatic) stays available and is kept once saved.
 const DEFAULT_SPEAKER_COUNT: u32 = 1;
 
+/// One speaker's three colours, each with its thickness as a fraction of the font size. Outward from the
+/// glyph: the fill thickens the letters, then the outline, then the rim.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SpeakerColor {
     pub fill: String,
+    #[serde(default)]
+    pub fill_width: f64,
     pub outline: String,
+    #[serde(default = "default_outline_width")]
+    pub outline_width: f64,
+    /// `None` is transparent: no rim at all, whatever `rim_width` says.
+    #[serde(default)]
+    pub rim: Option<String>,
+    #[serde(default)]
+    pub rim_width: f64,
+    /// `None` is no shadow. Only `.drt` draws one; Resolve ignores them in FCPXML and TTML.
+    #[serde(default)]
+    pub shadow: Option<String>,
+    /// Text+ offsets: drawn about offset x 2 x em pixels away; a negative `shadow_y` falls downward.
+    #[serde(default = "default_shadow_x")]
+    pub shadow_x: f64,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_y: f64,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,10 +102,34 @@ pub struct Placement {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SubtitleFormat {
+    /// A DaVinci Resolve timeline of Text+ titles, the only format that keeps every colour and shadow.
     #[default]
+    Drt,
     Fcpxml,
     Ttml,
     Srt,
+}
+
+/// How the app's own window looks.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UiTheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// An unknown theme, from a newer version or a hand-edited file, must not stop the app from opening.
+fn known_ui_theme<'de, D: Deserializer<'de>>(values: D) -> Result<UiTheme, D::Error> {
+    Ok(serde_json::from_value(Value::deserialize(values)?).unwrap_or_default())
+}
+
+/// As `known_ui_theme`: anything but a language the app has follows the system.
+fn known_ui_language<'de, D: Deserializer<'de>>(values: D) -> Result<String, D::Error> {
+    let tag = Value::deserialize(values)?;
+    let known = tag.as_str().filter(|tag| UI_LANGUAGES.contains(tag));
+    Ok(known.unwrap_or_default().to_owned())
 }
 
 /// `default` lets settings saved by an older version gain newer fields.
@@ -82,10 +142,6 @@ pub struct Settings {
     pub font_family: String,
     /// Font size as a fraction of the frame's short edge.
     pub font_ratio: f64,
-    /// Outline width as a fraction of the font size.
-    pub outline_ratio: f64,
-    /// Black rim outside the outline, as a fraction of the font size; zero turns it off.
-    pub rim_ratio: f64,
     /// Distance between caption lines as a multiple of the font size.
     pub line_height: f64,
     /// Longest caption line as a fraction of the frame width.
@@ -104,6 +160,14 @@ pub struct Settings {
     pub model_dirs: Vec<PathBuf>,
     /// The saved profile dropped subtitle files follow; empty means the settings above.
     pub active_profile: String,
+    /// One of `UI_LANGUAGES`; empty follows the operating system.
+    #[serde(deserialize_with = "known_ui_language")]
+    pub ui_language: String,
+    #[serde(deserialize_with = "known_ui_theme")]
+    pub ui_theme: UiTheme,
+    /// Always this build's version: what a file holds is read by `parse_settings`.
+    #[serde(skip_deserializing)]
+    pub settings_version: u64,
 }
 
 impl Default for Settings {
@@ -111,21 +175,21 @@ impl Default for Settings {
         Self {
             palette: std::iter::once(SpeakerColor {
                 fill: FIRST_SPEAKER_FILL.to_owned(),
+                fill_width: 0.0,
                 outline: FIRST_SPEAKER_OUTLINE.to_owned(),
+                outline_width: DEFAULT_OUTLINE_RATIO,
+                rim: None,
+                rim_width: DEFAULT_RIM_RATIO,
+                shadow: None,
+                shadow_x: DEFAULT_SHADOW_OFFSET,
+                shadow_y: -DEFAULT_SHADOW_OFFSET,
+                shadow_blur: DEFAULT_SHADOW_BLUR,
             })
-            .chain(OTHER_FILLS.iter().map(|fill| SpeakerColor {
-                fill: (*fill).to_owned(),
-                outline: DEFAULT_WHITE.to_owned(),
-            }))
+            .chain(OTHER_FILLS.iter().map(|fill| white_outlined(fill)))
             .collect(),
-            unassigned: SpeakerColor {
-                fill: UNASSIGNED_FILL.to_owned(),
-                outline: DEFAULT_WHITE.to_owned(),
-            },
+            unassigned: white_outlined(UNASSIGNED_FILL),
             font_family: FONT_FAMILY.to_owned(),
             font_ratio: DEFAULT_FONT_RATIO,
-            outline_ratio: DEFAULT_OUTLINE_RATIO,
-            rim_ratio: DEFAULT_RIM_RATIO,
             line_height: DEFAULT_LINE_HEIGHT,
             width_ratio: DEFAULT_WIDTH_RATIO,
             safe_left_percent: DEFAULT_SAFE_PERCENT,
@@ -142,23 +206,48 @@ impl Default for Settings {
             face_model: "yunet".to_owned(),
             model_dirs: Vec::new(),
             active_profile: String::new(),
+            ui_language: String::new(),
+            ui_theme: UiTheme::default(),
+            settings_version: SETTINGS_VERSION,
         }
+    }
+}
+
+const fn default_shadow_x() -> f64 {
+    DEFAULT_SHADOW_OFFSET
+}
+
+const fn default_shadow_y() -> f64 {
+    -DEFAULT_SHADOW_OFFSET
+}
+
+const fn default_shadow_blur() -> f64 {
+    DEFAULT_SHADOW_BLUR
+}
+
+const fn default_outline_width() -> f64 {
+    DEFAULT_OUTLINE_RATIO
+}
+
+/// Every speaker after the first: a white band, and no rim until one is chosen.
+fn white_outlined(fill: &str) -> SpeakerColor {
+    SpeakerColor {
+        fill: fill.to_owned(),
+        fill_width: 0.0,
+        outline: DEFAULT_WHITE.to_owned(),
+        outline_width: DEFAULT_OUTLINE_RATIO,
+        rim: None,
+        rim_width: DEFAULT_RIM_RATIO,
+        shadow: None,
+        shadow_x: DEFAULT_SHADOW_OFFSET,
+        shadow_y: -DEFAULT_SHADOW_OFFSET,
+        shadow_blur: DEFAULT_SHADOW_BLUR,
     }
 }
 
 fn is_hex_color(value: &str) -> bool {
     let digits = value.strip_prefix('#').unwrap_or("");
     digits.len() == 6 && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn validate_color(color: &SpeakerColor) -> AppResult<()> {
-    if is_hex_color(&color.fill) && is_hex_color(&color.outline) {
-        return Ok(());
-    }
-    Err(AppError::Invalid(format!(
-        "colours must be #RRGGBB: {} / {}",
-        color.fill, color.outline
-    )))
 }
 
 fn validate_ratio(name: &str, value: f64, low: f64, high: f64) -> AppResult<()> {
@@ -168,6 +257,127 @@ fn validate_ratio(name: &str, value: f64, low: f64, high: f64) -> AppResult<()> 
     Err(AppError::Invalid(format!(
         "{name} must be between {low} and {high}, got {value}"
     )))
+}
+
+fn validate_color(color: &SpeakerColor) -> AppResult<()> {
+    let rim_is_usable = color.rim.as_deref().is_none_or(is_hex_color);
+    let shadow_is_usable = color.shadow.as_deref().is_none_or(is_hex_color);
+    if !is_hex_color(&color.fill)
+        || !is_hex_color(&color.outline)
+        || !rim_is_usable
+        || !shadow_is_usable
+    {
+        return Err(AppError::Invalid(format!(
+            "colours must be #RRGGBB: {} / {} / {}",
+            color.fill,
+            color.outline,
+            color.rim.as_deref().unwrap_or("transparent")
+        )));
+    }
+    validate_ratio("fill_width", color.fill_width, 0.0, MAX_FILL_WIDTH)?;
+    validate_ratio("outline_width", color.outline_width, 0.0, MAX_OUTLINE_WIDTH)?;
+    if color.rim.is_some() {
+        validate_ratio("rim_width", color.rim_width, 0.0, MAX_RIM_WIDTH)?;
+    }
+    if color.shadow.is_some() {
+        validate_ratio(
+            "shadow_x",
+            color.shadow_x,
+            -MAX_SHADOW_OFFSET,
+            MAX_SHADOW_OFFSET,
+        )?;
+        validate_ratio(
+            "shadow_y",
+            color.shadow_y,
+            -MAX_SHADOW_OFFSET,
+            MAX_SHADOW_OFFSET,
+        )?;
+        validate_ratio("shadow_blur", color.shadow_blur, 0.0, MAX_SHADOW_BLUR)?;
+    }
+    Ok(())
+}
+
+/// Moves `outline_ratio` and `rim_ratio`, which applied to every speaker in earlier versions, into each
+/// speaker of a settings object or a profile's look, so old files keep the look they had.
+pub(crate) fn migrate_look(look: &mut Value) {
+    let outline = look
+        .get("outline_ratio")
+        .and_then(Value::as_f64)
+        .unwrap_or(DEFAULT_OUTLINE_RATIO);
+    let rim = look
+        .get("rim_ratio")
+        .and_then(Value::as_f64)
+        .unwrap_or(DEFAULT_RIM_RATIO);
+    let palette = look.get_mut("palette").and_then(Value::as_array_mut);
+    palette
+        .into_iter()
+        .flatten()
+        .for_each(|color| migrate_color(color, outline, rim));
+    if let Some(color) = look.get_mut("unassigned") {
+        migrate_color(color, outline, rim);
+    }
+}
+
+fn migrate_color(color: &mut Value, outline: f64, rim: f64) {
+    let Some(fields) = color.as_object_mut() else {
+        return;
+    };
+    if fields.contains_key("outline_width") || fields.contains_key("rim") {
+        return;
+    }
+    fields.insert("outline_width".to_owned(), json!(outline));
+    // The rim was always black, and added nothing around a black outline.
+    let on_black = fields
+        .get("outline")
+        .and_then(Value::as_str)
+        .is_some_and(|hex| hex.eq_ignore_ascii_case(BLACK));
+    if rim > 0.0 && !on_black {
+        fields.insert("rim".to_owned(), json!(BLACK));
+        fields.insert("rim_width".to_owned(), json!(rim));
+    }
+}
+
+fn clear_widthless_rim(color: &mut Value) {
+    let Some(fields) = color.as_object_mut() else {
+        return;
+    };
+    let width = fields.get("rim_width").and_then(Value::as_f64);
+    if width.unwrap_or(0.0) == 0.0 {
+        fields.insert("rim".to_owned(), Value::Null);
+    }
+}
+
+/// Reads a settings file's text through the migration of earlier versions' fields.
+fn parse_settings(text: &str) -> serde_json::Result<Settings> {
+    let mut value: Value = serde_json::from_str(text)?;
+    migrate_look(&mut value);
+    let saved_version = value.get("settings_version").and_then(Value::as_u64);
+    if saved_version.is_none() {
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("subtitle_format".to_owned(), json!("drt"));
+        }
+    }
+    if saved_version.unwrap_or(0) < SETTINGS_VERSION {
+        let palette = value.get_mut("palette").and_then(Value::as_array_mut);
+        palette.into_iter().flatten().for_each(clear_widthless_rim);
+        if let Some(color) = value.get_mut("unassigned") {
+            clear_widthless_rim(color);
+        }
+    }
+    serde_json::from_value(value)
+}
+
+impl SpeakerColor {
+    /// How far this speaker's caption reaches past the glyph, as a fraction of the font size.
+    #[must_use]
+    pub fn edge_ratio(&self) -> f64 {
+        let rim = if self.rim.is_some() {
+            self.rim_width
+        } else {
+            0.0
+        };
+        self.fill_width + self.outline_width + rim
+    }
 }
 
 impl Settings {
@@ -187,8 +397,6 @@ impl Settings {
         self.palette.iter().try_for_each(validate_color)?;
         validate_color(&self.unassigned)?;
         validate_ratio("font_ratio", self.font_ratio, 0.01, 0.3)?;
-        validate_ratio("outline_ratio", self.outline_ratio, 0.01, 0.5)?;
-        validate_ratio("rim_ratio", self.rim_ratio, 0.0, 0.2)?;
         validate_ratio("line_height", self.line_height, 1.0, 3.0)?;
         validate_ratio("width_ratio", self.width_ratio, 0.2, 1.0)?;
         validate_ratio(
@@ -237,6 +445,17 @@ impl Settings {
         Ok(())
     }
 
+    /// The furthest any speaker's caption reaches past the glyph, as a fraction of the font size; a line
+    /// must fit whoever ends up speaking it.
+    #[must_use]
+    pub fn widest_edge_ratio(&self) -> f64 {
+        self.palette
+            .iter()
+            .chain(std::iter::once(&self.unassigned))
+            .map(SpeakerColor::edge_ratio)
+            .fold(0.0, f64::max)
+    }
+
     /// The colour for a 1-based speaker; extra speakers reuse slots instead of failing a finished run.
     #[must_use]
     pub fn color_for(&self, speaker: Option<u32>) -> &SpeakerColor {
@@ -252,10 +471,13 @@ impl Settings {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(path).map_err(io_context("read settings"))?;
-        let mut settings: Self = serde_json::from_str(&text)
+        let mut settings: Self = parse_settings(&text)
             .map_err(|error| AppError::Invalid(format!("settings file: {error}")))?;
         // Earlier versions saved ten colours; a surplus one must not stop the app from opening.
         settings.palette.truncate(MAX_SPEAKER_COLORS);
+        if settings.diarize_model == RETIRED_DIARIZE_MODEL {
+            settings.diarize_model.clear();
+        }
         settings.validate()?;
         Ok(settings)
     }
@@ -318,7 +540,7 @@ mod tests {
         settings.palette[0].fill = "red".to_owned();
         assert_eq!(
             settings.validate().unwrap_err().to_string(),
-            "colours must be #RRGGBB: red / #000000"
+            "colours must be #RRGGBB: red / #000000 / transparent"
         );
     }
 
@@ -400,7 +622,7 @@ mod tests {
         settings.unassigned.outline = "#12345".to_owned();
         assert_eq!(
             settings.validate().unwrap_err().to_string(),
-            "colours must be #RRGGBB: #595959 / #12345"
+            "colours must be #RRGGBB: #595959 / #12345 / transparent"
         );
     }
 
@@ -502,18 +724,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rim_wider_than_the_limit_is_rejected() {
-        let settings = Settings {
-            rim_ratio: 0.5,
-            ..Settings::default()
-        };
-        assert_eq!(
-            settings.validate().unwrap_err().to_string(),
-            "rim_ratio must be between 0 and 0.2, got 0.5"
-        );
-    }
-
-    #[test]
     fn a_line_pitch_outside_the_range_is_rejected() {
         let settings = Settings {
             line_height: 0.5,
@@ -576,16 +786,13 @@ mod tests {
     #[test]
     fn a_longer_palette_in_memory_still_uses_only_the_first_colours() {
         let mut settings = Settings::default();
-        settings.palette.push(SpeakerColor {
-            fill: "#123456".to_owned(),
-            outline: "#FFFFFF".to_owned(),
-        });
+        settings.palette.push(white_outlined("#123456"));
         assert_eq!(settings.color_for(Some(8)).fill, "#006262");
         assert_eq!(settings.color_for(Some(9)).fill, "#FFFFFF");
     }
 
     #[test]
-    fn the_subtitle_format_defaults_to_fcpxml_and_reads_its_lowercase_names() {
+    fn the_subtitle_format_defaults_to_drt_and_reads_its_lowercase_names() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-format");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -593,20 +800,156 @@ mod tests {
         std::fs::write(&file, br#"{"language":"ja"}"#).unwrap();
         assert_eq!(
             Settings::load(&file).unwrap().subtitle_format,
-            SubtitleFormat::Fcpxml
+            SubtitleFormat::Drt
         );
-        std::fs::write(&file, br#"{"subtitle_format":"ttml"}"#).unwrap();
+        std::fs::write(&file, br#"{"settings_version":1,"subtitle_format":"ttml"}"#).unwrap();
         assert_eq!(
             Settings::load(&file).unwrap().subtitle_format,
             SubtitleFormat::Ttml
         );
-        std::fs::write(&file, br#"{"subtitle_format":"srt"}"#).unwrap();
+        std::fs::write(&file, br#"{"settings_version":1,"subtitle_format":"srt"}"#).unwrap();
         assert_eq!(
             Settings::load(&file).unwrap().subtitle_format,
             SubtitleFormat::Srt
         );
-        std::fs::write(&file, br#"{"subtitle_format":"vtt"}"#).unwrap();
+        std::fs::write(&file, br#"{"settings_version":1,"subtitle_format":"vtt"}"#).unwrap();
         assert!(Settings::load(&file).is_err());
+    }
+
+    #[test]
+    fn settings_from_before_versions_move_to_drt_once_and_a_later_choice_stays() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-version");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(&file, br#"{"subtitle_format":"fcpxml","language":"en"}"#).unwrap();
+        let mut migrated = Settings::load(&file).unwrap();
+        assert_eq!(migrated.subtitle_format, SubtitleFormat::Drt);
+        assert_eq!(migrated.language, "en");
+
+        migrated.subtitle_format = SubtitleFormat::Fcpxml;
+        migrated.save(&file).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["settings_version"], 2);
+        assert_eq!(saved["subtitle_format"], "fcpxml");
+        let reloaded = Settings::load(&file).unwrap();
+        assert_eq!(reloaded.subtitle_format, SubtitleFormat::Fcpxml);
+        assert_eq!(reloaded.settings_version, 2);
+    }
+
+    #[test]
+    fn a_file_saved_by_the_current_version_keeps_fcpxml() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-version-kept");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(
+            &file,
+            br#"{"settings_version":1,"subtitle_format":"fcpxml"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().subtitle_format,
+            SubtitleFormat::Fcpxml
+        );
+    }
+
+    #[test]
+    fn a_rim_of_no_width_saved_before_version_two_becomes_transparent() {
+        let settings = parse_settings(
+            r##"{"settings_version":1,"subtitle_format":"fcpxml",
+                "palette":[
+                    {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0},
+                    {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000"},
+                    {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.03}
+                ],
+                "unassigned":{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}}"##,
+        )
+        .unwrap();
+        assert_eq!(settings.subtitle_format, SubtitleFormat::Fcpxml);
+        assert_eq!(settings.palette[0].rim, None);
+        assert_eq!(settings.palette[1].rim, None);
+        assert_eq!(settings.palette[2].rim.as_deref(), Some("#000000"));
+        assert_eq!(settings.unassigned.rim, None);
+    }
+
+    #[test]
+    fn settings_without_a_version_get_both_migrations() {
+        let settings = parse_settings(
+            r##"{"subtitle_format":"fcpxml",
+                "palette":[{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}]}"##,
+        )
+        .unwrap();
+        assert_eq!(settings.subtitle_format, SubtitleFormat::Drt);
+        assert_eq!(settings.palette[0].rim, None);
+    }
+
+    #[test]
+    fn a_colour_that_is_not_an_object_is_still_an_error() {
+        assert!(parse_settings(r#"{"settings_version":1,"palette":["red"]}"#).is_err());
+    }
+
+    #[test]
+    fn a_rim_of_no_width_saved_by_version_two_stays() {
+        let settings = parse_settings(
+            r##"{"settings_version":2,
+                "palette":[{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}],
+                "unassigned":{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}}"##,
+        )
+        .unwrap();
+        assert_eq!(settings.palette[0].rim.as_deref(), Some("#000000"));
+        assert_eq!(settings.unassigned.rim.as_deref(), Some("#000000"));
+    }
+
+    #[test]
+    fn the_ui_language_and_theme_default_to_the_system_for_old_files() {
+        let old = parse_settings("{}").unwrap();
+        assert_eq!(old.ui_language, "");
+        assert_eq!(old.ui_theme, UiTheme::System);
+    }
+
+    #[test]
+    fn every_ui_language_and_theme_is_read_back() {
+        let languages = ["en", "ja", "zh-Hans", "zh-Hant", "ko", "de", "fr", "es"].map(|tag| {
+            let settings = Settings {
+                ui_language: tag.to_owned(),
+                ..Settings::default()
+            };
+            parse_settings(&serde_json::to_string(&settings).unwrap())
+                .unwrap()
+                .ui_language
+        });
+        assert_eq!(
+            languages,
+            ["en", "ja", "zh-Hans", "zh-Hant", "ko", "de", "fr", "es"]
+        );
+        let themes = [UiTheme::System, UiTheme::Light, UiTheme::Dark].map(|ui_theme| {
+            let settings = Settings {
+                ui_theme,
+                ..Settings::default()
+            };
+            serde_json::to_value(&settings).unwrap()["ui_theme"].clone()
+        });
+        assert_eq!(themes, ["system", "light", "dark"]);
+        assert_eq!(
+            parse_settings(r#"{"ui_theme":"dark"}"#).unwrap().ui_theme,
+            UiTheme::Dark
+        );
+    }
+
+    #[test]
+    fn an_unknown_ui_language_or_theme_goes_back_to_the_system() {
+        let unknown = parse_settings(r#"{"ui_language":"tlh","ui_theme":"neon"}"#).unwrap();
+        assert_eq!(unknown.ui_language, "");
+        assert_eq!(unknown.ui_theme, UiTheme::System);
+        let wrong_type = parse_settings(r#"{"ui_language":5,"ui_theme":null}"#).unwrap();
+        assert_eq!(wrong_type.ui_language, "");
+        assert_eq!(wrong_type.ui_theme, UiTheme::System);
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_an_object_is_an_error() {
+        assert!(parse_settings("5").is_err());
     }
 
     #[test]
@@ -670,5 +1013,251 @@ mod tests {
         assert_eq!(settings.language, "ja");
         let saved = serde_json::to_value(&settings).unwrap();
         assert_eq!(saved.get("shadow"), None);
+    }
+
+    #[test]
+    fn a_saved_choice_of_the_retired_speaker_model_reads_as_no_choice() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-retired-model");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(&file, br#"{"diarize_model":"nemotron-3-diarization"}"#).unwrap();
+        assert_eq!(Settings::load(&file).unwrap().diarize_model, "");
+        std::fs::write(&file, br#"{"diarize_model":"nemotron-3.5-transcribe-q2l"}"#).unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().diarize_model,
+            "nemotron-3.5-transcribe-q2l"
+        );
+    }
+
+    #[test]
+    fn the_first_speaker_keeps_a_black_outline_and_the_others_start_without_a_rim() {
+        let settings = Settings::default();
+        assert_eq!(
+            settings.palette[0],
+            SpeakerColor {
+                fill: "#FFFFFF".to_owned(),
+                fill_width: 0.0,
+                outline: "#000000".to_owned(),
+                outline_width: 0.115,
+                rim: None,
+                rim_width: 3.0 / 88.0,
+                shadow: None,
+                shadow_x: DEFAULT_SHADOW_OFFSET,
+                shadow_y: -DEFAULT_SHADOW_OFFSET,
+                shadow_blur: DEFAULT_SHADOW_BLUR,
+            }
+        );
+        assert_eq!(settings.palette[1].outline, "#FFFFFF");
+        assert_eq!(settings.palette[1].rim, None);
+        assert_eq!(settings.unassigned.rim, None);
+        assert_eq!(settings.widest_edge_ratio(), 0.115);
+    }
+
+    #[test]
+    fn a_transparent_rim_adds_no_edge_and_its_width_is_not_checked() {
+        let mut settings = Settings::default();
+        settings.palette[1].rim_width = 9.0;
+        assert_eq!(settings.palette[1].edge_ratio(), 0.115);
+        assert!(settings.validate().is_ok());
+        settings.palette[1].rim = Some("#112233".to_owned());
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "rim_width must be between 0 and 0.2, got 9"
+        );
+    }
+
+    #[test]
+    fn every_width_and_the_rim_colour_are_validated() {
+        let mut settings = Settings::default();
+        settings.palette[0].fill_width = 0.3;
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "fill_width must be between 0 and 0.2, got 0.3"
+        );
+        let mut settings = Settings::default();
+        settings.palette[0].outline_width = 0.6;
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "outline_width must be between 0 and 0.5, got 0.6"
+        );
+        let mut settings = Settings::default();
+        settings.palette[0].rim = Some("black".to_owned());
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "colours must be #RRGGBB: #FFFFFF / #000000 / black"
+        );
+    }
+
+    #[test]
+    fn the_widest_edge_counts_every_layer_of_every_speaker() {
+        let mut settings = Settings::default();
+        settings.palette[3].fill_width = 0.02;
+        settings.palette[3].rim = Some("#000000".to_owned());
+        settings.palette[3].rim_width = 0.03;
+        assert_eq!(settings.widest_edge_ratio(), 0.165);
+    }
+
+    #[test]
+    fn settings_from_before_per_speaker_widths_keep_their_look() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-migrate");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(
+            &file,
+            br##"{"outline_ratio":0.2,"rim_ratio":0.05,
+                "palette":[{"fill":"#FFFFFF","outline":"#000000"},{"fill":"#005A9C","outline":"#FFFFFF"}],
+                "unassigned":{"fill":"#595959","outline":"#FFFFFF"}}"##,
+        )
+        .unwrap();
+        let settings = Settings::load(&file).unwrap();
+        assert_eq!(
+            settings.palette[0],
+            SpeakerColor {
+                fill: "#FFFFFF".to_owned(),
+                fill_width: 0.0,
+                outline: "#000000".to_owned(),
+                outline_width: 0.2,
+                rim: None,
+                rim_width: 0.0,
+                shadow: None,
+                shadow_x: DEFAULT_SHADOW_OFFSET,
+                shadow_y: -DEFAULT_SHADOW_OFFSET,
+                shadow_blur: DEFAULT_SHADOW_BLUR,
+            }
+        );
+        assert_eq!(
+            settings.palette[1],
+            SpeakerColor {
+                fill: "#005A9C".to_owned(),
+                fill_width: 0.0,
+                outline: "#FFFFFF".to_owned(),
+                outline_width: 0.2,
+                rim: Some("#000000".to_owned()),
+                rim_width: 0.05,
+                shadow: None,
+                shadow_x: DEFAULT_SHADOW_OFFSET,
+                shadow_y: -DEFAULT_SHADOW_OFFSET,
+                shadow_blur: DEFAULT_SHADOW_BLUR,
+            }
+        );
+        assert_eq!(settings.unassigned.rim_width, 0.05);
+    }
+
+    #[test]
+    fn an_old_file_with_the_rim_off_stays_without_one() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-migrate-off");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(
+            &file,
+            br##"{"rim_ratio":0.0,"palette":[{"fill":"#005A9C","outline":"#FFFFFF"}]}"##,
+        )
+        .unwrap();
+        let settings = Settings::load(&file).unwrap();
+        assert_eq!(settings.palette[0].rim, None);
+        assert_eq!(settings.palette[0].outline_width, 0.115);
+    }
+
+    #[test]
+    fn an_old_file_without_ratios_gets_the_old_defaults() {
+        let mut look =
+            serde_json::json!({ "palette": [{ "fill": "#005A9C", "outline": "#FFFFFF" }] });
+        migrate_look(&mut look);
+        assert_eq!(
+            look,
+            serde_json::json!({ "palette": [{
+                "fill": "#005A9C",
+                "outline": "#FFFFFF",
+                "outline_width": 0.115,
+                "rim": "#000000",
+                "rim_width": 3.0 / 88.0
+            }] })
+        );
+    }
+
+    #[test]
+    fn colours_already_in_the_new_form_are_left_alone() {
+        let new_form = serde_json::json!({
+            "outline_ratio": 0.3,
+            "palette": [{ "fill": "#111111", "outline": "#222222", "outline_width": 0.1, "rim": null }],
+            "unassigned": "not an object"
+        });
+        let mut look = new_form.clone();
+        migrate_look(&mut look);
+        assert_eq!(look, new_form);
+    }
+
+    #[test]
+    fn a_colour_may_leave_out_its_widths_and_rim() {
+        let color: SpeakerColor =
+            serde_json::from_str(r##"{"fill":"#111111","outline":"#222222"}"##).unwrap();
+        assert_eq!(
+            color,
+            SpeakerColor {
+                fill: "#111111".to_owned(),
+                fill_width: 0.0,
+                outline: "#222222".to_owned(),
+                outline_width: 0.115,
+                rim: None,
+                rim_width: 0.0,
+                shadow: None,
+                shadow_x: DEFAULT_SHADOW_OFFSET,
+                shadow_y: -DEFAULT_SHADOW_OFFSET,
+                shadow_blur: DEFAULT_SHADOW_BLUR,
+            }
+        );
+    }
+
+    #[test]
+    fn a_colour_from_before_shadows_reads_without_one() {
+        let color: SpeakerColor =
+            serde_json::from_str(r##"{"fill":"#111111","outline":"#222222"}"##).unwrap();
+        assert_eq!(color.shadow, None);
+        assert_eq!(color.shadow_x, 0.03);
+        assert_eq!(color.shadow_y, -0.03);
+        assert_eq!(color.shadow_blur, 5.0);
+    }
+
+    #[test]
+    fn a_shadow_is_validated_only_when_there_is_one() {
+        let mut settings = Settings::default();
+        settings.palette[0].shadow_blur = 99.0;
+        assert!(settings.validate().is_ok());
+        settings.palette[0].shadow = Some("#000000".to_owned());
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "shadow_blur must be between 0 and 50, got 99"
+        );
+        let mut settings = Settings::default();
+        settings.palette[0].shadow = Some("#000000".to_owned());
+        settings.palette[0].shadow_x = 0.3;
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "shadow_x must be between -0.2 and 0.2, got 0.3"
+        );
+        let mut settings = Settings::default();
+        settings.palette[0].shadow = Some("#000000".to_owned());
+        settings.palette[0].shadow_y = -0.3;
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "shadow_y must be between -0.2 and 0.2, got -0.3"
+        );
+        let mut settings = Settings::default();
+        settings.palette[0].shadow = Some("black".to_owned());
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "colours must be #RRGGBB: #FFFFFF / #000000 / transparent"
+        );
+    }
+
+    #[test]
+    fn drt_has_a_lowercase_name() {
+        assert_eq!(
+            serde_json::to_string(&SubtitleFormat::Drt).unwrap(),
+            "\"drt\""
+        );
     }
 }

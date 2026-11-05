@@ -1,0 +1,56 @@
+<Element>
+      <Sm2TiVideoClip DbId="{{title_id}}">
+       <FieldsBlob>{{title_fields}}</FieldsBlob>
+       <PrettyType>Fusion Title</PrettyType>
+       <Name>Fusion Title</Name>
+       <Start>{{start}}</Start>
+       <Duration>{{duration}}</Duration>
+       <LinkedItemSync/>
+       <WasDisbanded>false</WasDisbanded>
+       <MarkersBA/>
+       <UiMemento>0</UiMemento>
+       <Flags>0</Flags>
+       <PriorityIndex>0</PriorityIndex>
+       <EffectFiltersBA/>
+       <ImportExportMetadataBA/>
+       <RenderTextEnabled>true</RenderTextEnabled>
+       <RenderTextGanged>true</RenderTextGanged>
+       <RenderTextPrefixed>true</RenderTextPrefixed>
+       <CompositionTable>
+        <Sm2TiCompositionTable DbId="{{comp_id}}">
+         <FieldsBlob>000000010000000200000016004c006100730074004d006f006400540069006d00650000000400{{zero8}}0000002c0046007500730069006f006e00530074006100720074004600720061006d0065004f006600660073006500740000000200{{zero4}}</FieldsBlob>
+         <DbSavedTime>0</DbSavedTime>
+         <CompositionBA>{{composition}}</CompositionBA>
+         <ActiveCompositionIdx>0</ActiveCompositionIdx>
+        </Sm2TiCompositionTable>
+       </CompositionTable>
+       <In/>
+       <MixedFrameRateAlignment>0</MixedFrameRateAlignment>
+       <MediaStartTime>0</MediaStartTime>
+       <MediaFilePath/>
+       <MediaReelNumber/>
+       <MediaFrameRate>{{frame_rate}}</MediaFrameRate>
+       <MediaTimemapBA>{{title_timemap}}</MediaTimemapBA>
+       <LastChangedTime>0</LastChangedTime>
+       <LastRenderedTime>0</LastRenderedTime>
+       <IsMarkedForCaching>false</IsMarkedForCaching>
+       <IsForceConformed>true</IsForceConformed>
+       <MatchConflictState>0</MatchConflictState>
+       <UseOppositeSrcForLeftEye>false</UseOppositeSrcForLeftEye>
+       <UseOppositeSrcForRightEye>false</UseOppositeSrcForRightEye>
+       <RenderCacheBA/>
+       <CurrentSelectorIdx>1</CurrentSelectorIdx>
+       <IsPreConformed>false</IsPreConformed>
+       <PreConformMediaExtents>00000100000030c20000010000003042</PreConformMediaExtents>
+       <MediaMetadata/>
+       <Thumbnail>
+        <BtThumnail DbId="{{thumb_id}}">
+         <FieldsBlob/>
+         <ImgWidth>-1</ImgWidth>
+         <ImgHeight>-1</ImgHeight>
+         <Buffer/>
+        </BtThumnail>
+       </Thumbnail>
+       <ThumbnailDirtyFlag>true</ThumbnailDirtyFlag>
+      </Sm2TiVideoClip>
+     </Element>

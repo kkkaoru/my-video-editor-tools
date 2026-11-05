@@ -320,6 +320,7 @@ mod tests {
         duration: 1.0,
         fps_num: 30,
         fps_den: 1,
+        audio: None,
     };
 
     fn detection(x: f32, y: f32, width: f32, score: f32) -> Detection {

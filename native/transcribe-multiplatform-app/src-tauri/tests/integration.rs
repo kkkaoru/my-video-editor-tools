@@ -17,10 +17,7 @@ use transcribe_app::pipeline;
 use transcribe_app::process::CancelToken;
 use transcribe_app::settings::{Anchor, Placement, Settings, SubtitleFormat};
 
-const DIARIZATION_FILE: &str = "models/nemotron-3-diarization/Nemotron-3-Diarization.q8_0.gguf";
-/// Only ever used when selected, so jobs that need any speaker model name it.
-const SMALL_SPEAKER_MODEL: &str = "nemotron-3-diarization";
-const DIARIZATION_BYTES: u64 = 107_012_128;
+const SPEAKER_MODEL: &str = "nemotron-3.5-transcribe-q2l";
 const Q2L_FILE: &str =
     "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf";
 const Q2L_BYTES: u64 = 15_547_824_288;
@@ -36,6 +33,7 @@ const VIDEO: VideoInfo = VideoInfo {
     duration: 2.0,
     fps_num: 30,
     fps_den: 1,
+    audio: None,
 };
 const FFMPEG: &str = r#"
 case "$*" in
@@ -65,16 +63,11 @@ cat > "$out.json" <<'EOF'
 EOF
 "#;
 const NEMO: &str = r#"
-command="$1"
 while [ $# -gt 0 ]; do
   if [ "$1" = "--output" ]; then out="$2"; fi
   shift
 done
-if [ "$command" = "diarize" ]; then
-  echo '{"segments":[{"start":0.0,"end":0.95,"speaker":1},{"start":0.95,"end":2.0,"speaker":2}]}' > "$out"
-else
-  echo '{"words":[{"word":"a","start":0.0,"end":0.9,"speaker":1},{"word":"b","start":1.0,"end":2.0,"speaker":1}]}' > "$out"
-fi
+echo '{"words":[{"word":"a","start":0.0,"end":0.95,"speaker":1},{"word":"b","start":0.95,"end":2.0,"speaker":2}]}' > "$out"
 "#;
 /// ModelProto with one Identity node: lets the real detector run without a real face model.
 const IDENTITY_ONNX: &[u8] = b"\x08\x08\x3a\x2b\x0a\x10\x0a\x01x\x12\x01y\x22\x08Identity\x12\x01g\x5a\x09\x0a\x01x\x12\x04\x0a\x02\x08\x01\x62\x09\x0a\x01y\x12\x04\x0a\x02\x08\x01\x42\x02\x10\x0d";
@@ -134,8 +127,14 @@ fn install_ipadic(paths: &AppPaths) {
 fn ready(root: &Path) -> AppPaths {
     let paths = with_tools(root);
     sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    install_speech_llm(&paths);
     paths
+}
+
+/// Speaker separation only runs with a usable Nemotron 3.5 present.
+fn install_speech_llm(paths: &AppPaths) {
+    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
 }
 
 fn install_yunet(paths: &AppPaths) {
@@ -168,7 +167,7 @@ fn bottom_anchored() -> Settings {
             offset_y_percent: 0.0,
         },
         speaker_count: 0,
-        diarize_model: SMALL_SPEAKER_MODEL.to_owned(),
+        diarize_model: SPEAKER_MODEL.to_owned(),
         ..Settings::default()
     }
 }
@@ -181,7 +180,7 @@ fn face_anchored() -> Settings {
             offset_y_percent: 0.0,
         },
         speaker_count: 0,
-        diarize_model: SMALL_SPEAKER_MODEL.to_owned(),
+        diarize_model: SPEAKER_MODEL.to_owned(),
         ..Settings::default()
     }
 }
@@ -303,6 +302,13 @@ fn a_job_with_a_speech_llm_merges_word_speakers_into_turns() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &counting_nemo(
+            &root,
+            r#"{"words":[{"word":"a","start":0.0,"end":0.9,"speaker":1},{"word":"b","start":1.0,"end":2.0,"speaker":1}]}"#,
+        ),
+    );
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         language: "ja".to_owned(),
@@ -326,7 +332,7 @@ fn a_job_with_a_speech_llm_merges_word_speakers_into_turns() {
 fn a_job_converts_the_whisper_checkpoint_once() {
     let root = scratch("job-convert");
     let paths = with_tools(&root);
-    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    install_speech_llm(&paths);
     write_checkpoint(
         &paths
             .data
@@ -425,51 +431,99 @@ fn a_job_refuses_invalid_settings_before_anything_else() {
 }
 
 #[test]
-fn a_job_without_any_speaker_model_names_the_role() {
+fn without_a_nemotron_3_5_a_job_has_one_speaker_whatever_is_saved() {
     let root = scratch("job-no-model");
     let paths = with_tools(&root);
-    assert_eq!(
-        pipeline::run_job(
-            &root.join("clip.mp4"),
-            &paths,
-            &Settings {
-                diarize_model: String::new(),
-                ..bottom_anchored()
-            },
-            &mac(),
-            &CancelToken::default(),
-            &mut |_| {}
-        )
-        .unwrap_err()
-        .to_string(),
-        "no model is installed for diarize"
+    sparse(&paths.data.join(GGML_FILE), 0);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        "echo 'nemo must not run' >&2; exit 9",
     );
+    let settings = Settings {
+        speaker_count: 3,
+        ..bottom_anchored()
+    };
+    let mut plan: Vec<Stage> = Vec::new();
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |progress: Progress| plan.clone_from(&progress.plan),
+    )
+    .unwrap();
+    assert_eq!(
+        plan,
+        vec![Stage::ExtractAudio, Stage::Transcribe, Stage::Export]
+    );
+    assert_eq!(outcome.speaker_count, 1);
+    assert_eq!(outcome.requested_speakers, 1);
 }
 
 #[test]
-fn the_small_speaker_model_alone_is_never_chosen_for_the_user() {
-    let root = scratch("job-small-not-default");
+fn a_nemotron_3_5_too_large_for_the_machine_counts_as_none() {
+    let root = scratch("job-blocked-llm");
     let paths = ready(&root);
-    let error = pipeline::run_job(
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        "echo 'nemo must not run' >&2; exit 9",
+    );
+    let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
         &Settings {
-            diarize_model: String::new(),
+            speaker_count: 2,
             ..bottom_anchored()
         },
+        &Hardware {
+            memory_gib: 12,
+            ..mac()
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.requested_speakers, 1);
+}
+
+#[test]
+fn writing_captions_again_reports_one_speaker_without_a_nemotron_3_5() {
+    let root = scratch("relayout-no-llm");
+    let paths = ready(&root);
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &bottom_anchored(),
         &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
-    .unwrap_err()
-    .to_string();
-    assert_eq!(error, "no model is installed for diarize");
+    .unwrap();
+    let outcome = pipeline::relayout_to(
+        &root.join("clip.transcript.json"),
+        &root.join("clip-2"),
+        &paths,
+        &Settings {
+            speaker_count: 3,
+            ..bottom_anchored()
+        },
+        &Hardware {
+            memory_gib: 12,
+            ..mac()
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.requested_speakers, 1);
 }
 
 #[test]
 fn a_job_with_an_unknown_speaker_model_fails() {
     let root = scratch("job-unknown-model");
     let paths = with_tools(&root);
+    install_speech_llm(&paths);
     let settings = Settings {
         diarize_model: "nope".to_owned(),
         ..bottom_anchored()
@@ -493,12 +547,13 @@ fn a_job_with_an_unknown_speaker_model_fails() {
 fn a_job_refuses_a_model_too_large_for_the_machine() {
     let root = scratch("job-too-large");
     let paths = with_tools(&root);
+    install_speech_llm(&paths);
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q8".to_owned(),
         ..bottom_anchored()
     };
     let hardware = Hardware {
-        memory_gib: 12,
+        memory_gib: 24,
         ..mac()
     };
     assert_eq!(
@@ -512,7 +567,7 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
         )
         .unwrap_err()
         .to_string(),
-        "model nemotron-3.5-transcribe-q8 needs 48 GiB of memory, this machine has 12 GiB"
+        "model nemotron-3.5-transcribe-q8 needs 48 GiB of memory, this machine has 24 GiB"
     );
 }
 
@@ -520,8 +575,9 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
 fn a_job_refuses_a_chosen_model_that_is_not_installed() {
     let root = scratch("job-not-installed");
     let paths = with_tools(&root);
+    install_speech_llm(&paths);
     let settings = Settings {
-        diarize_model: "nemotron-3-diarization".to_owned(),
+        diarize_model: "nemotron-3.5-transcribe-iq4".to_owned(),
         ..bottom_anchored()
     };
     assert_eq!(
@@ -535,7 +591,7 @@ fn a_job_refuses_a_chosen_model_that_is_not_installed() {
         )
         .unwrap_err()
         .to_string(),
-        "model nemotron-3-diarization is not installed"
+        "model nemotron-3.5-transcribe-iq4 is not installed"
     );
 }
 
@@ -547,7 +603,7 @@ fn a_job_without_bundled_tools_says_which_is_missing() {
         resources: root.join("resources"),
         hf_hub: None,
     };
-    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    install_speech_llm(&paths);
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
@@ -588,7 +644,7 @@ fn a_job_on_a_file_without_video_reports_the_user_error() {
 fn a_job_without_a_whisper_model_names_it() {
     let root = scratch("job-no-whisper");
     let paths = with_tools(&root);
-    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    install_speech_llm(&paths);
     assert_eq!(
         pipeline::run_job(
             &root.join("clip.mp4"),
@@ -772,6 +828,7 @@ fn relayout_writes_to_the_base_it_is_given() {
             font_ratio: 0.1,
             ..bottom_anchored()
         },
+        &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
     )
@@ -810,6 +867,7 @@ fn relayout_scans_faces_the_transcript_does_not_have_yet() {
         &root.join("renamed"),
         &paths,
         &face_anchored(),
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -831,6 +889,7 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
         &root.join("a"),
         &paths,
         &invalid,
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -842,6 +901,7 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
         &root.join("a"),
         &paths,
         &bottom_anchored(),
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -913,7 +973,8 @@ fn probe_reads_the_tool_output_and_reports_its_failure() {
             height: 720,
             duration: 2.0,
             fps_num: 30,
-            fps_den: 1
+            fps_den: 1,
+            audio: None,
         }
     );
     write_tool(
@@ -994,12 +1055,11 @@ fn a_diarizer_that_writes_nothing_is_an_error() {
         "",
     );
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3-diarization").unwrap(),
+        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
         main_file: Path::new("m.gguf"),
         encoder: None,
         device: "auto",
         speaker_count: 0,
-        onset: None,
     };
     let error = engines::diarize(
         &tools_in(&paths),
@@ -1025,7 +1085,6 @@ fn only_diarization_models_can_diarize() {
         encoder: None,
         device: "auto",
         speaker_count: 0,
-        onset: None,
     };
     let error = engines::diarize(
         &tools_in(&paths),
@@ -1142,24 +1201,22 @@ fn files_are_found_by_name_and_size_in_any_root() {
         resources: root.join("resources"),
         hf_hub: None,
     };
-    let entry = catalog::find_entry("nemotron-3-diarization").unwrap();
-    assert_eq!(catalog::locate(entry, &paths, &[]), None);
     let extra = root.join("user");
-    let wrong_size = extra.join("a/Nemotron-3-Diarization.q8_0.gguf");
-    sparse(&wrong_size, 5);
     assert_eq!(
-        catalog::locate(entry, &paths, std::slice::from_ref(&extra)),
+        catalog::speech_llm_encoder(std::slice::from_ref(&extra), &paths),
         None
     );
-    File::options()
-        .write(true)
-        .open(&wrong_size)
+    let file = extra.join("a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf");
+    sparse(&file, 5);
+    assert_eq!(
+        catalog::speech_llm_encoder(std::slice::from_ref(&extra), &paths),
+        None
+    );
+    sparse(&file, ENCODER_BYTES);
+    assert!(catalog::speech_llm_encoder(&[extra], &paths)
         .unwrap()
-        .set_len(DIARIZATION_BYTES)
-        .unwrap();
-    assert!(catalog::locate(entry, &paths, &[extra])
-        .unwrap()
-        .ends_with("user/a/Nemotron-3-Diarization.q8_0.gguf"));
+        .ends_with("user/a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1170,21 +1227,21 @@ fn hidden_and_too_deep_folders_are_not_searched() {
         resources: root.join("resources"),
         hf_hub: None,
     };
-    let entry = catalog::find_entry("nemotron-3-diarization").unwrap();
     sparse(
-        &root.join("data/models/.cache/Nemotron-3-Diarization.q8_0.gguf"),
-        DIARIZATION_BYTES,
+        &root.join("data/models/.cache/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        ENCODER_BYTES,
     );
     sparse(
-        &root.join("data/models/a/b/c/d/e/Nemotron-3-Diarization.q8_0.gguf"),
-        DIARIZATION_BYTES,
+        &root.join("data/models/a/b/c/d/e/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        ENCODER_BYTES,
     );
-    assert_eq!(catalog::locate(entry, &paths, &[]), None);
+    assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(
-        &root.join("data/models/a/b/c/d/Nemotron-3-Diarization.q8_0.gguf"),
-        DIARIZATION_BYTES,
+        &root.join("data/models/a/b/c/d/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        ENCODER_BYTES,
     );
-    assert!(catalog::locate(entry, &paths, &[]).is_some());
+    assert!(catalog::speech_llm_encoder(&[], &paths).is_some());
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1195,15 +1252,15 @@ fn the_hugging_face_cache_counts_as_installed() {
         resources: root.join("resources"),
         hf_hub: Some(root.join("hub")),
     };
-    let entry = catalog::find_entry("nemotron-3-diarization").unwrap();
-    assert_eq!(catalog::locate(entry, &paths, &[]), None);
+    assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(
-        &root.join("hub/models--nvidia--Nemotron-3-Diarization/snapshots/abc/Nemotron-3-Diarization.q8_0.gguf"),
-        DIARIZATION_BYTES,
+        &root.join("hub/models--AtomicChat--NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        ENCODER_BYTES,
     );
-    assert!(catalog::locate(entry, &paths, &[])
+    assert!(catalog::speech_llm_encoder(&[], &paths)
         .unwrap()
-        .ends_with("snapshots/abc/Nemotron-3-Diarization.q8_0.gguf"));
+        .ends_with("snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1315,7 +1372,6 @@ fn statuses_describe_every_entry_for_this_hardware() {
             "nemotron-3.5-transcribe-q2m",
             "nemotron-3.5-transcribe-q2l",
             "nemotron-3.5-transcribe-q8",
-            "nemotron-3-diarization",
             "yunet",
             "avatar-face-yolo"
         ]
@@ -1336,7 +1392,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
             .filter(|row| row.found_at.is_some())
             .map(|row| row.id)
             .collect::<Vec<_>>(),
-        vec!["whisper-large-v3-turbo", "nemotron-3-diarization"]
+        vec!["whisper-large-v3-turbo", "nemotron-3.5-transcribe-q2l",]
     );
     assert_eq!(
         rows.iter()
@@ -1354,7 +1410,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
 #[test]
 fn the_default_speaker_model_prefers_the_recommended_build() {
     let root = scratch("default-model");
-    let paths = ready(&root);
+    let paths = with_tools(&root);
     let hardware = Hardware {
         memory_gib: 24,
         ..mac()
@@ -1405,7 +1461,7 @@ fn outputs_land_beside_the_video_and_load_back() {
         end: 2.0,
     }];
     let outputs = export::write_outputs(&root.join("a"), &transcript, &settings).unwrap();
-    assert_eq!(names(&outputs), vec!["a.fcpxml"]);
+    assert_eq!(names(&outputs), vec!["a.drt"]);
     assert_eq!(
         Transcript::load(&root.join("a.transcript.json")).unwrap(),
         transcript
@@ -1441,7 +1497,12 @@ fn the_cli_runs_a_whole_job_and_prints_the_outcome() {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/settings.json"),
-        serde_json::to_vec(&bottom_anchored()).unwrap(),
+        // One speaker: the real machine's memory decides whether a Nemotron 3.5 could run here.
+        serde_json::to_vec(&Settings {
+            speaker_count: 1,
+            ..bottom_anchored()
+        })
+        .unwrap(),
     )
     .unwrap();
     let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
@@ -1452,10 +1513,10 @@ fn the_cli_runs_a_whole_job_and_prints_the_outcome() {
     let first: Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(first["stage"], "extract_audio");
     let last: Value = serde_json::from_str(lines[lines.len() - 1]).unwrap();
-    assert_eq!(last["speaker_count"], 2);
-    assert_eq!(last["cue_count"], 2);
+    assert_eq!(last["speaker_count"], 1);
+    assert_eq!(last["cue_count"], 1);
     assert_eq!(last["faceless"], false);
-    assert_eq!(last["requested_speakers"], 0);
+    assert_eq!(last["requested_speakers"], 1);
 }
 
 #[test]
@@ -1464,7 +1525,7 @@ fn the_cli_reports_failure_on_stderr_with_a_failing_status() {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(root.join("data/settings.json"), br#"{"speaker_count":0}"#).unwrap();
     let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
-    assert_eq!(stderr(&output), "no model is installed for diarize");
+    assert_eq!(stderr(&output), "model yunet is not installed");
     assert_eq!(output.status.code(), Some(1));
 }
 
@@ -1516,7 +1577,7 @@ fn the_cli_defaults_to_the_folder_under_home() {
 fn a_job_reports_a_checkpoint_that_cannot_convert() {
     let root = scratch("job-bad-checkpoint");
     let paths = with_tools(&root);
-    sparse(&paths.data.join(DIARIZATION_FILE), DIARIZATION_BYTES);
+    install_speech_llm(&paths);
     sparse(
         &paths
             .data
@@ -1580,6 +1641,7 @@ fn relayout_reports_a_face_scan_that_cannot_start() {
         &root.join("clip"),
         &paths,
         &face_anchored(),
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -1821,119 +1883,23 @@ fn one_known_speaker_skips_separation_entirely() {
     assert_eq!(outcome.requested_speakers, 1);
 }
 
-/// Logs each call beside the job, then writes `$1` voices without `--onset` and `$2` with it.
-fn counting_nemo(root: &Path, plain: &str, with_onset: &str) -> String {
+/// Logs each call beside the job, then writes `body`.
+fn counting_nemo(root: &Path, body: &str) -> String {
     format!(
         r#"
 echo "$*" >> "{log}"
-case "$*" in
-  *--onset*) body='{with_onset}' ;;
-  *) body='{plain}' ;;
-esac
 while [ $# -gt 0 ]; do
   if [ "$1" = "--output" ]; then out="$2"; fi
   shift
 done
-echo "$body" > "$out"
+echo '{body}' > "$out"
 "#,
         log = root.join("nemo-calls.log").display(),
     )
 }
 
-const ONE_VOICE: &str = r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#;
-const TWO_VOICES: &str =
-    r#"{"segments":[{"start":0.0,"end":0.95,"speaker":1},{"start":0.95,"end":2.0,"speaker":2}]}"#;
-
 #[test]
-fn too_few_voices_are_retried_once_with_a_lower_onset() {
-    let root = scratch("job-retry");
-    let paths = ready(&root);
-    write_tool(
-        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
-        &counting_nemo(&root, ONE_VOICE, TWO_VOICES),
-    );
-    let settings = Settings {
-        speaker_count: 2,
-        ..bottom_anchored()
-    };
-    let outcome = pipeline::run_job(
-        &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &mac(),
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap();
-    assert_eq!(outcome.speaker_count, 2);
-    assert_eq!(outcome.requested_speakers, 2);
-    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
-    assert_eq!(log.lines().count(), 2);
-    assert!(log
-        .lines()
-        .next()
-        .is_some_and(|call| !call.contains("--onset")));
-    assert!(log
-        .lines()
-        .nth(1)
-        .is_some_and(|call| call.contains("--onset 0.3")));
-}
-
-#[test]
-fn voices_still_missing_after_the_retry_are_reported_not_invented() {
-    let root = scratch("job-retry-short");
-    let paths = ready(&root);
-    write_tool(
-        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
-        &counting_nemo(&root, ONE_VOICE, ONE_VOICE),
-    );
-    let settings = Settings {
-        speaker_count: 3,
-        ..bottom_anchored()
-    };
-    let outcome = pipeline::run_job(
-        &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &mac(),
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap();
-    assert_eq!(outcome.speaker_count, 1);
-    assert_eq!(outcome.requested_speakers, 3);
-    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
-    assert_eq!(log.lines().count(), 2);
-}
-
-#[test]
-fn enough_voices_need_no_retry() {
-    let root = scratch("job-no-retry");
-    let paths = ready(&root);
-    write_tool(
-        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
-        &counting_nemo(&root, TWO_VOICES, ONE_VOICE),
-    );
-    let settings = Settings {
-        speaker_count: 2,
-        ..bottom_anchored()
-    };
-    let outcome = pipeline::run_job(
-        &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &mac(),
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap();
-    assert_eq!(outcome.speaker_count, 2);
-    let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
-    assert_eq!(log.lines().count(), 1);
-}
-
-#[test]
-fn a_speech_llm_is_not_retried() {
+fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
     let root = scratch("job-llm-no-retry");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
@@ -1942,7 +1908,7 @@ fn a_speech_llm_is_not_retried() {
     let one_word = r#"{"words":[{"word":"a","start":0.0,"end":2.0,"speaker":1}]}"#;
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
-        &counting_nemo(&root, one_word, one_word),
+        &counting_nemo(&root, one_word),
     );
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
@@ -1985,6 +1951,7 @@ fn relayout_reports_the_requested_speaker_count() {
             speaker_count: 2,
             ..bottom_anchored()
         },
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -2120,7 +2087,7 @@ fn a_missing_face_model_fails_before_any_work_folder_exists() {
 }
 
 #[test]
-fn a_job_writes_fcpxml_when_nothing_was_chosen() {
+fn a_job_writes_a_resolve_timeline_when_nothing_was_chosen() {
     let root = scratch("job-default-format");
     let paths = ready(&root);
     let outcome = pipeline::run_job(
@@ -2132,7 +2099,8 @@ fn a_job_writes_fcpxml_when_nothing_was_chosen() {
         &mut |_| {},
     )
     .unwrap();
-    assert_eq!(names(&outcome.outputs), vec!["clip.fcpxml"]);
+    assert_eq!(names(&outcome.outputs), vec!["clip.drt"]);
+    assert!(!root.join("clip.fcpxml").exists());
     assert!(!root.join("clip.srt").exists());
     assert!(!root.join("clip.ttml").exists());
 }
@@ -2184,6 +2152,7 @@ fn writing_captions_again_follows_the_chosen_format() {
             subtitle_format: SubtitleFormat::Ttml,
             ..bottom_anchored()
         },
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -2239,4 +2208,52 @@ fn a_voice_detector_that_fails_stops_the_job() {
         "exit 3\n",
     );
     assert!(engines::voice_spans(&tools_in(&paths), &root.join("a.wav")).is_err());
+}
+
+#[test]
+fn writing_a_timeline_from_an_old_transcript_reads_the_audio_from_the_video() {
+    let root = scratch("relayout-old-audio");
+    let paths = ready(&root);
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            subtitle_format: SubtitleFormat::Srt,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        Transcript::load(&root.join("clip.transcript.json"))
+            .unwrap()
+            .info
+            .audio,
+        None
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffprobe"),
+        r#"echo '{"format":{"duration":"2.0"},"streams":[{"codec_type":"video","width":1280,"height":720,"avg_frame_rate":"30/1","nb_frames":"60"},{"codec_type":"audio","sample_rate":"48000","channels":2,"duration":"2.0"}]}'"#,
+    );
+    pipeline::relayout_to(
+        &root.join("clip.transcript.json"),
+        &root.join("clip-2"),
+        &paths,
+        &bottom_anchored(),
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        Transcript::load(&root.join("clip-2.transcript.json"))
+            .unwrap()
+            .info
+            .audio
+            .map(|audio| audio.sample_rate),
+        Some(48_000)
+    );
+    assert!(root.join("clip-2.drt").exists());
 }

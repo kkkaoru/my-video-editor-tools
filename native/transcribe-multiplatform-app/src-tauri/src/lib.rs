@@ -3,6 +3,7 @@
 pub mod captions;
 pub mod catalog;
 pub mod download;
+pub mod drt;
 pub mod engines;
 pub mod error;
 pub mod eta;
