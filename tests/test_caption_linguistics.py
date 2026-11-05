@@ -25,6 +25,7 @@ from replay.caption_timing import CaptionPolicy, SpokenToken, make_captions
 def synthetic_dictionary(monkeypatch: pytest.MonkeyPatch) -> Vibrato:
     tokenizer = Vibrato.from_textdict(
         (
+            "歌っ,0,0,0,動詞,自立\nちゃった,0,0,0,名詞,一般\nえっ,0,0,0,感動詞,*\nそう,0,0,0,名詞,一般\n"
             "今日,0,0,0,名詞,一般\nは,0,0,0,助詞,係助詞\n青い,0,0,0,形容詞,自立\n"
             "空,0,0,0,名詞,一般\nを,0,0,0,助詞,格助詞\n見,0,0,0,動詞,自立\n"
             "ながら,0,0,0,助詞,接続助詞\n、,0,0,0,記号,読点\nお,0,0,0,接頭詞,名詞接続\n"
@@ -1014,3 +1015,55 @@ def test_a_too_wide_unknown_run_is_shown_in_fitting_runs_at_its_word_onsets() ->
         ("ディー", 1.6),
         ("ディーさす", 2.2),
     ]
+
+
+def measured_by_characters(text: str) -> tuple[float, float]:
+    lines = text.split("\n")
+    return max(map(len, lines)), len(lines)
+
+
+def test_a_line_does_not_part_a_sokuon_from_the_kana_it_doubles() -> None:
+    assert (
+        caption_linguistics.wrap_measured_lines(
+            "空を歌っちゃった", measure=measured_by_characters, width=6, height=2, maximum_lines=2
+        )
+        == "空を\n歌っちゃった"
+    )
+
+
+def test_an_interjections_sokuon_may_end_a_line() -> None:
+    assert (
+        caption_linguistics.wrap_measured_lines(
+            "えっそう", measure=measured_by_characters, width=2, height=2, maximum_lines=2
+        )
+        == "えっ\nそう"
+    )
+
+
+def test_parting_a_sokuon_is_the_last_resort_when_nothing_else_fits() -> None:
+    assert (
+        caption_linguistics.wrap_measured_lines(
+            "空を歌っちゃった", measure=measured_by_characters, width=4, height=2, maximum_lines=2
+        )
+        == "空を歌っ\nちゃった"
+    )
+
+
+def test_a_split_word_breaks_elsewhere_than_at_a_sokuon() -> None:
+    assert (
+        caption_linguistics.wrap_split_word(
+            "ハメニノリッタイバコ", measure=measured_by_characters, width=6, height=3
+        )
+        == "ハメニノ\nリッタイバコ"
+    )
+    assert (
+        caption_linguistics.wrap_split_word(
+            "あっか", measure=measured_by_characters, width=2, height=3
+        )
+        == "あっ\nか"
+    )
+
+
+def test_a_sokuon_before_a_kanji_splits_no_sound() -> None:
+    assert caption_linguistics.splits_sound("あっ今", 2) is False
+    assert caption_linguistics.splits_sound("あって", 2) is True

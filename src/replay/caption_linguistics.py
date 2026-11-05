@@ -29,6 +29,7 @@ ALPHANUMERIC_PAIR = regex.compile(r"[\p{Script=Latin}\p{Number}]{2}")
 DEPENDENT_KANA = frozenset("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶーﾞﾟ々ゝゞヽヾ")
 PROHIBITED_LINE_START = DEPENDENT_KANA | frozenset("、。！？!?.,;:…」』）)]｝")
 PROHIBITED_LINE_END = frozenset("「『（([｛")
+SOKUON = frozenset("っッ")
 RAW_CHUNK_NAME = regex.compile(r"[0-9]+\.raw\.json")
 ASSEMBLED_GROUP_OWNER = regex.compile(r"(?P<context>.*:)?(?P<window>[0-9]{12}):[0-9]+")
 
@@ -263,6 +264,33 @@ def wrap_measured_lines(
             and not any(first < point < last for first, last in fitting_runs)
         )
     )
+    # An interjection's sokuon closes its word (えっ / そうなの); others belong to the next sound.
+    interjections = {item.end() for item in items if item.feature().split(",")[0] == "感動詞"}
+    whole = tuple(
+        point for point in points if point in interjections or not splits_sound(text, point)
+    )
+    for usable in (whole, points) if whole != points else (points,):
+        layout = _fitting_layout(text, usable, bounds, width, height, maximum_lines, prepare_lines)
+        if layout is not None:
+            return layout
+    raise CaptionLayoutError("No phrase layout fits measured caption region")
+
+
+def splits_sound(text: str, point: int) -> bool:
+    """Whether a break at ``point`` parts a sokuon from the kana it doubles (入っ / てない)."""
+    return text[point - 1] in SOKUON and "\u3041" <= text[point] <= "\u30ff"
+
+
+def _fitting_layout(
+    text: str,
+    points: tuple[int, ...],
+    measure: Callable[[str], tuple[float, float]],
+    width: float,
+    height: float,
+    maximum_lines: int,
+    prepare_lines: Callable[[tuple[str, ...]], None] | None,
+) -> str | None:
+    """The most even layout breaking only at ``points`` in the fewest lines that fit, or None."""
     for line_count in range(2, maximum_lines + 1):
         splits = tuple(islice(combinations(points, line_count - 1), MAX_LAYOUT_CANDIDATES + 1))
         if len(splits) > MAX_LAYOUT_CANDIDATES:
@@ -275,13 +303,13 @@ def wrap_measured_lines(
         candidates: list[tuple[float, int, str]] = []
         for index, lines in enumerate(layouts):
             candidate = "\n".join(lines)
-            measured_width, measured_height = bounds(candidate)
+            measured_width, measured_height = measure(candidate)
             if measured_width <= width and measured_height <= height:
-                widths = [bounds(line)[0] for line in lines]
+                widths = [measure(line)[0] for line in lines]
                 candidates.append((max(widths) - min(widths), index, candidate))
         if candidates:
             return min(candidates)[2]
-    raise CaptionLayoutError("No phrase layout fits measured caption region")
+    return None
 
 
 def wrap_split_word(
@@ -308,8 +336,11 @@ def wrap_split_word(
         if text[point] not in PROHIBITED_LINE_START and text[point - 1] not in PROHIBITED_LINE_END
     ]
     morphemes = {item.end() for item in _tokenizer().tokenize(text)}
-    ordered = [point for point in legal if point in morphemes]
-    ordered += [point for point in legal if point not in morphemes]
+    ordered = [point for point in legal if point in morphemes and not splits_sound(text, point)]
+    ordered += [
+        point for point in legal if point not in morphemes and not splits_sound(text, point)
+    ]
+    ordered += [point for point in legal if splits_sound(text, point)]
     layouts = [(text[:point], text[point:]) for point in ordered]
     if prepare_lines is not None:
         prepare_lines(tuple(dict.fromkeys(line for layout in layouts for line in layout)))
