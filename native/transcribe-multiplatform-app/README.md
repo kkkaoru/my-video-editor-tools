@@ -135,8 +135,8 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 
 Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
 
-Windows, Ryzen 5 3600 with a Radeon RX 6900 XT: v0.1.1's Vulkan `whisper-cli` contains AVX-512 and crashes on this CPU with `0xc000001d`. With that binary in place, a 30-second clip through the command line crashed once, then finished on the CPU build.
+Windows, Ryzen 5 3600 with a Radeon RX 6900 XT: v0.1.1's Vulkan `whisper-cli` contains AVX-512 and crashes on this CPU with `0xc000001d`. With that binary in place, a 30-second clip through the command line crashed once, then finished on the CPU build. A 31-minute one-speaker recording (720x1280) took 99.3 minutes that way and 14.2 minutes with the rebuilt Vulkan `whisper-cli`, which has no AVX-512, and neither run produced overlapping captions. The Vulkan run had almost the same text apart from punctuation, which faded out about 20 minutes in and was absent from 25 minutes on; one run of each cannot say whether Vulkan causes that.
 
-Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline. The bulk download, the reset and the missing-model error have tests only.
+Not checked: two or more real speakers, a real GeForce GPU, TTML and SRT placed on a Resolve timeline. The bulk download, the reset and the missing-model error have tests only.
 
 Avatars with hair reaching the top of the frame leave no room above the head. The caption then goes below the face, because not covering the face comes first.
