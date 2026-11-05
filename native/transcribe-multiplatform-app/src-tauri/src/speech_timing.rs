@@ -137,8 +137,10 @@ fn pcm_samples(bytes: &[u8]) -> Option<(Vec<i16>, u32)> {
         }
         if id == b"data" {
             let samples = bytes[body..end]
-                .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| i16::from_le_bytes(*pair))
                 .collect();
             return Some((samples, rate?));
         }
