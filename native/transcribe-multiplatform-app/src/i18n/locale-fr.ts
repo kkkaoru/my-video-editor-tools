@@ -5,6 +5,13 @@ export const frMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "Transcrire",
   tabStyle: "Apparence et position des sous-titres",
+  tabSettings: "Réglages",
+  uiLanguageLabel: "Langue de l'interface",
+  uiLanguageSystem: "Comme le système",
+  uiThemeLabel: "Apparence",
+  uiThemeSystem: "Comme le système",
+  uiThemeLight: "Clair",
+  uiThemeDark: "Sombre",
   tabHelp: "Mode d'emploi",
   tabModels: "Modèles",
   noticeSpeakersOnCpu:
@@ -25,6 +32,8 @@ export const frMessages: Messages = {
   speakerCountHelpLabel: "Pourquoi indiquer le nombre de locuteurs ?",
   speakerCountHelp:
     "Les couleurs des locuteurs dépendent de la distinction des voix. Indiquer le nombre évite que des voix proches se confondent ou qu'une voix soit scindée. Avec 1 locuteur, la séparation est ignorée : c'est plus rapide et aucun modèle de locuteurs n'est nécessaire.",
+  speakerCountOnlyOne:
+    "Sans modèle Nemotron 3.5, seul 1 locuteur est possible. Télécharge-en un dans « {tabModels} » pour en choisir plus.",
   profilesHeading: "Profils",
   profilesHint:
     "Enregistre l'apparence et la position des sous-titres sous un nom, puis restaure-les plus tard. Les modèles et la langue parlée ne font pas partie d'un profil.",
@@ -97,6 +106,7 @@ export const frMessages: Messages = {
   jobRemainingUnderMinute: "Moins d'une minute restante",
   stepStates: { done: "terminé", current: "en cours", pending: "en attente" },
   outputPurposes: {
+    drt: "Sous-titres Text+ pour DaVinci Resolve, avec couleurs, contours, contours extérieurs et ombres",
     ttml: "Sous-titres stylés (couleur, contour, position)",
     srt: "Sous-titres avec les mots et les temps (couleurs parfois absentes, ni contours ni positions)",
     fcpxml: "Timeline avec titres",
@@ -132,9 +142,7 @@ export const frMessages: Messages = {
     "Les tailles suivent automatiquement la résolution de chaque vidéo. Ce sont des proportions de la vidéo.",
   fontSize: "Taille du texte (pourcentage du petit côté)",
   captionWidth: "Ligne la plus longue (pourcentage de la largeur)",
-  outlineWidth: "Épaisseur du contour (pourcentage du texte)",
   captionLineHeight: "Interligne (multiple de la taille du texte)",
-  rimWidth: "Bord noir à l'extérieur du contour (pourcentage du texte)",
   unknownSpeaker: "Locuteur inconnu",
   contrastWarning:
     "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisis des couleurs plus éloignées.",
@@ -149,16 +157,47 @@ export const frMessages: Messages = {
   previewUhd: "4K",
   speakersHeading: "Couleurs des intervenants (jusqu’à {count} intervenants)",
   speakersHint:
-    "Chaque intervenant reçoit automatiquement une couleur de remplissage et une couleur de contour. Modifie-les ici.",
+    "Choisis un locuteur pour changer ses couleurs et ses épaisseurs. L'aperçu montre ses sous-titres. L'épaisseur et la position sont des pourcentages de la taille du texte.",
   speakerName: "Intervenant {number}",
-  fillLabel: "remplissage",
-  outlineLabel: "contour",
+  colorColumn: "Couleur",
+  fillWidth: "Épaisseur du remplissage (pourcentage de la taille du texte)",
+  outlineWidth: "Épaisseur du contour (pourcentage de la taille du texte)",
+  rimWidth: "Épaisseur du contour extérieur (pourcentage de la taille du texte)",
+  layerWidth: "Épaisseur (pourcentage de la taille du texte)",
+  colorTransparent: "Transparent",
+  colorCustom: "Couleur libre",
+  colorNames: {
+    white: "Blanc",
+    black: "Noir",
+    red: "Rouge",
+    orange: "Orange",
+    yellow: "Jaune",
+    green: "Vert",
+    blue: "Bleu",
+    purple: "Violet",
+  },
+  fillLabel: "Remplissage",
+  outlineLabel: "Contour",
+  rimLabel: "Contour extérieur",
+  formatLimits: {
+    fcpxml: "FCPXML n'affiche pas l'ombre. Choisis DRT pour l'utiliser.",
+    ttml: "TTML n'affiche ni contour extérieur ni ombre. Choisis DRT pour les utiliser.",
+    srt: "SRT ne garde que la couleur du texte : ni contour, ni contour extérieur, ni ombre. Choisis DRT pour les utiliser.",
+  },
+  shadowLabel: "Ombre",
+  shadowColor: "Couleur de l'ombre",
+  shadowX: "Ombre gauche-droite (pourcentage de la taille du texte)",
+  shadowXShort: "Ombre gauche-droite",
+  shadowY: "Ombre haut-bas (pourcentage de la taille du texte ; négatif vers le bas)",
+  shadowYShort: "Ombre haut-bas",
+  shadowBlur: "Flou de l'ombre (0 à 50)",
+  shadowBlurShort: "Flou de l'ombre",
   addSpeaker: "Ajouter un intervenant",
   removeSpeaker: "Retirer un intervenant",
   resetPalette: "Rétablir les couleurs d’origine",
   modelsHeading: "Modèles",
   noRecommendedSpeakerModel:
-    "Aucun modèle de séparation des locuteurs n'est recommandé pour cet ordinateur. Règle le nombre de locuteurs sur 1, ou télécharge un petit modèle dans la liste ci-dessous et choisis-le.",
+    "Aucun modèle Nemotron 3.5 n'est recommandé pour cet ordinateur. Tu peux quand même créer des sous-titres pour 1 locuteur.",
   modelsHint:
     "Les modèles adaptés à cet ordinateur sont marqués comme recommandés. Les modèles déjà téléchargés sont retrouvés et réutilisés.",
   addModelFolder: "Ajouter un dossier contenant des modèles existants",
@@ -182,13 +221,12 @@ export const frMessages: Messages = {
     unreadable_duration: "La durée de cette vidéo est illisible. Le fichier est peut-être endommagé.",
     no_words: "Aucun mot n’a été trouvé dans l’audio.",
     model_missing: "{model} n’est pas installé. Télécharge-le dans Modèles.",
-    no_model_for_role:
-      "Aucun modèle n’est installé pour {role}. Règle le nombre de locuteurs sur 1, ou télécharge un petit modèle dans Modèles et choisis-le.",
+    no_model_for_role: "Aucun modèle n’est installé pour {role}. Télécharge-en un dans Modèles.",
     needs_nvidia: "{model} nécessite un GPU NVIDIA. Choisis un autre modèle dans Modèles.",
     needs_memory:
       "{model} nécessite {required} Go de mémoire ; cet ordinateur en a {available} Go. Choisis un modèle plus petit.",
     too_long_for_model:
-      "{model} accepte les enregistrements jusqu'à {limit} minutes. Cette vidéo est plus longue. Choisis Nemotron 3 Diarization dans Modèles.",
+      "{model} accepte les enregistrements jusqu'à {limit} minutes. Cette vidéo est plus longue. Règle le nombre de locuteurs sur 1.",
     transcript_missing:
       "{file} n'a pas de transcription à côté de lui ; il ne peut donc pas être réécrit. Garde le fichier .transcript.json du même nom dans le même dossier.",
     profile_exists: "Un profil nommé {name} existe déjà. Choisis un autre nom ou écrase-le depuis la liste.",
@@ -198,7 +236,7 @@ export const frMessages: Messages = {
     models_missing:
       "Les vidéos n'ont pas été ajoutées, car aucun modèle n'est disponible pour : {roles}. Télécharge-les dans Modèles ou ajoute un dossier qui les contient.",
     no_supported_files:
-      "Ce fichier n'est pas accepté. Choisis une vidéo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) ou un fichier de sous-titres (.fcpxml .srt .ttml .transcript.json).",
+      "Ce fichier n'est pas accepté. Choisis une vidéo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) ou un fichier de sous-titres (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
       "{file} ne peut pas être lu comme un profil. Choisis un fichier exporté par cette application.",
     internal: "{detail}",
@@ -215,8 +253,6 @@ export const frMessages: Messages = {
     "nemotron-3.5-transcribe-q2l": "Séparation des voix. Pour les Mac de 24 Go.",
     "nemotron-3.5-transcribe-q8":
       "Séparation des voix. Qualité maximale, pour les Mac de 64 Go et les GPU de 48 Go.",
-    "nemotron-3-diarization":
-      "Séparation des voix uniquement, 107 Mo. Jusqu’à 8 intervenants ; fonctionne avec peu de mémoire.",
     yunet: "Visages réels. Fourni avec l’app ; donne le même résultat sur Mac et Windows.",
     "avatar-face-yolo":
       "Visages d’avatars. Fonctionne une fois le fichier ONNX exporté placé dans un dossier de modèles.",
@@ -285,13 +321,14 @@ export const frMessages: Messages = {
             steps: [
               "Ouvre l'onglet « {tabJobs} ».",
               "« {speakerCount} » est réglé sur 1 au départ. Si plus de personnes parlent, choisis leur nombre. Si tu ne sais pas, choisis « {speakerCountAuto} ».",
-              "Dans « {subtitleFormat} », choisis le type de fichier. Au départ, c'est FCPXML. La ligne en dessous dit à quoi il sert.",
+              "Dans « {subtitleFormat} », choisis le type de fichier. Au départ, c'est DRT. La ligne en dessous dit à quoi il sert.",
               "Fais glisser la vidéo dans le cadre et lâche-la. Faire glisser, c'est garder appuyé en bougeant. Tu peux aussi appuyer sur « {pickVideos} ».",
             ],
             notes: [
               "Le « ? » à côté du nombre explique à quoi il sert.",
               "Si une seule personne parle, laisse 1. C'est plus rapide.",
-              "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Fichiers de sous-titres : .fcpxml .srt .ttml .transcript.json. Avec un autre fichier, l'application dit qu'il n'est pas accepté.",
+              "Tu peux choisir d'autres nombres dès qu'un modèle Nemotron 3.5 est sur cet ordinateur. Tu le télécharges dans « {tabModels} ».",
+              "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Fichiers de sous-titres : .drt .fcpxml .srt .ttml .transcript.json. Avec un autre fichier, l'application dit qu'il n'est pas accepté.",
               "Si tu ajoutes plusieurs vidéos, elles sont traitées une par une.",
               "La première fois, l'application met aussi un modèle sous une forme qu'elle peut utiliser.",
               "Si la langue des sous-titres n'est pas la bonne, choisis-la dans « {speechLanguage} », dans l'onglet « {tabStyle} ».",
@@ -314,6 +351,7 @@ export const frMessages: Messages = {
               "Deux fichiers apparaissent dans le dossier de la vidéo : le fichier de sous-titres du type choisi et un fichier .transcript.json. Les anciens sont gardés. Si le nom est déjà pris, les nouveaux reçoivent -2 dans leur nom.",
             steps: [],
             notes: [
+              ".drt : sous-titres Text+ pour DaVinci Resolve, avec couleurs, contours, contours extérieurs et ombres.",
               ".fcpxml : les sous-titres avec la vidéo, pour logiciel de montage.",
               ".ttml : des sous-titres avec couleurs et positions.",
               ".srt : des sous-titres avec les mots et les temps. Les couleurs peuvent ne pas s'afficher. Il n'y a ni contours ni positions.",
@@ -326,9 +364,26 @@ export const frMessages: Messages = {
         heading: "Ouvrir dans le logiciel de montage",
         parts: [
           {
+            heading: "Importer dans DaVinci Resolve",
+            intro:
+              "Un fichier .drt importe les sous-titres en clips Text+, avec leurs couleurs, contours, contours extérieurs et ombres.",
+            steps: [
+              "Ouvre un projet dans DaVinci Resolve.",
+              "Dans le menu, choisis File > Import > Timeline...",
+              "Choisis le fichier .drt créé par l'application.",
+              "À l'écran de confirmation, appuie sur Import.",
+              "Les sous-titres arrivent en clips Text+. Sélectionne un clip : dans l'Inspector, Text change les mots et Shading les couleurs et les bords.",
+            ],
+            notes: [
+              "Les numéros de Select Element : 1 est le remplissage, 2 le contour, 4 le contour extérieur, 3 l'ombre, 5 l'épaisseur du remplissage.",
+              "Pour un nouveau projet, « Automatically set project setting » peut rester activé. Si tu ajoutes à un projet en cours, désactive-le pour que la résolution ne change pas.",
+              "Ne déplace pas le fichier vidéo.",
+            ],
+          },
+          {
             heading: "Importer un fichier FCPXML",
             intro:
-              "Un fichier FCPXML apporte la vidéo et les sous-titres d'un coup, avec leurs couleurs, contours et positions. C'est pour cela qu'il est choisi au départ.",
+              "Un fichier FCPXML apporte la vidéo et les sous-titres d'un coup, avec leurs couleurs, contours et positions.",
             steps: [
               "Ouvre un projet dans ton logiciel de montage. Un projet contient tout ton travail de montage.",
               "Dans le menu, importe la timeline (par exemple File > Import > Timeline).",
@@ -361,8 +416,8 @@ export const frMessages: Messages = {
             steps: [
               "Ouvre l'onglet « {tabStyle} ».",
               "Dans « {positionHeading} », choisis « {anchorFaceAbove} », « {anchorFaceBelow} », « {anchorVideoTop} » ou « {anchorVideoBottom} ».",
-              "Règle la taille du texte et l'épaisseur du contour avec les curseurs. Un curseur est une poignée à bouger à gauche et à droite. Tu peux aussi taper un nombre.",
-              "Choisis la couleur du texte et du contour pour chaque personne.",
+              "Règle la taille du texte avec le curseur. Un curseur est une poignée à bouger à gauche et à droite. Tu peux aussi taper un nombre.",
+              "Choisis un locuteur, puis règle le remplissage, le contour, le contour extérieur et l'ombre. Appuie sur un carré de couleur pour choisir une couleur. « Transparent » retire le contour extérieur ou l'ombre.",
             ],
             notes: [
               "L'aperçu est à droite sur un grand écran et en haut sur un petit. Il reste visible quand tu fais défiler.",
@@ -431,7 +486,7 @@ export const frMessages: Messages = {
             steps: [
               "Charge le profil que tu veux. Sinon, les réglages actuels sont utilisés.",
               "Ouvre l'onglet « {tabJobs} ».",
-              "Fais glisser un fichier .fcpxml, .srt, .ttml ou .transcript.json dans le cadre et lâche-le. Tu peux aussi appuyer sur « {pickSubtitles} ».",
+              "Fais glisser un fichier .drt, .fcpxml, .srt, .ttml ou .transcript.json dans le cadre et lâche-le. Tu peux aussi appuyer sur « {pickSubtitles} ».",
               "La liste sous le cadre montre l'avancement et le résultat.",
             ],
             notes: [
@@ -441,6 +496,22 @@ export const frMessages: Messages = {
               "Le fichier .transcript.json du même nom doit être dans le même dossier.",
               "Quand tu utilises un profil, les changements non enregistrés dans ce profil ne sont pas utilisés.",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "Changer la langue et l'apparence",
+        parts: [
+          {
+            heading: "Les réglages",
+            intro:
+              "L'onglet « {tabSettings} » montre la version de l'application. Tes choix restent pour la prochaine fois.",
+            steps: [
+              "Ouvre l'onglet « {tabSettings} ».",
+              "Dans « {uiLanguageLabel} », choisis une langue. L'écran change tout de suite.",
+              "Dans « {uiThemeLabel} », choisis « {uiThemeLight} » ou « {uiThemeDark} ». « {uiThemeSystem} » suit ton ordinateur.",
+            ],
+            notes: [],
           },
         ],
       },
@@ -458,12 +529,13 @@ export const frMessages: Messages = {
             notes: [],
           },
           {
-            heading: "Il manque un modèle pour distinguer les locuteurs",
-            intro: "Certains ordinateurs n'ont pas de modèle recommandé. Fais l'une de ces deux choses.",
+            heading: "Tu ne peux pas choisir le nombre de locuteurs",
+            intro:
+              "Il faut pour cela un modèle Nemotron 3.5. Sans lui, l'application crée des sous-titres pour 1 locuteur.",
             steps: [],
             notes: [
-              "Si une seule personne parle dans la vidéo, choisis 1 dans « {speakerCount} ». Ce modèle n'est alors pas nécessaire.",
-              "Dans l'onglet « {tabModels} », télécharge un petit modèle, puis appuie sur son bouton d'utilisation.",
+              "Si un modèle Nemotron 3.5 convient à cet ordinateur, télécharge-le dans l'onglet « {tabModels} ».",
+              "Si aucun ne convient, tu peux quand même créer des sous-titres pour 1 locuteur.",
             ],
           },
           {
@@ -497,10 +569,10 @@ export const frMessages: Messages = {
           {
             heading: "Le logiciel de montage ne trouve pas la vidéo",
             intro:
-              "Un fichier FCPXML contient la place et le nom de la vidéo. Si tu déplaces ou renommes la vidéo, le logiciel ne la trouve plus.",
+              "Un fichier .drt/FCPXML contient la place et le nom de la vidéo. Si tu déplaces ou renommes la vidéo, le logiciel ne la trouve plus.",
             steps: [
               "Remets la vidéo à son ancienne place, avec son ancien nom.",
-              "Ouvre de nouveau le fichier .fcpxml.",
+              "Ouvre de nouveau le fichier .drt/.fcpxml.",
             ],
             notes: [],
           },
@@ -508,6 +580,13 @@ export const frMessages: Messages = {
       },
     },
     imageFolder: "fr",
+    resolveFigures: {
+      menu: "Choisis File, puis Import, puis Timeline. 1 est File, 2 Import, 3 Timeline.",
+      dialog: "L'écran Import Timeline. 1 est Automatically set project setting, 2 le bouton Import.",
+      timeline: "La timeline après l'import. 1 montre les clips Text+ sur V2.",
+      text: "L'Inspector avec un clip sélectionné. 1 est l'onglet Text, 2 l'endroit où changer les mots.",
+      shading: "L'onglet Shading de l'Inspector. 1 est Shading, 2 les numéros de Select Element.",
+    },
     images: {
       models: "L'onglet Modèles. 1 est l'onglet, 2 le bouton de téléchargement, 3 la barre de chaque modèle.",
       transcribe:

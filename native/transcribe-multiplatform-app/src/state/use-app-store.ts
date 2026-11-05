@@ -16,7 +16,7 @@ import {
   applyJobEvent,
   initialState,
   missingModelRoles,
-  withModels,
+  withSaveAnswer,
   withSettings,
 } from "./app-state.ts";
 
@@ -33,10 +33,10 @@ export interface AppStore {
 
 const SAVE_DELAY_MS: number = 250;
 const VIDEO_PATTERN: RegExp = /\.(mp4|mov|mkv|m4v|webm|avi|mts|mxf|ts)$/i;
-const SUBTITLE_PATTERN: RegExp = /\.(fcpxml|srt|ttml|transcript\.json)$/i;
+const SUBTITLE_PATTERN: RegExp = /\.(drt|fcpxml|srt|ttml|transcript\.json)$/i;
 
 export const VIDEO_EXTENSIONS: string[] = ["mp4", "mov", "mkv", "m4v", "webm", "avi", "mts", "mxf", "ts"];
-export const SUBTITLE_EXTENSIONS: string[] = ["fcpxml", "srt", "ttml", "json"];
+export const SUBTITLE_EXTENSIONS: string[] = ["drt", "fcpxml", "srt", "ttml", "json"];
 
 const isBackendError = (error: unknown): error is BackendError =>
   typeof error === "object" && error !== null && "code" in error && typeof error.code === "string";
@@ -117,9 +117,9 @@ export function useAppStore(initial: Snapshot): AppStore {
     }
     saveTimer.current = setTimeout((): void => {
       saveSettings(settings)
-        // Only the models: newer settings may have been edited while this save was in flight.
-        .then(({ models }: Snapshot): void =>
-          setState((current: AppState): AppState => withModels(current, models)),
+        // Not the settings: newer ones may have been edited while this save was in flight.
+        .then((answer: Snapshot): void =>
+          setState((current: AppState): AppState => withSaveAnswer(current, answer)),
         )
         .catch((error: unknown): void => reportFailure(setState, error));
     }, SAVE_DELAY_MS);

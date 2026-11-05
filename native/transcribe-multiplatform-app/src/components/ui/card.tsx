@@ -14,7 +14,7 @@ export const Card = ({ className, ...props }: ComponentProps<"div">): VNode => (
 );
 
 export const CardHeader = ({ className, ...props }: ComponentProps<"div">): VNode => (
-  <div data-slot="card-header" className={cn("grid auto-rows-min gap-1 px-4", className)} {...props} />
+  <div data-slot="card-header" className={cn("grid auto-rows-min gap-2 px-4", className)} {...props} />
 );
 
 export const CardTitle = ({ className, children, ...props }: ComponentProps<"h2">): VNode => (

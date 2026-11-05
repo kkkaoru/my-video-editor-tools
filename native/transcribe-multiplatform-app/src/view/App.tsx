@@ -2,15 +2,17 @@
 import type { VNode } from "preact";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
-import type { ModelStatus, Snapshot } from "../backend/types.ts";
+import type { ModelStatus, Snapshot, UiTheme } from "../backend/types.ts";
 import { type Language, languageFor } from "../i18n/language.ts";
 import { errorText, format } from "../i18n/messages.ts";
 import { MessagesContext } from "../i18n/use-messages.ts";
+import { uiLocale } from "../state/app-state.ts";
 import { useAppStore } from "../state/use-app-store.ts";
 import type { SelectOption } from "./fields.tsx";
 import { HelpPane } from "./HelpPane.tsx";
 import { JobsPane } from "./JobsPane.tsx";
 import { ModelsPane } from "./ModelsPane.tsx";
+import { SettingsPane } from "./SettingsPane.tsx";
 import { StylePane } from "./StylePane.tsx";
 
 const faceOptions = (models: ModelStatus[]): SelectOption[] =>
@@ -24,10 +26,23 @@ const faceOptions = (models: ModelStatus[]): SelectOption[] =>
       }),
     );
 
-function Loaded({ snapshot, language }: { snapshot: Snapshot; language: Language }): VNode {
+/** Before the paint, so assistive tech reads the right voice and nothing flashes in the other theme. */
+function applyToDocument({ tag, messages }: Language, theme: UiTheme): void {
+  document.documentElement.lang = tag;
+  document.title = messages.appName;
+  if (theme === "system") {
+    delete document.documentElement.dataset.theme;
+  } else {
+    document.documentElement.dataset.theme = theme;
+  }
+}
+
+function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
   const store = useAppStore(snapshot);
-  const { messages } = language;
   const live: Snapshot = store.state.snapshot;
+  const language: Language = languageFor(uiLocale(live));
+  const { messages } = language;
+  applyToDocument(language, live.settings.ui_theme);
   return (
     <MessagesContext.Provider value={messages}>
       <Tabs defaultValue="jobs" className="mx-auto min-h-screen w-full max-w-5xl p-4">
@@ -38,6 +53,7 @@ function Loaded({ snapshot, language }: { snapshot: Snapshot; language: Language
             <TabsTrigger value="style">{messages.tabStyle}</TabsTrigger>
             <TabsTrigger value="models">{messages.tabModels}</TabsTrigger>
             <TabsTrigger value="help">{messages.tabHelp}</TabsTrigger>
+            <TabsTrigger value="settings">{messages.tabSettings}</TabsTrigger>
           </TabsList>
         </header>
         <main className="grid flex-1 gap-4">
@@ -61,7 +77,10 @@ function Loaded({ snapshot, language }: { snapshot: Snapshot; language: Language
             <ModelsPane store={store} snapshot={live} />
           </TabsContent>
           <TabsContent value="help" keepMounted>
-            <HelpPane version={live.version} />
+            <HelpPane />
+          </TabsContent>
+          <TabsContent value="settings" keepMounted>
+            <SettingsPane version={live.version} settings={live.settings} onChange={store.updateSettings} />
           </TabsContent>
         </main>
       </Tabs>
@@ -73,10 +92,6 @@ export interface AppProps {
   initial: Snapshot;
 }
 
-/** Sets the document language before the first paint so assistive tech reads the right voice. */
 export function App({ initial }: AppProps): VNode {
-  const language: Language = languageFor(initial.locale);
-  document.documentElement.lang = language.tag;
-  document.title = language.messages.appName;
-  return <Loaded snapshot={initial} language={language} />;
+  return <Loaded snapshot={initial} />;
 }

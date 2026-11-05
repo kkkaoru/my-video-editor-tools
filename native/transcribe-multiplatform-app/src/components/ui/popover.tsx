@@ -28,7 +28,8 @@ export const PopoverContent = ({
     <PopoverPrimitive.Positioner
       // Fixed: WebKit keeps counting where an absolute popup used to be in the page's scroll width.
       positionMethod="fixed"
-      side="right"
+      // Below its trigger: a control beside the trigger stays reachable while it is open.
+      side="bottom"
       align="start"
       sideOffset={4}
       collisionPadding={8}

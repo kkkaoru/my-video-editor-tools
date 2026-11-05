@@ -1,5 +1,5 @@
 // Runs with bun: the text every language must supply, and the formatter that fills it in.
-import type { BackendError, Role, Stage } from "../backend/types.ts";
+import type { BackendError, Role, Stage, SubtitleFormat } from "../backend/types.ts";
 
 export interface StepStates {
   done: string;
@@ -13,7 +13,6 @@ export interface ModelNotes {
   "nemotron-3.5-transcribe-nvfp4": string;
   "nemotron-3.5-transcribe-q2l": string;
   "nemotron-3.5-transcribe-q8": string;
-  "nemotron-3-diarization": string;
   "nemotron-3.5-transcribe-q2m": string;
   yunet: string;
   "avatar-face-yolo": string;
@@ -61,6 +60,7 @@ export interface HelpSections {
   editor: HelpSection;
   look: HelpSection;
   rewrite: HelpSection;
+  settings: HelpSection;
   trouble: HelpSection;
 }
 
@@ -74,19 +74,39 @@ export interface HelpImages {
   rewrite: string;
 }
 
+/** The DaVinci Resolve pictures are the same in every language; only their descriptions change. */
+export interface ResolveFigures {
+  menu: string;
+  dialog: string;
+  timeline: string;
+  text: string;
+  shading: string;
+}
+
 export interface HelpMessages {
   version: string;
   intro: string;
   sections: HelpSections;
   /** The folder of this language's pictures under `public/help`. */
   imageFolder: string;
+  resolveFigures: ResolveFigures;
   images: HelpImages;
 }
+
+/** The colours every speaker colour picker offers. */
+export type PresetColor = "white" | "black" | "red" | "orange" | "yellow" | "green" | "blue" | "purple";
 
 export interface Messages {
   appName: string;
   tabJobs: string;
   tabStyle: string;
+  tabSettings: string;
+  uiLanguageLabel: string;
+  uiLanguageSystem: string;
+  uiThemeLabel: string;
+  uiThemeSystem: string;
+  uiThemeLight: string;
+  uiThemeDark: string;
   tabHelp: string;
   tabModels: string;
   noticeSpeakersOnCpu: string;
@@ -101,6 +121,7 @@ export interface Messages {
   dropCurrentHint: string;
   speakerCountHelpLabel: string;
   speakerCountHelp: string;
+  speakerCountOnlyOne: string;
   profilesHeading: string;
   profilesHint: string;
   profileName: string;
@@ -184,9 +205,7 @@ export interface Messages {
   sizeHint: string;
   fontSize: string;
   captionWidth: string;
-  outlineWidth: string;
   captionLineHeight: string;
-  rimWidth: string;
   unknownSpeaker: string;
   contrastWarning: string;
   previewHeading: string;
@@ -200,8 +219,27 @@ export interface Messages {
   speakersHeading: string;
   speakersHint: string;
   speakerName: string;
+  colorColumn: string;
+  fillWidth: string;
+  outlineWidth: string;
+  rimWidth: string;
+  layerWidth: string;
+  colorTransparent: string;
+  colorCustom: string;
+  colorNames: Record<PresetColor, string>;
   fillLabel: string;
   outlineLabel: string;
+  rimLabel: string;
+  /** What each format cannot show; `.drt` shows everything. */
+  formatLimits: Record<Exclude<SubtitleFormat, "drt">, string>;
+  shadowLabel: string;
+  shadowColor: string;
+  shadowX: string;
+  shadowXShort: string;
+  shadowY: string;
+  shadowYShort: string;
+  shadowBlur: string;
+  shadowBlurShort: string;
   addSpeaker: string;
   removeSpeaker: string;
   resetPalette: string;

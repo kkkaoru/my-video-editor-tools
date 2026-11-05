@@ -25,10 +25,20 @@ interface HookView {
 const onDragDropEvent: Mock<(callback: DropCallback) => Promise<() => void>> = vi.hoisted(() => vi.fn());
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -42,10 +52,11 @@ const SETTINGS: Settings = {
   face_model: "c",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 };
 const SNAPSHOT: Snapshot = {
   version: "1.2.3",
@@ -203,10 +214,20 @@ it("shows new settings at once and saves only the last of a burst", async () => 
       {
         settings: {
           palette: [],
-          unassigned: { fill: "#AAAAAA", outline: "#000000" },
+          unassigned: {
+            fill: "#AAAAAA",
+            fill_width: 0,
+            outline: "#000000",
+            outline_width: 0.1,
+            rim: null,
+            rim_width: 0.034,
+            shadow: null,
+            shadow_x: 0.03,
+            shadow_y: -0.03,
+            shadow_blur: 5,
+          },
           font_family: "Sans",
           font_ratio: 0.05,
-          outline_ratio: 0.1,
           width_ratio: 0.8,
           safe_left_percent: 5,
           safe_right_percent: 5,
@@ -220,17 +241,18 @@ it("shows new settings at once and saves only the last of a burst", async () => 
           face_model: "c",
           model_dirs: [],
           active_profile: "",
-          rim_ratio: 0.034,
           line_height: 1.448,
           speaker_count: 0,
           subtitle_format: "fcpxml",
+          ui_language: "",
+          ui_theme: "system",
         },
       },
     ],
   ]);
 });
 
-it("takes only the models from a save, so newer settings stay, and ends an old failure", async () => {
+it("takes the models and the language from a save, so newer settings stay, and ends an old failure", async () => {
   vi.useFakeTimers();
   const view: HookView = mounted();
   act((): void => view.result.current.setState((state) => ({ ...state, loadError: { code: "internal" } })));
@@ -257,7 +279,7 @@ it("takes only the models from a save, so newer settings stay, and ends an old f
   });
   expect(view.result.current.state.snapshot.models.map(({ id }): string => id)).toStrictEqual(["m"]);
   expect(view.result.current.state.snapshot.settings.language).toBe("ja");
-  expect(view.result.current.state.snapshot.locale).toBe("en");
+  expect(view.result.current.state.snapshot.locale).toBe("de");
   expect(view.result.current.state.loadError).toBe(null);
 });
 
@@ -317,7 +339,7 @@ it("survives a subscription that fails to stop", async () => {
 });
 
 it("lists the subtitle files the picker offers", () => {
-  expect(SUBTITLE_EXTENSIONS).toStrictEqual(["fcpxml", "srt", "ttml", "json"]);
+  expect(SUBTITLE_EXTENSIONS).toStrictEqual(["drt", "fcpxml", "srt", "ttml", "json"]);
 });
 
 it("keeps only subtitle paths, in any case", () => {
@@ -376,7 +398,7 @@ it("refuses videos without their models, naming what is missing, and starts noth
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
   expect(view.result.current.state.loadError).toStrictEqual({
     code: "models_missing",
-    roles: ["transcribe", "diarize"],
+    roles: ["transcribe"],
   });
 });
 

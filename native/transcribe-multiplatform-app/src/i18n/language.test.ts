@@ -1,7 +1,7 @@
 // Runs with bun: locale resolution, and every translation matching the English shape and placeholders.
 import { expect, it } from "vitest";
 import indexHtml from "../../index.html?raw";
-import { ALL_LANGUAGE_MESSAGES, languageFor } from "./language.ts";
+import { ALL_LANGUAGE_MESSAGES, keepWordsWhole, languageFor } from "./language.ts";
 import { enMessages } from "./locale-en.ts";
 import { jaMessages } from "./locale-ja.ts";
 import type { Messages } from "./messages.ts";
@@ -99,12 +99,16 @@ it("notices a placeholder the English text does not have", () => {
   expect(placeholderMismatches({ ...enMessages, jobQueued: "{name}" }, 3)).toStrictEqual(["3:jobQueued"]);
 });
 
-it("names no particular video editor anywhere on screen, in any language", () => {
+it("names a particular video editor only where the .drt format is explained, in any language", () => {
   expect(
     ALL_LANGUAGE_MESSAGES.flatMap((messages: Messages): string[] =>
       entriesOf(messages, "")
         .filter(([, text]: [string, string]): boolean => /resolve|davinci/i.test(text))
-        .map(([path]: [string, string]): string => path),
+        .map(([path]: [string, string]): string => path)
+        .filter(
+          (path: string): boolean =>
+            !/outputPurposes\.drt|help\.resolveFigures|help\.sections\.(editor|transcribe)\.parts/.test(path),
+        ),
     ),
   ).toStrictEqual([]);
 });
@@ -121,4 +125,17 @@ it("says preview in Japanese, the word the screen uses", () => {
       .map(([path]: [string, string]): string => path),
   ).toStrictEqual([]);
   expect(jaMessages.previewHeading).toBe("プレビュー");
+});
+
+it("joins the characters of a Japanese word and leaves the breaks between words", () => {
+  const kept = keepWordsWhole("「モデル」のタブ", "ja");
+  expect(kept).toContain("モ\u2060デ\u2060ル");
+  expect(kept.replaceAll("\u2060", "")).toBe("「モデル」のタブ");
+  expect(kept).not.toContain("ル\u2060」");
+  expect(keepWordsWhole("人数を選べます。次に", "ja")).toContain("選\u2060べ\u2060ま\u2060す。");
+  expect(keepWordsWhole("選べます。次に", "ja")).not.toContain("。\u2060");
+});
+
+it("leaves languages that wrap at spaces untouched", () => {
+  expect(keepWordsWhole("Download one on the “Models” tab.", "en")).toBe("Download one on the “Models” tab.");
 });

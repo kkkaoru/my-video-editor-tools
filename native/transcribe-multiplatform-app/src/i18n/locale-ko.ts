@@ -5,6 +5,13 @@ export const koMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "받아쓰기",
   tabStyle: "자막 모양과 위치",
+  tabSettings: "설정",
+  uiLanguageLabel: "화면 언어",
+  uiLanguageSystem: "시스템에 맞춤",
+  uiThemeLabel: "표시 모드",
+  uiThemeSystem: "시스템에 맞춤",
+  uiThemeLight: "밝게",
+  uiThemeDark: "어둡게",
   tabHelp: "사용 방법",
   tabModels: "모델",
   noticeSpeakersOnCpu:
@@ -21,6 +28,8 @@ export const koMessages: Messages = {
   speakerCountHelpLabel: "화자 수를 지정하는 이유",
   speakerCountHelp:
     "화자별 색상은 목소리를 구별하는 데 달려 있습니다. 인원수를 지정하면 비슷한 목소리가 하나로 합쳐지거나 한 사람이 둘로 나뉘는 일이 줄어듭니다. 1명을 선택하면 화자 분리를 건너뛰므로 더 빠르고 화자 모델도 필요 없습니다.",
+  speakerCountOnlyOne:
+    "Nemotron 3.5 모델이 없어 1명만 고를 수 있습니다. “{tabModels}” 탭에서 내려받으면 인원수를 고를 수 있습니다.",
   profilesHeading: "프로필",
   profilesHint:
     "자막의 모양과 위치에 이름을 붙여 저장하고 나중에 복원합니다. 모델과 음성 언어는 프로필에 포함되지 않습니다.",
@@ -90,6 +99,7 @@ export const koMessages: Messages = {
   jobRemainingUnderMinute: "1분 미만 남음",
   stepStates: { done: "완료", current: "진행 중", pending: "대기 중" },
   outputPurposes: {
+    drt: "DaVinci Resolve로 가져오는 Text+ 자막. 색, 외곽선, 바깥 외곽선, 그림자가 모두 들어갑니다",
     ttml: "스타일 자막(색상, 윤곽선, 위치)",
     srt: "글자와 시간이 든 자막 (색은 나오지 않을 수 있음, 테두리와 위치 없음)",
     fcpxml: "타이틀이 포함된 타임라인",
@@ -123,9 +133,7 @@ export const koMessages: Messages = {
   sizeHint: "크기는 각 동영상의 해상도에 맞춰 자동으로 정해집니다. 아래 값은 동영상 대비 비율입니다.",
   fontSize: "글자 크기 (짧은 변 대비 퍼센트)",
   captionWidth: "가장 긴 줄 (너비 대비 퍼센트)",
-  outlineWidth: "외곽선 두께 (글자 대비 퍼센트)",
   captionLineHeight: "자막 줄 간격(글자 크기의 배수)",
-  rimWidth: "윤곽선 바깥 검은 테두리 두께(글자 대비 %)",
   unknownSpeaker: "알 수 없는 화자",
   contrastWarning:
     "{name}: 채우기와 윤곽선의 대비가 {ratio}:1로 WCAG AA 기준 4.5:1보다 낮습니다. 명암 차이가 큰 색을 선택하세요.",
@@ -138,16 +146,48 @@ export const koMessages: Messages = {
   previewVertical: "세로 1080×1920",
   previewUhd: "4K",
   speakersHeading: "화자 색상 (최대 {count}명)",
-  speakersHint: "화자마다 채우기 색과 외곽선 색이 자동으로 지정됩니다. 여기서 바꿀 수 있습니다.",
+  speakersHint:
+    "화자를 고르면 그 사람의 색과 두께를 바꿀 수 있습니다. 미리 보기에 고른 사람의 자막이 나옵니다. 두께와 위치는 글자 크기 대비 퍼센트입니다.",
   speakerName: "화자 {number}",
+  colorColumn: "색",
+  fillWidth: "채우기 두께 (글자 크기 대비 퍼센트)",
+  outlineWidth: "외곽선 두께 (글자 크기 대비 퍼센트)",
+  rimWidth: "바깥 외곽선 두께 (글자 크기 대비 퍼센트)",
+  layerWidth: "두께 (글자 크기 대비 퍼센트)",
+  colorTransparent: "투명",
+  colorCustom: "직접 고르기",
+  colorNames: {
+    white: "흰색",
+    black: "검정",
+    red: "빨강",
+    orange: "주황",
+    yellow: "노랑",
+    green: "초록",
+    blue: "파랑",
+    purple: "보라",
+  },
   fillLabel: "채우기",
-  outlineLabel: "윤곽선",
+  outlineLabel: "외곽선",
+  rimLabel: "바깥 외곽선",
+  formatLimits: {
+    fcpxml: "FCPXML에는 그림자가 나오지 않습니다. 쓰려면 DRT를 고르세요.",
+    ttml: "TTML에는 바깥 외곽선과 그림자가 나오지 않습니다. 쓰려면 DRT를 고르세요.",
+    srt: "SRT에는 글자 색만 들어갑니다. 외곽선, 바깥 외곽선, 그림자는 나오지 않습니다. 쓰려면 DRT를 고르세요.",
+  },
+  shadowLabel: "그림자",
+  shadowColor: "그림자 색",
+  shadowX: "그림자 좌우 위치 (글자 크기 대비 퍼센트)",
+  shadowXShort: "그림자 좌우 위치",
+  shadowY: "그림자 상하 위치 (글자 크기 대비 퍼센트, 음수가 아래)",
+  shadowYShort: "그림자 상하 위치",
+  shadowBlur: "그림자 흐림 (0~50)",
+  shadowBlurShort: "그림자 흐림",
   addSpeaker: "화자 추가",
   removeSpeaker: "화자 줄이기",
   resetPalette: "처음 색상으로 되돌리기",
   modelsHeading: "모델",
   noRecommendedSpeakerModel:
-    "이 컴퓨터에 추천하는 화자 분리 모델이 없습니다. 화자 수를 1명으로 하거나, 아래 목록에서 작은 모델을 내려받아 고르세요.",
+    "이 컴퓨터에 추천하는 Nemotron 3.5 모델이 없습니다. 화자 1명의 자막은 만들 수 있습니다.",
   modelsHint:
     "이 컴퓨터에 알맞은 모델에는 추천 표시가 붙습니다. 이미 다운로드한 모델은 자동으로 찾아 다시 사용합니다.",
   addModelFolder: "기존 모델이 있는 폴더 추가",
@@ -171,13 +211,12 @@ export const koMessages: Messages = {
     unreadable_duration: "이 동영상의 길이를 읽을 수 없습니다. 파일이 손상되었을 수 있습니다.",
     no_words: "오디오에서 말을 찾지 못했습니다.",
     model_missing: "{model}이(가) 설치되어 있지 않습니다. 모델에서 다운로드하세요.",
-    no_model_for_role:
-      "{role} 모델이 없습니다. 화자 수를 1명으로 하거나, 모델 탭에서 작은 모델을 내려받아 고르세요.",
+    no_model_for_role: "{role} 모델이 없습니다. 모델 탭에서 내려받으세요.",
     needs_nvidia: "{model}에는 NVIDIA GPU가 필요합니다. 모델에서 다른 모델을 선택하세요.",
     needs_memory:
       "{model}에는 메모리 {required} GB가 필요하지만 이 컴퓨터는 {available} GB입니다. 더 작은 모델을 선택하세요.",
     too_long_for_model:
-      "{model}은(는) 최대 {limit}분 음성을 지원합니다. 이 동영상은 더 깁니다. 모델에서 Nemotron 3 Diarization을 선택하세요.",
+      "{model}은(는) 최대 {limit}분 음성을 지원합니다. 이 동영상은 더 깁니다. 화자 수를 1명으로 하세요.",
     transcript_missing:
       "{file} 옆에 대본 데이터가 없어 다시 쓸 수 없습니다. 같은 이름의 .transcript.json 파일을 같은 폴더에 두세요.",
     profile_exists: "{name} 프로필이 이미 있습니다. 다른 이름을 쓰거나 목록에서 덮어쓰세요.",
@@ -187,7 +226,7 @@ export const koMessages: Messages = {
     models_missing:
       "다음 모델이 없어 동영상을 추가하지 않았습니다: {roles}. 모델 탭에서 다운로드하거나 모델이 있는 폴더를 추가하세요.",
     no_supported_files:
-      "이 파일은 넣을 수 없습니다. 동영상(.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts)이나 자막 파일(.fcpxml .srt .ttml .transcript.json)을 고르세요.",
+      "이 파일은 넣을 수 없습니다. 동영상(.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts)이나 자막 파일(.drt .fcpxml .srt .ttml .transcript.json)을 고르세요.",
     profile_invalid: "{file} 파일을 프로필로 읽을 수 없습니다. 이 앱에서 내보낸 파일을 고르세요.",
     internal: "{detail}",
     cancelled: "취소됨",
@@ -199,7 +238,6 @@ export const koMessages: Messages = {
     "nemotron-3.5-transcribe-q2m": "화자 분리. 16 GB GPU용이며, 녹음 한 건은 약 7분까지입니다.",
     "nemotron-3.5-transcribe-q2l": "화자 분리. 24 GB Mac용입니다.",
     "nemotron-3.5-transcribe-q8": "화자 분리. 최고 품질이며 64 GB Mac과 48 GB GPU용입니다.",
-    "nemotron-3-diarization": "화자 분리 전용, 107 MB. 최대 8명이며 적은 메모리로 동작합니다.",
     yunet: "실제 얼굴. 앱에 포함되어 있으며 Mac과 Windows에서 같은 결과를 냅니다.",
     "avatar-face-yolo": "아바타 얼굴. 내보낸 ONNX 파일을 모델 폴더에 넣으면 사용할 수 있습니다.",
     "geforce-runtime": "화자 분리 도구의 CUDA 버전. 없으면 화자 분리를 CPU에서 실행합니다.",
@@ -265,13 +303,14 @@ export const koMessages: Messages = {
             steps: [
               "“{tabJobs}” 탭을 엽니다.",
               "“{speakerCount}” 값은 처음에 1명입니다. 더 많은 사람이 말하면 인원수를 고릅니다. 잘 모르면 “{speakerCountAuto}” 항목을 고릅니다.",
-              "“{subtitleFormat}” 항목에서 만들 파일 형식을 고릅니다. 처음에는 FCPXML입니다. 아래에 그 형식의 쓰임새가 나옵니다.",
+              "“{subtitleFormat}” 항목에서 만들 파일 형식을 고릅니다. 처음에는 DRT입니다. 아래에 그 형식의 쓰임새가 나옵니다.",
               "동영상을 상자 안으로 끌어다 놓습니다. 끌기는 누른 채로 움직이는 것입니다. “{pickVideos}” 버튼을 눌러도 됩니다.",
             ],
             notes: [
               "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
               "한 사람만 말하면 1명 그대로 둡니다. 더 빨리 끝납니다.",
-              "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
+              "Nemotron 3.5 모델이 있어야 다른 인원수를 고를 수 있습니다. “{tabModels}” 탭에서 내려받을 수 있습니다.",
+              "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .drt .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
               "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
               "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",
               "자막의 언어가 다르면 “{tabStyle}” 탭의 “{speechLanguage}”에서 언어를 고릅니다.",
@@ -294,6 +333,7 @@ export const koMessages: Messages = {
               "동영상과 같은 폴더에 고른 형식의 자막 파일과 .transcript.json 파일, 모두 2개가 생깁니다. 전에 만든 파일은 지우지 않습니다. 이름이 같으면 새 파일 이름에 -2를 붙입니다.",
             steps: [],
             notes: [
+              ".drt: DaVinci Resolve로 가져오는 Text+ 자막입니다. 색, 외곽선, 바깥 외곽선, 그림자가 들어갑니다.",
               ".fcpxml: 동영상 편집 프로그램에서 읽을 수 있는, 자막과 동영상이 함께 든 파일입니다.",
               ".ttml: 색과 위치가 든 자막 파일입니다.",
               ".srt: 글자와 시간이 든 자막입니다. 색은 나오지 않을 수 있습니다. 테두리와 위치는 들어 있지 않습니다.",
@@ -306,9 +346,26 @@ export const koMessages: Messages = {
         heading: "동영상 편집 프로그램으로 가져오기",
         parts: [
           {
+            heading: "DaVinci Resolve로 가져오기",
+            intro:
+              ".drt 파일은 자막을 Text+ 클립으로 가져옵니다. 색, 외곽선, 바깥 외곽선, 그림자도 함께 들어옵니다.",
+            steps: [
+              "DaVinci Resolve에서 프로젝트를 엽니다.",
+              "메뉴에서 File > Import > Timeline...을 고릅니다.",
+              "만들어진 .drt 파일을 고릅니다.",
+              "확인 화면에서 Import를 누릅니다.",
+              "자막은 Text+ 클립이 됩니다. 클립을 고르면 Inspector의 Text에서 글자를, Shading에서 색과 외곽선을 고칠 수 있습니다.",
+            ],
+            notes: [
+              "Select Element의 번호는 1이 채우기, 2가 외곽선, 4가 바깥 외곽선, 3이 그림자, 5가 채우기 두께입니다.",
+              "새 프로젝트라면 Automatically set project setting을 켜 둔 채로 괜찮습니다. 편집 중인 프로젝트에 추가할 때는 해상도가 바뀌지 않도록 끕니다.",
+              "동영상 파일을 옮기지 마세요.",
+            ],
+          },
+          {
             heading: "FCPXML 가져오기",
             intro:
-              "FCPXML 파일은 동영상과 자막을 한 번에 가져옵니다. 자막의 색, 테두리, 위치도 함께 들어옵니다. 그래서 처음에는 이 형식으로 되어 있습니다.",
+              "FCPXML 파일은 동영상과 자막을 한 번에 가져옵니다. 자막의 색, 테두리, 위치도 함께 들어옵니다.",
             steps: [
               "동영상 편집 프로그램에서 프로젝트를 엽니다. 프로젝트는 편집 작업을 모아 둔 것입니다.",
               "메뉴에서 타임라인을 가져옵니다 (예: File > Import > Timeline).",
@@ -339,8 +396,8 @@ export const koMessages: Messages = {
             steps: [
               "“{tabStyle}” 탭을 엽니다.",
               "“{positionHeading}”에서 “{anchorFaceAbove}”, “{anchorFaceBelow}”, “{anchorVideoTop}”, “{anchorVideoBottom}” 중 하나를 고릅니다.",
-              "슬라이더로 글자 크기와 테두리 굵기를 정합니다. 슬라이더는 좌우로 움직이는 손잡이입니다. 숫자를 입력해도 됩니다.",
-              "사람마다 글자 색과 테두리 색을 고릅니다.",
+              "슬라이더로 글자 크기를 정합니다. 슬라이더는 좌우로 움직이는 손잡이입니다. 숫자를 입력해도 됩니다.",
+              "화자를 고른 뒤 채우기, 외곽선, 바깥 외곽선, 그림자를 정합니다. 색 네모를 누르면 색을 고를 수 있습니다. “투명”을 고르면 바깥 외곽선이나 그림자가 사라집니다.",
             ],
             notes: [
               "미리보기는 넓은 화면에서는 오른쪽에, 좁은 화면에서는 위에 나옵니다. 아래로 내려도 계속 보입니다.",
@@ -402,7 +459,7 @@ export const koMessages: Messages = {
             steps: [
               "쓰고 싶은 프로필을 불러옵니다. 불러오지 않으면 지금 설정을 씁니다.",
               "“{tabJobs}” 탭을 엽니다.",
-              ".fcpxml, .srt, .ttml, .transcript.json 중 하나를 상자 안으로 끌어다 놓습니다. “{pickSubtitles}” 버튼을 눌러도 됩니다.",
+              ".drt, .fcpxml, .srt, .ttml, .transcript.json 중 하나를 상자 안으로 끌어다 놓습니다. “{pickSubtitles}” 버튼을 눌러도 됩니다.",
               "상자 아래 목록에 진행 상황과 결과가 나옵니다.",
             ],
             notes: [
@@ -412,6 +469,21 @@ export const koMessages: Messages = {
               "같은 폴더에 이름이 같은 .transcript.json 파일이 있어야 합니다.",
               "프로필을 쓰고 있을 때는 그 프로필에 저장하지 않은 변경을 쓰지 않습니다.",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "언어와 표시 모드 바꾸기",
+        parts: [
+          {
+            heading: "설정",
+            intro: "“{tabSettings}” 탭에는 앱의 버전이 나옵니다. 고른 내용은 다음에도 남습니다.",
+            steps: [
+              "“{tabSettings}” 탭을 엽니다.",
+              "“{uiLanguageLabel}” 항목에서 언어를 고릅니다. 화면이 바로 바뀝니다.",
+              "“{uiThemeLabel}” 항목에서 “{uiThemeLight}” 또는 “{uiThemeDark}” 항목을 고릅니다. “{uiThemeSystem}” 항목은 컴퓨터 설정을 따릅니다.",
+            ],
+            notes: [],
           },
         ],
       },
@@ -429,12 +501,12 @@ export const koMessages: Messages = {
             notes: [],
           },
           {
-            heading: "화자를 구별하는 모델이 없다고 나올 때",
-            intro: "컴퓨터에 따라 추천 모델이 없을 수 있습니다. 다음 중 하나를 하세요.",
+            heading: "화자 수를 고를 수 없을 때",
+            intro: "인원수를 고르려면 Nemotron 3.5 모델이 필요합니다. 없으면 화자 1명의 자막을 만듭니다.",
             steps: [],
             notes: [
-              "한 사람만 말하는 동영상이면 “{speakerCount}”에서 1명을 고릅니다. 이 모델은 필요 없습니다.",
-              "“{tabModels}” 탭에서 작은 모델을 내려받고 사용 버튼을 누릅니다.",
+              "이 컴퓨터에서 Nemotron 3.5를 쓸 수 있으면 “{tabModels}” 탭에서 내려받습니다.",
+              "맞는 모델이 없어도 화자 1명의 자막은 만들 수 있습니다.",
             ],
           },
           {
@@ -468,14 +540,22 @@ export const koMessages: Messages = {
           {
             heading: "동영상 편집 프로그램에서 동영상을 찾지 못할 때",
             intro:
-              "FCPXML 파일에는 동영상의 위치와 이름이 적혀 있습니다. 동영상을 옮기거나 이름을 바꾸면 찾지 못합니다.",
-            steps: ["동영상을 원래 위치와 원래 이름으로 되돌립니다.", ".fcpxml 파일을 다시 가져옵니다."],
+              ".drt/FCPXML 파일에는 동영상의 위치와 이름이 적혀 있습니다. 동영상을 옮기거나 이름을 바꾸면 찾지 못합니다.",
+            steps: ["동영상을 원래 위치와 원래 이름으로 되돌립니다.", ".drt/.fcpxml 파일을 다시 가져옵니다."],
             notes: [],
           },
         ],
       },
     },
     imageFolder: "ko",
+    resolveFigures: {
+      menu: "File, Import, Timeline 순서로 고릅니다. 1은 File, 2는 Import, 3은 Timeline입니다.",
+      dialog:
+        "Import Timeline 확인 화면입니다. 1은 Automatically set project setting, 2는 Import 버튼입니다.",
+      timeline: "가져온 뒤의 타임라인입니다. 1은 V2에 놓인 Text+ 클립입니다.",
+      text: "클립을 고른 Inspector입니다. 1은 Text 탭, 2는 글자를 고치는 곳입니다.",
+      shading: "Inspector의 Shading 탭입니다. 1은 Shading, 2는 Select Element의 번호입니다.",
+    },
     images: {
       models: "모델 탭 화면입니다. 1은 탭, 2는 내려받기 버튼, 3은 모델마다 있는 막대입니다.",
       transcribe:

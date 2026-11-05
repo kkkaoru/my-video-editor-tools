@@ -5,6 +5,13 @@ export const esMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "Transcribir",
   tabStyle: "Aspecto y posición de los subtítulos",
+  tabSettings: "Ajustes",
+  uiLanguageLabel: "Idioma de la interfaz",
+  uiLanguageSystem: "Igual que el sistema",
+  uiThemeLabel: "Apariencia",
+  uiThemeSystem: "Igual que el sistema",
+  uiThemeLight: "Claro",
+  uiThemeDark: "Oscuro",
   tabHelp: "Cómo se usa",
   tabModels: "Modelos",
   noticeSpeakersOnCpu:
@@ -25,6 +32,8 @@ export const esMessages: Messages = {
   speakerCountHelpLabel: "¿Por qué indicar el número de hablantes?",
   speakerCountHelp:
     "Los colores de los hablantes dependen de distinguir las voces. Indicar cuántas personas hablan evita que voces parecidas se unan y que una voz se divida. Con 1 hablante se omite la separación, así que es más rápido y no necesita un modelo de hablantes.",
+  speakerCountOnlyOne:
+    "Sin un modelo Nemotron 3.5 solo se puede elegir 1 hablante. Descarga uno en «{tabModels}» para elegir más.",
   profilesHeading: "Perfiles",
   profilesHint:
     "Guarda el aspecto y la posición de los subtítulos con un nombre y restáuralos más tarde. Los modelos y el idioma hablado no forman parte de un perfil.",
@@ -97,6 +106,7 @@ export const esMessages: Messages = {
   jobRemainingUnderMinute: "Queda menos de un minuto",
   stepStates: { done: "listo", current: "en curso", pending: "en espera" },
   outputPurposes: {
+    drt: "Subtítulos Text+ para DaVinci Resolve, con colores, bordes, bordes exteriores y sombras",
     ttml: "Subtítulos con estilo (color, contorno, posición)",
     srt: "Subtítulos con palabras y tiempos (puede que sin colores; sin bordes ni posiciones)",
     fcpxml: "Línea de tiempo con títulos",
@@ -131,9 +141,7 @@ export const esMessages: Messages = {
   sizeHint: "Los tamaños siguen automáticamente la resolución de cada vídeo. Son proporciones del vídeo.",
   fontSize: "Tamaño del texto (porcentaje del lado corto)",
   captionWidth: "Línea más larga (porcentaje del ancho)",
-  outlineWidth: "Grosor del contorno (porcentaje del texto)",
   captionLineHeight: "Interlineado (múltiplo del tamaño del texto)",
-  rimWidth: "Borde negro fuera del contorno (porcentaje del texto)",
   unknownSpeaker: "Hablante desconocido",
   contrastWarning:
     "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elige colores más distintos.",
@@ -147,16 +155,48 @@ export const esMessages: Messages = {
   previewVertical: "Vertical 1080×1920",
   previewUhd: "4K",
   speakersHeading: "Colores de los hablantes (hasta {count} hablantes)",
-  speakersHint: "Cada hablante recibe automáticamente un color de relleno y uno de contorno. Cámbialos aquí.",
+  speakersHint:
+    "Elige un hablante para cambiar sus colores y grosores. La vista previa muestra sus subtítulos. El grosor y la posición son porcentajes del tamaño del texto.",
   speakerName: "Hablante {number}",
-  fillLabel: "relleno",
-  outlineLabel: "contorno",
+  colorColumn: "Color",
+  fillWidth: "Grosor del relleno (porcentaje del tamaño del texto)",
+  outlineWidth: "Grosor del borde (porcentaje del tamaño del texto)",
+  rimWidth: "Grosor del borde exterior (porcentaje del tamaño del texto)",
+  layerWidth: "Grosor (porcentaje del tamaño del texto)",
+  colorTransparent: "Transparente",
+  colorCustom: "Color libre",
+  colorNames: {
+    white: "Blanco",
+    black: "Negro",
+    red: "Rojo",
+    orange: "Naranja",
+    yellow: "Amarillo",
+    green: "Verde",
+    blue: "Azul",
+    purple: "Morado",
+  },
+  fillLabel: "Relleno",
+  outlineLabel: "Borde",
+  rimLabel: "Borde exterior",
+  formatLimits: {
+    fcpxml: "FCPXML no muestra sombra. Elige DRT para usarla.",
+    ttml: "TTML no muestra borde exterior ni sombra. Elige DRT para usarlos.",
+    srt: "SRT solo conserva el color del texto: sin borde, borde exterior ni sombra. Elige DRT para usarlos.",
+  },
+  shadowLabel: "Sombra",
+  shadowColor: "Color de la sombra",
+  shadowX: "Sombra izquierda-derecha (porcentaje del tamaño del texto)",
+  shadowXShort: "Sombra izquierda-derecha",
+  shadowY: "Sombra arriba-abajo (porcentaje del tamaño del texto; negativo hacia abajo)",
+  shadowYShort: "Sombra arriba-abajo",
+  shadowBlur: "Desenfoque de la sombra (0 a 50)",
+  shadowBlurShort: "Desenfoque de la sombra",
   addSpeaker: "Añadir un hablante",
   removeSpeaker: "Quitar un hablante",
   resetPalette: "Restaurar los colores iniciales",
   modelsHeading: "Modelos",
   noRecommendedSpeakerModel:
-    "No hay ningún modelo recomendado de separación de hablantes para este ordenador. Pon el número de hablantes en 1, o descarga un modelo pequeño de la lista de abajo y elígelo.",
+    "No hay ningún modelo Nemotron 3.5 recomendado para este ordenador. Aun así puedes crear subtítulos para 1 hablante.",
   modelsHint:
     "Los modelos adecuados para este ordenador se marcan como recomendados. Los modelos que ya descargaste se encuentran y se reutilizan.",
   addModelFolder: "Añadir una carpeta con modelos existentes",
@@ -180,13 +220,12 @@ export const esMessages: Messages = {
     unreadable_duration: "No se pudo leer la duración de este vídeo. Es posible que el archivo esté dañado.",
     no_words: "No se encontraron palabras en el audio.",
     model_missing: "{model} no está instalado. Descárgalo en Modelos.",
-    no_model_for_role:
-      "No hay ningún modelo instalado para {role}. Pon el número de hablantes en 1, o descarga un modelo pequeño en Modelos y elígelo.",
+    no_model_for_role: "No hay ningún modelo instalado para {role}. Descarga uno en Modelos.",
     needs_nvidia: "{model} necesita una GPU NVIDIA. Elige otro modelo en Modelos.",
     needs_memory:
       "{model} necesita {required} GB de memoria; este ordenador tiene {available} GB. Elige un modelo más pequeño.",
     too_long_for_model:
-      "{model} admite grabaciones de hasta {limit} minutos. Este video es más largo. Elige Nemotron 3 Diarization en Modelos.",
+      "{model} admite grabaciones de hasta {limit} minutos. Este video es más largo. Pon el número de hablantes en 1.",
     transcript_missing:
       "{file} no tiene una transcripción al lado, así que no se puede reescribir. Conserva el archivo .transcript.json con el mismo nombre en la misma carpeta.",
     profile_exists: "Ya existe un perfil llamado {name}. Elige otro nombre o sobrescríbelo desde la lista.",
@@ -196,7 +235,7 @@ export const esMessages: Messages = {
     models_missing:
       "Los vídeos no se añadieron porque no hay modelo disponible para: {roles}. Descárgalos en Modelos o añade una carpeta que ya los tenga.",
     no_supported_files:
-      "Este archivo no se puede añadir. Elige un vídeo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) o un archivo de subtítulos (.fcpxml .srt .ttml .transcript.json).",
+      "Este archivo no se puede añadir. Elige un vídeo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) o un archivo de subtítulos (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
       "{file} no se puede leer como perfil. Elige un archivo que haya exportado esta aplicación.",
     internal: "{detail}",
@@ -213,8 +252,6 @@ export const esMessages: Messages = {
     "nemotron-3.5-transcribe-q2l": "Separación de hablantes. Para Mac de 24 GB.",
     "nemotron-3.5-transcribe-q8":
       "Separación de hablantes. La mejor calidad, para Mac de 64 GB y GPU de 48 GB.",
-    "nemotron-3-diarization":
-      "Solo separación de hablantes, 107 MB. Hasta 8 hablantes; funciona con poca memoria.",
     yunet: "Caras reales. Incluido con la app; da el mismo resultado en Mac y Windows.",
     "avatar-face-yolo":
       "Caras de avatares. Funciona cuando el archivo ONNX exportado está en una carpeta de modelos.",
@@ -283,13 +320,14 @@ export const esMessages: Messages = {
             steps: [
               "Abre la pestaña «{tabJobs}».",
               "«{speakerCount}» empieza en 1. Si hablan más personas, elige cuántas. Si no lo sabes, elige «{speakerCountAuto}».",
-              "En «{subtitleFormat}», elige el tipo de archivo. Al principio es FCPXML. Debajo se indica para qué sirve.",
+              "En «{subtitleFormat}», elige el tipo de archivo. Al principio es DRT. Debajo se indica para qué sirve.",
               "Arrastra el vídeo al recuadro y suéltalo. Arrastrar es mantener pulsado mientras mueves. También puedes pulsar «{pickVideos}».",
             ],
             notes: [
               "El «?» junto al número explica para qué sirve.",
               "Si solo habla una persona, deja 1. Es más rápido.",
-              "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Archivos de subtítulos: .fcpxml .srt .ttml .transcript.json. Con otro archivo, la aplicación dice que no se puede añadir.",
+              "Puedes elegir otros números cuando haya un modelo Nemotron 3.5 en este ordenador. Se descarga en «{tabModels}».",
+              "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Archivos de subtítulos: .drt .fcpxml .srt .ttml .transcript.json. Con otro archivo, la aplicación dice que no se puede añadir.",
               "Si añades varios vídeos, se hacen uno por uno.",
               "La primera vez, la aplicación también pasa un modelo a una forma que puede usar.",
               "Si el idioma de los subtítulos no es el correcto, elígelo en «{speechLanguage}», en la pestaña «{tabStyle}».",
@@ -312,6 +350,7 @@ export const esMessages: Messages = {
               "Aparecen dos archivos en la carpeta del vídeo: el de subtítulos del tipo elegido y un archivo .transcript.json. Los anteriores se conservan. Si el nombre ya existe, los nuevos llevan -2 en el nombre.",
             steps: [],
             notes: [
+              ".drt: subtítulos Text+ para DaVinci Resolve, con colores, bordes, bordes exteriores y sombras.",
               ".fcpxml: los subtítulos junto con el vídeo, para programas de edición.",
               ".ttml: subtítulos con colores y posiciones.",
               ".srt: subtítulos con palabras y tiempos. Puede que no se vean los colores. No lleva bordes ni posiciones.",
@@ -324,9 +363,26 @@ export const esMessages: Messages = {
         heading: "Abrir en el programa de edición",
         parts: [
           {
+            heading: "Importar en DaVinci Resolve",
+            intro:
+              "Un archivo .drt importa los subtítulos como clips Text+, con sus colores, bordes, bordes exteriores y sombras.",
+            steps: [
+              "Abre un proyecto en DaVinci Resolve.",
+              "En el menú, elige File > Import > Timeline...",
+              "Elige el archivo .drt que hizo la aplicación.",
+              "En la pantalla de confirmación, pulsa Import.",
+              "Los subtítulos llegan como clips Text+. Selecciona un clip: en el Inspector, Text cambia las palabras y Shading los colores y los bordes.",
+            ],
+            notes: [
+              "Los números de Select Element: 1 es el relleno, 2 el borde, 4 el borde exterior, 3 la sombra, 5 el grosor del relleno.",
+              "En un proyecto nuevo, «Automatically set project setting» puede seguir activado. Si añades a un proyecto en curso, desactívalo para que la resolución no cambie.",
+              "No muevas el archivo de vídeo.",
+            ],
+          },
+          {
             heading: "Importar un archivo FCPXML",
             intro:
-              "Un archivo FCPXML trae el vídeo y los subtítulos a la vez, con sus colores, bordes y posiciones. Por eso es la opción inicial.",
+              "Un archivo FCPXML trae el vídeo y los subtítulos a la vez, con sus colores, bordes y posiciones.",
             steps: [
               "Abre un proyecto en tu programa de edición. Un proyecto guarda todo tu trabajo de edición.",
               "En el menú, importa la línea de tiempo (por ejemplo, File > Import > Timeline).",
@@ -359,8 +415,8 @@ export const esMessages: Messages = {
             steps: [
               "Abre la pestaña «{tabStyle}».",
               "En «{positionHeading}», elige «{anchorFaceAbove}», «{anchorFaceBelow}», «{anchorVideoTop}» o «{anchorVideoBottom}».",
-              "Ajusta el tamaño del texto y el grosor del borde con los controles deslizantes. Un control deslizante es un asa que mueves a izquierda y derecha. También puedes escribir un número.",
-              "Elige el color del texto y del borde para cada persona.",
+              "Ajusta el tamaño del texto con el control deslizante. Es un tirador que se mueve a izquierda y derecha. También puedes escribir un número.",
+              "Elige un hablante y ajusta el relleno, el borde, el borde exterior y la sombra. Pulsa un cuadrado de color para elegir un color. «Transparente» quita el borde exterior o la sombra.",
             ],
             notes: [
               "La vista previa está a la derecha en una pantalla ancha y arriba en una estrecha. Sigue visible al desplazarte.",
@@ -425,7 +481,7 @@ export const esMessages: Messages = {
             steps: [
               "Carga el perfil que quieras. Si no hay ninguno, se usan los ajustes actuales.",
               "Abre la pestaña «{tabJobs}».",
-              "Arrastra un archivo .fcpxml, .srt, .ttml o .transcript.json al recuadro y suéltalo. También puedes pulsar «{pickSubtitles}».",
+              "Arrastra un archivo .drt, .fcpxml, .srt, .ttml o .transcript.json al recuadro y suéltalo. También puedes pulsar «{pickSubtitles}».",
               "La lista bajo el recuadro muestra cómo va y el resultado.",
             ],
             notes: [
@@ -435,6 +491,22 @@ export const esMessages: Messages = {
               "El archivo .transcript.json con el mismo nombre debe estar en la misma carpeta.",
               "Cuando usas un perfil, no se usan los cambios que no guardaste en ese perfil.",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "Cambiar el idioma y la apariencia",
+        parts: [
+          {
+            heading: "Los ajustes",
+            intro:
+              "La pestaña «{tabSettings}» muestra la versión de la aplicación. Lo que elijas se guarda para la próxima vez.",
+            steps: [
+              "Abre la pestaña «{tabSettings}».",
+              "En «{uiLanguageLabel}», elige un idioma. La pantalla cambia al momento.",
+              "En «{uiThemeLabel}», elige «{uiThemeLight}» o «{uiThemeDark}». «{uiThemeSystem}» sigue a tu ordenador.",
+            ],
+            notes: [],
           },
         ],
       },
@@ -452,12 +524,13 @@ export const esMessages: Messages = {
             notes: [],
           },
           {
-            heading: "Falta un modelo para distinguir a los hablantes",
-            intro: "Algunos ordenadores no tienen un modelo recomendado. Haz una de estas dos cosas.",
+            heading: "No puedes elegir el número de hablantes",
+            intro:
+              "Para eso hace falta un modelo Nemotron 3.5. Sin él, la aplicación crea subtítulos para 1 hablante.",
             steps: [],
             notes: [
-              "Si solo habla una persona en el vídeo, elige 1 en «{speakerCount}». Entonces no hace falta este modelo.",
-              "En la pestaña «{tabModels}», descarga un modelo pequeño y pulsa su botón de usar.",
+              "Si un modelo Nemotron 3.5 sirve para este ordenador, descárgalo en la pestaña «{tabModels}».",
+              "Si ninguno sirve, aun así puedes crear subtítulos para 1 hablante.",
             ],
           },
           {
@@ -487,10 +560,10 @@ export const esMessages: Messages = {
           {
             heading: "El programa de edición no encuentra el vídeo",
             intro:
-              "Un archivo FCPXML guarda el lugar y el nombre del vídeo. Si mueves el vídeo o le cambias el nombre, el programa de edición no lo encuentra.",
+              "Un archivo .drt/FCPXML guarda el lugar y el nombre del vídeo. Si mueves el vídeo o le cambias el nombre, el programa de edición no lo encuentra.",
             steps: [
               "Devuelve el vídeo a su lugar de antes, con su nombre de antes.",
-              "Abre otra vez el archivo .fcpxml.",
+              "Abre otra vez el archivo .drt/.fcpxml.",
             ],
             notes: [],
           },
@@ -498,6 +571,13 @@ export const esMessages: Messages = {
       },
     },
     imageFolder: "es",
+    resolveFigures: {
+      menu: "Elige File, luego Import y luego Timeline. 1 es File, 2 Import, 3 Timeline.",
+      dialog: "La pantalla Import Timeline. 1 es Automatically set project setting, 2 el botón Import.",
+      timeline: "La línea de tiempo después de importar. 1 son los clips Text+ en V2.",
+      text: "El Inspector con un clip seleccionado. 1 es la pestaña Text, 2 donde cambias las palabras.",
+      shading: "La pestaña Shading del Inspector. 1 es Shading, 2 los números de Select Element.",
+    },
     images: {
       models: "La pestaña Modelos. 1 es la pestaña, 2 el botón de descarga, 3 la barra de cada modelo.",
       transcribe:

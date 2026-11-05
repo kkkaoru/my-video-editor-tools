@@ -11,7 +11,7 @@ export const Slider = ({ className, thumbLabel, ...props }: SliderProps): VNode 
   <SliderPrimitive.Root
     data-slot="slider"
     thumbAlignment="edge"
-    className={cn("w-full", className)}
+    className={cn("w-full data-[disabled]:opacity-50", className)}
     {...props}
   >
     <SliderPrimitive.Control className="relative flex min-h-11 w-full touch-none items-center select-none">

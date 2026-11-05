@@ -10,10 +10,20 @@ import { formatBytes, hasRecommendedSpeakerModel, ModelsPane, missingDownloads }
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -27,10 +37,11 @@ const SETTINGS: Settings = {
   face_model: "c",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 };
 const MODEL: ModelStatus = {
   id: "whisper-large-v3-turbo",
@@ -307,10 +318,20 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
       {
         settings: {
           palette: [],
-          unassigned: { fill: "#AAAAAA", outline: "#000000" },
+          unassigned: {
+            fill: "#AAAAAA",
+            fill_width: 0,
+            outline: "#000000",
+            outline_width: 0.1,
+            rim: null,
+            rim_width: 0.034,
+            shadow: null,
+            shadow_x: 0.03,
+            shadow_y: -0.03,
+            shadow_blur: 5,
+          },
           font_family: "Sans",
           font_ratio: 0.05,
-          outline_ratio: 0.1,
           width_ratio: 0.8,
           safe_left_percent: 5,
           safe_right_percent: 5,
@@ -324,10 +345,11 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
           face_model: "c",
           model_dirs: ["/x", "/extra"],
           active_profile: "",
-          rim_ratio: 0.034,
           line_height: 1.448,
           speaker_count: 0,
           subtitle_format: "fcpxml",
+          ui_language: "",
+          ui_theme: "system",
         },
       },
     ],
@@ -494,7 +516,7 @@ it("says what to do on a computer with no recommended speaker model", () => {
   render(<ModelsPane store={storeWith(SNAPSHOT, new Map())} snapshot={SNAPSHOT} />);
   expect(
     screen.getByText(
-      "No speaker separation model is recommended for this computer. Set the number of speakers to 1, or download a small model from the list below and choose it.",
+      "No Nemotron 3.5 model is recommended for this computer. You can still make subtitles for 1 speaker.",
     ).tagName,
   ).toBe("P");
 });

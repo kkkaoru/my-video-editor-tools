@@ -5,20 +5,52 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { Settings, Snapshot } from "../backend/types.ts";
 import { initialState } from "../state/app-state.ts";
 import type { AppStore } from "../state/use-app-store.ts";
-import { defaultPalette, StylePane } from "./StylePane.tsx";
+import { StylePane } from "./StylePane.tsx";
 
 // The edge-aligned thumb stays visibility:hidden until measured and happy-dom measures nothing,
 // which also empties its accessible name, so its input is found by the label attribute.
 const SLIDER_INPUT: { selector: string } = { selector: "input[type=range]" };
 const SETTINGS: Settings = {
   palette: [
-    { fill: "#111111", outline: "#222222" },
-    { fill: "#333333", outline: "#444444" },
+    {
+      fill: "#111111",
+      fill_width: 0,
+      outline: "#222222",
+      outline_width: 0.1,
+      rim: null,
+      rim_width: 0.034,
+      shadow: null,
+      shadow_x: 0.03,
+      shadow_y: -0.03,
+      shadow_blur: 5,
+    },
+    {
+      fill: "#333333",
+      fill_width: 0,
+      outline: "#444444",
+      outline_width: 0.1,
+      rim: null,
+      rim_width: 0.034,
+      shadow: null,
+      shadow_x: 0.03,
+      shadow_y: -0.03,
+      shadow_blur: 5,
+    },
   ],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -32,10 +64,11 @@ const SETTINGS: Settings = {
   face_model: "yunet",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 };
 const SNAPSHOT: Snapshot = {
   version: "1.2.3",
@@ -97,19 +130,6 @@ async function pressAndChoose(combobox: string, option: string): Promise<void> {
 
 afterEach(cleanup);
 
-it("starts speaker 1 white on black and the others in colour on white", () => {
-  expect(defaultPalette()).toStrictEqual([
-    { fill: "#FFFFFF", outline: "#000000" },
-    { fill: "#005A9C", outline: "#FFFFFF" },
-    { fill: "#6A1FA8", outline: "#FFFFFF" },
-    { fill: "#0B672C", outline: "#FFFFFF" },
-    { fill: "#A3123A", outline: "#FFFFFF" },
-    { fill: "#8A4500", outline: "#FFFFFF" },
-    { fill: "#7A1D7A", outline: "#FFFFFF" },
-    { fill: "#006262", outline: "#FFFFFF" },
-  ]);
-});
-
 it("moves the captions to another anchor", () => {
   const store: AppStore = show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Above the face" }));
@@ -170,29 +190,12 @@ it("converts the caption width to a ratio", () => {
   expect(lastSaved(store)?.width_ratio).toBe(0.5);
 });
 
-it("converts the outline width to a ratio", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByRole("spinbutton", { name: "Outline thickness (percent of the text)" }), {
-    target: { value: "20" },
-  });
-  expect(lastSaved(store)?.outline_ratio).toBe(0.2);
-});
-
 it("reports the line spacing as it is", () => {
   const store: AppStore = show(SETTINGS);
   fireEvent.keyDown(screen.getByLabelText("Line spacing (times the text size)", SLIDER_INPUT), {
     key: "ArrowRight",
   });
   expect(lastSaved(store)?.line_height).toBeCloseTo(1.449);
-});
-
-it("converts the rim width to a ratio", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.input(
-    screen.getByRole("spinbutton", { name: "Black rim outside the outline (percent of the text)" }),
-    { target: { value: "5" } },
-  );
-  expect(lastSaved(store)?.rim_ratio).toBe(0.05);
 });
 
 it("describes the preview in the landscape frame by default", () => {
@@ -206,7 +209,7 @@ it("shows the vertical frame narrower", () => {
   show(SETTINGS);
   fireEvent.click(screen.getByRole("button", { name: "Vertical 1080×1920" }));
   expect(descriptionText()).toBe(
-    "Preview caption at 51% across and 77% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
+    "Preview caption at 51% across and 81% down the Vertical 1080×1920 frame. Text size at this resolution: 54 px.",
   );
 });
 
@@ -245,94 +248,12 @@ it("draws the sample with the first speaker's colours at its place in the frame"
   expect(Number.parseFloat(container.querySelector("text")?.getAttribute("x") ?? "")).toBeCloseTo(979.2);
 });
 
-it("warns when a speaker's fill and outline are below AA", () => {
-  show({ ...SETTINGS, palette: [{ fill: "#777777", outline: "#888888" }] });
-  expect(screen.getByRole("alert").textContent).toMatch(/Speaker 1/);
-});
-
-it("gives no warning for a readable pair", () => {
-  show({
-    ...SETTINGS,
-    unassigned: { fill: "#FFFFFF", outline: "#000000" },
-    palette: [{ fill: "#FFFFFF", outline: "#000000" }],
-  });
-  expect(screen.queryByRole("alert")).toBe(null);
-});
-
-it("changes the unknown speaker's colours", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByLabelText("Unknown speaker: fill"), { target: { value: "#abcdef" } });
-  expect(lastSaved(store)?.unassigned).toStrictEqual({ fill: "#ABCDEF", outline: "#000000" });
-});
-
 it("still draws the sample with an empty palette", () => {
   show({ ...SETTINGS, palette: [] });
   expect(descriptionText()).toBe(
     "Preview caption at 51% across and 83% down the 1920×1080 frame. Text size at this resolution: 54 px.",
   );
   expect(screen.queryByRole("button", { name: "Remove a speaker" })).toBe(null);
-});
-
-it("changes the fill of one speaker, in capitals", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByLabelText("Speaker 2: fill"), { target: { value: "#abcdef" } });
-  expect(lastSaved(store)?.palette).toStrictEqual([
-    { fill: "#111111", outline: "#222222" },
-    { fill: "#ABCDEF", outline: "#444444" },
-  ]);
-});
-
-it("changes the outline of one speaker, in capitals", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.input(screen.getByLabelText("Speaker 1: outline"), { target: { value: "#abcdef" } });
-  expect(lastSaved(store)?.palette).toStrictEqual([
-    { fill: "#111111", outline: "#ABCDEF" },
-    { fill: "#333333", outline: "#444444" },
-  ]);
-});
-
-it("adds a white speaker", () => {
-  const store: AppStore = show(SETTINGS);
-  expect(screen.getByRole("heading", { name: "Speaker colours (up to 2 speakers)" }).tagName).toBe("H2");
-  fireEvent.click(screen.getByRole("button", { name: "Add a speaker" }));
-  expect(lastSaved(store)?.palette).toStrictEqual([
-    { fill: "#111111", outline: "#222222" },
-    { fill: "#333333", outline: "#444444" },
-    { fill: "#FFFFFF", outline: "#FFFFFF" },
-  ]);
-});
-
-it("removes the last speaker", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.click(screen.getByRole("button", { name: "Remove a speaker" }));
-  expect(lastSaved(store)?.palette).toStrictEqual([{ fill: "#111111", outline: "#222222" }]);
-});
-
-it("keeps at least one speaker", () => {
-  show({ ...SETTINGS, palette: [{ fill: "#111111", outline: "#222222" }] });
-  expect(screen.queryByRole("button", { name: "Remove a speaker" })).toBe(null);
-});
-
-it("stops adding speakers at the eight the speaker models can tell apart", () => {
-  show({ ...SETTINGS, palette: defaultPalette() });
-  expect(screen.queryByRole("button", { name: "Add a speaker" })).toBe(null);
-});
-
-it("restores the first colours", () => {
-  const store: AppStore = show(SETTINGS);
-  fireEvent.click(screen.getByRole("button", { name: "Restore the first colours" }));
-  expect(lastSaved(store)?.palette.length).toBe(8);
-});
-
-it("lists the unknown speaker after every numbered speaker", () => {
-  const { container } = render(
-    <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
-  );
-  expect(
-    Array.from(new Set(container.querySelectorAll('input[type="color"] ~ span.whitespace-nowrap'))).map(
-      (name: Element): string | null => name.textContent,
-    ),
-  ).toStrictEqual(["Speaker 1", "Speaker 2", "Unknown speaker"]);
 });
 
 it("draws the preview and the colour samples in the chosen font", () => {
@@ -459,4 +380,53 @@ it("draws nothing for a safe zone of no width", () => {
     <StylePane store={storeOf()} settings={settings} profiles={[]} faceOptions={[]} />,
   );
   expect(container.querySelectorAll('[data-slot="safe-zone"]').length).toBe(1);
+});
+
+it("previews the speaker being edited", () => {
+  const { container } = render(
+    <StylePane store={storeOf()} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+  );
+  const previewFill = (): string | null | undefined =>
+    container.querySelector('[data-slot="caption-preview"] g g:last-child')?.getAttribute("fill");
+  expect(previewFill()).toBe("#111111");
+  fireEvent.click(screen.getByRole("button", { name: "Speaker 2" }));
+  expect(previewFill()).toBe("#333333");
+  fireEvent.click(screen.getByRole("button", { name: "Speaker 2" }));
+  expect(previewFill()).toBe("#111111");
+});
+
+it("saves a speaker's change and the unknown speaker's apart", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.input(
+    screen.getByRole("spinbutton", { name: "Speaker 1: Fill thickness (percent of the text size)" }),
+    {
+      target: { value: "2" },
+    },
+  );
+  expect(lastSaved(store)?.palette[0]?.fill_width).toBe(0.02);
+  fireEvent.click(screen.getByRole("button", { name: "Unknown speaker" }));
+  fireEvent.input(
+    screen.getByRole("spinbutton", { name: "Unknown speaker: Fill thickness (percent of the text size)" }),
+    { target: { value: "3" } },
+  );
+  expect(lastSaved(store)?.unassigned.fill_width).toBe(0.03);
+});
+
+it("previews the unknown speaker when the row open has gone", () => {
+  const store: AppStore = storeOf();
+  const { container, rerender } = render(
+    <StylePane store={store} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Unknown speaker" }));
+  rerender(
+    <StylePane
+      store={store}
+      settings={{ ...SETTINGS, palette: SETTINGS.palette.slice(0, 1) }}
+      profiles={[]}
+      faceOptions={[]}
+    />,
+  );
+  expect(container.querySelector('[data-slot="caption-preview"] g g:last-child')?.getAttribute("fill")).toBe(
+    SETTINGS.unassigned.fill,
+  );
 });

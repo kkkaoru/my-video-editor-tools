@@ -1,24 +1,38 @@
 // Runs with bun: the pure transitions of jobs, downloads and settings.
 import { expect, it } from "vitest";
-import type { BackendError, Settings, Snapshot } from "../backend/types.ts";
+import type { BackendError, ModelStatus, Settings, Snapshot } from "../backend/types.ts";
 import {
   type AppState,
   applyDownloadEvent,
   applyJobEvent,
+  canChooseSpeakerCount,
+  effectiveSpeakerCount,
   initialState,
   lookChanged,
   missingModelRoles,
   startedDownload,
+  uiLocale,
   withModels,
+  withSaveAnswer,
   withSettings,
 } from "./app-state.ts";
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -32,10 +46,11 @@ const SETTINGS: Settings = {
   face_model: "c",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 };
 const SNAPSHOT: Snapshot = {
   version: "1.2.3",
@@ -61,10 +76,20 @@ it("starts empty", () => {
       backend: "default",
       settings: {
         palette: [],
-        unassigned: { fill: "#AAAAAA", outline: "#000000" },
+        unassigned: {
+          fill: "#AAAAAA",
+          fill_width: 0,
+          outline: "#000000",
+          outline_width: 0.1,
+          rim: null,
+          rim_width: 0.034,
+          shadow: null,
+          shadow_x: 0.03,
+          shadow_y: -0.03,
+          shadow_blur: 5,
+        },
         font_family: "Sans",
         font_ratio: 0.05,
-        outline_ratio: 0.1,
         width_ratio: 0.8,
         safe_left_percent: 5,
         safe_right_percent: 5,
@@ -78,10 +103,11 @@ it("starts empty", () => {
         face_model: "c",
         model_dirs: [],
         active_profile: "",
-        rim_ratio: 0.034,
         line_height: 1.448,
         speaker_count: 0,
         subtitle_format: "fcpxml",
+        ui_language: "",
+        ui_theme: "system",
       },
       models: [],
       models_dir: "/models",
@@ -252,41 +278,38 @@ it("replaces the models and ends an earlier failure, keeping the settings", () =
   expect(state.loadError).toBe(null);
 });
 
-it("needs a present, unblocked model for transcription and for speakers", () => {
-  expect(missingModelRoles(SNAPSHOT)).toStrictEqual(["transcribe", "diarize"]);
+const MODEL: ModelStatus = {
+  id: "t",
+  role: "transcribe",
+  label: "T",
+  source_url: "",
+  download_bytes: 1,
+  found_at: "/t",
+  blocked: null,
+  recommended: true,
+};
+
+it("needs a present, unblocked model for transcription only", () => {
+  expect(missingModelRoles(SNAPSHOT)).toStrictEqual(["transcribe"]);
   expect(
-    missingModelRoles({
-      ...SNAPSHOT,
-      models: [
-        {
-          id: "t",
-          role: "transcribe",
-          label: "T",
-          source_url: "",
-          download_bytes: 1,
-          found_at: "/t",
-          blocked: null,
-          recommended: true,
-        },
-        {
-          id: "d",
-          role: "diarize",
-          label: "D",
-          source_url: "",
-          download_bytes: 1,
-          found_at: "/d",
-          blocked: { code: "needs_nvidia" },
-          recommended: true,
-        },
-      ],
-    }),
-  ).toStrictEqual(["diarize"]);
+    missingModelRoles({ ...SNAPSHOT, models: [{ ...MODEL, blocked: { code: "needs_nvidia" } }] }),
+  ).toStrictEqual(["transcribe"]);
+  expect(missingModelRoles({ ...SNAPSHOT, models: [MODEL] })).toStrictEqual([]);
 });
 
-it("needs no speaker model for one known speaker", () => {
-  expect(missingModelRoles({ ...SNAPSHOT, settings: { ...SETTINGS, speaker_count: 1 } })).toStrictEqual([
-    "transcribe",
-  ]);
+it("lets the speaker count be chosen only with a present, unblocked Nemotron 3.5 model", () => {
+  const nemotron: ModelStatus = { ...MODEL, id: "nemotron-3.5-transcribe-q8", role: "diarize" };
+  expect(canChooseSpeakerCount({ models: [nemotron] })).toBe(true);
+  expect(canChooseSpeakerCount({ models: [{ ...nemotron, found_at: null }] })).toBe(false);
+  expect(canChooseSpeakerCount({ models: [{ ...nemotron, blocked: { code: "needs_nvidia" } }] })).toBe(false);
+  expect(canChooseSpeakerCount({ models: [{ ...nemotron, id: "other-diarizer" }] })).toBe(false);
+});
+
+it("runs with one speaker without such a model, and the saved number with it", () => {
+  const saved: Settings = { ...SETTINGS, speaker_count: 4 };
+  const nemotron: ModelStatus = { ...MODEL, id: "nemotron-3.5-transcribe-q8", role: "diarize" };
+  expect(effectiveSpeakerCount({ models: [], settings: saved })).toBe(1);
+  expect(effectiveSpeakerCount({ models: [nemotron], settings: saved })).toBe(4);
 });
 
 it("notices a look that differs from the saved one, and ignores everything else", () => {
@@ -298,4 +321,17 @@ it("notices a look that differs from the saved one, and ignores everything else"
 
 it("counts a safe zone as part of the look a profile saves", () => {
   expect(lookChanged({ ...SETTINGS, safe_left_percent: 9 }, SETTINGS)).toBe(true);
+});
+
+it("shows the language chosen in the settings, or the system's when none is", () => {
+  expect(uiLocale({ locale: "ja-JP", settings: SETTINGS })).toBe("ja-JP");
+  expect(uiLocale({ locale: "ja-JP", settings: { ...SETTINGS, ui_language: "de" } })).toBe("de");
+});
+
+it("takes the models and the language from a save's answer, and keeps newer settings on screen", () => {
+  const state = initialState(SNAPSHOT);
+  const answer: Snapshot = { ...SNAPSHOT, locale: "fr", settings: { ...SETTINGS, language: "older" } };
+  const updated = withSaveAnswer(state, answer);
+  expect(updated.snapshot.locale).toBe("fr");
+  expect(updated.snapshot.settings).toStrictEqual(SETTINGS);
 });

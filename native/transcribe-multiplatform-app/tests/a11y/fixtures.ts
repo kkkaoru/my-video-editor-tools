@@ -6,18 +6,22 @@ import type {
   ModelStatus,
   Profile,
   Snapshot,
+  SpeakerColor,
   Stage,
 } from "../../src/backend/types.ts";
 import { enMessages } from "../../src/i18n/locale-en.ts";
 import type { ErrorMessages } from "../../src/i18n/messages.ts";
 
-export type Tab = "jobs" | "style" | "models" | "help";
+export type Tab = "jobs" | "style" | "models" | "help" | "settings";
 export type StateStep =
   | "open-face-select"
   | "open-language-select"
   | "open-subtitle-format"
   | "hover-drop"
   | "open-speaker-help"
+  | "open-settings-language"
+  | "open-second-speaker"
+  | "open-color-picker"
   | "open-font-list"
   | "open-reset-dialog"
   | "open-overwrite-dialog"
@@ -95,10 +99,6 @@ export const ALL_MODELS: ModelStatus[] = [
   model("nemotron-3.5-transcribe-q8", "diarize", "Nemotron 3.5 Transcribe 30B-A4B (Q8_0)", {
     blocked: { code: "needs_memory", model: "nemotron-3.5-transcribe-q8", required: 48, available: 12 },
   }),
-  model("nemotron-3-diarization", "diarize", "Nemotron 3 Diarization (Q8)", {
-    found_at: "/user/models/nemotron.gguf",
-    download_bytes: 107_000_000,
-  }),
   model("yunet", "face", "YuNet", { found_at: "/app/yunet.onnx", download_bytes: 0, recommended: true }),
   model("avatar-face-yolo", "face", "Avatar face YOLO", { download_bytes: 0, source_url: "" }),
 ];
@@ -113,15 +113,48 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
   models: ALL_MODELS,
   models_dir: "/data/models",
   settings: {
-    palette: FIRST_FILL.map((fill: string, index: number) => ({
-      fill,
-      outline: index === 0 ? "#000000" : "#FFFFFF",
-    })),
-    unassigned: { fill: "#595959", outline: "#FFFFFF" },
+    palette: FIRST_FILL.map(
+      (fill: string, index: number): SpeakerColor =>
+        index === 0
+          ? {
+              fill,
+              fill_width: 0,
+              outline: "#000000",
+              outline_width: 0.115,
+              rim: null,
+              rim_width: 3 / 88,
+              shadow: null,
+              shadow_x: 0.03,
+              shadow_y: -0.03,
+              shadow_blur: 5,
+            }
+          : {
+              fill,
+              fill_width: 0,
+              outline: "#FFFFFF",
+              outline_width: 0.115,
+              rim: null,
+              rim_width: 3 / 88,
+              shadow: null,
+              shadow_x: 0.03,
+              shadow_y: -0.03,
+              shadow_blur: 5,
+            },
+    ),
+    unassigned: {
+      fill: "#595959",
+      fill_width: 0,
+      outline: "#FFFFFF",
+      outline_width: 0.115,
+      rim: null,
+      rim_width: 3 / 88,
+      shadow: null,
+      shadow_x: 0.03,
+      shadow_y: -0.03,
+      shadow_blur: 5,
+    },
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
-    outline_ratio: 0.115,
-    rim_ratio: 0.034,
     line_height: 1.448,
     width_ratio: 0.9,
     safe_left_percent: 5,
@@ -132,9 +165,11 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
       offset_y_percent: 0,
     },
     language: "auto",
-    diarize_model: "nemotron-3-diarization",
+    diarize_model: "nemotron-3.5-transcribe-iq4",
     speaker_count: 1,
-    subtitle_format: "fcpxml",
+    subtitle_format: "drt",
+    ui_language: "",
+    ui_theme: "system",
     face_model: "yunet",
     model_dirs: ["/user/models"],
     active_profile: "",
@@ -150,8 +185,6 @@ const profile = (name: string): Profile => ({
     unassigned: snapshot({}).settings.unassigned,
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
-    outline_ratio: 0.115,
-    rim_ratio: 0.034,
     line_height: 1.448,
     width_ratio: 0.9,
     safe_left_percent: 5,
@@ -264,6 +297,9 @@ export const UI_STATES: UiState[] = [
   }),
   state("jobs speaker help open", "jobs", { steps: ["open-speaker-help"] }),
   state("jobs with a selected profile", "jobs", { snapshot: WITH_PROFILES }),
+  state("jobs subtitle format fcpxml", "jobs", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "fcpxml" } }),
+  }),
   state("jobs subtitle format ttml", "jobs", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "ttml" } }),
   }),
@@ -271,6 +307,18 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
   }),
   state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
+  state("jobs with a nemotron 3.5 model", "jobs", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, speaker_count: 3 },
+      models: ALL_MODELS.map(
+        (row: ModelStatus): ModelStatus =>
+          row.id === "nemotron-3.5-transcribe-iq4" ? { ...row, found_at: "/data/models/iq4.gguf" } : row,
+      ),
+    }),
+  }),
+  state("jobs saved as automatic without a nemotron 3.5 model", "jobs", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, speaker_count: 0 } }),
+  }),
   state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
   state("jobs unsupported file dropped", "jobs", { steps: ["drop-other"] }),
   state("jobs video dropped without models", "jobs", {
@@ -387,6 +435,49 @@ export const UI_STATES: UiState[] = [
   ...ANCHORS.flatMap((anchor: string): UiState[] =>
     FRAMES.map((frame: string): UiState => state(`style ${anchor} ${frame}`, "style", { anchor, frame })),
   ),
+  state("style with every speaker's outer edge on and thick layers", "style", {
+    snapshot: snapshot({
+      settings: {
+        ...snapshot({}).settings,
+        palette: snapshot({}).settings.palette.map(
+          (color: SpeakerColor): SpeakerColor => ({
+            ...color,
+            fill_width: 0.02,
+            outline_width: 0.2,
+            rim: "#000000",
+            rim_width: 0.1,
+            shadow: null,
+            shadow_x: 0.03,
+            shadow_y: -0.03,
+            shadow_blur: 5,
+          }),
+        ),
+      },
+    }),
+  }),
+  state("style with every speaker's shadow on", "style", {
+    snapshot: snapshot({
+      settings: {
+        ...snapshot({}).settings,
+        palette: snapshot({}).settings.palette.map(
+          (color: SpeakerColor): SpeakerColor => ({
+            ...color,
+            shadow: "#112233",
+            shadow_y: -0.2,
+            shadow_blur: 50,
+          }),
+        ),
+      },
+    }),
+  }),
+  state("style for the srt format", "style", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
+  }),
+  state("style second speaker open", "style", { steps: ["open-second-speaker"] }),
+  state("style colour picker open", "style", { steps: ["open-color-picker"] }),
+  state("style colour picker open on a transparent edge", "style", {
+    steps: ["open-second-speaker", "open-color-picker"],
+  }),
   state("style with wide safe zones", "style", {
     snapshot: snapshot({
       settings: {
@@ -418,8 +509,33 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({
       settings: {
         ...snapshot({}).settings,
-        palette: [{ fill: "#C48CFF", outline: "#FFFFFF" }, ...snapshot({}).settings.palette.slice(1)],
-        unassigned: { fill: "#C8C8C8", outline: "#FFFFFF" },
+        palette: [
+          {
+            fill: "#C48CFF",
+            fill_width: 0,
+            outline: "#FFFFFF",
+            outline_width: 0.1,
+            rim: null,
+            rim_width: 0.034,
+            shadow: null,
+            shadow_x: 0.03,
+            shadow_y: -0.03,
+            shadow_blur: 5,
+          },
+          ...snapshot({}).settings.palette.slice(1),
+        ],
+        unassigned: {
+          fill: "#C8C8C8",
+          fill_width: 0,
+          outline: "#FFFFFF",
+          outline_width: 0.1,
+          rim: null,
+          rim_width: 0.034,
+          shadow: null,
+          shadow_x: 0.03,
+          shadow_y: -0.03,
+          shadow_blur: 5,
+        },
       },
     }),
   }),
@@ -448,6 +564,20 @@ export const UI_STATES: UiState[] = [
   state("style face select open", "style", { steps: ["open-face-select"] }),
   state("style language select open", "style", { steps: ["open-language-select"] }),
   state("help", "help", {}),
+  state("settings", "settings", {}),
+  state("settings language list open", "settings", { steps: ["open-settings-language"] }),
+  state("settings dark on a light system", "settings", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, ui_theme: "dark" } }),
+  }),
+  state("settings light on a dark system", "settings", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, ui_theme: "light" } }),
+  }),
+  state("settings with the language overridden", "settings", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, ui_language: "de" } }),
+  }),
+  state("style in the dark setting", "style", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, ui_theme: "dark" } }),
+  }),
   state("models idle", "models", {}),
   state("models on geforce without its runtime", "models", {
     snapshot: snapshot({
@@ -510,7 +640,12 @@ export const UI_STATES: UiState[] = [
         done_bytes: 800_000_000,
         total_bytes: 1_700_000_000,
       },
-      { state: "running", id: "nemotron-3-diarization", done_bytes: 107_000_000, total_bytes: 107_000_000 },
+      {
+        state: "running",
+        id: "nemotron-3.5-transcribe-q8",
+        done_bytes: 100_000_000,
+        total_bytes: 1_700_000_000,
+      },
     ],
   }),
   state("model downloading", "models", {

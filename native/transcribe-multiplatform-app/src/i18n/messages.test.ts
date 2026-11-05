@@ -23,13 +23,13 @@ it("names the model in a known error", () => {
 
 it("names speaker separation for a diarize role", () => {
   expect(errorText(enMessages, { code: "no_model_for_role", role: "diarize" }, "")).toBe(
-    "No model is installed for speaker separation. Set the number of speakers to 1, or download a small model in Models and choose it.",
+    "No model is installed for speaker separation. Download one in Models.",
   );
 });
 
 it("names transcription for any other role", () => {
   expect(errorText(enMessages, { code: "no_model_for_role", role: "transcribe" }, "")).toBe(
-    "No model is installed for transcription. Set the number of speakers to 1, or download a small model in Models and choose it.",
+    "No model is installed for transcription. Download one in Models.",
   );
 });
 
@@ -63,7 +63,7 @@ it("shows an unknown code when it has no detail", () => {
 
 it("states the recording limit when it is known", () => {
   expect(errorText(enMessages, { code: "too_long_for_model", limit_minutes: 7 }, "Big")).toBe(
-    "Big takes recordings up to 7 minutes. This video is longer. Choose Nemotron 3 Diarization in Models.",
+    "Big takes recordings up to 7 minutes. This video is longer. Set the number of speakers to 1.",
   );
 });
 

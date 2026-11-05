@@ -57,7 +57,7 @@ function ProfileRow({ profile, settings, apply, fail }: ProfileRowProps): VNode 
   const { name } = profile;
   const selected: boolean = settings.active_profile === name;
   return (
-    <li className="grid gap-2 border-t border-border pt-3 first:border-t-0 first:pt-0">
+    <li className="grid gap-2 border-t border-border pt-4 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium break-all">{name}</span>
         {selected ? <Badge variant="default">{messages.profileSelected}</Badge> : null}
@@ -125,7 +125,7 @@ export function ProfilesCard({ store, settings, profiles }: ProfilesCardProps): 
             );
           }}
         >
-          <div className="grid min-w-48 flex-1 gap-1">
+          <div className="grid min-w-48 flex-1 gap-2">
             <Label htmlFor={inputId}>{messages.profileName}</Label>
             <Input
               id={inputId}
@@ -141,7 +141,7 @@ export function ProfilesCard({ store, settings, profiles }: ProfilesCardProps): 
         {profiles.length === 0 ? (
           <p className="text-muted-foreground">{messages.profileEmpty}</p>
         ) : (
-          <ul className="grid grid-cols-1 gap-3">
+          <ul className="grid grid-cols-1 gap-4">
             {profiles.map(
               (profile: Profile): VNode => (
                 <ProfileRow

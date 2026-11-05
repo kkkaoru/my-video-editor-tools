@@ -5,6 +5,13 @@ export const enMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "Transcribe",
   tabStyle: "Caption look and position",
+  tabSettings: "Settings",
+  uiLanguageLabel: "Display language",
+  uiLanguageSystem: "Same as the system",
+  uiThemeLabel: "Appearance",
+  uiThemeSystem: "Same as the system",
+  uiThemeLight: "Light",
+  uiThemeDark: "Dark",
   tabHelp: "How to use",
   tabModels: "Models",
   noticeSpeakersOnCpu:
@@ -21,6 +28,8 @@ export const enMessages: Messages = {
   speakerCountHelpLabel: "Why set the number of speakers?",
   speakerCountHelp:
     "Speaker colours depend on telling voices apart. Saying how many people speak keeps similar voices from merging and one voice from splitting. With 1 speaker, speaker separation is skipped, so it is faster and needs no speaker model.",
+  speakerCountOnlyOne:
+    "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “{tabModels}” tab to choose more.",
   profilesHeading: "Profiles",
   profilesHint:
     "Save the caption look and position under a name and restore it later. Models and the spoken language are not part of a profile.",
@@ -92,6 +101,7 @@ export const enMessages: Messages = {
   jobRemainingUnderMinute: "Less than a minute left",
   stepStates: { done: "done", current: "in progress", pending: "waiting" },
   outputPurposes: {
+    drt: "DaVinci Resolve timeline of Text+ clips: colours, outlines, outer edges and shadows",
     ttml: "Styled subtitles (colour, outline, position)",
     srt: "Subtitles with words and times (colours may not show; no outlines or positions)",
     fcpxml: "Timeline with titles",
@@ -126,9 +136,7 @@ export const enMessages: Messages = {
   sizeHint: "Sizes follow each video's resolution automatically. These are proportions of the video.",
   fontSize: "Text size (percent of the short edge)",
   captionWidth: "Longest line (percent of the width)",
-  outlineWidth: "Outline thickness (percent of the text)",
   captionLineHeight: "Line spacing (times the text size)",
-  rimWidth: "Black rim outside the outline (percent of the text)",
   unknownSpeaker: "Unknown speaker",
   contrastWarning:
     "{name}: the fill and outline contrast is {ratio}:1, below the WCAG AA minimum of 4.5:1. Choose colours further apart.",
@@ -141,16 +149,48 @@ export const enMessages: Messages = {
   previewVertical: "Vertical 1080×1920",
   previewUhd: "4K",
   speakersHeading: "Speaker colours (up to {count} speakers)",
-  speakersHint: "Each speaker automatically gets a fill and an outline colour. Change them here.",
+  speakersHint:
+    "Choose a speaker to change their colours and thickness. The preview shows that speaker's captions. Thickness and position are a percent of the text size.",
   speakerName: "Speaker {number}",
-  fillLabel: "fill",
-  outlineLabel: "outline",
+  colorColumn: "Colour",
+  fillWidth: "Fill thickness (percent of the text size)",
+  outlineWidth: "Outline thickness (percent of the text size)",
+  rimWidth: "Outer edge thickness (percent of the text size)",
+  layerWidth: "Thickness (percent of the text size)",
+  colorTransparent: "Transparent",
+  colorCustom: "Any colour",
+  colorNames: {
+    white: "White",
+    black: "Black",
+    red: "Red",
+    orange: "Orange",
+    yellow: "Yellow",
+    green: "Green",
+    blue: "Blue",
+    purple: "Purple",
+  },
+  fillLabel: "Fill",
+  outlineLabel: "Outline",
+  rimLabel: "Outer edge",
+  formatLimits: {
+    fcpxml: "FCPXML shows no shadow. Choose DRT to use one.",
+    ttml: "TTML shows no outer edge or shadow. Choose DRT to use them.",
+    srt: "SRT keeps only the text colour: no outlines, outer edges or shadows. Choose DRT to use them.",
+  },
+  shadowLabel: "Shadow",
+  shadowColor: "Shadow colour",
+  shadowX: "Shadow left/right (percent of the text size)",
+  shadowXShort: "Shadow left/right",
+  shadowY: "Shadow up/down (percent of the text size; minus is down)",
+  shadowYShort: "Shadow up/down",
+  shadowBlur: "Shadow blur (0 to 50)",
+  shadowBlurShort: "Shadow blur",
   addSpeaker: "Add a speaker",
   removeSpeaker: "Remove a speaker",
   resetPalette: "Restore the first colours",
   modelsHeading: "Models",
   noRecommendedSpeakerModel:
-    "No speaker separation model is recommended for this computer. Set the number of speakers to 1, or download a small model from the list below and choose it.",
+    "No Nemotron 3.5 model is recommended for this computer. You can still make subtitles for 1 speaker.",
   modelsHint:
     "The models suited to this computer are marked as recommended. Models you already downloaded are found and reused.",
   addModelFolder: "Add a folder with existing models",
@@ -174,13 +214,12 @@ export const enMessages: Messages = {
     unreadable_duration: "The length of this video could not be read. The file may be damaged.",
     no_words: "No words were found in the audio.",
     model_missing: "{model} is not installed. Download it in Models.",
-    no_model_for_role:
-      "No model is installed for {role}. Set the number of speakers to 1, or download a small model in Models and choose it.",
+    no_model_for_role: "No model is installed for {role}. Download one in Models.",
     needs_nvidia: "{model} needs an NVIDIA GPU. Choose another model in Models.",
     needs_memory:
       "{model} needs {required} GB of memory; this computer has {available} GB. Choose a smaller model.",
     too_long_for_model:
-      "{model} takes recordings up to {limit} minutes. This video is longer. Choose Nemotron 3 Diarization in Models.",
+      "{model} takes recordings up to {limit} minutes. This video is longer. Set the number of speakers to 1.",
     transcript_missing:
       "{file} has no transcript beside it, so it cannot be written again. Keep the .transcript.json file with the same name in the same folder.",
     profile_exists:
@@ -191,7 +230,7 @@ export const enMessages: Messages = {
     models_missing:
       "The videos were not added because no model is available for: {roles}. Download them in Models, or add a folder that already has them.",
     no_supported_files:
-      "This file cannot be added. Choose a video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) or a subtitle file (.fcpxml .srt .ttml .transcript.json).",
+      "This file cannot be added. Choose a video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) or a subtitle file (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid: "{file} cannot be read as a profile. Choose a file this app exported.",
     internal: "{detail}",
     cancelled: "Cancelled",
@@ -205,7 +244,6 @@ export const enMessages: Messages = {
       "Speaker separation. For 16 GB GPUs; each recording can be about 7 minutes.",
     "nemotron-3.5-transcribe-q2l": "Speaker separation. For 24 GB Macs.",
     "nemotron-3.5-transcribe-q8": "Speaker separation. Highest quality, for 64 GB Macs and 48 GB GPUs.",
-    "nemotron-3-diarization": "Speaker separation only, 107 MB. Up to 8 speakers; runs with little memory.",
     yunet: "Real faces. Included with the app; gives the same result on Mac and Windows.",
     "avatar-face-yolo": "Avatar faces. Works once the exported ONNX file is in a model folder.",
     "geforce-runtime": "CUDA build of the speaker separation tool. Without it, speakers run on the CPU.",
@@ -272,13 +310,14 @@ export const enMessages: Messages = {
             steps: [
               "Open the “{tabJobs}” tab.",
               "“{speakerCount}” starts at 1. If more people speak, choose how many. If you are not sure, choose “{speakerCountAuto}”.",
-              "Choose the file type in “{subtitleFormat}”. It starts at FCPXML. The line under it says what each type is for.",
+              "Choose the file type in “{subtitleFormat}”. It starts at DRT. The line under it says what each type is for.",
               "Drag the video into the box and let go. To drag means to hold it down while you move it. You can also press “{pickVideos}”.",
             ],
             notes: [
               "Press the “?” next to the number to read why it helps.",
               "If only one person speaks, leave it at 1. It finishes faster.",
-              "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Subtitle files can be .fcpxml .srt .ttml .transcript.json. With any other file, the app says it cannot be added.",
+              "You can choose other numbers once a Nemotron 3.5 model is on this computer. Get one on the “{tabModels}” tab.",
+              "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Subtitle files can be .drt .fcpxml .srt .ttml .transcript.json. With any other file, the app says it cannot be added.",
               "If you add several videos, they are done one at a time.",
               "The first time, the app also changes a model into a form it can use.",
               "If the subtitles are in the wrong language, choose it in “{speechLanguage}” on the “{tabStyle}” tab.",
@@ -301,6 +340,7 @@ export const enMessages: Messages = {
               "Two files appear in the same folder as the video: the subtitle file in the type you chose, and a .transcript.json file. Older files are kept. If the name is taken, the new files get -2 added to their name.",
             steps: [],
             notes: [
+              ".drt: Text+ subtitles for DaVinci Resolve, with colours, outlines, outer edges and shadows.",
               ".fcpxml: subtitles video editing software can read, together with the video.",
               ".ttml: subtitles with colours and positions.",
               ".srt: subtitles with words and times. Colours may not show. There are no outlines or positions.",
@@ -313,9 +353,26 @@ export const enMessages: Messages = {
         heading: "Open the subtitles in your video editor",
         parts: [
           {
+            heading: "Bring the subtitles into DaVinci Resolve",
+            intro:
+              "A .drt file brings the subtitles in as Text+ clips, with their colours, outlines, outer edges and shadows.",
+            steps: [
+              "Open a project in DaVinci Resolve.",
+              "From the menu, choose File > Import > Timeline...",
+              "Choose the .drt file the app made.",
+              "On the screen that asks, press Import.",
+              "The subtitles come in as Text+ clips. Select a clip to change the words under Text in the Inspector, and the colours and edges under Shading.",
+            ],
+            notes: [
+              "The numbers of Select Element: 1 is the fill, 2 the outline, 4 the outer edge, 3 the shadow, 5 the fill thickness.",
+              "For a new project, “Automatically set project setting” can stay on. When you add to a project you are editing, turn it off so the resolution does not change.",
+              "Do not move the video file.",
+            ],
+          },
+          {
             heading: "Bring in an FCPXML file",
             intro:
-              "An FCPXML file brings in the video and the subtitles at once, with their colours, outlines and positions. That is why it is the first setting.",
+              "An FCPXML file brings in the video and the subtitles at once, with their colours, outlines and positions.",
             steps: [
               "Open a project in your video editor. A project holds all your editing work.",
               "Bring in the timeline from the menu (for example, File > Import > Timeline).",
@@ -348,8 +405,8 @@ export const enMessages: Messages = {
             steps: [
               "Open the “{tabStyle}” tab.",
               "Under “{positionHeading}”, choose “{anchorFaceAbove}”, “{anchorFaceBelow}”, “{anchorVideoTop}” or “{anchorVideoBottom}”.",
-              "Use the sliders to set the text size and outline width. A slider is a handle you move left and right. You can type a number too.",
-              "Choose the text colour and outline colour for each person.",
+              "Use the slider to set the text size. A slider is a handle you move left and right. You can type a number too.",
+              "Choose a speaker, then set the fill, outline, outer edge and shadow. Press a colour square to choose a colour. “Transparent” removes the outer edge or the shadow.",
             ],
             notes: [
               "The preview is on the right on a wide screen and at the top on a narrow one. It stays in view as you scroll.",
@@ -414,7 +471,7 @@ export const enMessages: Messages = {
             steps: [
               "Load the profile you want. If none is loaded, the current settings are used.",
               "Open the “{tabJobs}” tab.",
-              "Drag a .fcpxml, .srt, .ttml or .transcript.json file into the box and let go. You can also press “{pickSubtitles}”.",
+              "Drag a .drt, .fcpxml, .srt, .ttml or .transcript.json file into the box and let go. You can also press “{pickSubtitles}”.",
               "The list under the box shows the progress and the result.",
             ],
             notes: [
@@ -424,6 +481,21 @@ export const enMessages: Messages = {
               "The .transcript.json file with the same name must be in the same folder.",
               "When you are using a profile, changes you have not saved to it are not used.",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "Change the language and the appearance",
+        parts: [
+          {
+            heading: "The settings",
+            intro: "The “{tabSettings}” tab shows the version of the app. Your choices stay for next time.",
+            steps: [
+              "Open the “{tabSettings}” tab.",
+              "Under “{uiLanguageLabel}”, choose a language. The screen changes at once.",
+              "Under “{uiThemeLabel}”, choose “{uiThemeLight}” or “{uiThemeDark}”. “{uiThemeSystem}” follows your computer.",
+            ],
+            notes: [],
           },
         ],
       },
@@ -441,12 +513,13 @@ export const enMessages: Messages = {
             notes: [],
           },
           {
-            heading: "It says there is no model for telling speakers apart",
-            intro: "Some computers have no recommended model for this. Do one of these.",
+            heading: "You cannot choose the number of speakers",
+            intro:
+              "Choosing the number needs a Nemotron 3.5 model. Without one, the app makes subtitles for 1 speaker.",
             steps: [],
             notes: [
-              "If one person speaks in the video, choose 1 in “{speakerCount}”. No model for this is needed.",
-              "On the “{tabModels}” tab, download a small model, then press its use button.",
+              "If a Nemotron 3.5 model fits this computer, download it on the “{tabModels}” tab.",
+              "If none fits, you can still make subtitles for 1 speaker.",
             ],
           },
           {
@@ -476,10 +549,10 @@ export const enMessages: Messages = {
           {
             heading: "Your video editor cannot find the video",
             intro:
-              "An FCPXML file holds the video's place and name. If you move or rename the video, your video editor cannot find it.",
+              "A .drt or FCPXML file holds the video's place and name. If you move or rename the video, your video editor cannot find it.",
             steps: [
               "Put the video back in its old place, with its old name.",
-              "Open the .fcpxml file again.",
+              "Open the .drt/.fcpxml file again.",
             ],
             notes: [],
           },
@@ -487,6 +560,13 @@ export const enMessages: Messages = {
       },
     },
     imageFolder: "en",
+    resolveFigures: {
+      menu: "Choose File, then Import, then Timeline. 1 is File, 2 is Import, 3 is Timeline.",
+      dialog: "The Import Timeline screen. 1 is Automatically set project setting, 2 is the Import button.",
+      timeline: "The timeline after importing. 1 is the Text+ clips on V2.",
+      text: "The Inspector with a clip selected. 1 is the Text tab, 2 is where you change the words.",
+      shading: "The Shading tab of the Inspector. 1 is Shading, 2 is the numbers of Select Element.",
+    },
     images: {
       models: "The Models tab. 1 is the tab, 2 is the download button, 3 is the bar for each model.",
       transcribe:

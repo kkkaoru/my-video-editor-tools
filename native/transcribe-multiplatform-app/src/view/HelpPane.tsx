@@ -3,20 +3,32 @@ import type { VNode } from "preact";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { format, type HelpPart, type HelpSections, type Messages, type Params } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
-import { HELP_IMAGE_SIZES, type HelpImageName, imageOfPart } from "./help-images.ts";
-
-export interface HelpPaneProps {
-  version: string;
-}
+import {
+  figuresOfStep,
+  HELP_IMAGE_SIZES,
+  type HelpImageName,
+  imageOfPart,
+  RESOLVE_FIGURE_SIZES,
+  type ResolveFigureName,
+} from "./help-images.ts";
 
 interface HelpPartViewProps {
   part: HelpPart;
   labels: Params;
   image: HelpImageName | undefined;
+  figuresOf: (step: number) => ResolveFigureName[];
 }
 
 /** AAA line length (WCAG 1.4.8): under 80 Latin characters, or 40 CJK. */
-const SECTION_ORDER: (keyof HelpSections)[] = ["start", "transcribe", "editor", "look", "rewrite", "trouble"];
+const SECTION_ORDER: (keyof HelpSections)[] = [
+  "start",
+  "transcribe",
+  "editor",
+  "look",
+  "rewrite",
+  "settings",
+  "trouble",
+];
 const LINE_LIMIT: string = "max-w-[min(65ch,40em)] leading-normal";
 
 /** The on-screen names the text quotes, so a renamed button cannot leave the help behind. */
@@ -44,6 +56,12 @@ export const helpLabels = ({
   anchorVideoBottom,
   profileImport,
   resetLook,
+  tabSettings,
+  uiLanguageLabel,
+  uiThemeLabel,
+  uiThemeSystem,
+  uiThemeLight,
+  uiThemeDark,
 }: Messages): Params => ({
   tabJobs,
   tabStyle,
@@ -68,6 +86,12 @@ export const helpLabels = ({
   anchorVideoBottom,
   profileImport,
   resetLook,
+  tabSettings,
+  uiLanguageLabel,
+  uiThemeLabel,
+  uiThemeSystem,
+  uiThemeLight,
+  uiThemeDark,
 });
 
 /** Lazy, and sized up front: a picture in a closed tab costs nothing, and arriving moves nothing. */
@@ -86,10 +110,34 @@ const HelpImage = ({ name }: { name: HelpImageName }): VNode => {
   );
 };
 
+/** One picture of DaVinci Resolve under its step, the same for every language; its caption says what the numbers mark. */
+const ResolveFigure = ({ name }: { name: ResolveFigureName }): VNode => {
+  const { help } = useMessages();
+  const { width, height } = RESOLVE_FIGURE_SIZES[name];
+  return (
+    <figure className="mt-2 grid gap-2">
+      <img
+        src={`/help/resolve/${name}.webp`}
+        alt=""
+        width={width}
+        height={height}
+        loading="lazy"
+        decoding="async"
+        className={`h-auto w-full rounded-lg border border-border ${height > width ? "max-w-sm" : ""}`}
+      />
+      <figcaption className="text-sm text-muted-foreground">{help.resolveFigures[name]}</figcaption>
+    </figure>
+  );
+};
+
+export const ResolveFigureList = ({ names }: { names: ResolveFigureName[] }): VNode[] =>
+  names.map((name: ResolveFigureName): VNode => <ResolveFigure key={name} name={name} />);
+
 const HelpPartView = ({
   part: { heading, intro, steps, notes },
   labels,
   image,
+  figuresOf,
 }: HelpPartViewProps): VNode => (
   <div className="grid grid-cols-1 gap-2">
     <h3 className="font-medium">{heading}</h3>
@@ -98,8 +146,11 @@ const HelpPartView = ({
     {steps.length === 0 ? null : (
       <ol className={`${LINE_LIMIT} list-decimal pl-6`}>
         {steps.map(
-          (step: string): VNode => (
-            <li key={step}>{format(step, labels)}</li>
+          (step: string, index: number): VNode => (
+            <li key={step}>
+              {format(step, labels)}
+              <ResolveFigureList names={figuresOf(index)} />
+            </li>
           ),
         )}
       </ol>
@@ -116,13 +167,12 @@ const HelpPartView = ({
   </div>
 );
 
-export function HelpPane({ version }: HelpPaneProps): VNode {
+export function HelpPane(): VNode {
   const messages: Messages = useMessages();
   const labels: Params = helpLabels(messages);
   const { sections } = messages.help;
   return (
     <div className="grid grid-cols-1 gap-4 text-base break-words">
-      <p className="text-muted-foreground">{format(messages.help.version, { version })}</p>
       <p className={LINE_LIMIT}>{messages.help.intro}</p>
       {SECTION_ORDER.map(
         (key: keyof HelpSections): VNode => (
@@ -138,6 +188,7 @@ export function HelpPane({ version }: HelpPaneProps): VNode {
                     part={part}
                     labels={labels}
                     image={imageOfPart(key, index)}
+                    figuresOf={(step: number): ResolveFigureName[] => figuresOfStep(key, index, step)}
                   />
                 ),
               )}

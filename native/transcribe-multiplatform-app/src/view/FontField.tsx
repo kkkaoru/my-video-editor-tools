@@ -47,7 +47,7 @@ export function FontField({ value, onChange, onFailure }: FontFieldProps): VNode
     }
   };
   return (
-    <div className="grid grid-cols-1 gap-1">
+    <div className="grid grid-cols-1 gap-2">
       <span className="text-sm font-medium">{messages.fontFamily}</span>
       <Combobox
         items={choices}

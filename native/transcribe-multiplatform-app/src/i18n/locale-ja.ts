@@ -5,6 +5,13 @@ export const jaMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "字幕を作る",
   tabStyle: "字幕の見た目と位置",
+  tabSettings: "設定",
+  uiLanguageLabel: "画面の言語",
+  uiLanguageSystem: "システムに合わせる",
+  uiThemeLabel: "表示モード",
+  uiThemeSystem: "システムに合わせる",
+  uiThemeLight: "通常",
+  uiThemeDark: "ダーク",
   tabHelp: "使い方",
   tabModels: "モデル",
   noticeSpeakersOnCpu:
@@ -23,6 +30,8 @@ export const jaMessages: Messages = {
   speakerCountHelpLabel: "話す人の数を選ぶ理由",
   speakerCountHelp:
     "字幕の色を分けるには、声を聞き分ける必要があります。人数を選ぶと、まちがいが減ります。1 人を選ぶと、聞き分けをしないので速く終わります。聞き分け用のモデルも要りません。",
+  speakerCountOnlyOne:
+    "Nemotron 3.5 のモデルがないので、1 人だけ選べます。「{tabModels}」のタブでダウンロードすると、人数を選べます。",
   profilesHeading: "プロファイル",
   profilesHint:
     "プロファイルは、字幕の見た目と位置の設定に名前を付けて保存したものです。あとで読み込むと元に戻せます。モデルと話す言葉の設定は入りません。",
@@ -92,8 +101,9 @@ export const jaMessages: Messages = {
   jobRemainingUnderMinute: "残り 1 分より短い",
   stepStates: { done: "終わり", current: "作業中", pending: "待っています" },
   outputPurposes: {
+    drt: "DaVinci Resolve に読み込む Text+ の字幕です。色、縁、外側の縁、シャドウがすべて入ります",
     ttml: "色と位置が入った字幕",
-    srt: "文字と時間の字幕 (色は出ないことがあります。ふちと位置は入りません)",
+    srt: "文字と時間の字幕 (色は出ないことがあります。縁と位置は入りません)",
     fcpxml: "動画編集ソフトで読める、字幕入りのファイル",
     json: "字幕を作り直すためのデータ",
   },
@@ -125,12 +135,10 @@ export const jaMessages: Messages = {
   sizeHint: "動画の大きさに合わせて自動で計算します。下の数字は動画に対する割合です。",
   fontSize: "文字の大きさ (動画の短い辺に対する %)",
   captionWidth: "1 行の長さの上限 (動画の横はばに対する %)",
-  outlineWidth: "ふちの太さ (文字に対する %)",
   captionLineHeight: "行と行の間 (文字の大きさの何倍か)",
-  rimWidth: "ふちの外の黒い線の太さ (文字に対する %)",
   unknownSpeaker: "不明な人",
   contrastWarning:
-    "{name}: 文字とふちの色が近くて、読みにくいです (色の差は {ratio}:1、目安は 4.5:1 以上)。明るさのちがう色を選んでください。",
+    "{name}: 文字と縁の色が近くて、読みにくいです (色の差は {ratio}:1、目安は 4.5:1 以上)。明るさのちがう色を選んでください。",
   previewHeading: "プレビュー",
   previewFrameLabel: "プレビューの大きさ",
   previewDescription: "プレビューの字幕は {size} の画面で、横 {x}%、縦 {y}% の位置にあります。",
@@ -140,16 +148,48 @@ export const jaMessages: Messages = {
   previewVertical: "縦 1080×1920",
   previewUhd: "4K",
   speakersHeading: "話す人の色 (最大 {count} 人)",
-  speakersHint: "話す人ごとに、文字とふちの色を自動で分けます。色はここで変えられます。",
+  speakersHint:
+    "話す人を選ぶと、その人の色と太さを変えられます。プレビューには、選んだ人の字幕が出ます。太さと位置は文字サイズに対する % です。",
   speakerName: "話す人 {number}",
-  fillLabel: "文字の色",
-  outlineLabel: "ふちの色",
+  colorColumn: "色",
+  fillWidth: "塗りの太さ (文字サイズに対する %)",
+  outlineWidth: "縁の太さ (文字サイズに対する %)",
+  rimWidth: "外側の縁の太さ (文字サイズに対する %)",
+  layerWidth: "太さ (文字サイズに対する %)",
+  colorTransparent: "透明",
+  colorCustom: "自由な色",
+  colorNames: {
+    white: "白",
+    black: "黒",
+    red: "赤",
+    orange: "オレンジ",
+    yellow: "黄",
+    green: "緑",
+    blue: "青",
+    purple: "紫",
+  },
+  fillLabel: "塗り",
+  outlineLabel: "縁",
+  rimLabel: "外側の縁",
+  formatLimits: {
+    fcpxml: "FCPXML ではシャドウは出ません。シャドウを使うときは DRT を選びます。",
+    ttml: "TTML では外側の縁とシャドウは出ません。使うときは DRT を選びます。",
+    srt: "SRT で効くのは文字の色だけです。縁、外側の縁、シャドウは出ません。使うときは DRT を選びます。",
+  },
+  shadowLabel: "シャドウ",
+  shadowColor: "影の色",
+  shadowX: "影の左右の位置 (文字サイズに対する %)",
+  shadowXShort: "影の左右の位置",
+  shadowY: "影の上下の位置 (文字サイズに対する %、マイナスが下)",
+  shadowYShort: "影の上下の位置",
+  shadowBlur: "影のぼかし (0〜50)",
+  shadowBlurShort: "影のぼかし",
   addSpeaker: "話す人を増やす",
   removeSpeaker: "話す人を減らす",
   resetPalette: "最初の色に戻す",
   modelsHeading: "モデル",
   noRecommendedSpeakerModel:
-    "このパソコンに合う、おすすめの聞き分けモデルがありません。話す人の数を 1 人にするか、下の一覧から小さいモデルをダウンロードして選んでください。",
+    "このパソコンに合う、おすすめの Nemotron 3.5 のモデルがありません。話す人が 1 人の字幕は作れます。",
   modelsHint:
     "モデルは、文字起こしに使うデータです。このパソコンに合うモデルには「おすすめ」と出ます。ダウンロードしたことのあるモデルは、自動で見つけて使います。",
   addModelFolder: "持っているモデルのフォルダを追加",
@@ -173,14 +213,13 @@ export const jaMessages: Messages = {
     unreadable_duration: "動画の長さを読み取れません。ファイルがこわれているかもしれません。",
     no_words: "音声の中に言葉が見つかりませんでした。",
     model_missing: "{model} がありません。「モデル」のタブでダウンロードしてください。",
-    no_model_for_role:
-      "{role}のモデルがありません。話す人の数を 1 人にするか、「モデル」のタブで小さいモデルをダウンロードして選んでください。",
+    no_model_for_role: "{role}のモデルがありません。「モデル」のタブでダウンロードしてください。",
     needs_nvidia:
       "{model} は、NVIDIA の GPU (絵や計算が速い部品) がないと動きません。「モデル」のタブで別のモデルを選んでください。",
     needs_memory:
       "{model} を動かすには、メモリ (作業に使う場所) が {required} GB 必要です。このパソコンは {available} GB です。小さいモデルを選んでください。",
     too_long_for_model:
-      "{model} は {limit} 分までの音声に使えます。この動画は長すぎます。「モデル」のタブで Nemotron 3 Diarization を選んでください。",
+      "{model} は {limit} 分までの音声に使えます。この動画は長すぎます。話す人の数を 1 人にしてください。",
     transcript_missing:
       "{file} と同じフォルダに、字幕を作り直すデータがありません。だから作り直せません。同じ名前の .transcript.json を同じフォルダに置いてください。",
     profile_exists:
@@ -191,7 +230,7 @@ export const jaMessages: Messages = {
     models_missing:
       "動画を入れられませんでした。{roles}のモデルがありません。「モデル」のタブでダウンロードするか、モデルが入っているフォルダを追加してください。",
     no_supported_files:
-      "このファイルは入れられません。動画 (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) か、字幕ファイル (.fcpxml .srt .ttml .transcript.json) を入れてください。",
+      "このファイルは入れられません。動画 (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) か、字幕ファイル (.drt .fcpxml .srt .ttml .transcript.json) を入れてください。",
     profile_invalid:
       "{file} はプロファイルのファイルとして読めません。このアプリで書き出したファイルを選んでください。",
     internal: "{detail}",
@@ -208,8 +247,6 @@ export const jaMessages: Messages = {
     "nemotron-3.5-transcribe-q2l": "話す人の聞き分けに使います。メモリ 24 GB の Mac 向けです。",
     "nemotron-3.5-transcribe-q8":
       "話す人の聞き分けに使います。一番ていねいです。メモリ 64 GB の Mac と 48 GB の GPU 向けです。",
-    "nemotron-3-diarization":
-      "話す人の聞き分けだけに使う小さいモデルです (107 MB)。8 人まで聞き分けます。メモリが少なくても動きます。",
     yunet: "人の顔を見つけます。アプリに入っています。",
     "avatar-face-yolo":
       "アバターの顔を見つけます。自分で用意したモデルのファイル (.onnx) をモデルのフォルダに置くと使えます。",
@@ -277,13 +314,14 @@ export const jaMessages: Messages = {
             steps: [
               "「{tabJobs}」のタブを開きます。",
               "「{speakerCount}」は、最初は 1 人です。2 人以上が話す動画は、人数を選びます。分からないときは「{speakerCountAuto}」を選びます。",
-              "「{subtitleFormat}」で、作るファイルの形式を選びます。最初は FCPXML です。下に、その形式の使い道が出ます。",
+              "「{subtitleFormat}」で、作るファイルの形式を選びます。最初は DRT です。下に、その形式の使い道が出ます。",
               "動画を枠の中までドラッグして、指を離します。ドラッグは、押したまま動かすことです。「{pickVideos}」のボタンで選ぶこともできます。",
             ],
             notes: [
               "人数の横の「?」を押すと、人数を選ぶ理由が読めます。",
               "1 人しか話さない動画は「1 人」のままにします。速く終わります。",
-              "動画を入れられる形は .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts です。字幕ファイルは .fcpxml .srt .ttml .transcript.json です。ほかのファイルを入れると、入れられないと出ます。",
+              "人数を選べるのは、Nemotron 3.5 のモデルがあるときです。「{tabModels}」のタブでダウンロードできます。",
+              "動画を入れられる形は .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts です。字幕ファイルは .drt .fcpxml .srt .ttml .transcript.json です。ほかのファイルを入れると、入れられないと出ます。",
               "動画を何本も入れると、1 本ずつ順番に作ります。",
               "はじめて作るときは、モデルをこのアプリで使える形に直す作業が入ります。",
               "字幕の言葉がちがうときは、「{tabStyle}」のタブの「{speechLanguage}」で言葉を選びます。",
@@ -306,9 +344,10 @@ export const jaMessages: Messages = {
               "動画と同じフォルダに、選んだ形式の字幕ファイルと .transcript.json の 2 つができます。前に作ったファイルは消しません。同じ名前があるときは、新しいファイルの名前に -2 を付けます。",
             steps: [],
             notes: [
+              ".drt: DaVinci Resolve に読み込む Text+ の字幕です。色、縁、外側の縁、シャドウが入ります。",
               ".fcpxml: 動画編集ソフトで読める、字幕入りのファイルです。",
               ".ttml: 色と位置が入った字幕のファイルです。",
-              ".srt: 文字と時間の字幕です。色は出ないことがあります。ふちと位置は入りません。",
+              ".srt: 文字と時間の字幕です。色は出ないことがあります。縁と位置は入りません。",
               ".transcript.json: 字幕を作り直すときに使うデータです。消さないでください。",
             ],
           },
@@ -318,9 +357,26 @@ export const jaMessages: Messages = {
         heading: "動画編集ソフトに読み込む",
         parts: [
           {
+            heading: "DaVinci Resolve で読み込む",
+            intro:
+              ".drt のファイルは、字幕を Text+ のクリップとして読み込みます。色、縁、外側の縁、シャドウも入ります。",
+            steps: [
+              "DaVinci Resolve でプロジェクトを開きます。",
+              "メニューの File > Import > Timeline... を選びます。",
+              "できた .drt のファイルを選びます。",
+              "確認の画面で Import を押します。",
+              "字幕は Text+ のクリップになります。クリップを選ぶと、Inspector の Text で文字を、Shading で色や縁を直せます。",
+            ],
+            notes: [
+              "Select Element の番号は、1 が塗り、2 が縁、4 が外側の縁、3 がシャドウ、5 が塗りの太さです。",
+              "新しいプロジェクトなら、Automatically set project setting はオンのままで大丈夫です。作業中のプロジェクトに足すときは、解像度が変わらないようにオフにします。",
+              "動画のファイルは動かさないでください。",
+            ],
+          },
+          {
             heading: "FCPXML を読み込む",
             intro:
-              "FCPXML は、動画と字幕を一度に読み込めるファイルです。字幕の色、ふち、位置も一緒に入ります。だから、最初はこの形式になっています。",
+              "FCPXML は、動画と字幕を一度に読み込めるファイルです。字幕の色、縁、位置も一緒に入ります。",
             steps: [
               "動画編集ソフトでプロジェクトを開きます。プロジェクトは、編集の作業をまとめたものです。",
               "メニューからタイムラインを読み込みます (例: File > Import > Timeline)。",
@@ -351,8 +407,8 @@ export const jaMessages: Messages = {
             steps: [
               "「{tabStyle}」のタブを開きます。",
               "「{positionHeading}」で、「{anchorFaceAbove}」「{anchorFaceBelow}」「{anchorVideoTop}」「{anchorVideoBottom}」のどれかを選びます。",
-              "スライダーで、文字の大きさやふちの太さを決めます。スライダーは、左右に動かすつまみです。数字を入力することもできます。",
-              "話す人ごとに、文字の色とふちの色を選びます。",
+              "スライダーで、文字の大きさを決めます。スライダーは、左右に動かすつまみです。数字を入力することもできます。",
+              "話す人を選んで、塗り、縁、外側の縁、シャドウを決めます。色の四角を押すと色を選べます。外側の縁とシャドウは「透明」で消せます。",
             ],
             notes: [
               "プレビューは、広い画面では右に、せまい画面では上に出ます。下に動かしても見えたままです。",
@@ -421,7 +477,7 @@ export const jaMessages: Messages = {
             steps: [
               "使いたいプロファイルを読み込みます。読み込んでいないときは、今の設定を使います。",
               "「{tabJobs}」のタブを開きます。",
-              ".fcpxml、.srt、.ttml、.transcript.json のどれかを枠の中までドラッグして、指を離します。「{pickSubtitles}」のボタンで選ぶこともできます。",
+              ".drt、.fcpxml、.srt、.ttml、.transcript.json のどれかを枠の中までドラッグして、指を離します。「{pickSubtitles}」のボタンで選ぶこともできます。",
               "枠の下の一覧に、進み具合と結果が出ます。",
             ],
             notes: [
@@ -431,6 +487,22 @@ export const jaMessages: Messages = {
               "同じフォルダに、同じ名前の .transcript.json が必要です。",
               "プロファイルを使っているときは、そのプロファイルに保存していない変更を使いません。",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "言語と表示モードを変える",
+        parts: [
+          {
+            heading: "設定のタブ",
+            intro:
+              "「{tabSettings}」のタブには、アプリのバージョンが出ます。選んだ内容は、次に開いたときも残ります。",
+            steps: [
+              "「{tabSettings}」のタブを開きます。",
+              "「{uiLanguageLabel}」で言語を選びます。画面がすぐ変わります。",
+              "「{uiThemeLabel}」で「{uiThemeLight}」か「{uiThemeDark}」を選びます。「{uiThemeSystem}」にすると、パソコンの設定に合わせます。",
+            ],
+            notes: [],
           },
         ],
       },
@@ -448,12 +520,12 @@ export const jaMessages: Messages = {
             notes: [],
           },
           {
-            heading: "話す人の聞き分けのモデルがないと出たとき",
-            intro: "パソコンによっては、おすすめのモデルがありません。次のどちらかをします。",
+            heading: "話す人の数を選べないとき",
+            intro: "人数を選ぶには、Nemotron 3.5 のモデルが要ります。ないときは、1 人の字幕を作ります。",
             steps: [],
             notes: [
-              "話す人が 1 人の動画は、「{speakerCount}」で 1 人を選びます。聞き分けのモデルは要りません。",
-              "「{tabModels}」のタブで小さいモデルをダウンロードして、使うボタンを押します。",
+              "このパソコンに合う Nemotron 3.5 があるときは、「{tabModels}」のタブでダウンロードします。",
+              "合うモデルがないときも、1 人の字幕は作れます。",
             ],
           },
           {
@@ -487,14 +559,22 @@ export const jaMessages: Messages = {
           {
             heading: "動画編集ソフトで動画が見つからないとき",
             intro:
-              "FCPXML には、動画の場所と名前が書いてあります。動画を動かしたり名前を変えたりすると、見つかりません。",
-            steps: ["動画を元の場所と元の名前に戻します。", "もう一度 .fcpxml を読み込みます。"],
+              ".drt/FCPXML には、動画の場所と名前が書いてあります。動画を動かしたり名前を変えたりすると、見つかりません。",
+            steps: ["動画を元の場所と元の名前に戻します。", "もう一度 .drt/.fcpxml を読み込みます。"],
             notes: [],
           },
         ],
       },
     },
     imageFolder: "ja",
+    resolveFigures: {
+      menu: "File、Import、Timeline の順に選びます。1 は File、2 は Import、3 は Timeline です。",
+      dialog:
+        "Import Timeline の確認の画面です。1 は Automatically set project setting、2 は Import のボタンです。",
+      timeline: "読み込んだ後のタイムラインです。1 は V2 に並ぶ Text+ のクリップです。",
+      text: "クリップを選んだ Inspector です。1 は Text のタブ、2 は文字を直す欄です。",
+      shading: "Inspector の Shading のタブです。1 は Shading、2 は Select Element の番号です。",
+    },
     images: {
       models: "「モデル」のタブの画面です。1 はタブ、2 はダウンロードのボタン、3 はモデルごとのバーです。",
       transcribe:

@@ -4,9 +4,21 @@ export type Anchor = "face_above" | "face_below" | "video_top" | "video_bottom";
 export type Role = "transcribe" | "diarize" | "face" | "runtime";
 export type Stage = "convert_model" | "extract_audio" | "transcribe" | "diarize" | "faces" | "export";
 
+/** Widths are layer thicknesses, as ratios of the text size; they stack from the glyph outwards. */
 export interface SpeakerColor {
   fill: string;
+  fill_width: number;
   outline: string;
+  outline_width: number;
+  /** Null is transparent: no such layer, whatever `rim_width` says. */
+  rim: string | null;
+  rim_width: number;
+  /** Null is no shadow: the rest of these are then ignored. Only the `.drt` format draws it. */
+  shadow: string | null;
+  /** Half a ratio of the text size each, negative `shadow_y` being down. */
+  shadow_x: number;
+  shadow_y: number;
+  shadow_blur: number;
 }
 
 export interface Placement {
@@ -21,8 +33,6 @@ export interface CaptionLook {
   unassigned: SpeakerColor;
   font_family: string;
   font_ratio: number;
-  outline_ratio: number;
-  rim_ratio: number;
   line_height: number;
   width_ratio: number;
   /** Strips at the sides of the width that captions keep out of. */
@@ -36,13 +46,17 @@ export interface Profile {
   look: CaptionLook;
 }
 
-export type SubtitleFormat = "fcpxml" | "ttml" | "srt";
+export type UiTheme = "system" | "light" | "dark";
+export type SubtitleFormat = "drt" | "fcpxml" | "ttml" | "srt";
 
 export interface Settings extends CaptionLook {
   language: string;
   diarize_model: string;
   speaker_count: number;
   subtitle_format: SubtitleFormat;
+  /** Empty follows the system; a language tag overrides it. */
+  ui_language: string;
+  ui_theme: UiTheme;
   face_model: string;
   model_dirs: string[];
   /** The profile dropped subtitle files follow; empty for the settings above. */

@@ -82,7 +82,7 @@ async function showState(page: Page, state: UiState, locale: string): Promise<vo
     },
     { jobEvents: state.jobEvents, downloadEvents: state.downloadEvents },
   );
-  await page.getByRole("tab").nth(["jobs", "style", "models", "help"].indexOf(state.tab)).click();
+  await page.getByRole("tab").nth(["jobs", "style", "models", "help", "settings"].indexOf(state.tab)).click();
   await applySteps(page, state, locale);
   await page.mouse.move(0, 0);
 }
@@ -107,7 +107,10 @@ async function applySteps(page: Page, state: UiState, locale: string): Promise<v
       ["landscape", "vertical", "uhd"].indexOf(state.frame),
     );
   }
-  await Promise.all(state.steps.map((step: string) => applyStep(page, step)));
+  await state.steps.reduce(async (previous: Promise<void>, step: string): Promise<void> => {
+    await previous;
+    await applyStep(page, step);
+  }, Promise.resolve());
 }
 
 async function applyStep(page: Page, step: string): Promise<void> {
@@ -136,6 +139,21 @@ async function applyStep(page: Page, step: string): Promise<void> {
   if (dialogButton !== undefined) {
     await panel.locator(DIALOG_TRIGGER).nth(dialogButton).click();
     await page.getByRole("alertdialog").waitFor();
+    return;
+  }
+  if (step === "open-second-speaker") {
+    await panel.locator('[data-slot="accordion-trigger"]').nth(1).click();
+    await panel.locator('[data-slot="accordion-panel"]').waitFor();
+    return;
+  }
+  if (step === "open-color-picker") {
+    await panel.locator('[data-slot="color-swatch"]').nth(2).click();
+    await page.getByRole("dialog").waitFor();
+    return;
+  }
+  if (step === "open-settings-language") {
+    await panel.getByRole("combobox").first().click();
+    await page.getByRole("listbox").waitFor();
     return;
   }
   if (step === "open-speaker-help") {
@@ -239,7 +257,8 @@ const failingFocus = (reports: FocusReport[]): FocusReport[] =>
 
 async function hoverViolations(page: Page): Promise<string[]> {
   // Behind an open alert dialog the page is inert: nothing there can be hovered, or used at all.
-  const dialog = page.getByRole("alertdialog");
+  // An open colour picker stays until it is answered and may cover what is under it; other states sweep that.
+  const dialog = page.locator('[role="alertdialog"], [data-slot="color-picker"]');
   const scope = (await dialog.count()) > 0 ? dialog : page.locator("body");
   const buttons = await scope
     .locator('button:visible, [role="tab"]:visible, [role="combobox"]:visible')
@@ -299,6 +318,9 @@ test("the speaker count help does not cover the control it explains", async ({ p
   await panel.locator(DIALOG_TRIGGER).hover();
   await page.getByRole("dialog").waitFor();
   await panel.getByRole("combobox").first().hover({ timeout: 2000 });
+  await panel.locator(DIALOG_TRIGGER).hover();
+  await page.getByRole("dialog").waitFor();
+  await panel.getByRole("combobox").nth(1).hover({ timeout: 2000 });
 });
 
 const popupsOffScreen = (page: Page): Promise<string[]> =>
@@ -367,7 +389,7 @@ test("the preview stays beside the controls in a wide window", async ({ page }):
 });
 
 const brokenSpeakerNames = (page: Page): Promise<string[]> =>
-  page.$$eval('input[type="color"] ~ span', (elements: Element[]): string[] =>
+  page.$$eval('[data-slot="speaker-name"]', (elements: Element[]): string[] =>
     elements
       .filter((element: Element): boolean => {
         const { fontSize } = getComputedStyle(element);
@@ -403,6 +425,7 @@ LOCALES.forEach((locale: string): void => {
     }
     await showState(page, state, locale);
     expect(await overlongLines(page)).toStrictEqual([]);
+    await page.getByRole("tab").nth(4).click();
     const version = page.getByRole("tabpanel").locator("p").first();
     await expect(version).toHaveText(
       languageFor(locale).messages.help.version.replace("{version}", state.snapshot.version),

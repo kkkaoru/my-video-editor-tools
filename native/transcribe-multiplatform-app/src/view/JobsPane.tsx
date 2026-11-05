@@ -7,14 +7,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Progress } from "@/components/ui/progress.tsx";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
 import type { Profile, Role, Snapshot, Stage, SubtitleFormat } from "../backend/types.ts";
-import { languageFor } from "../i18n/language.ts";
+import { keepWordsWhole, languageFor } from "../i18n/language.ts";
 import { errorText, format, type Messages, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import {
+  canChooseSpeakerCount,
+  effectiveSpeakerCount,
   type FinishedJobRow,
   type JobRow,
   missingModelRoles,
   type RunningJobRow,
+  uiLocale,
 } from "../state/app-state.ts";
 import {
   type AppStore,
@@ -22,6 +25,7 @@ import {
   SUBTITLE_EXTENSIONS,
   VIDEO_EXTENSIONS,
 } from "../state/use-app-store.ts";
+import { FormatLimit } from "./FormatLimit.tsx";
 import { SelectField, type SelectOption } from "./fields.tsx";
 import { HelpTip } from "./HelpTip.tsx";
 
@@ -46,7 +50,7 @@ interface StepRowProps {
 
 const SECONDS_PER_MINUTE: number = 60;
 const MAX_SPEAKER_COUNT: number = 8;
-const SUBTITLE_FORMATS: SubtitleFormat[] = ["fcpxml", "ttml", "srt"];
+const SUBTITLE_FORMATS: SubtitleFormat[] = ["drt", "fcpxml", "ttml", "srt"];
 const PERCENT: number = 100;
 const FOLDERS: RegExp = /^.*[\\/]/s;
 const BEFORE_EXTENSION: RegExp = /^.*\./s;
@@ -100,6 +104,8 @@ export const speakerCountOptions = (messages: Messages): SelectOption[] => [
     }),
   ),
 ];
+
+const isOneSpeaker = ({ value }: SelectOption): boolean => value === "1";
 
 export const subtitleFormatOptions = (): SelectOption[] =>
   SUBTITLE_FORMATS.map(
@@ -301,23 +307,33 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
   const missing: string[] = missingRoles(snapshot, messages);
   const { hovering, jobs } = store.state;
   const notice: string | null = slowProcessingNotice(snapshot, messages);
+  const choosable: boolean = canChooseSpeakerCount(snapshot);
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
-      {/* One above the other: the speaker count's "?" opens to the right, where a neighbour would be covered. */}
-      <div className="grid max-w-sm grid-cols-1 gap-4">
-        <div>
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
             label={messages.speakerCount}
-            value={String(snapshot.settings.speaker_count)}
-            options={speakerCountOptions(messages)}
+            value={String(effectiveSpeakerCount(snapshot))}
+            options={
+              choosable ? speakerCountOptions(messages) : speakerCountOptions(messages).filter(isOneSpeaker)
+            }
             help={<HelpTip label={messages.speakerCountHelpLabel}>{messages.speakerCountHelp}</HelpTip>}
             onChange={(value: string): void =>
               store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
             }
           />
+          {choosable ? null : (
+            <p className="text-muted-foreground">
+              {keepWordsWhole(
+                format(messages.speakerCountOnlyOne, { tabModels: messages.tabModels }),
+                languageFor(uiLocale(snapshot)).tag,
+              )}
+            </p>
+          )}
         </div>
-        <div className="grid grid-cols-1 gap-1">
+        <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
             label={messages.subtitleFormat}
             value={snapshot.settings.subtitle_format}
@@ -333,6 +349,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
           <p className="text-muted-foreground">
             {messages.outputPurposes[snapshot.settings.subtitle_format]}
           </p>
+          <FormatLimit format={snapshot.settings.subtitle_format} />
         </div>
       </div>
       <section
@@ -356,7 +373,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
       {missing.length === 0 ? null : (
         <Alert>
           {format(messages.readinessMissing, {
-            roles: new Intl.ListFormat(languageFor(snapshot.locale).tag, { type: "conjunction" }).format(
+            roles: new Intl.ListFormat(languageFor(uiLocale(snapshot)).tag, { type: "conjunction" }).format(
               missing,
             ),
           })}

@@ -5,6 +5,13 @@ export const deMessages: Messages = {
   appName: "Transcribe Captions",
   tabJobs: "Transkribieren",
   tabStyle: "Aussehen und Position der Untertitel",
+  tabSettings: "Einstellungen",
+  uiLanguageLabel: "Sprache der Oberfläche",
+  uiLanguageSystem: "Wie das System",
+  uiThemeLabel: "Darstellung",
+  uiThemeSystem: "Wie das System",
+  uiThemeLight: "Hell",
+  uiThemeDark: "Dunkel",
   tabHelp: "Anleitung",
   tabModels: "Modelle",
   noticeSpeakersOnCpu:
@@ -25,6 +32,8 @@ export const deMessages: Messages = {
   speakerCountHelpLabel: "Warum die Anzahl der Sprecher angeben?",
   speakerCountHelp:
     "Die Sprecherfarben hängen davon ab, dass Stimmen unterschieden werden. Mit der Anzahl verschmelzen ähnliche Stimmen seltener, und eine Stimme wird seltener aufgeteilt. Bei 1 Sprecher entfällt die Sprechertrennung; das geht schneller und braucht kein Sprechermodell.",
+  speakerCountOnlyOne:
+    "Ohne ein Nemotron-3.5-Modell geht nur 1 Sprecher. Lade unter „{tabModels}“ eines, dann kannst du mehr wählen.",
   profilesHeading: "Profile",
   profilesHint:
     "Aussehen und Position der Untertitel unter einem Namen speichern und später wiederherstellen. Modelle und die gesprochene Sprache gehören nicht zum Profil.",
@@ -97,6 +106,7 @@ export const deMessages: Messages = {
   jobRemainingUnderMinute: "Noch weniger als eine Minute",
   stepStates: { done: "fertig", current: "läuft", pending: "wartet" },
   outputPurposes: {
+    drt: "Text+-Untertitel für DaVinci Resolve mit Farben, Konturen, äußeren Rändern und Schatten",
     ttml: "Gestaltete Untertitel (Farbe, Kontur, Position)",
     srt: "Untertitel mit Wörtern und Zeiten (Farben vielleicht nicht sichtbar, keine Ränder und Positionen)",
     fcpxml: "Timeline mit Titeln",
@@ -132,9 +142,7 @@ export const deMessages: Messages = {
     "Die Größen passen sich automatisch der Auflösung jedes Videos an. Die Werte sind Anteile am Video.",
   fontSize: "Schriftgröße (Prozent der kurzen Kante)",
   captionWidth: "Längste Zeile (Prozent der Breite)",
-  outlineWidth: "Konturstärke (Prozent der Schrift)",
   captionLineHeight: "Zeilenabstand (Vielfaches der Textgröße)",
-  rimWidth: "Schwarzer Rand außerhalb der Kontur (Prozent des Texts)",
   unknownSpeaker: "Unbekannter Sprecher",
   contrastWarning:
     "{name}: Der Kontrast zwischen Füllung und Kontur beträgt {ratio}:1 und liegt unter dem WCAG-AA-Mindestwert von 4,5:1. Wähle Farben mit größerem Helligkeitsunterschied.",
@@ -148,16 +156,47 @@ export const deMessages: Messages = {
   previewUhd: "4K",
   speakersHeading: "Sprecherfarben (bis zu {count} Sprecher)",
   speakersHint:
-    "Jeder Sprecher erhält automatisch eine Füll- und eine Konturfarbe. Hier kannst du sie ändern.",
+    "Wähle einen Sprecher, um seine Farben und Stärken zu ändern. Die Vorschau zeigt seine Untertitel. Stärke und Position sind Prozentwerte der Schriftgröße.",
   speakerName: "Sprecher {number}",
+  colorColumn: "Farbe",
+  fillWidth: "Stärke der Füllung (Prozent der Schriftgröße)",
+  outlineWidth: "Stärke der Kontur (Prozent der Schriftgröße)",
+  rimWidth: "Stärke des äußeren Rands (Prozent der Schriftgröße)",
+  layerWidth: "Stärke (Prozent der Schriftgröße)",
+  colorTransparent: "Transparent",
+  colorCustom: "Eigene Farbe",
+  colorNames: {
+    white: "Weiß",
+    black: "Schwarz",
+    red: "Rot",
+    orange: "Orange",
+    yellow: "Gelb",
+    green: "Grün",
+    blue: "Blau",
+    purple: "Lila",
+  },
   fillLabel: "Füllung",
   outlineLabel: "Kontur",
+  rimLabel: "Äußerer Rand",
+  formatLimits: {
+    fcpxml: "FCPXML zeigt keinen Schatten. Wähle dafür DRT.",
+    ttml: "TTML zeigt weder äußeren Rand noch Schatten. Wähle dafür DRT.",
+    srt: "SRT behält nur die Textfarbe, ohne Kontur, äußeren Rand und Schatten. Wähle dafür DRT.",
+  },
+  shadowLabel: "Schatten",
+  shadowColor: "Schattenfarbe",
+  shadowX: "Schatten links/rechts (Prozent der Schriftgröße)",
+  shadowXShort: "Schatten links/rechts",
+  shadowY: "Schatten oben/unten (Prozent der Schriftgröße; minus ist unten)",
+  shadowYShort: "Schatten oben/unten",
+  shadowBlur: "Schattenunschärfe (0 bis 50)",
+  shadowBlurShort: "Schattenunschärfe",
   addSpeaker: "Sprecher hinzufügen",
   removeSpeaker: "Sprecher entfernen",
   resetPalette: "Ursprüngliche Farben wiederherstellen",
   modelsHeading: "Modelle",
   noRecommendedSpeakerModel:
-    "Für diesen Computer wird kein Modell zur Sprechertrennung empfohlen. Stelle die Anzahl der Sprecher auf 1, oder lade aus der Liste unten ein kleines Modell und wähle es aus.",
+    "Für diesen Computer wird kein Nemotron-3.5-Modell empfohlen. Untertitel für 1 Sprecher kannst du trotzdem machen.",
   modelsHint:
     "Die für diesen Computer geeigneten Modelle sind als empfohlen markiert. Bereits heruntergeladene Modelle werden gefunden und wiederverwendet.",
   addModelFolder: "Ordner mit vorhandenen Modellen hinzufügen",
@@ -183,13 +222,12 @@ export const deMessages: Messages = {
       "Die Länge dieses Videos konnte nicht gelesen werden. Die Datei ist möglicherweise beschädigt.",
     no_words: "Im Audio wurden keine Wörter gefunden.",
     model_missing: "{model} ist nicht installiert. Lade es unter „Modelle“ herunter.",
-    no_model_for_role:
-      "Für {role} ist kein Modell installiert. Stelle die Anzahl der Sprecher auf 1, oder lade unter Modelle ein kleines Modell und wähle es aus.",
+    no_model_for_role: "Für {role} ist kein Modell installiert. Lade eines unter Modelle.",
     needs_nvidia: "{model} benötigt eine NVIDIA GPU. Wähle unter „Modelle“ ein anderes Modell.",
     needs_memory:
       "{model} benötigt {required} GB Arbeitsspeicher; dieser Computer hat {available} GB. Wähle ein kleineres Modell.",
     too_long_for_model:
-      "{model} verarbeitet Aufnahmen bis {limit} Minuten. Dieses Video ist länger. Wähle unter Modelle Nemotron 3 Diarization.",
+      "{model} verarbeitet Aufnahmen bis {limit} Minuten. Dieses Video ist länger. Stelle die Anzahl der Sprecher auf 1.",
     transcript_missing:
       "Neben {file} liegt keine Transkription, daher kann die Datei nicht neu geschrieben werden. Lege die gleichnamige .transcript.json-Datei in denselben Ordner.",
     profile_exists:
@@ -200,7 +238,7 @@ export const deMessages: Messages = {
     models_missing:
       "Die Videos wurden nicht hinzugefügt, weil für Folgendes kein Modell verfügbar ist: {roles}. Lade sie unter Modelle herunter oder füge einen Ordner hinzu, der sie enthält.",
     no_supported_files:
-      "Diese Datei geht nicht. Wähle ein Video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) oder eine Untertiteldatei (.fcpxml .srt .ttml .transcript.json).",
+      "Diese Datei geht nicht. Wähle ein Video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) oder eine Untertiteldatei (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
       "{file} lässt sich nicht als Profil lesen. Wähle eine Datei, die diese App exportiert hat.",
     internal: "{detail}",
@@ -217,8 +255,6 @@ export const deMessages: Messages = {
     "nemotron-3.5-transcribe-q2l": "Sprechertrennung. Für Macs mit 24 GB.",
     "nemotron-3.5-transcribe-q8":
       "Sprechertrennung. Höchste Qualität, für Macs mit 64 GB und GPUs mit 48 GB.",
-    "nemotron-3-diarization":
-      "Nur Sprechertrennung, 107 MB. Bis zu 8 Sprecher; läuft mit wenig Arbeitsspeicher.",
     yunet: "Echte Gesichter. Im Lieferumfang der App; liefert auf Mac und Windows dasselbe Ergebnis.",
     "avatar-face-yolo":
       "Avatar-Gesichter. Funktioniert, sobald die exportierte ONNX-Datei in einem Modellordner liegt.",
@@ -287,13 +323,14 @@ export const deMessages: Messages = {
             steps: [
               "Öffne den Tab „{tabJobs}“.",
               "„{speakerCount}“ steht am Anfang auf 1. Sprechen mehr Menschen, wähle ihre Anzahl. Bist du nicht sicher, wähle „{speakerCountAuto}“.",
-              "Wähle bei „{subtitleFormat}“ die Dateiart. Am Anfang steht dort FCPXML. Darunter steht, wofür sie gut ist.",
+              "Wähle bei „{subtitleFormat}“ die Dateiart. Am Anfang steht dort DRT. Darunter steht, wofür sie gut ist.",
               "Ziehe das Video in das Feld und lass es los. Ziehen heißt: gedrückt halten und bewegen. Du kannst auch „{pickVideos}“ drücken.",
             ],
             notes: [
               "Das „?“ neben der Anzahl erklärt, warum sie hilft.",
               "Spricht nur eine Person, lass 1 stehen. Das geht schneller.",
-              "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
+              "Andere Anzahlen kannst du wählen, sobald ein Nemotron-3.5-Modell auf diesem Computer ist. Du holst es unter „{tabModels}“.",
+              "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .drt .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
               "Mehrere Videos werden eines nach dem anderen bearbeitet.",
               "Beim ersten Mal bringt die App außerdem ein Modell in eine Form, die sie nutzen kann.",
               "Stimmt die Sprache der Untertitel nicht, wähle sie im Tab „{tabStyle}“ bei „{speechLanguage}“.",
@@ -316,6 +353,7 @@ export const deMessages: Messages = {
               "Im Ordner des Videos erscheinen zwei Dateien: die Untertiteldatei in der gewählten Art und eine .transcript.json-Datei. Ältere Dateien bleiben. Ist der Name schon vergeben, bekommen die neuen Dateien ein -2 im Namen.",
             steps: [],
             notes: [
+              ".drt: Text+-Untertitel für DaVinci Resolve mit Farben, Konturen, äußeren Rändern und Schatten.",
               ".fcpxml: Untertitel und Video zusammen, für Videoschnittprogramme.",
               ".ttml: Untertitel mit Farben und Positionen.",
               ".srt: Untertitel mit Wörtern und Zeiten. Farben werden vielleicht nicht gezeigt. Ränder und Positionen fehlen.",
@@ -328,9 +366,26 @@ export const deMessages: Messages = {
         heading: "Im Videoschnittprogramm öffnen",
         parts: [
           {
+            heading: "In DaVinci Resolve holen",
+            intro:
+              "Eine .drt-Datei holt die Untertitel als Text+-Clips, mit Farben, Konturen, äußeren Rändern und Schatten.",
+            steps: [
+              "Öffne ein Projekt in DaVinci Resolve.",
+              "Wähle im Menü File > Import > Timeline...",
+              "Wähle die .drt-Datei, die die App gemacht hat.",
+              "Drücke in der Rückfrage Import.",
+              "Die Untertitel kommen als Text+-Clips. Wähle einen Clip aus. Im Inspector änderst du unter Text die Wörter und unter Shading die Farben und Ränder.",
+            ],
+            notes: [
+              "Die Nummern von Select Element: 1 ist die Füllung, 2 die Kontur, 4 der äußere Rand, 3 der Schatten, 5 die Stärke der Füllung.",
+              "Bei einem neuen Projekt kann „Automatically set project setting“ an bleiben. Fügst du sie zu einem Projekt hinzu, an dem du arbeitest, schalte es aus, damit die Auflösung gleich bleibt.",
+              "Verschiebe die Videodatei nicht.",
+            ],
+          },
+          {
             heading: "Eine FCPXML-Datei holen",
             intro:
-              "Eine FCPXML-Datei holt Video und Untertitel auf einmal, mit Farben, Rändern und Positionen. Darum ist sie am Anfang eingestellt.",
+              "Eine FCPXML-Datei holt Video und Untertitel auf einmal, mit Farben, Rändern und Positionen.",
             steps: [
               "Öffne ein Projekt in deinem Videoschnittprogramm. Ein Projekt enthält deine ganze Schnittarbeit.",
               "Hole die Timeline über das Menü (zum Beispiel File > Import > Timeline).",
@@ -363,8 +418,8 @@ export const deMessages: Messages = {
             steps: [
               "Öffne den Tab „{tabStyle}“.",
               "Wähle bei „{positionHeading}“: „{anchorFaceAbove}“, „{anchorFaceBelow}“, „{anchorVideoTop}“ oder „{anchorVideoBottom}“.",
-              "Stelle mit den Reglern Textgröße und Randbreite ein. Ein Regler ist ein Griff, den du nach links und rechts schiebst. Du kannst auch eine Zahl eintippen.",
-              "Wähle für jede Person die Textfarbe und die Randfarbe.",
+              "Stelle mit dem Schieberegler die Textgröße ein. Ein Schieberegler ist ein Griff, den du nach links und rechts bewegst. Du kannst auch eine Zahl eingeben.",
+              "Wähle einen Sprecher und stelle Füllung, Kontur, äußeren Rand und Schatten ein. Drücke ein Farbquadrat, um eine Farbe zu wählen. „Transparent“ entfernt den äußeren Rand oder den Schatten.",
             ],
             notes: [
               "Die Vorschau steht auf einem breiten Bildschirm rechts und auf einem schmalen oben. Sie bleibt beim Scrollen sichtbar.",
@@ -433,7 +488,7 @@ export const deMessages: Messages = {
             steps: [
               "Lade das gewünschte Profil. Ist keines geladen, gelten die aktuellen Einstellungen.",
               "Öffne den Tab „{tabJobs}“.",
-              "Ziehe eine .fcpxml-, .srt-, .ttml- oder .transcript.json-Datei in das Feld und lass sie los. Du kannst auch „{pickSubtitles}“ drücken.",
+              "Ziehe eine .drt-, .fcpxml-, .srt-, .ttml- oder .transcript.json-Datei in das Feld und lass sie los. Du kannst auch „{pickSubtitles}“ drücken.",
               "Die Liste unter dem Feld zeigt Fortschritt und Ergebnis.",
             ],
             notes: [
@@ -443,6 +498,22 @@ export const deMessages: Messages = {
               "Die .transcript.json-Datei mit demselben Namen muss im selben Ordner liegen.",
               "Nutzt du ein Profil, werden Änderungen nicht verwendet, die du nicht darin gespeichert hast.",
             ],
+          },
+        ],
+      },
+      settings: {
+        heading: "Sprache und Darstellung ändern",
+        parts: [
+          {
+            heading: "Die Einstellungen",
+            intro:
+              "Der Tab „{tabSettings}“ zeigt die Version der App. Deine Auswahl bleibt für das nächste Mal.",
+            steps: [
+              "Öffne den Tab „{tabSettings}“.",
+              "Wähle bei „{uiLanguageLabel}“ eine Sprache. Der Bildschirm ändert sich sofort.",
+              "Wähle bei „{uiThemeLabel}“ „{uiThemeLight}“ oder „{uiThemeDark}“. „{uiThemeSystem}“ folgt deinem Computer.",
+            ],
+            notes: [],
           },
         ],
       },
@@ -460,12 +531,13 @@ export const deMessages: Messages = {
             notes: [],
           },
           {
-            heading: "Es fehlt ein Modell zum Unterscheiden der Sprecher",
-            intro: "Für manche Computer gibt es kein empfohlenes Modell. Mache eines von beiden.",
+            heading: "Du kannst die Anzahl der Sprecher nicht wählen",
+            intro:
+              "Dafür brauchst du ein Nemotron-3.5-Modell. Ohne es macht die App Untertitel für 1 Sprecher.",
             steps: [],
             notes: [
-              "Spricht nur eine Person im Video, wähle bei „{speakerCount}“ die 1. Dieses Modell brauchst du dann nicht.",
-              "Lade im Tab „{tabModels}“ ein kleines Modell und drücke seinen Knopf zum Verwenden.",
+              "Passt ein Nemotron-3.5-Modell zu diesem Computer, lade es im Tab „{tabModels}“.",
+              "Passt keines, kannst du trotzdem Untertitel für 1 Sprecher machen.",
             ],
           },
           {
@@ -499,10 +571,10 @@ export const deMessages: Messages = {
           {
             heading: "Das Videoschnittprogramm findet das Video nicht",
             intro:
-              "In einer FCPXML-Datei stehen Ort und Name des Videos. Verschiebst du das Video oder benennst es um, findet das Schnittprogramm es nicht.",
+              "In einer .drt/FCPXML-Datei stehen Ort und Name des Videos. Verschiebst du das Video oder benennst es um, findet das Schnittprogramm es nicht.",
             steps: [
               "Lege das Video zurück an seinen alten Ort, mit seinem alten Namen.",
-              "Öffne die .fcpxml-Datei noch einmal.",
+              "Öffne die .drt/.fcpxml-Datei noch einmal.",
             ],
             notes: [],
           },
@@ -510,6 +582,13 @@ export const deMessages: Messages = {
       },
     },
     imageFolder: "de",
+    resolveFigures: {
+      menu: "Wähle File, dann Import, dann Timeline. 1 ist File, 2 Import, 3 Timeline.",
+      dialog: "Die Rückfrage Import Timeline. 1 ist Automatically set project setting, 2 der Knopf Import.",
+      timeline: "Die Timeline nach dem Import. 1 sind die Text+-Clips auf V2.",
+      text: "Der Inspector mit einem gewählten Clip. 1 ist der Tab Text, 2 das Feld für die Wörter.",
+      shading: "Der Tab Shading im Inspector. 1 ist Shading, 2 sind die Nummern von Select Element.",
+    },
     images: {
       models: "Der Tab Modelle. 1 ist der Tab, 2 der Knopf zum Herunterladen, 3 der Balken jedes Modells.",
       transcribe:

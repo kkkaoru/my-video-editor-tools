@@ -26,7 +26,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --background: #0a0a0a;
     --foreground: #fafafa;
     --card: #171717;
@@ -46,6 +46,33 @@
     --ring: #fafafa;
     --page: #0a0a0a;
   }
+}
+
+/* The setting overrides the system: the same values as above, chosen by the app. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #171717;
+  --card-foreground: #fafafa;
+  --popover: #171717;
+  --popover-foreground: #fafafa;
+  --primary: #e5e5e5;
+  --primary-hover: #d0d0d0;
+  --primary-foreground: #171717;
+  --muted: #262626;
+  --muted-foreground: #c8c8c8;
+  --accent: #333333;
+  --accent-foreground: #fafafa;
+  --destructive: #ffb0a8;
+  --success: #86e3ad;
+  --border: #7c7c7c;
+  --ring: #fafafa;
+  --page: #0a0a0a;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 @theme inline {

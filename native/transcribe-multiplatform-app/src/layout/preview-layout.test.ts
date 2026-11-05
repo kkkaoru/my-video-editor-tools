@@ -4,11 +4,34 @@ import type { Anchor, Settings } from "../backend/types.ts";
 import { metricsFor, type PreviewLayout, previewLayout, wrapText } from "./preview-layout.ts";
 
 const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Settings => ({
-  palette: [],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  palette: [
+    {
+      fill: "#FFFFFF",
+      fill_width: 0,
+      outline: "#000000",
+      outline_width: 0.1,
+      rim: "#000000",
+      rim_width: 0.034,
+      shadow: null,
+      shadow_x: 0.03,
+      shadow_y: -0.03,
+      shadow_blur: 5,
+    },
+  ],
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 0,
   safe_right_percent: 0,
@@ -22,10 +45,11 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   face_model: "c",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 });
 
 it("derives the metrics from the short edge and the width", () => {
@@ -34,7 +58,6 @@ it("derives the metrics from the short edge and the width", () => {
     settingsWith("video_top", 0, 0),
   );
   expect(metrics.fontPx).toBe(54);
-  expect(metrics.outlinePx).toBeCloseTo(5.4);
   expect(metrics.maxLinePx).toBe(1509);
 });
 
@@ -44,7 +67,6 @@ it("keeps the metrics at their minimums on a tiny frame", () => {
     settingsWith("video_top", 0, 0),
   );
   expect(metrics.fontPx).toBe(1);
-  expect(metrics.outlinePx).toBe(1);
   expect(metrics.maxLinePx).toBe(1);
 });
 
@@ -300,19 +322,85 @@ it("scales a landscape frame by its height too", () => {
   expect(layout.renderedFontPx).toBeCloseTo(52.596, 3);
 });
 
-it("draws the outline in frame pixels, whatever the frame's size", () => {
-  const small: PreviewLayout = previewLayout(
-    "あ",
-    { width: 1280, height: 720 },
-    settingsWith("video_top", 0, 0),
-  );
-  const large: PreviewLayout = previewLayout(
-    "あ",
-    { width: 3840, height: 2160 },
-    settingsWith("video_top", 0, 0),
-  );
-  expect([small.outlinePx, small.rimPx]).toStrictEqual([10, 3.4000000000000004]);
-  expect([large.outlinePx, large.rimPx]).toStrictEqual([10, 3.4000000000000004]);
+it("draws the strokes in frame pixels, whatever the frame's size", () => {
+  expect(
+    previewLayout("あ", { width: 1280, height: 720 }, settingsWith("video_top", 0, 0)).strokeUnitPx,
+  ).toBe(100);
+  expect(
+    previewLayout("あ", { width: 3840, height: 2160 }, settingsWith("video_top", 0, 0)).strokeUnitPx,
+  ).toBe(100);
+});
+
+it("takes every drawn layer of the first speaker off the line width", () => {
+  const settings: Settings = {
+    ...settingsWith("video_top", 0, 0),
+    palette: [
+      {
+        fill: "#FFFFFF",
+        fill_width: 0.01,
+        outline: "#000000",
+        outline_width: 0.1,
+        rim: "#000000",
+        rim_width: 0.02,
+        shadow: null,
+        shadow_x: 0.03,
+        shadow_y: -0.03,
+        shadow_blur: 5,
+      },
+    ],
+  };
+  expect(metricsFor({ width: 1000, height: 1000 }, settings).maxLinePx).toBe(774);
+});
+
+it("does not count a transparent outer edge", () => {
+  const settings: Settings = {
+    ...settingsWith("video_top", 0, 0),
+    palette: [
+      {
+        fill: "#FFFFFF",
+        fill_width: 0,
+        outline: "#000000",
+        outline_width: 0.1,
+        rim: null,
+        rim_width: 0.2,
+        shadow: null,
+        shadow_x: 0.03,
+        shadow_y: -0.03,
+        shadow_blur: 5,
+      },
+    ],
+  };
+  expect(metricsFor({ width: 1000, height: 1000 }, settings).maxLinePx).toBe(780);
+});
+
+it("takes the widest edge of all speakers off the line width, the unknown speaker's too", () => {
+  const speaker: Settings["unassigned"] = {
+    fill: "#FFFFFF",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.25,
+    rim: null,
+    rim_width: 0,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  };
+  const base: Settings = settingsWith("video_top", 0, 0);
+  expect(
+    metricsFor({ width: 1000, height: 1000 }, { ...base, palette: [...base.palette, speaker] }).maxLinePx,
+  ).toBe(750);
+  expect(metricsFor({ width: 1000, height: 1000 }, { ...base, unassigned: speaker }).maxLinePx).toBe(750);
+});
+
+it("keeps at least one pixel of edge on a tiny text", () => {
+  const base: Settings = settingsWith("video_top", 0, 0);
+  expect(
+    metricsFor(
+      { width: 1000, height: 1000 },
+      { ...base, font_ratio: 0.002, palette: [], unassigned: { ...base.unassigned, outline_width: 0.01 } },
+    ).maxLinePx,
+  ).toBe(700);
 });
 
 it("keeps a sokuon with the kana after it", () => {

@@ -35,6 +35,26 @@ export const languageFor = (locale: string): Language =>
     ? TRADITIONAL
     : (LANGUAGES.get(locale.split(/[-_]/)[0].toLowerCase()) ?? FALLBACK);
 
+const WORD_JOINER: string = "\u2060";
+const BREAKS_INSIDE_WORDS: RegExp = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]/u;
+const PARTICLE_START: RegExp = /^\p{sc=Hiragana}/u;
+const SENTENCE_MARK_END: RegExp = /[、。！？]$/u;
+
+/** Browsers wrap Japanese, Chinese and Korean between any two characters; this keeps "モデル" and "選べます" on one line. */
+export const keepWordsWhole = (text: string, tag: string): string =>
+  Array.from(new Intl.Segmenter(tag, { granularity: "word" }).segment(text))
+    .map(({ segment, isWordLike }, index, all): string => {
+      const word =
+        isWordLike === true && BREAKS_INSIDE_WORDS.test(segment)
+          ? Array.from(segment).join(WORD_JOINER)
+          : segment;
+      const next = all[index + 1]?.segment ?? "";
+      return PARTICLE_START.test(next) && !SENTENCE_MARK_END.test(segment) && segment.trim() !== ""
+        ? word + WORD_JOINER
+        : word;
+    })
+    .join("");
+
 export const ALL_LANGUAGE_MESSAGES: Messages[] = [
   enMessages,
   jaMessages,

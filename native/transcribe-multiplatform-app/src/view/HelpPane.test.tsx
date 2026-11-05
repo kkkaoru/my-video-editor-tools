@@ -6,7 +6,7 @@ import { enMessages } from "../i18n/locale-en.ts";
 import { jaMessages } from "../i18n/locale-ja.ts";
 import { format, type HelpPart, type HelpSection, type Messages } from "../i18n/messages.ts";
 import { MessagesContext } from "../i18n/use-messages.ts";
-import { HelpPane, helpLabels } from "./HelpPane.tsx";
+import { HelpPane, helpLabels, ResolveFigureList } from "./HelpPane.tsx";
 
 const PLACEHOLDER: RegExp = /\{\w+\}/;
 const FILE_NAME: RegExp = /Transcribe-Captions-[\w.-]+/g;
@@ -49,14 +49,13 @@ it("explains the words a beginner does not know the first time they appear in Ja
   expect(jaMessages.help.sections.start.parts[1]?.intro).toBe(
     "モデルは、文字起こしに使うデータです。文字起こしは、話している言葉を文字にすることです。はじめに一度だけ入れます。",
   );
-  expect(jaMessages.help.sections.transcribe.parts[2]?.notes[0]).toBe(
+  expect(jaMessages.help.sections.transcribe.parts[2]?.notes[1]).toBe(
     ".fcpxml: 動画編集ソフトで読める、字幕入りのファイルです。",
   );
 });
 
-it("opens with the version, then the six topics as second-level headings", () => {
-  const { container } = render(<HelpPane version="1.2.3" />);
-  expect(container.querySelector("p")?.textContent).toBe("Version 1.2.3");
+it("has the seven topics as second-level headings", () => {
+  render(<HelpPane />);
   expect(
     screen
       .getAllByRole("heading", { level: 2 })
@@ -67,13 +66,14 @@ it("opens with the version, then the six topics as second-level headings", () =>
     "Open the subtitles in your video editor",
     "Change how subtitles look and where they sit",
     "Give finished subtitles a new look",
+    "Change the language and the appearance",
     "If something goes wrong",
   ]);
   expect(screen.getByRole("heading", { level: 3, name: "Bring in an FCPXML file" }).tagName).toBe("H3");
 });
 
 it("numbers the steps and quotes the real button names", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   const steps: HTMLElement | undefined = screen
     .getAllByRole("list")
     .find((list: HTMLElement): boolean => list.tagName === "OL");
@@ -98,7 +98,7 @@ it("numbers the steps and quotes the real button names", () => {
 });
 
 it("gives the import path without naming any editor", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   expect(
     screen.getByText("Bring in the timeline from the menu (for example, File > Import > Timeline).").tagName,
   ).toBe("LI");
@@ -107,10 +107,9 @@ it("gives the import path without naming any editor", () => {
 it("draws no empty lists for a topic with only a list of notes or steps", () => {
   render(
     <MessagesContext.Provider value={jaMessages}>
-      <HelpPane version="1.2.3" />
+      <HelpPane />
     </MessagesContext.Provider>,
   );
-  expect(screen.getByText("バージョン 1.2.3").tagName).toBe("P");
   expect(
     screen.getAllByRole("list").filter((list: HTMLElement): boolean => list.children.length === 0).length,
   ).toBe(0);
@@ -125,12 +124,12 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 4/6 0/4 0/4 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 0/2 3/2 3/3 2/0"]),
+    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/0 0/2 3/2 3/3 2/0"]),
   );
 });
 
 it("quotes the place choices as the style tab shows them", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   expect(
     screen.getByText(
       "Under “Caption position”, choose “Above the face”, “Below the face”, “Top of the video” or “Bottom of the video”.",
@@ -139,7 +138,7 @@ it("quotes the place choices as the style tab shows them", () => {
 });
 
 it("keeps the opening text within the readable line length", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   expect(
     screen.getByText(
       "This app turns the words spoken in a video into subtitles, with a different colour for each person. You can use the subtitles in video editing software.",
@@ -148,7 +147,7 @@ it("keeps the opening text within the readable line length", () => {
 });
 
 it("says the write-again button keeps the old files", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   expect(
     screen.getByText(
       "The write-again button next to a video's name in the list makes new files with a different name. The old files are kept.",
@@ -159,7 +158,7 @@ it("says the write-again button keeps the old files", () => {
 it("shows each annotated picture lazily, sized, in this language, and described", () => {
   render(
     <MessagesContext.Provider value={jaMessages}>
-      <HelpPane version="1.2.3" />
+      <HelpPane />
     </MessagesContext.Provider>,
   );
   const picture: HTMLElement = screen.getByAltText(
@@ -172,7 +171,7 @@ it("shows each annotated picture lazily, sized, in this language, and described"
 });
 
 it("has a picture for each topic with numbered marks", () => {
-  render(<HelpPane version="1.2.3" />);
+  render(<HelpPane />);
   expect(
     screen.getAllByRole("img").map((picture: HTMLElement): string | null => picture.getAttribute("src")),
   ).toStrictEqual([
@@ -192,18 +191,42 @@ it("says what a picture's marks point at, by the step numbers of the text", () =
   );
 });
 
-it("gives both ways forward when no speaker model is recommended", () => {
-  render(<HelpPane version="1.2.3" />);
+it("explains why the number of speakers cannot be chosen", () => {
+  render(<HelpPane />);
   expect(
-    screen.getByRole("heading", { level: 3, name: "It says there is no model for telling speakers apart" })
-      .tagName,
+    screen.getByRole("heading", { level: 3, name: "You cannot choose the number of speakers" }).tagName,
   ).toBe("H3");
   expect(
-    screen.getByText(
-      "If one person speaks in the video, choose 1 in “Number of speakers”. No model for this is needed.",
-    ).tagName,
+    screen.getByText("If a Nemotron 3.5 model fits this computer, download it on the “Models” tab.").tagName,
   ).toBe("LI");
-  expect(
-    screen.getByText("On the “Models” tab, download a small model, then press its use button.").tagName,
-  ).toBe("LI");
+  expect(screen.getByText("If none fits, you can still make subtitles for 1 speaker.").tagName).toBe("LI");
+});
+
+it("captions a DaVinci Resolve picture in the language, from the one folder", () => {
+  const { container } = render(<ResolveFigureList names={["menu"]} />);
+  expect(container.querySelector("img")?.getAttribute("src")).toBe("/help/resolve/menu.webp");
+  expect(container.querySelector("figcaption")?.textContent).toBe(
+    "Choose File, then Import, then Timeline. 1 is File, 2 is Import, 3 is Timeline.",
+  );
+});
+
+it("shows each DaVinci Resolve picture under the step it belongs to", () => {
+  const { container } = render(<HelpPane />);
+  const stepsOfFigures = Array.from(
+    container.querySelectorAll("figure img"),
+    (image: Element): string | null => image.getAttribute("src"),
+  );
+  expect(stepsOfFigures).toStrictEqual([
+    "/help/resolve/menu.webp",
+    "/help/resolve/dialog.webp",
+    "/help/resolve/timeline.webp",
+    "/help/resolve/text.webp",
+    "/help/resolve/shading.webp",
+  ]);
+  expect(container.querySelector('img[src="/help/resolve/text.webp"]')?.className.includes("max-w-sm")).toBe(
+    true,
+  );
+  expect(container.querySelector('img[src="/help/resolve/menu.webp"]')?.className.includes("max-w-sm")).toBe(
+    false,
+  );
 });

@@ -13,6 +13,9 @@ import type {
   Snapshot,
 } from "../backend/types.ts";
 
+const SYSTEM_LANGUAGE: string = "";
+const SPEAKER_CHOICE_MODEL_PREFIX: string = "nemotron-3.5-transcribe-";
+
 interface JobBase {
   id: number;
   path: string;
@@ -142,12 +145,30 @@ export const withModels = (state: AppState, models: ModelStatus[]): AppState => 
   loadError: null,
 });
 
-/** One known speaker skips speaker separation, so it needs no model for it. */
-export const missingModelRoles = ({ models, settings }: Snapshot): Role[] =>
-  (settings.speaker_count === 1
-    ? (["transcribe"] satisfies Role[])
-    : (["transcribe", "diarize"] satisfies Role[])
-  ).filter(
+/** A save answers with the models and the language it now means; newer settings on screen stay. */
+export const withSaveAnswer = (state: AppState, { models, locale }: Snapshot): AppState => {
+  const updated: AppState = withModels(state, models);
+  return { ...updated, snapshot: { ...updated.snapshot, locale } };
+};
+
+/** The language to show: the one chosen in the settings, or the system's. */
+export const uiLocale = ({ locale, settings }: Pick<Snapshot, "locale" | "settings">): string =>
+  settings.ui_language === SYSTEM_LANGUAGE ? locale : settings.ui_language;
+
+/** Only these models take a number of speakers; without one, every job is for one speaker. */
+export const canChooseSpeakerCount = ({ models }: Pick<Snapshot, "models">): boolean =>
+  models.some(
+    ({ id, found_at: foundAt, blocked }: ModelStatus): boolean =>
+      id.startsWith(SPEAKER_CHOICE_MODEL_PREFIX) && foundAt !== null && blocked === null,
+  );
+
+/** What a job runs with; the saved number stays, so it comes back once such a model is there. */
+export const effectiveSpeakerCount = (snapshot: Pick<Snapshot, "models" | "settings">): number =>
+  canChooseSpeakerCount(snapshot) ? snapshot.settings.speaker_count : 1;
+
+/** Speaker separation is never required: without its model, a job is for one speaker. */
+export const missingModelRoles = ({ models }: Pick<Snapshot, "models">): Role[] =>
+  (["transcribe"] satisfies Role[]).filter(
     (role: Role): boolean =>
       !models.some(
         (model: ModelStatus): boolean =>
@@ -160,8 +181,6 @@ const lookFields = ({
   unassigned,
   font_family,
   font_ratio,
-  outline_ratio,
-  rim_ratio,
   line_height,
   width_ratio,
   safe_left_percent,
@@ -172,8 +191,6 @@ const lookFields = ({
   unassigned,
   font_family,
   font_ratio,
-  outline_ratio,
-  rim_ratio,
   line_height,
   width_ratio,
   safe_left_percent,

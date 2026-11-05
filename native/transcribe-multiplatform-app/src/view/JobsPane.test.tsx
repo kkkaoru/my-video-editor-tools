@@ -22,10 +22,20 @@ import {
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: { fill: "#AAAAAA", outline: "#000000" },
+  unassigned: {
+    fill: "#AAAAAA",
+    fill_width: 0,
+    outline: "#000000",
+    outline_width: 0.1,
+    rim: null,
+    rim_width: 0.034,
+    shadow: null,
+    shadow_x: 0.03,
+    shadow_y: -0.03,
+    shadow_blur: 5,
+  },
   font_family: "Sans",
   font_ratio: 0.05,
-  outline_ratio: 0.1,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -39,10 +49,11 @@ const SETTINGS: Settings = {
   face_model: "c",
   model_dirs: [],
   active_profile: "",
-  rim_ratio: 0.034,
   line_height: 1.448,
   speaker_count: 0,
   subtitle_format: "fcpxml",
+  ui_language: "",
+  ui_theme: "system",
 };
 const WHISPER: ModelStatus = {
   id: "whisper",
@@ -56,7 +67,7 @@ const WHISPER: ModelStatus = {
 };
 const DIARIZER: ModelStatus = {
   ...WHISPER,
-  id: "diarizer",
+  id: "nemotron-3.5-transcribe-iq4",
   role: "diarize",
   label: "Diarizer",
   found_at: "/d",
@@ -150,7 +161,7 @@ it("needs a present, unblocked model for each required role", () => {
       { ...READY, models: [WHISPER, { ...DIARIZER, blocked: { code: "needs_nvidia" } }] },
       enMessages,
     ),
-  ).toStrictEqual(["speaker separation"]);
+  ).toStrictEqual([]);
 });
 
 it("labels a model by id, and falls back to the id or nothing", () => {
@@ -180,7 +191,7 @@ it("names the missing roles", () => {
   const snapshot: Snapshot = { ...READY, models: [] };
   render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
   expect(screen.getByRole("alert").textContent).toBe(
-    "No model is available for: transcription and speaker separation. Download one in Models, or add a folder that already has it.",
+    "No model is available for: transcription. Download one in Models, or add a folder that already has it.",
   );
 });
 
@@ -188,7 +199,7 @@ it("names the missing roles in a POSIX locale that is not a language tag", () =>
   const snapshot: Snapshot = { ...READY, locale: "C", models: [] };
   render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
   expect(screen.getByRole("alert").textContent).toBe(
-    "No model is available for: transcription and speaker separation. Download one in Models, or add a folder that already has it.",
+    "No model is available for: transcription. Download one in Models, or add a folder that already has it.",
   );
 });
 
@@ -346,8 +357,61 @@ it("says speaker, not speakers, when a finished job found one", () => {
   expect(screen.getByRole("status").textContent).toBe("Finished: 9 captions, 1 speaker");
 });
 
+it("offers only one speaker, and says why, without a Nemotron 3.5 model", async () => {
+  const small: Snapshot = {
+    ...READY,
+    settings: { ...READY.settings, speaker_count: 0 },
+    models: [WHISPER, { ...DIARIZER, id: "other-diarizer" }],
+  };
+  render(
+    <main>
+      <JobsPane store={storeWith(small, [], false)} snapshot={small} />
+    </main>,
+  );
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker");
+  expect(
+    screen.getByText(
+      "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.",
+    ).tagName,
+  ).toBe("P");
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
+  });
+  expect(
+    screen.getAllByRole("option").map(({ textContent }: HTMLElement): string | null => textContent),
+  ).toStrictEqual(["1 speaker"]);
+});
+
+it("offers every number again once a Nemotron 3.5 model has been downloaded, with the saved one", async () => {
+  const saved: Settings = { ...READY.settings, speaker_count: 3 };
+  const before: Snapshot = { ...READY, settings: saved, models: [WHISPER] };
+  const after: Snapshot = { ...READY, settings: saved, models: [WHISPER, DIARIZER] };
+  const { rerender } = render(
+    <main>
+      <JobsPane store={storeWith(before, [], false)} snapshot={before} />
+    </main>,
+  );
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker");
+  rerender(
+    <main>
+      <JobsPane store={storeWith(after, [], false)} snapshot={after} />
+    </main>,
+  );
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers");
+  expect(
+    screen.queryByText(
+      "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.",
+    ),
+  ).toBe(null);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
+  });
+  expect(screen.getAllByRole("option").length).toBe(9);
+});
+
 it("offers the three subtitle formats by their names", () => {
   expect(subtitleFormatOptions()).toStrictEqual([
+    { value: "drt", label: "DRT", disabled: false },
     { value: "fcpxml", label: "FCPXML", disabled: false },
     { value: "ttml", label: "TTML", disabled: false },
     { value: "srt", label: "SRT", disabled: false },
@@ -360,6 +424,20 @@ it("says what the chosen subtitle format is for", () => {
   expect(screen.getByRole("combobox", { name: "Subtitle file format" }).textContent).toBe("SRT");
   expect(
     screen.getByText("Subtitles with words and times (colours may not show; no outlines or positions)")
+      .tagName,
+  ).toBe("P");
+});
+
+it("says what a format other than DRT cannot show, and nothing for DRT", () => {
+  const ttml: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "ttml" } };
+  const { unmount } = render(<JobsPane store={storeWith(ttml, [], false)} snapshot={ttml} />);
+  expect(screen.getByText("TTML shows no outer edge or shadow. Choose DRT to use them.").tagName).toBe("P");
+  unmount();
+  const drt: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "drt" } };
+  render(<JobsPane store={storeWith(drt, [], false)} snapshot={drt} />);
+  expect(screen.queryByText("TTML shows no outer edge or shadow. Choose DRT to use them.")).toBe(null);
+  expect(
+    screen.getByText("DaVinci Resolve timeline of Text+ clips: colours, outlines, outer edges and shadows")
       .tagName,
   ).toBe("P");
 });
@@ -482,11 +560,20 @@ it("says subtitle files follow the selected profile", () => {
             name: "A",
             look: {
               palette: [],
-              unassigned: { fill: "#AAAAAA", outline: "#000000" },
+              unassigned: {
+                fill: "#AAAAAA",
+                fill_width: 0,
+                outline: "#000000",
+                outline_width: 0.1,
+                rim: null,
+                rim_width: 0.034,
+                shadow: null,
+                shadow_x: 0.03,
+                shadow_y: -0.03,
+                shadow_blur: 5,
+              },
               font_family: "Sans",
               font_ratio: 0.05,
-              outline_ratio: 0.1,
-              rim_ratio: 0.03,
               line_height: 1.4,
               width_ratio: 0.8,
               safe_left_percent: 5,
@@ -534,7 +621,7 @@ it("refuses to choose videos without their models, saying what is missing", () =
   render(<JobsPane store={store} snapshot={snapshot} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   expect(vi.mocked(open).mock.calls).toStrictEqual([]);
-  expect(failureOf(store)).toStrictEqual({ code: "models_missing", roles: ["transcribe", "diarize"] });
+  expect(failureOf(store)).toStrictEqual({ code: "models_missing", roles: ["transcribe"] });
 });
 
 it("rewrites the chosen subtitle files", async () => {
@@ -547,7 +634,7 @@ it("rewrites the chosen subtitle files", async () => {
   });
   expect(vi.mocked(open).mock.calls[0]?.[0]).toStrictEqual({
     multiple: true,
-    filters: [{ name: "Subtitle files", extensions: ["fcpxml", "srt", "ttml", "json"] }],
+    filters: [{ name: "Subtitle files", extensions: ["drt", "fcpxml", "srt", "ttml", "json"] }],
   });
 });
 

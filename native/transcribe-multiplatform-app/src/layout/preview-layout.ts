@@ -1,5 +1,5 @@
 // Runs with bun: mirrors src-tauri/src/captions.rs so the sliders preview what the files will contain.
-import type { Settings } from "../backend/types.ts";
+import type { Settings, SpeakerColor } from "../backend/types.ts";
 
 export interface FrameSize {
   width: number;
@@ -15,10 +15,10 @@ export interface FaceBox {
 
 export interface PreviewLayout {
   fontPx: number;
-  /** The size the editor shows `fontPx` at; the sizes below are drawn as they are, in frame pixels. */
+  /** The size the editor shows `fontPx` at; stroke widths are drawn in frame pixels. */
   renderedFontPx: number;
-  outlinePx: number;
-  rimPx: number;
+  /** Frame pixels per unit of a layer's width ratio. */
+  strokeUnitPx: number;
   lineHeightPx: number;
   lines: string[];
   x: number;
@@ -35,7 +35,6 @@ interface BlockSize {
 
 interface Metrics {
   fontPx: number;
-  outlinePx: number;
   maxLinePx: number;
   scale: number;
 }
@@ -104,28 +103,32 @@ const FACE_ANCHORS: ReadonlySet<string> = new Set(["face_above", "face_below"]);
 const renderedScale = ({ height }: FrameSize): number =>
   (height / RENDERED_SCALE_HEIGHT) * RENDERED_SCALE_RATIO;
 
-/** The editor draws half of `strokeWidth` in frame pixels, whatever the font size: percent of the text, as pixels. */
-const strokePx = (ratio: number): number => ratio * PERCENT;
+/** Every layer's thickness in ratios of the text size, a transparent one counting for nothing. */
+const layerReach = ({
+  fill_width: fill,
+  outline_width: outline,
+  rim,
+  rim_width: rimWidth,
+}: SpeakerColor): number => fill + outline + (rim === null ? 0 : rimWidth);
 
-const blockEdge = (fontPx: number, outlinePx: number, settings: Settings): number =>
-  strokePx(outlinePx / fontPx + settings.rim_ratio);
+/**
+ * `block_edge` with `widest_edge_ratio`: any speaker may say the line, so the widest edge, the unknown speaker's too.
+ * The editor draws half of `strokeWidth` in frame pixels, whatever the font size: percent of the text, as pixels.
+ */
+const blockEdge = (fontPx: number, { palette, unassigned }: Settings): number =>
+  (Math.max(1, fontPx * Math.max(...[...palette, unassigned].map(layerReach))) / fontPx) * PERCENT;
 
 export const metricsFor = (frame: FrameSize, settings: Settings): Metrics => {
   const { width, height } = frame;
   const fontPx: number = Math.max(1, Math.round(Math.min(width, height) * settings.font_ratio));
-  const outlinePx: number = Math.max(1, fontPx * settings.outline_ratio);
   const scale: number = renderedScale(frame);
   const usable: number =
     width *
     Math.min(settings.width_ratio, 1 - (settings.safe_left_percent + settings.safe_right_percent) / PERCENT);
   return {
     fontPx,
-    outlinePx,
     scale,
-    maxLinePx: Math.max(
-      Math.ceil(fontPx * scale),
-      Math.floor(usable - 2 * blockEdge(fontPx, outlinePx, settings)),
-    ),
+    maxLinePx: Math.max(Math.ceil(fontPx * scale), Math.floor(usable - 2 * blockEdge(fontPx, settings))),
   };
 };
 
@@ -285,12 +288,12 @@ const anchorY = (anchor: Settings["placement"]["anchor"], block: BlockSize, fram
 
 export function previewLayout(text: string, frame: FrameSize, settings: Settings): PreviewLayout {
   const metrics: Metrics = metricsFor(frame, settings);
-  const { fontPx, outlinePx, scale } = metrics;
+  const { fontPx, scale } = metrics;
   const lines: string[] = wrapText(text, metrics);
   const block: BlockSize = {
     width:
       Math.max(...lines.map((line: string): number => measureLine(line, metrics))) +
-      2 * blockEdge(fontPx, outlinePx, settings),
+      2 * blockEdge(fontPx, settings),
     height: fontPx * scale * (EM_LINE_HEIGHT + (lines.length - 1) * settings.line_height),
   };
   const { anchor, offset_x_percent: offsetX, offset_y_percent: offsetY } = settings.placement;
@@ -299,8 +302,7 @@ export function previewLayout(text: string, frame: FrameSize, settings: Settings
   return {
     fontPx,
     renderedFontPx: fontPx * scale,
-    outlinePx: strokePx(outlinePx / fontPx),
-    rimPx: strokePx(settings.rim_ratio),
+    strokeUnitPx: PERCENT,
     lineHeightPx: fontPx * settings.line_height * scale,
     lines,
     x: clampCenter({
