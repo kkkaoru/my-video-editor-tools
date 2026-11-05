@@ -13,7 +13,8 @@ A desktop app for macOS (Apple Silicon) and Windows (x64). Download it from the
 
 Each Windows download uses only its own vendor's GPU: the GeForce build never uses a Radeon, nor the reverse. Without
 that GPU it runs on the CPU, and the Transcribe tab says so because it is slower. The right build needs an up-to-date GPU
-driver, which provides Vulkan.
+driver, which provides Vulkan. If the Vulkan build of `whisper-cli` fails, the job goes on with the CPU build, which picks
+the fastest code for the processor when it starts.
 
 The builds are not notarized or code-signed with a paid certificate: on macOS open the app, then choose System Settings >
 Privacy & Security > Open Anyway; on Windows choose "More info > Run anyway" in SmartScreen.
@@ -133,6 +134,8 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
 
 Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
+
+Windows, Ryzen 5 3600 with a Radeon RX 6900 XT: v0.1.1's Vulkan `whisper-cli` contains AVX-512 and crashes on this CPU with `0xc000001d`. With that binary in place, a 30-second clip through the command line crashed once, then finished on the CPU build.
 
 Not checked: two or more real speakers, a real GeForce or Radeon GPU, TTML and SRT placed on a Resolve timeline. The bulk download, the reset and the missing-model error have tests only.
 
