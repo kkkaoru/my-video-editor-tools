@@ -11,7 +11,6 @@ work="${RUNTIME_WORK_DIR:-$app_dir/src-tauri/target-runtime}"
 NEMO_VERSION=0.3.0
 WHISPER_TAG=v1.9.5
 WHISPER_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
-WHISPER_BIN_TAG=b5454
 VOICE_MODEL=ggml-silero-v6.2.0.bin
 VOICE_MODEL_SHA256=2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
 FFMPEG_MAC_VERSION=8.0.1
@@ -49,6 +48,8 @@ voice_model_into() { # folder
 clone_whisper() { # folder
   git clone --quiet --depth 1 --branch "$WHISPER_TAG" https://github.com/ggml-org/whisper.cpp "$1"
   [ "$(git -C "$1" rev-parse HEAD)" = "$WHISPER_COMMIT" ] || { echo "whisper.cpp $WHISPER_TAG is not the pinned commit" >&2; return 1; }
+  # Token times from the text pass itself, so no second pass; see docs/issues/whisper-fixed-text-alignment.md. Also -mavxvnni for clang-cl.
+  git -C "$1" apply "$app_dir/scripts/release/whisper-cpp.patch"
 }
 
 nemo_url() { echo "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v$NEMO_VERSION/nemo-speech-$NEMO_VERSION-$1"; }
@@ -95,8 +96,52 @@ windows_whisper_vulkan() {
   rm -rf "$short"
 }
 
-# The same build from a Mac: clang-cl and the Windows SDK cargo-xwin downloaded (XWIN_CACHE_DIR) stand in for
-# MSVC, and Homebrew's headers and glslc for the Vulkan SDK.
+# One ggml-cpu-*.dll per instruction set, loaded by what the CPU has: this build is the fallback for a CPU the Vulkan build crashes on.
+WHISPER_CPU_FLAGS=(-DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON)
+
+# What whisper-cli and the voice detector load; a CMake build also leaves import libraries and other tools there.
+whisper_cpu_into_runtime() { # build-bin-folder
+  rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper/Release"
+  cp "$1"/whisper-cli.exe "$1"/whisper-vad-speech-segments.exe "$1"/whisper.dll "$1"/ggml.dll "$1"/ggml-base.dll "$1"/ggml-cpu-*.dll "$runtime/whisper/Release/"
+}
+
+windows_whisper_cpu() {
+  local short="${RUNNER_TEMP:-$work}/wc"
+  rm -rf "$short"
+  clone_whisper "$short/src"
+  cmake -S "$short/src" -B "$short/b" "${WHISPER_CPU_FLAGS[@]}" >/dev/null
+  # No --target: nothing links the ggml-cpu-*.dll, so a target list would have to name each one.
+  cmake --build "$short/b" --config Release -j 8 >"$short/build.log" ||
+    { tail -40 "$short/build.log"; return 1; }
+  whisper_cpu_into_runtime "$short/b/bin/Release"
+  rm -rf "$short"
+}
+
+# The toolchain for building from a Mac: clang-cl and the Windows SDK cargo-xwin downloaded (XWIN_CACHE_DIR).
+cross_toolchain_file() { # file
+  # cargo-xwin's toolchain clears the standard libraries; ggml reads the registry through advapi32.
+  cat >"$1" <<EOF
+include($XWIN_CACHE_DIR/cmake/clang-cl/x86_64-pc-windows-msvc-toolchain.cmake)
+string(APPEND CMAKE_EXE_LINKER_FLAGS " advapi32.lib")
+string(APPEND CMAKE_SHARED_LINKER_FLAGS " advapi32.lib")
+string(APPEND CMAKE_MODULE_LINKER_FLAGS " advapi32.lib")
+EOF
+}
+
+windows_whisper_cpu_from_mac() {
+  local short="$work/wc"
+  rm -rf "$short" && mkdir -p "$short"
+  clone_whisper "$short/src"
+  cross_toolchain_file "$short/target.cmake"
+  cmake -S "$short/src" -B "$short/b" -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$short/target.cmake" -DCMAKE_BUILD_TYPE=Release "${WHISPER_CPU_FLAGS[@]}" -DGGML_OPENMP=OFF >"$short/configure.log" 2>&1 ||
+    { tail -40 "$short/configure.log"; return 1; }
+  cmake --build "$short/b" -j 8 >"$short/build.log" ||
+    { tail -40 "$short/build.log"; return 1; }
+  whisper_cpu_into_runtime "$short/b/bin"
+  rm -rf "$short"
+}
+
+# The Vulkan build from a Mac: the same toolchain, and Homebrew's headers and glslc for the Vulkan SDK.
 # shortcut: those Homebrew versions are not pinned and OpenMP is off (ggml's own threads run instead), so this
 # differs slightly from CI's binary; pin them if a local build ever replaces CI for a tagged release.
 windows_whisper_vulkan_from_mac() {
@@ -107,11 +152,7 @@ windows_whisper_vulkan_from_mac() {
   cp -R "$brew_prefix/opt/vulkan-headers/include/." "$brew_prefix/opt/spirv-headers/include/." "$short/include/"
   fetch "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/$VULKAN_LOADER_DEF_TAG/loader/vulkan-1.def" "$VULKAN_LOADER_DEF_SHA256" "$work/vulkan-1.def"
   llvm-lib "/def:$work/vulkan-1.def" /machine:x64 "/out:$short/vulkan-1.lib" >/dev/null
-  # cargo-xwin's toolchain clears the standard libraries; ggml reads the registry through advapi32.
-  cat >"$short/target.cmake" <<EOF
-include($XWIN_CACHE_DIR/cmake/clang-cl/x86_64-pc-windows-msvc-toolchain.cmake)
-string(APPEND CMAKE_EXE_LINKER_FLAGS " advapi32.lib")
-EOF
+  cross_toolchain_file "$short/target.cmake"
   # Runs on the Mac during the build, to embed the shaders.
   cat >"$short/host.cmake" <<EOF
 set(CMAKE_C_COMPILER /usr/bin/clang)
@@ -127,13 +168,6 @@ EOF
   rm -rf "$runtime/whisper-vulkan" && mkdir -p "$runtime/whisper-vulkan"
   cp "$short/b/bin/whisper-cli.exe" "$runtime/whisper-vulkan/"
   rm -rf "$short"
-}
-
-# The archive holds every example and test of whisper.cpp; these are all whisper-cli's imports reach.
-# ggml-cpu-*.dll are loaded at run time by CPU features, so no import table lists them.
-prune_whisper_bin() { # folder
-  find "$1" -type f ! \( -name whisper-cli.exe -o -name whisper-vad-speech-segments.exe -o -name whisper.dll -o -name ggml.dll -o -name ggml-base.dll -o -name 'ggml-cpu-*.dll' \) -delete
-  [ "$(find "$1" -name '*.exe' | wc -l | tr -d ' ')" = 2 ] || { echo "whisper-bin kept unexpected executables" >&2; return 1; }
 }
 
 nemo_zip() { # sha256 asset folder
@@ -152,13 +186,12 @@ vc_runtime_into() { # folder
 windows_common() {
   if [ "$(uname -s)" = Darwin ]; then
     windows_whisper_vulkan_from_mac
+    windows_whisper_cpu_from_mac
   else
     windows_whisper_vulkan
+    windows_whisper_cpu
   fi
   nemo_zip 4ed9740e361e4653f56c3dce7d1e81883a1c8b831c1bd7d01567fff1130b5b05 windows-x86_64-cpu.zip nemo
-  fetch "https://github.com/ggml-org/whisper.cpp/releases/download/$WHISPER_BIN_TAG/whisper-bin-x64.zip" 6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb "$work/whisper.zip"
-  rm -rf "$runtime/whisper" && mkdir -p "$runtime/whisper" && unzip -q -o "$work/whisper.zip" -d "$runtime/whisper"
-  prune_whisper_bin "$runtime/whisper"
   vc_runtime_into "$runtime/whisper/Release"
   voice_model_into "$runtime/whisper/Release"
   vc_runtime_into "$runtime/whisper-vulkan"

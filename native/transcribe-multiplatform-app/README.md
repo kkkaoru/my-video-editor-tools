@@ -138,7 +138,7 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 - A real download of whisper-large-v3-turbo and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
 
-Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, the second Whisper pass on Vulkan (a failed pass falls back to coarser times).
+Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, Whisper on Vulkan (if warping fails, the job falls back to coarser times).
 
 Windows, Ryzen 5 3600 with a Radeon RX 6900 XT: v0.1.1's Vulkan `whisper-cli` contains AVX-512 and crashes on this CPU with `0xc000001d`. With that binary in place, a 30-second clip through the command line crashed once, then finished on the CPU build.
 

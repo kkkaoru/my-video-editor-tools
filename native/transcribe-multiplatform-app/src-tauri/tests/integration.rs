@@ -1021,7 +1021,7 @@ fn transcription_reports_progress_and_words() {
         &mut |fraction| seen.push(fraction),
     )
     .unwrap();
-    assert_eq!(seen, vec![0.25, 0.75]);
+    assert_eq!(seen, vec![0.5]);
     assert_eq!(words[0].text, "はい");
     assert_eq!(words[1].text, "どうも");
     assert_eq!(words.len(), 2);

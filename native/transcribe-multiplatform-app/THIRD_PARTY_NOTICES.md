@@ -5,7 +5,7 @@ Bundled in the release builds:
 | Component | Use | License |
 | --- | --- | --- |
 | [FFmpeg](https://ffmpeg.org/) (LGPL build) | audio extraction, frame sampling | LGPL-2.1-or-later |
-| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | transcription runtime (Vulkan and CPU in both Windows builds, Metal on macOS) | MIT |
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp), built with `scripts/release/whisper-cpp.patch` | transcription runtime (Vulkan and CPU in both Windows builds, Metal on macOS) | MIT |
 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | speaker separation runtime (CPU in both Windows builds, Vulkan in the Radeon build, Metal on macOS) | Apache-2.0 |
 | [Vibrato](https://github.com/daac-tools/vibrato) with MeCab IPADIC (`resources/ipadic-*`) | Japanese phrase boundaries for caption breaks | MIT/Apache-2.0; IPADIC license in `resources/ipadic-COPYING` |
 | [fontdb](https://github.com/RazrFalcon/fontdb) | listing the installed font families | MIT |

@@ -18,21 +18,17 @@ const AUTO_LANGUAGE: &str = "auto";
 const AUDIO_ARGS: [&str; 8] = ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y"];
 const MILLIS_PER_SECOND: f64 = 1000.0;
 /// Dynamic time warping over the decoder's attention gives each token a time of its own (mean
-/// error 0.22 s against 0.52 s for plain token timestamps, measured against Nemotron). whisper.cpp
-/// needs flash attention off for it, which also makes the text worse (similarity to Nemotron's
-/// 0.82 against 0.87), so one pass gives the text and a second pass only its times.
-const TOKEN_TIMING_ARGS: [&str; 3] = ["-nfa", "-dtw", "large.v3.turbo"];
+/// error 0.22 s against 0.52 s for plain token timestamps, measured against Nemotron). Stock
+/// whisper.cpp needs flash attention off for it, which makes the text worse (similarity to
+/// Nemotron's 0.82 against 0.87); the bundled build is patched to warp with flash attention on
+/// (`scripts/release/whisper-cpp.patch`), so one pass gives both.
+const TOKEN_TIMING_ARGS: [&str; 2] = ["-dtw", "large.v3.turbo"];
 /// Speech stays above about five syllables a second: a word after a pause started at most this
 /// long per beat before its end.
 const LONGEST_ONSET_SECONDS_PER_CHARACTER: f64 = 0.2;
 const KANJI_BEATS: usize = 2;
 /// Words on each side that tell how fast the speech around a word is.
 const LOCAL_RATE_WORDS: usize = 5;
-/// How far the two passes' texts may drift apart while being matched, in characters.
-const ALIGNMENT_BAND_CHARACTERS: usize = 200;
-const STEP_MATCH: u8 = 1;
-const STEP_UP: u8 = 2;
-const STEP_LEFT: u8 = 3;
 /// `t_dtw` counts in hundredths of a second.
 const DTW_TICKS_PER_SECOND: f64 = 100.0;
 const CENTISECONDS_PER_SECOND: f64 = 100.0;
@@ -40,6 +36,9 @@ const VOICE_MODEL: &str = "ggml-silero-v6.2.0.bin";
 /// A word timed by warping has only a start; it is said in at most this much per character, so the
 /// last word before a pause does not last through the pause.
 const LONGEST_SPOKEN_CHARACTER_SECONDS: f64 = 0.25;
+/// Segment bounds are coarser than warping: without this margin words piled up at a bound (24 of
+/// 130 starts over 0.2 s early against Nemotron, none with it).
+const SEGMENT_MARGIN_SECONDS: f64 = 1.0;
 const FALLBACK_FPS: (u32, u32) = (30, 1);
 const QUARTER_TURN_DEGREES: i64 = 90;
 
@@ -372,17 +371,17 @@ fn segment_bounds(segment: &Value) -> Option<(f64, f64)> {
     Some((from / MILLIS_PER_SECOND, to / MILLIS_PER_SECOND))
 }
 
-/// Warping is reliable inside its segment; a segment's first and last tokens can land seconds
-/// outside it (64 s for a token of a segment ending at 62.4 s), so they come back: the first to the
-/// segment's start, the last to just after the token before it.
+/// Warping is reliable in and just around its segment; a segment's first and last tokens can land
+/// seconds outside it (64 s for a token of a segment ending at 62.4 s), so they come back: the first
+/// to the segment's start, the last to just after the token before it.
 fn warped_start(warped: f64, bounds: Option<(f64, f64)>, previous: Option<f64>) -> f64 {
     let Some((from, to)) = bounds else {
         return warped;
     };
-    if warped < from {
+    if warped < from - SEGMENT_MARGIN_SECONDS {
         return from;
     }
-    if warped <= to {
+    if warped <= to + SEGMENT_MARGIN_SECONDS {
         return warped;
     }
     previous.map_or(to, |earlier| {
@@ -467,19 +466,15 @@ fn open_warped_words(words: &mut [Word]) {
 }
 
 /// Warped starts can step back a little; each word ends where the next starts or when its
-/// characters have been said, whichever comes first. Unwarped words keep their own end.
+/// characters have been said, whichever comes first.
 fn close_warped_words(words: &mut [Word]) {
     let mut latest = 0.0_f64;
     for word in words.iter_mut() {
-        let length = word.end - word.start;
         word.start = word.start.max(latest);
-        word.end = word.start + length.max(0.0);
+        word.end = word.start;
         latest = word.start;
     }
     for index in 0..words.len() {
-        if words[index].end > words[index].start {
-            continue;
-        }
         let characters = words[index].text.trim().chars().count() as f64;
         let said = words[index].start + characters * LONGEST_SPOKEN_CHARACTER_SECONDS;
         words[index].end = words
@@ -546,23 +541,22 @@ pub fn voice_spans(tools: &Tools, wav: &Path) -> AppResult<Vec<VoiceSpan>> {
 }
 
 /// Runs `pass` on `tools.whisper`, and on the CPU build if a GPU build exited with a failure, such
-/// as a driver that crashes or a CPU missing an instruction. Returns the program that worked.
+/// as a driver that crashes or a CPU missing an instruction.
 fn with_cpu_fallback<T>(
     tools: &Tools,
     mut pass: impl FnMut(&Path) -> AppResult<T>,
-) -> AppResult<(T, &Path)> {
+) -> AppResult<T> {
     let failure = match pass(&tools.whisper) {
-        Ok(value) => return Ok((value, &tools.whisper)),
+        Ok(value) => return Ok(value),
         Err(failure) => failure,
     };
     match (&failure, &tools.whisper_cpu) {
-        (AppError::Tool { .. }, Some(cpu)) => Ok((pass(cpu)?, cpu)),
+        (AppError::Tool { .. }, Some(cpu)) => pass(cpu),
         _ => Err(failure),
     }
 }
 
-/// Runs whisper.cpp twice: the text from its best decoding, the times from warping. The second pass
-/// uses whichever build gave the text, so a build that failed is not started again.
+/// Runs whisper.cpp once for the text and each word's warped time.
 pub fn transcribe(
     tools: &Tools,
     model: &Path,
@@ -578,147 +572,30 @@ pub fn transcribe(
         language,
         cancel,
     };
-    let (words, program) = with_cpu_fallback(tools, |program| {
-        run_whisper(program, &run, &[], &work.join("asr"), &mut |fraction| {
-            progress(fraction / 2.0);
+    let base = work.join("asr");
+    let warped = with_cpu_fallback(tools, |program| {
+        run_whisper(program, &run, &TOKEN_TIMING_ARGS, &base, &mut *progress)
+    })
+    .map(|mut words| {
+        close_warped_words(&mut words);
+        words
+    });
+    or_plain_times(warped, || {
+        with_cpu_fallback(tools, |program| {
+            run_whisper(program, &run, &[], &base, &mut *progress)
         })
-    })?;
-    let timing = run_whisper(
-        program,
-        &run,
-        &TOKEN_TIMING_ARGS,
-        &work.join("asr-timing"),
-        &mut |fraction| {
-            progress(0.5 + fraction / 2.0);
-        },
-    );
-    with_warped_times(words, timing)
+    })
 }
 
-/// The text's words on the warped clock. A timing pass that failed leaves plain token times, which
-/// are coarse but usable; only cancelling stops the job.
-fn with_warped_times(mut words: Vec<Word>, timing: AppResult<Vec<Word>>) -> AppResult<Vec<Word>> {
-    match timing {
-        Ok(timed) => {
-            retime_words(&mut words, &timed);
-            Ok(words)
-        }
+/// Warping that failed leaves plain token times, which are coarse but usable; only cancelling stops the job.
+fn or_plain_times(
+    warped: AppResult<Vec<Word>>,
+    plain: impl FnOnce() -> AppResult<Vec<Word>>,
+) -> AppResult<Vec<Word>> {
+    match warped {
         Err(AppError::Cancelled) => Err(AppError::Cancelled),
-        Err(_) => Ok(words),
-    }
-}
-
-/// One character's time for each spoken character of `words`.
-fn timed_characters(words: &[Word]) -> Vec<(char, f64)> {
-    let mut characters = Vec::new();
-    for word in words {
-        let spoken: Vec<char> = word.text.chars().filter(|c| !c.is_whitespace()).collect();
-        let step = (word.end - word.start) / spoken.len().max(1) as f64;
-        characters.extend(
-            spoken
-                .into_iter()
-                .enumerate()
-                .map(|(index, c)| (c, word.start + step * index as f64)),
-        );
-    }
-    characters
-}
-
-/// For each character of `text`, the index of the character of `other` it matches: a longest common
-/// subsequence inside a band, since both are decodings of the same audio.
-fn matched_characters(text: &[char], other: &[char]) -> Vec<Option<usize>> {
-    let (rows, columns) = (text.len(), other.len());
-    let band = ALIGNMENT_BAND_CHARACTERS + rows.abs_diff(columns);
-    let width = 2 * band + 1;
-    let mut steps = vec![0_u8; (rows + 1) * width];
-    let mut previous = vec![0_u32; width + 2];
-    for row in 1..=rows {
-        let mut current = vec![0_u32; width + 2];
-        for slot in 0..width {
-            let Some(column) = (row + slot)
-                .checked_sub(band)
-                .filter(|c| *c >= 1 && *c <= columns)
-            else {
-                continue;
-            };
-            let up = previous[slot + 2];
-            let left = current[slot];
-            let diagonal = previous[slot + 1] + u32::from(text[row - 1] == other[column - 1]);
-            let (best, step) = if diagonal >= up.max(left) && text[row - 1] == other[column - 1] {
-                (diagonal, STEP_MATCH)
-            } else if up >= left {
-                (up, STEP_UP)
-            } else {
-                (left, STEP_LEFT)
-            };
-            current[slot + 1] = best;
-            steps[row * width + slot] = step;
-        }
-        previous = current;
-    }
-    let mut matched = vec![None; rows];
-    let (mut row, mut column) = (rows, columns);
-    while row > 0 && column > 0 {
-        let slot = column + band - row;
-        match steps
-            .get(row * width + slot)
-            .copied()
-            .filter(|_| slot < width)
-        {
-            Some(STEP_MATCH) => {
-                matched[row - 1] = Some(column - 1);
-                row -= 1;
-                column -= 1;
-            }
-            Some(STEP_LEFT) => column -= 1,
-            _ => row -= 1,
-        }
-    }
-    matched
-}
-
-/// Moves `words` onto the times of `timed`. Characters only one pass heard share the time between
-/// their matched neighbours.
-fn retime_words(words: &mut [Word], timed: &[Word]) {
-    let other = timed_characters(timed);
-    if other.is_empty() {
-        return;
-    }
-    let own: Vec<char> = words
-        .iter()
-        .flat_map(|word| word.text.chars())
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let keys: Vec<char> = other.iter().map(|(c, _)| *c).collect();
-    let matched = matched_characters(&own, &keys);
-    let anchors: Vec<(usize, f64)> = matched
-        .iter()
-        .enumerate()
-        .filter_map(|(index, found)| found.map(|at| (index, other[at].1)))
-        .collect();
-    let mut position = 0;
-    for word in words.iter_mut() {
-        word.start = time_at(position, &anchors).unwrap_or(word.start);
-        word.end = word.start;
-        position += word.text.chars().filter(|c| !c.is_whitespace()).count();
-    }
-    close_warped_words(words);
-}
-
-/// The time of character `position`, between the anchors around it.
-fn time_at(position: usize, anchors: &[(usize, f64)]) -> Option<f64> {
-    let after = anchors.partition_point(|(index, _)| *index < position);
-    match (
-        after.checked_sub(1).map(|at| anchors[at]),
-        anchors.get(after),
-    ) {
-        (_, Some(&(index, time))) if index == position => Some(time),
-        (Some((before, from)), Some(&(next, to))) => {
-            Some(from + (to - from) * (position - before) as f64 / (next - before) as f64)
-        }
-        (Some((_, from)), None) => Some(from),
-        (None, Some(&(_, to))) => Some(to),
-        (None, None) => None,
+        Err(_) => plain(),
+        words => words,
     }
 }
 
@@ -859,12 +736,12 @@ mod tests {
     fn a_working_gpu_build_never_starts_the_cpu_build() {
         let tools = gpu_tools(Some("cpu"));
         let mut started = Vec::new();
-        let (value, program) = with_cpu_fallback(&tools, |program| {
+        let value = with_cpu_fallback(&tools, |program| {
             started.push(program.to_path_buf());
             Ok(7)
         })
         .unwrap();
-        assert_eq!((value, program), (7, Path::new("gpu")));
+        assert_eq!(value, 7);
         assert_eq!(started, vec![PathBuf::from("gpu")]);
     }
 
@@ -872,7 +749,7 @@ mod tests {
     fn a_crashed_gpu_build_falls_back_to_the_cpu_build() {
         let tools = gpu_tools(Some("cpu"));
         let mut started = Vec::new();
-        let (value, program) = with_cpu_fallback(&tools, |program| {
+        let value = with_cpu_fallback(&tools, |program| {
             started.push(program.to_path_buf());
             if program == Path::new("gpu") {
                 Err(crashed())
@@ -881,7 +758,7 @@ mod tests {
             }
         })
         .unwrap();
-        assert_eq!((value, program), (7, Path::new("cpu")));
+        assert_eq!(value, 7);
         assert_eq!(started, vec![PathBuf::from("gpu"), PathBuf::from("cpu")]);
     }
 
@@ -1315,11 +1192,17 @@ mod tests {
     #[test]
     fn warped_times_outside_their_segment_come_back() {
         assert_eq!(warped_start(5.0, Some((4.0, 6.0)), Some(4.5)), 5.0);
-        assert_eq!(warped_start(3.0, Some((4.0, 6.0)), None), 4.0);
+        assert_eq!(warped_start(2.5, Some((4.0, 6.0)), None), 4.0);
         assert_eq!(warped_start(8.0, Some((4.0, 6.0)), Some(4.5)), 4.75);
         assert_eq!(warped_start(8.0, Some((4.0, 6.0)), Some(5.9)), 6.0);
         assert_eq!(warped_start(8.0, Some((4.0, 6.0)), None), 6.0);
         assert_eq!(warped_start(8.0, None, None), 8.0);
+    }
+
+    #[test]
+    fn warped_times_just_outside_their_segment_stay() {
+        assert_eq!(warped_start(3.5, Some((4.0, 6.0)), None), 3.5);
+        assert_eq!(warped_start(6.5, Some((4.0, 6.0)), Some(4.5)), 6.5);
     }
 
     #[test]
@@ -1342,18 +1225,13 @@ mod tests {
     }
 
     #[test]
-    fn the_text_keeps_its_words_and_takes_the_warped_times() {
+    fn warped_words_are_closed_at_the_next_start_or_their_said_length() {
         let mut words = vec![
-            timed(0.0, 9.0, "味濃い"),
-            timed(9.0, 9.5, " じゃん"),
-            timed(9.5, 12.0, "です"),
+            timed(1.0, 1.0, "味濃い"),
+            timed(2.0, 2.0, " じゃん"),
+            timed(1.5, 1.5, "です"),
         ];
-        let warped = [
-            timed(1.0, 1.75, "味濃い"),
-            timed(2.0, 2.75, "じゃん"),
-            timed(5.0, 5.5, "です"),
-        ];
-        retime_words(&mut words, &warped);
+        close_warped_words(&mut words);
         assert_eq!(
             words
                 .iter()
@@ -1361,74 +1239,63 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("味濃い", 1.0, 1.75),
-                (" じゃん", 2.0, 2.75),
-                ("です", 5.0, 5.5)
+                (" じゃん", 2.0, 2.0),
+                ("です", 2.0, 2.5)
             ]
         );
     }
 
     #[test]
-    fn words_only_the_text_pass_heard_share_the_time_between_their_neighbours() {
-        let mut words = vec![
-            timed(0.0, 1.0, "はい"),
-            timed(1.0, 2.0, "味濃"),
-            timed(2.0, 3.0, "です"),
-        ];
-        let warped = [timed(1.0, 1.5, "はい"), timed(6.0, 6.5, "です")];
-        retime_words(&mut words, &warped);
-        assert_eq!((words[1].start * 100.0).round(), 283.0);
-        assert_eq!(words[2].start, 6.0);
+    fn warping_changes_the_times_but_never_the_text() {
+        let plain = br#"{"transcription":[{"tokens":[
+            {"text":"[_BEG_]","offsets":{"from":0,"to":0}},
+            {"text":"\u00e3\u0081\u00af","offsets":{"from":0,"to":1000}},
+            {"text":" a","offsets":{"from":1000,"to":2000}}
+        ]}]}"#;
+        let warped = br#"{"transcription":[{"tokens":[
+            {"text":"[_BEG_]","offsets":{"from":0,"to":0},"t_dtw":-1},
+            {"text":"\u00e3\u0081\u00af","offsets":{"from":0,"to":1000},"t_dtw":70},
+            {"text":" a","offsets":{"from":1000,"to":2000},"t_dtw":150}
+        ]}]}"#;
+        let text = |json: &[u8]| {
+            parse_whisper_json(json)
+                .unwrap()
+                .into_iter()
+                .map(|word| word.text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text(plain), vec!["は", " a"]);
+        assert_eq!(text(warped), vec!["は", " a"]);
     }
 
     #[test]
-    fn words_before_and_after_every_match_take_the_nearest_time() {
-        assert_eq!(time_at(0, &[(2, 5.0), (4, 6.0)]), Some(5.0));
-        assert_eq!(time_at(3, &[(2, 5.0), (4, 6.0)]), Some(5.5));
-        assert_eq!(time_at(4, &[(2, 5.0), (4, 6.0)]), Some(6.0));
-        assert_eq!(time_at(9, &[(2, 5.0), (4, 6.0)]), Some(6.0));
-        assert_eq!(time_at(1, &[]), None);
-    }
-
-    #[test]
-    fn nothing_in_common_leaves_the_plain_times() {
-        let mut words = vec![timed(1.0, 2.0, "はい")];
-        retime_words(&mut words, &[timed(5.0, 6.0, "abc")]);
-        assert_eq!(words[0].start, 1.0);
-    }
-
-    #[test]
-    fn an_empty_timing_pass_changes_nothing() {
-        let mut words = vec![timed(1.0, 2.0, "はい")];
-        retime_words(&mut words, &[]);
-        assert_eq!((words[0].start, words[0].end), (1.0, 2.0));
-    }
-
-    #[test]
-    fn matching_tolerates_texts_of_different_lengths_and_order() {
-        let text: Vec<char> = "あいうえお".chars().collect();
-        let other: Vec<char> = "xあうxxお".chars().collect();
-        assert_eq!(
-            matched_characters(&text, &other),
-            vec![Some(1), None, Some(2), None, Some(5)]
-        );
-        assert_eq!(matched_characters(&[], &other), Vec::<Option<usize>>::new());
-        assert_eq!(matched_characters(&text, &[]), vec![None; 5]);
-    }
-
-    #[test]
-    fn a_failed_timing_pass_keeps_the_plain_times_but_a_cancel_stops() {
+    fn a_failed_warping_run_falls_back_to_plain_times() {
         let words = vec![timed(1.0, 2.0, "はい")];
-        let kept = with_warped_times(words.clone(), Err(AppError::Invalid("no dtw".into())));
-        assert_eq!(kept.unwrap(), words);
-        let cancelled = with_warped_times(words, Err(AppError::Cancelled));
-        assert_eq!(cancelled.unwrap_err().to_string(), "cancelled");
+        let kept = or_plain_times(Err(crashed()), || Ok(words.clone())).unwrap();
+        assert_eq!(kept, vec![timed(1.0, 2.0, "はい")]);
     }
 
     #[test]
-    fn a_good_timing_pass_is_used() {
-        let words = vec![timed(1.0, 2.0, "は")];
-        let kept = with_warped_times(words, Ok(vec![timed(5.0, 5.2, "は")])).unwrap();
-        assert_eq!((kept[0].start, kept[0].end), (5.0, 5.25));
+    fn a_cancel_during_warping_starts_no_plain_run() {
+        let mut starts = 0;
+        let result = or_plain_times(Err(AppError::Cancelled), || {
+            starts += 1;
+            Ok(Vec::new())
+        });
+        assert_eq!(result.unwrap_err().to_string(), "cancelled");
+        assert_eq!(starts, 0);
+    }
+
+    #[test]
+    fn a_good_warping_run_needs_no_plain_run() {
+        let mut starts = 0;
+        let kept = or_plain_times(Ok(vec![timed(5.0, 5.2, "は")]), || {
+            starts += 1;
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(kept, vec![timed(5.0, 5.2, "は")]);
+        assert_eq!(starts, 0);
     }
 
     #[test]

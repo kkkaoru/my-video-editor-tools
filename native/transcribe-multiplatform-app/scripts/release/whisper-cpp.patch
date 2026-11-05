@@ -1,0 +1,84 @@
+diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
+index 71f55b4..159f6a6 100644
+--- a/ggml/src/ggml-cpu/CMakeLists.txt
++++ b/ggml/src/ggml-cpu/CMakeLists.txt
+@@ -337,6 +337,9 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
+             endif()
+             if (GGML_AVX_VNNI)
+                 list(APPEND ARCH_DEFINITIONS __AVXVNNI__ GGML_AVX_VNNI)
++                if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
++                    list(APPEND ARCH_FLAGS -mavxvnni)
++                endif()
+             endif()
+             if (GGML_BMI2)
+                 # MSVC does not define macro __BMI2__
+diff --git a/src/whisper.cpp b/src/whisper.cpp
+index 1675f33..4881ab7 100644
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -2518,6 +2518,17 @@ static bool whisper_encode_internal(
+     return !(abort_callback && abort_callback(abort_callback_data));
+ }
+
++// The alignment heads' columns of one layer's cross-attention weights.
++static struct ggml_tensor * whisper_aheads_KQs(struct ggml_context * ctx0, struct ggml_tensor * KQ_soft_max, struct ggml_tensor * mask) {
++    struct ggml_tensor * aheads_KQs = ggml_reshape_2d(ctx0, KQ_soft_max, KQ_soft_max->ne[0] * KQ_soft_max->ne[1], KQ_soft_max->ne[2]);
++    aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
++    aheads_KQs = ggml_cont(ctx0, aheads_KQs);
++    aheads_KQs = ggml_mul_mat(ctx0, mask, aheads_KQs);
++    aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
++    aheads_KQs = ggml_cont(ctx0, aheads_KQs);
++    return ggml_reshape_3d(ctx0, aheads_KQs, KQ_soft_max->ne[0], KQ_soft_max->ne[1], mask->ne[1]);
++}
++
+ static struct ggml_cgraph * whisper_build_graph_decoder(
+          whisper_context & wctx,
+          whisper_state   & wstate,
+@@ -2758,6 +2769,20 @@ static struct ggml_cgraph * whisper_build_graph_decoder(
+                 cur = ggml_flash_attn_ext(ctx0, Q, Kcross, Vcross, nullptr, KQscale, 0.0f, 0.0f);
+
+                 cur = ggml_reshape_2d(ctx0, cur, n_state, n_tokens);
++
++                // Flash attention keeps its weights to itself, so the forced decode behind DTW computes
++                // them beside it. The rows past n_audio_ctx are padding and must stay out of the softmax.
++                if (save_alignment_heads_QKs && wctx.params.dtw_token_timestamps && wstate.aheads_masks.m[il] != nullptr) {
++                    struct ggml_tensor * Kaudio =
++                        ggml_view_3d(ctx0, wstate.kv_cross.k,
++                                n_state_head, n_audio_ctx, n_head,
++                                ggml_element_size(wstate.kv_cross.k)*n_state,
++                                ggml_element_size(wstate.kv_cross.k)*n_state_head,
++                                ggml_element_size(wstate.kv_cross.k)*n_state*n_audio_ctx_pad*il);
++                    struct ggml_tensor * KQ_soft_max = ggml_soft_max_ext(ctx0, ggml_mul_mat(ctx0, Kaudio, Q), nullptr, KQscale, 0.0f);
++                    struct ggml_tensor * aheads_KQs = whisper_aheads_KQs(ctx0, KQ_soft_max, wstate.aheads_masks.m[il]);
++                    aheads_cross_QKs = aheads_cross_QKs == NULL ? aheads_KQs : ggml_concat(ctx0, aheads_cross_QKs, aheads_KQs, 2);
++                }
+             } else {
+                 struct ggml_tensor * Kcross =
+                     ggml_view_3d(ctx0, wstate.kv_cross.k,
+@@ -2783,13 +2808,7 @@ static struct ggml_cgraph * whisper_build_graph_decoder(
+                 // [EXPERIMENTAL] Token-level timestamps with DTW
+                 if (wctx.params.dtw_token_timestamps) {
+                     if (wstate.aheads_masks.m[il] != nullptr) {
+-                        struct ggml_tensor * aheads_KQs = ggml_reshape_2d(ctx0, KQ_soft_max, KQ_soft_max->ne[0] * KQ_soft_max->ne[1], KQ_soft_max->ne[2]);
+-                        aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
+-                        aheads_KQs = ggml_cont(ctx0, aheads_KQs);
+-                        aheads_KQs = ggml_mul_mat(ctx0, wstate.aheads_masks.m[il], aheads_KQs);
+-                        aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
+-                        aheads_KQs = ggml_cont(ctx0, aheads_KQs);
+-                        aheads_KQs = ggml_reshape_3d(ctx0, aheads_KQs, KQ_soft_max->ne[0], KQ_soft_max->ne[1], wstate.aheads_masks.m[il]->ne[1]);
++                        struct ggml_tensor * aheads_KQs = whisper_aheads_KQs(ctx0, KQ_soft_max, wstate.aheads_masks.m[il]);
+                         if (aheads_cross_QKs == NULL) {
+                             aheads_cross_QKs = aheads_KQs;
+                         } else {
+@@ -3814,11 +3833,6 @@ struct whisper_context * whisper_init_from_buffer_with_params_no_state(void * bu
+ struct whisper_context * whisper_init_with_params_no_state(struct whisper_model_loader * loader, struct whisper_context_params params) {
+     ggml_time_init();
+
+-    if (params.flash_attn && params.dtw_token_timestamps) {
+-        WHISPER_LOG_WARN("%s: dtw_token_timestamps is not supported with flash_attn - disabling\n", __func__);
+-        params.dtw_token_timestamps = false;
+-    }
+-
+     WHISPER_LOG_INFO("%s: use gpu    = %d\n", __func__, params.use_gpu);
+     WHISPER_LOG_INFO("%s: flash attn = %d\n", __func__, params.flash_attn);
+     WHISPER_LOG_INFO("%s: gpu_device = %d\n", __func__, params.gpu_device);
