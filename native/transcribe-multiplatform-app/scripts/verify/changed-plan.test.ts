@@ -74,6 +74,10 @@ it("runs the whole UI suite when its configuration changes", () => {
   expect(commandOf(["vite.config.ts"], "lint")).toStrictEqual(["bun", "run", "lint"]);
 });
 
+it("does not lint the JSON under src-tauri, which biome ignores", () => {
+  expect(commandOf(["src-tauri/tauri.conf.json"], "lint")).toStrictEqual(undefined);
+});
+
 it("lints everything when the lint rules change", () => {
   expect(commandOf(["biome.json"], "lint")).toStrictEqual(["bun", "run", "lint"]);
 });

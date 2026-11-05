@@ -20,7 +20,8 @@ const WHOLE_UI: RegExp = /^(package\.json|bun\.lock|tsconfig[^/]*\.json|vite\.co
 const WHOLE_RUST: RegExp =
   /^src-tauri\/(Cargo\.(toml|lock)|build\.rs|tauri\.conf\.json|rustfmt\.toml|resources\/|capabilities\/|src\/(lib|main)\.rs)/;
 const TYPED: RegExp = /\.tsx?$/;
-const LINTED: RegExp = /\.(tsx?|json|css)$/;
+// biome.json ignores src-tauri, and biome fails when every path it gets is ignored.
+const LINTED: RegExp = /^(?!src-tauri\/).*\.(tsx?|json|css)$/;
 const VITEST_INPUT: RegExp = /^(src|scripts)\/.*\.(tsx?|css)$/;
 const COVERED_SOURCE: RegExp = /^src\/.*\.tsx?$/;
 const NOT_COVERED: RegExp = /\.test\.tsx?$|^src\/backend\/types\.ts$/;
