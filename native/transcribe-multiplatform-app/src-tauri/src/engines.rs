@@ -49,6 +49,8 @@ pub struct Tools {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
     pub whisper: PathBuf,
+    /// The CPU build to fall back on when `whisper` is a GPU build and it fails.
+    pub whisper_cpu: Option<PathBuf>,
     /// Always the CPU build: Silero needs no GPU, and it takes a fraction of a percent of the audio's length.
     pub voice_detector: PathBuf,
     pub nemo: PathBuf,
@@ -113,6 +115,10 @@ impl Tools {
             },
             ffmpeg: plain("ffmpeg", "ffmpeg")?,
             ffprobe: plain("ffmpeg", "ffprobe")?,
+            whisper_cpu: whisper
+                .is_some()
+                .then(|| plain("whisper", "whisper-cli"))
+                .transpose()?,
             whisper: whisper.map_or_else(|| plain("whisper", "whisper-cli"), Ok)?,
             voice_detector: plain("whisper", "whisper-vad-speech-segments")?,
             nemo: nemo.map_or_else(|| plain("nemo", "nemo-speech"), Ok)?,
@@ -257,7 +263,6 @@ fn latin1_bytes(text: &str) -> Vec<u8> {
 
 /// One whisper.cpp invocation's fixed inputs.
 struct WhisperRun<'a> {
-    tools: &'a Tools,
     model: &'a Path,
     wav: &'a Path,
     language: &'a str,
@@ -461,12 +466,13 @@ fn close_warped_words(words: &mut [Word]) {
 }
 
 fn run_whisper(
+    program: &Path,
     run: &WhisperRun<'_>,
     extra_args: &[&str],
     base: &Path,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<Word>> {
-    let mut command = background_command(&run.tools.whisper);
+    let mut command = background_command(program);
     command
         .arg("-m")
         .arg(run.model)
@@ -516,7 +522,24 @@ pub fn voice_spans(tools: &Tools, wav: &Path) -> AppResult<Vec<VoiceSpan>> {
     Ok(parse_voice_spans(&String::from_utf8_lossy(&output)))
 }
 
-/// Runs whisper.cpp twice: the text from its best decoding, the times from warping.
+/// Runs `pass` on `tools.whisper`, and on the CPU build if a GPU build exited with a failure, such
+/// as a driver that crashes or a CPU missing an instruction. Returns the program that worked.
+fn with_cpu_fallback<T>(
+    tools: &Tools,
+    mut pass: impl FnMut(&Path) -> AppResult<T>,
+) -> AppResult<(T, &Path)> {
+    let failure = match pass(&tools.whisper) {
+        Ok(value) => return Ok((value, &tools.whisper)),
+        Err(failure) => failure,
+    };
+    match (&failure, &tools.whisper_cpu) {
+        (AppError::Tool { .. }, Some(cpu)) => Ok((pass(cpu)?, cpu)),
+        _ => Err(failure),
+    }
+}
+
+/// Runs whisper.cpp twice: the text from its best decoding, the times from warping. The second pass
+/// uses whichever build gave the text, so a build that failed is not started again.
 pub fn transcribe(
     tools: &Tools,
     model: &Path,
@@ -527,16 +550,18 @@ pub fn transcribe(
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<Word>> {
     let run = WhisperRun {
-        tools,
         model,
         wav,
         language,
         cancel,
     };
-    let words = run_whisper(&run, &[], &work.join("asr"), &mut |fraction| {
-        progress(fraction / 2.0);
+    let (words, program) = with_cpu_fallback(tools, |program| {
+        run_whisper(program, &run, &[], &work.join("asr"), &mut |fraction| {
+            progress(fraction / 2.0);
+        })
     })?;
     let timing = run_whisper(
+        program,
         &run,
         &TOKEN_TIMING_ARGS,
         &work.join("asr-timing"),
@@ -1049,12 +1074,100 @@ mod tests {
             .collect()
     }
 
+    fn gpu_tools(whisper_cpu: Option<&str>) -> Tools {
+        Tools {
+            ffmpeg: "f".into(),
+            ffprobe: "p".into(),
+            whisper: "gpu".into(),
+            whisper_cpu: whisper_cpu.map(Into::into),
+            voice_detector: "d".into(),
+            nemo: "n".into(),
+            backend: Backend::Vulkan,
+        }
+    }
+
+    fn crashed() -> AppError {
+        AppError::Tool {
+            tool: "whisper-cli".to_owned(),
+            detail: "exit code: 0xc000001d".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_working_gpu_build_never_starts_the_cpu_build() {
+        let tools = gpu_tools(Some("cpu"));
+        let mut started = Vec::new();
+        let (value, program) = with_cpu_fallback(&tools, |program| {
+            started.push(program.to_path_buf());
+            Ok(7)
+        })
+        .unwrap();
+        assert_eq!((value, program), (7, Path::new("gpu")));
+        assert_eq!(started, vec![PathBuf::from("gpu")]);
+    }
+
+    #[test]
+    fn a_crashed_gpu_build_falls_back_to_the_cpu_build() {
+        let tools = gpu_tools(Some("cpu"));
+        let mut started = Vec::new();
+        let (value, program) = with_cpu_fallback(&tools, |program| {
+            started.push(program.to_path_buf());
+            if program == Path::new("gpu") {
+                Err(crashed())
+            } else {
+                Ok(7)
+            }
+        })
+        .unwrap();
+        assert_eq!((value, program), (7, Path::new("cpu")));
+        assert_eq!(started, vec![PathBuf::from("gpu"), PathBuf::from("cpu")]);
+    }
+
+    #[test]
+    fn the_cpu_builds_own_failure_is_the_one_reported() {
+        let tools = gpu_tools(Some("cpu"));
+        let error = with_cpu_fallback::<()>(&tools, |program| {
+            Err(AppError::Tool {
+                tool: "whisper-cli".to_owned(),
+                detail: program.display().to_string(),
+            })
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "whisper-cli failed: cpu");
+    }
+
+    #[test]
+    fn cancelling_does_not_start_the_cpu_build() {
+        let tools = gpu_tools(Some("cpu"));
+        let mut starts = 0;
+        let result = with_cpu_fallback::<()>(&tools, |_| {
+            starts += 1;
+            Err(AppError::Cancelled)
+        });
+        assert!(matches!(result, Err(AppError::Cancelled)));
+        assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn without_a_cpu_build_the_failure_stands() {
+        let tools = gpu_tools(None);
+        let mut starts = 0;
+        let result = with_cpu_fallback::<()>(&tools, |_| {
+            starts += 1;
+            Err(crashed())
+        });
+        assert!(matches!(result, Err(AppError::Tool { .. })));
+        assert_eq!(starts, 1);
+    }
+
     #[test]
     fn a_sortformer_model_is_driven_by_the_diarize_command() {
         let tools = Tools {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
@@ -1090,6 +1203,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
@@ -1151,6 +1265,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
@@ -1196,6 +1311,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
@@ -1231,6 +1347,7 @@ mod tests {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
             whisper: "w".into(),
+            whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
             backend: Backend::Default,
