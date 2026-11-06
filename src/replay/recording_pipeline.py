@@ -14,10 +14,12 @@ while its measured utilization leaves room:
         ── compose (+ cleanup; no captions) ── finish ── publish ── excitement ── upload
         ; publish ── caption-plan (the caption plan and face track the viewers draw from)
         ── summary (the completion gate and supersession, then on-device, then a data sync)
-        ── clips (the viewer's clip points are ready) ; summary ── retire-renders (compose)
+        ; summary ── retire-renders (compose)
         ; publish ── youtube-encode (Compressor's YouTube setting, beside the delivery)
-        ; youtube-encode + summary + clips ── youtube-master (the verified encode replaces it)
-        ── web-hls (the web viewer's HLS ladder of the final delivery)
+        ; youtube-encode ── web-hls-encode (the web viewer's HLS ladder of the master-to-be)
+        ; youtube-encode + summary ── youtube-master (the verified encode replaces it)
+        ── clips (the viewer's clip points of the final delivery are ready)
+        ; youtube-master + web-hls-encode ── web-hls (the ladder published)
 
 The caption half (``replay.recording_caption_steps``) reads ``captions.json``, written beside
 ``pipeline.json`` from the defaults' ``captions`` section; changing it marks only caption steps
@@ -111,25 +113,25 @@ ORDER = (
     "audio-clock", "clocks", "yolo-track", "separation", "cleanup-bootstrap", "cleanup", "asr",
     "upload-original",
     "voice-repair", "cut-plan",
-    "paging", "onsets", "placement", "caption-parts", "compose", "finish",
+    "paging", "voice-audio", "onsets", "placement", "caption-parts", "compose", "finish",
     "voice-remux", "publish", "caption-plan",
     "summarize", "excitement", "upload", "summary", "clips", "retire-renders", "youtube-encode",
-    "youtube-master", "web-hls",
+    "web-hls-encode", "youtube-master", "web-hls",
 )  # fmt: skip
 DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
 # Start order only, not receipt inputs: summary reuses what summarize gated and generated, so it
 # never generates beside it.
-# cleanup starts after yolo-track so its chunks read the stored caption boxes instead of
-# detecting them again: a cleanup started first gave up waiting and ran YOLO twice (10-28).
 SCHEDULE = {
     **DEPENDENCIES,
     # The YouTube encode comes first, then the summary and the clips (user, 2026-11-03).
     "summarize": (*DEPENDENCIES["summarize"], "youtube-encode"),
     "summary": (*DEPENDENCIES["summary"], "summarize"),
-    "cleanup": (*DEPENDENCIES["cleanup"], "yolo-track"),
-    # The master replaces the delivery only after its gate, summary and clips read it; a redo of
-    # those never redoes the master.
-    "youtube-master": (*DEPENDENCIES["youtube-master"], "summary", "clips"),
+    # The master replaces the delivery only after its gate and summary read it; a redo of those
+    # never redoes the master.
+    "youtube-master": (*DEPENDENCIES["youtube-master"], "summary"),
+    # Clips are stored under the published movie's content key: computed before the master, the
+    # viewer stopped finding them when the master replaced the movie (found 2026-11-06).
+    "clips": (*DEPENDENCIES["clips"], "youtube-master"),
 }
 OUTER_CAP = 24 * HOUR  # a backstop (stages.Stage allows at most 24 h); IDLE_SECONDS bound each step
 TIMEOUTS = dict.fromkeys(
@@ -137,9 +139,9 @@ TIMEOUTS = dict.fromkeys(
         "audio-clock", "clocks", "separation", "cleanup-bootstrap", "cleanup", "asr", "yolo-track",
         "retire-intermediates", "upload-original", "cut-plan", "voice-repair", "paging",
         "placement", "onsets", "caption-parts", "compose", "finish",
-        "voice-remux", "publish", "caption-plan",
+        "voice-audio", "voice-remux", "publish", "caption-plan",
         "excitement", "upload", "summarize", "summary", "clips", "retire-renders",
-        "youtube-encode", "youtube-master", "web-hls",
+        "youtube-encode", "web-hls-encode", "youtube-master", "web-hls",
     ),
     OUTER_CAP,
 )  # fmt: skip
@@ -154,11 +156,11 @@ IDLE_SECONDS = {
     "retire-intermediates": HOUR, "upload-original": 2 * HOUR, "cut-plan": HOUR,
     "voice-repair": 2 * HOUR,
     "paging": 2 * HOUR, "placement": HOUR, "onsets": HOUR, "caption-parts": 2 * HOUR,
-    "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-remux": 2 * HOUR,
+    "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-audio": 2 * HOUR, "voice-remux": 2 * HOUR,
     "publish": 2 * HOUR, "caption-plan": HOUR,
     "excitement": HOUR, "upload": 2 * HOUR, "summarize": 2 * HOUR, "summary": 2 * HOUR,
     "clips": 2 * HOUR, "retire-renders": HOUR, "youtube-encode": 2 * HOUR,
-    "youtube-master": 2 * HOUR, "web-hls": 2 * HOUR,
+    "web-hls-encode": 2 * HOUR, "youtube-master": 2 * HOUR, "web-hls": 2 * HOUR,
 }  # fmt: skip
 # youtube-encode only waits on Compressor, which renders one job at a time machine-wide: it
 # takes the one Compressor lease instead of a GPU lease.
@@ -175,7 +177,7 @@ SERIAL_STEPS = {
     "finish": "compose-leases",
     "youtube-encode": "compressor-leases",
     # x264 takes every CPU core: two recordings' ladders at once would only slow both.
-    "web-hls": "web-hls-leases",
+    "web-hls-encode": "web-hls-leases",
 }
 SERIAL_SETTINGS = '{"capacity": 1}\n'
 

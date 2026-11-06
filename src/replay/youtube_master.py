@@ -25,6 +25,7 @@ encode are then deleted, each logged in ``deletions.md``.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -59,6 +60,7 @@ SIDECARS = (
 SUMMARIES = ".srt.summaries"
 DELETIONS = Path("edits/work/recording-pipeline/deletions.md")
 PSNR = re.compile(r"average:([0-9.]+|inf)")
+STAGE_LOCK = ".stage-lock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +106,13 @@ def sampled_psnr(delivery: Path, encode: Path, ffmpeg: str) -> float:
     return float("inf") if found[-1] == "inf" else float(found[-1])
 
 
-def verified(delivery: Path, encode: Path, *, ffmpeg: str, ffprobe: str) -> dict[str, object]:
-    """The proof that ``encode`` shows ``delivery`` frame for frame (see the docstring)."""
+def verified(
+    delivery: Path, encode: Path, *, ffmpeg: str, ffprobe: str, decode: bool = True
+) -> dict[str, object]:
+    """The proof that ``encode`` shows ``delivery`` frame for frame (see the docstring).
+
+    ``decode`` False leaves the clean full decode to the caller, before anything is removed.
+    """
     original, made = probe(delivery, ffprobe), probe(encode, ffprobe)
     frame = 1 / max(1.0, made.frames / max(made.video_seconds, 1e-9))
     checks = {
@@ -114,7 +121,8 @@ def verified(delivery: Path, encode: Path, *, ffmpeg: str, ffprobe: str) -> dict
         "audio": len(original.audio) == 1
         and abs(original.audio[0] - original.video_seconds) <= frame,
         "duration": abs(made.video_seconds - original.video_seconds) <= frame,
-        "decodes": movie_decode.decodes(encode, ffmpeg=ffmpeg, ffprobe=ffprobe, frames=made.frames),
+        "decodes": not decode
+        or movie_decode.decodes(encode, ffmpeg=ffmpeg, ffprobe=ffprobe, frames=made.frames),
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
@@ -146,6 +154,18 @@ def remux(encode: Path, delivery: Path, output: Path, ffmpeg: str) -> None:
         check=True,
     )  # fmt: skip
     partial.rename(output)
+
+
+def stage(delivery: Path, *, ffmpeg: str) -> Path:
+    """The remux the master will be, made once, by whichever of the HLS encode and the master
+    asks first; its bytes are final here, before any check."""
+    encode = youtube_encode.output_of(delivery)
+    staged = encode.with_name(delivery.name)
+    with encode.with_suffix(STAGE_LOCK).open("a", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not staged.exists():
+            remux(encode, delivery, staged, ffmpeg)
+    return staged
 
 
 def carry(delivery: Path, master: Path) -> None:
@@ -180,12 +200,14 @@ def master(delivery: Path, *, ffmpeg: str, ffprobe: str) -> Path:
     encode = youtube_encode.output_of(delivery)
     if not delivery.is_file() or not encode.is_file():
         raise ReplayError(f"{delivery.name} or its YouTube encode is missing")
-    proof = verified(delivery, encode, ffmpeg=ffmpeg, ffprobe=ffprobe)
-    staged = encode.with_name(delivery.name)
-    if not staged.exists():
-        remux(encode, delivery, staged, ffmpeg)
-    revision = f"youtube-{sha256(staged)[:12]}"
     evidence = delivery.parents[1] / "metadata" / completion.INDEX_NAME
+    # A pipeline delivery's master decodes whole in its completion check (``republished``), on
+    # the same video packets and before anything is deleted: a decode here would repeat it.
+    proof = verified(
+        delivery, encode, ffmpeg=ffmpeg, ffprobe=ffprobe, decode=not evidence.is_file()
+    )
+    staged = stage(delivery, ffmpeg=ffmpeg)
+    revision = f"youtube-{sha256(staged)[:12]}"
     links: list[Path] = []
     if evidence.is_file():
         published, links = republished(delivery, evidence, staged, revision)
@@ -206,6 +228,7 @@ def master(delivery: Path, *, ffmpeg: str, ffprobe: str) -> Path:
     carry(delivery, published)
     reason = f"replaced by its verified YouTube encode {published} ({RECORD})"
     delete([*links_of(delivery, links), staged, encode], reason)
+    encode.with_suffix(STAGE_LOCK).unlink(missing_ok=True)
     if not evidence.is_file():  # an excerpt's own folder keeps nothing of the old delivery
         delete([delivery.with_suffix(suffix) for suffix in (".srt", *SIDECARS)], reason)
         summaries = delivery.with_suffix(SUMMARIES)
@@ -227,7 +250,7 @@ def republished(
         root, movie=staged, steps=finish.parent,
         candidate=Path(str(record(index["candidate"])["path"])), revision=revision,
     )  # fmt: skip
-    viewer.release_older(root, published)
+    viewer.release_older(root, published, gated=delivery)
     carry(delivery, published)  # the completion check reads the caption plan beside the master
     failures = completion.assess(new_index, delivery=published, root=root)
     if failures:

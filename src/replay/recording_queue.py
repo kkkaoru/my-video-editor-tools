@@ -75,6 +75,8 @@ DISK_FLOOR_EXIT = 4  # scripts/tmux-job.sh refuses a launch below the free-space
 RELIEF_SPARE_BYTES = 83 * disk_budget.GIB
 RELIEF_SECONDS = 900.0
 STEP_NAMES = (*pipelines.ORDER, "retire-intermediates")
+# A step added later, and the step after it whose receipt says the recording went on without it.
+ADDED_SINCE = {"web-hls-encode": "web-hls", "voice-audio": "voice-remux"}
 # A failure of one recording or tick is reported and retried; it never stops the runner.
 FAILURES = (ReplayError, StageError, OSError, ValueError)
 
@@ -183,7 +185,15 @@ def running(layout: pipelines.Layout) -> bool:
 
 
 def done(layout: pipelines.Layout) -> bool:
-    return all((layout.steps / f"{name}.json").is_file() for name in STEP_NAMES)
+    """Every step has its receipt; one added after the published receipts (``mark_legacy``) needs
+    none, and a recording that only lacks steps added since it finished is not launched again."""
+    return all(
+        (layout.steps / f"{name}.json").is_file()
+        or (layout.steps / steps.LEGACY / f"{name}.json").is_file()
+        or name in ADDED_SINCE
+        and (layout.steps / f"{ADDED_SINCE[name]}.json").is_file()
+        for name in STEP_NAMES
+    )
 
 
 def state(

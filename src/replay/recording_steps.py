@@ -924,6 +924,8 @@ LEGACY_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "separation": ("clocks",),
     "paging": ("cut-plan",),
     "publish": ("finish",),  # before ``voice-remux`` (2026-10-29)
+    "web-hls": ("youtube-master",),  # before ``web-hls-encode`` (2026-11-06)
+    "voice-remux": ("finish",),  # before ``voice-audio`` (2026-11-06)
 }
 # Upstream steps added after orchestrators were started that never schedule them: a step such an
 # orchestrator launches binds the upstream receipts that exist (its legacy set). The step itself
@@ -933,6 +935,8 @@ ADDED_UPSTREAM: dict[str, frozenset[str]] = {
     "cut-plan": frozenset({"voice-repair"}),
     "paging": frozenset({"voice-repair"}),
     "publish": frozenset({"voice-remux"}),
+    "web-hls": frozenset({"web-hls-encode"}),
+    "voice-remux": frozenset({"voice-audio"}),
 }
 # A step that is not applicable to a published recording (``recording_pipeline``: it was added
 # after the delivery, whose later receipts were computed without it) is marked here instead of

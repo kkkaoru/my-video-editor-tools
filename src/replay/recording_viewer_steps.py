@@ -20,9 +20,11 @@
 - ``clips``: the Mac computes the clip points from the uploaded data with its local models
   (``bun run clips:mac``) and stores them through the viewer; the step passes once
   ``/api/clips/<id>.json`` reports them ready. Cloudflare AI runs only for a user's reload;
-- ``web-hls`` (after ``youtube-master``): ``bun run hls`` encodes the final delivery's HLS ladder
-  for the web viewer (``web-viewer/src/hls.ts``), uploads it beside the bucket's MP4, checks the
-  sizes, lists it in ``hls/index.json`` and removes the local encode (the MP4s stay untouched).
+- ``web-hls-encode`` (after ``youtube-encode``): ``bun run hls --encode`` encodes the HLS ladder of
+  the master-to-be for the web viewer (``web-viewer/src/hls.ts``), at a low priority;
+- ``web-hls`` (after ``youtube-master`` and ``web-hls-encode``): ``bun run hls`` uploads that ladder
+  beside the bucket's MP4, checks the sizes, lists it in ``hls/index.json`` and removes the local
+  encode (the MP4s stay untouched).
 """
 
 import fcntl
@@ -51,6 +53,8 @@ CHECKOUT = checkout_root()
 SUMMARY_CLI = CHECKOUT / "TranscriptViewer" / ".build" / "release" / "transcript-summary"
 WEB_VIEWER = CHECKOUT / "web-viewer"
 GATE_KEPT = "summarize-gate.json"
+NICE = "/usr/bin/nice"
+HLS_NICENESS = "15"
 # Cloudflare refuses Python's default User-Agent with 403.
 USER_AGENT = "replay-recording-pipeline/1"
 
@@ -180,12 +184,14 @@ def kept_gate(pipeline: Pipeline) -> dict[str, object] | None:
     return passed if path.is_file() and sha256(path) == report.get("sha256") else None
 
 
-def release_older(root: Path, published: Path) -> None:
+def release_older(root: Path, published: Path, *, gated: Path | None = None) -> None:
     """Supersede the older revisions of a new publication before it is gated, so the web viewer's
     catalog and the summary CLI see only it: the incomplete ones, and those it replaces under the
-    same name. The publication itself is left to the gate; every record still re-checks the
-    movie's identity before it is written."""
-    supersede_incomplete(root, {delivery_label(root, published): {}})
+    same name. The publication itself is left to the gate, as is ``gated``, which passed it
+    already and need not be decoded again; every record still re-checks the movie's identity
+    before it is written."""
+    passed = (published,) if gated is None else (published, gated)
+    supersede_incomplete(root, {delivery_label(root, movie): {} for movie in passed})
     supersede_replaced(root, published)
 
 
@@ -276,15 +282,29 @@ def _fetch(request: urllib.request.Request) -> dict[str, object]:
         return record(json.loads(response.read()))
 
 
+def _bun() -> str:
+    bun = shutil.which("bun")
+    if bun is None:
+        raise ReplayError("bun is required to publish the web viewer's HLS ladder")
+    return bun
+
+
+def encode_hls(run: Runner, source: Path, log: Path) -> None:
+    """``source``'s HLS ladder encoded for a later ``web_hls``, at a low priority: x264 takes every
+    core, and a voice remux beside it ran 3.8x slower (2026-11-05)."""
+    run(
+        [NICE, "-n", HLS_NICENESS, _bun(), str(WEB_VIEWER / "src" / "bin" / "hls.ts"), "--encode",
+         str(source), source.name],
+        log,
+    )  # fmt: skip
+
+
 def web_hls(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     """The final delivery (the verified YouTube master) streamed as HLS by the web viewer, so
     phones adapt the bitrate instead of reading the 15 Mbps MP4 in 64 KiB ranges (2026-11-04)."""
     master = json.loads((pipeline.steps / "youtube-master.json").read_text(encoding="utf-8"))
     video = Path(str(record(record(master["outputs"])["master"])["path"])).stem
-    bun = shutil.which("bun")
-    if bun is None:
-        raise ReplayError("bun is required to publish the web viewer's HLS ladder")
-    run([bun, str(WEB_VIEWER / "src" / "bin" / "hls.ts"), video], pipeline.logs / "web-hls.log")
+    run([_bun(), str(WEB_VIEWER / "src" / "bin" / "hls.ts"), video], pipeline.logs / "web-hls.log")
     return {"video": video}
 
 

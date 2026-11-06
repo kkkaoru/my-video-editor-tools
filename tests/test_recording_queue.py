@@ -839,3 +839,33 @@ def test_the_runner_reports_what_relief_freed(
     path = queue_file(tmp_path)
     assert queue.main(["run", "--queue", str(path), "--defaults", "d.json", "--once"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[0]) == {"reliefBytes": 7}
+
+
+def test_a_recording_finished_before_a_step_existed_is_still_done(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    recording(tmp_path, "7")
+    finished(tmp_path, "7")
+    steps = tmp_path / "edits/work/recordings/replay-7/steps"
+    (steps / "web-hls-encode.json").unlink()
+    assert queue.done(pipelines.layout_of("7", defaults(tmp_path), root)) is True
+
+
+def test_a_recording_without_the_step_after_the_new_one_is_not_done(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    recording(tmp_path, "7")
+    finished(tmp_path, "7")
+    steps = tmp_path / "edits/work/recordings/replay-7/steps"
+    (steps / "web-hls-encode.json").unlink()
+    (steps / "web-hls.json").unlink()
+    assert queue.done(pipelines.layout_of("7", defaults(tmp_path), root)) is False
+
+
+def test_a_step_marked_as_added_after_publication_counts_as_done(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    recording(tmp_path, "7")
+    finished(tmp_path, "7")
+    steps = tmp_path / "edits/work/recordings/replay-7/steps"
+    (steps / "clips.json").unlink()
+    (steps / "legacy").mkdir()
+    (steps / "legacy/clips.json").write_text("{}", encoding="utf-8")
+    assert queue.done(pipelines.layout_of("7", defaults(tmp_path), root)) is True

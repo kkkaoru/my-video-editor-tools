@@ -204,6 +204,12 @@ def test_releasing_older_revisions_leaves_the_publication_to_the_gate(
         (tmp_path / "edit", {"storage:2026-10-21_18-30-00_JST_replay-123-review.mp4": {}}),
         (tmp_path / "edit", "2026-10-21_18-30-00_JST_replay-123-review.mp4"),
     ]
+    calls.clear()
+    viewer.release_older(tmp_path / "edit", Path("new/m.mp4"), gated=Path("old/g.mp4"))
+    assert calls == [
+        (tmp_path / "edit", {"storage:m.mp4": {}, "storage:g.mp4": {}}),
+        (tmp_path / "edit", "m.mp4"),
+    ]
 
 
 def test_summarize_after_an_older_summary_only_repeats_its_outputs(
@@ -584,6 +590,34 @@ def test_web_hls_publishes_the_final_delivery_s_ladder(
                 "2026-11-03_22-00-21_JST_replay-1-review",
             ],
             "web-hls.log",
+        )
+    ]
+
+
+def test_the_hls_encode_runs_ahead_at_a_low_priority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer, "WEB_VIEWER", tmp_path / "web")
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+    commands: list[tuple[list[str], str]] = []
+
+    def run(command: Sequence[str], log: Path) -> None:
+        commands.append((list(command), log.name))
+
+    viewer.encode_hls(run, Path("/d/m-review.mp4"), tmp_path / "web-hls-encode.log")
+    assert commands == [
+        (
+            [
+                "/usr/bin/nice",
+                "-n",
+                "15",
+                "/bin/bun",
+                str(tmp_path / "web/src/bin/hls.ts"),
+                "--encode",
+                "/d/m-review.mp4",
+                "m-review.mp4",
+            ],
+            "web-hls-encode.log",
         )
     ]
 

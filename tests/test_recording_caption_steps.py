@@ -1516,6 +1516,51 @@ def test_the_youtube_encode_step_encodes_the_published_delivery(tmp_path: Path) 
     }
 
 
+def test_the_voice_audio_step_reports_whether_it_restored_the_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    monkeypatch.setattr(captions, "voice_audio", lambda _pipeline, _run: None)
+    assert captions.voice_audio_step(pipeline, lambda _command, _log: None) == {"restored": False}
+    monkeypatch.setattr(captions, "voice_audio", lambda _pipeline, _run: {"audio": "a"})
+    assert captions.voice_audio_step(pipeline, lambda _command, _log: None) == {
+        "restored": True,
+        "audio": "a",
+    }
+
+
+def test_the_hls_encode_step_reads_the_staged_master_or_an_existing_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = steps.load(configure(tmp_path))
+    (tmp_path / "steps" / "publish.json").write_text(
+        json.dumps({"outputs": {"delivery": "/d/m-review.mp4"}}), encoding="utf-8"
+    )
+    staged: list[tuple[Path, str]] = []
+    encoded: list[tuple[Path, str]] = []
+
+    def stage(movie: Path, *, ffmpeg: str) -> Path:
+        staged.append((movie, ffmpeg))
+        return Path("/d/encoded/m-review.mp4")
+
+    monkeypatch.setattr(youtube_master, "stage", stage)
+    monkeypatch.setattr(
+        viewer, "encode_hls", lambda _run, source, log: encoded.append((source, log.name))
+    )
+    assert captions.web_hls_encode_step(pipeline, lambda _command, _log: None) == {
+        "source": "/d/encoded/m-review.mp4"
+    }
+    assert staged == [(Path("/d/m-review.mp4"), pipeline.text("ffmpeg"))]
+    assert encoded == [(Path("/d/encoded/m-review.mp4"), "web-hls-encode.log")]
+    (pipeline.steps / "youtube-master.json").write_text(
+        '{"outputs": {"master": {"path": "/d/master/m-review.mp4"}}}', encoding="utf-8"
+    )
+    assert captions.web_hls_encode_step(pipeline, lambda _command, _log: None) == {
+        "source": "/d/master/m-review.mp4"
+    }
+    assert staged == [(Path("/d/m-review.mp4"), pipeline.text("ffmpeg"))]
+
+
 def test_the_youtube_master_step_replaces_the_delivery_and_syncs_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

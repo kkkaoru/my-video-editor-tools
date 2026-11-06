@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from replay import movie_decode, youtube_encode
 from replay import pipeline_completion as completion
 from replay import recording_viewer_steps as viewer
-from replay import youtube_encode
 from replay import youtube_master as master
 from replay.core import ReplayError
 
@@ -165,7 +165,7 @@ def test_a_pipeline_delivery_is_published_again_and_must_pass_its_check(
         return {}
 
     monkeypatch.setattr(completion, "publish", publish)
-    monkeypatch.setattr(viewer, "release_older", lambda root, path: calls.append(path))
+    monkeypatch.setattr(viewer, "release_older", lambda root, path, gated: calls.append(path))
     monkeypatch.setattr(completion, "assess", assess)
     assert master.master(delivery, ffmpeg=FFMPEG, ffprobe=FFPROBE) == published
     assert calls == [
@@ -192,8 +192,41 @@ def test_a_master_failing_its_completion_check_keeps_the_delivery(
         encoding="utf-8",
     )  # fmt: skip
     monkeypatch.setattr(completion, "publish", lambda root, **o: (delivery, index))
-    monkeypatch.setattr(viewer, "release_older", lambda root, path: None)
+    monkeypatch.setattr(viewer, "release_older", lambda root, path, gated: None)
     monkeypatch.setattr(completion, "assess", lambda i, **k: {"silence_cut": "frames differ"})
     with pytest.raises(ReplayError, match="fails its completion check"):
         master.republished(delivery, index, delivery, "youtube-x")
     assert delivery.exists()
+
+
+def test_a_pipeline_delivery_leaves_the_full_decode_to_its_completion_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    delivery, encode = excerpt(tmp_path)
+    monkeypatch.setattr(movie_decode, "decodes", lambda *_a, **_k: pytest.fail("decoded twice"))
+    proof = master.verified(delivery, encode, ffmpeg=FFMPEG, ffprobe=FFPROBE, decode=False)
+    assert proof["frames"] == 60
+
+
+def test_a_verified_excerpt_is_still_decoded_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    delivery, encode = excerpt(tmp_path)
+    monkeypatch.setattr(movie_decode, "decodes", lambda *_a, **_k: False)
+    with pytest.raises(ReplayError, match="decodes"):
+        master.verified(delivery, encode, ffmpeg=FFMPEG, ffprobe=FFPROBE)
+
+
+def test_the_staged_remux_is_made_once_for_the_hls_encode_and_the_master(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(master, "checkout_root", lambda: tmp_path)
+    (tmp_path / master.DELETIONS).parent.mkdir(parents=True)
+    delivery, encode = excerpt(tmp_path)
+    staged = master.stage(delivery, ffmpeg=FFMPEG)
+    inode = staged.stat().st_ino
+    assert master.stage(delivery, ffmpeg=FFMPEG) == staged
+    assert staged.stat().st_ino == inode
+    printed = master.master(delivery, ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    assert printed.stat().st_ino == inode  # the master is the very file the ladder was made from
+    assert not encode.with_suffix(master.STAGE_LOCK).exists()

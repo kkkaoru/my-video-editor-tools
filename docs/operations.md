@@ -401,8 +401,15 @@ PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m replay.volume_resume --volume /V
 | --- | --- |
 | Downloads (up to 3; a video waiting for YouTube's processed archive blocks none) | A video's bind and queueing, after its final original |
 | Queue slots (`slots`, at most 3) | GPU steps (`gpu_lease`) |
-| A pipeline's independent steps (`maxParallel`) | `compose`/`finish`, `youtube-encode`, `web-hls` (`SERIAL_STEPS`) |
+| A pipeline's independent steps (`maxParallel`), such as `cleanup` beside `yolo-track`, and `web-hls-encode` beside `summarize`, `youtube-master` and `clips` | `compose`/`finish`, `youtube-encode`, `web-hls-encode` (`SERIAL_STEPS`) |
 | | Web viewer sync and uploads (`withSyncLock`) |
+
+The order after `publish` keeps the wait short (2026-11-06): `youtube-encode`, then its remux is the
+master's final bytes, so `web-hls-encode` encodes the ladder at once at `nice 15`, and `web-hls` only
+uploads it after `youtube-master` passed; `clips` come after the master, because their record is
+stored under the published movie's content key. `voice-audio` makes the delivered voice right after
+`paging`, and `voice-remux` only muxes it. `cleanup` starts without waiting for `yolo-track`: its
+chunks wait for that pass's boxes one by one (`BOXES_START_SECONDS` before the first range).
 
 The runner checks both volumes every 15 minutes. With less than one recording's peak (83 GiB)
 spare above the floor it retires the intermediates of every idle recording whose gate passed

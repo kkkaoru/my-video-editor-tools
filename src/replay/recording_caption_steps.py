@@ -967,20 +967,19 @@ def planned_frames(pipeline: Pipeline) -> int:
     )
 
 
-def voice_remux_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+def voice_audio(pipeline: Pipeline, run: Runner) -> dict[str, object] | None:
     """With ``voice-remux.json`` beside ``pipeline.json`` (or ``voiceJudge``: no components, the
-    resampled tempo), the finished movie re-muxed with the delivered voice restored by its
-    components (``replay.voice_remux``): the paging tempo slots re-rendered from the restored
-    voice, rejected unless ``replay.voice_judge`` passes them, encoded under the loudness policy,
-    stream-copied with the finished video. Otherwise the finished movie unchanged."""
-    finished = record(read_json(pipeline.steps / "finish.json")["outputs"])
+    resampled tempo), the delivered voice restored by its components (``replay.voice_remux``): the
+    paging tempo slots re-rendered from the restored voice, rejected unless ``replay.voice_judge``
+    passes them, encoded under the loudness policy. None when the voice stays as it is. Every part
+    is made once, so the ``voice-remux`` step finds what ``voice-audio`` made."""
     path = pipeline.path.parent / voice_remux.SETTINGS
     captions = load_captions(pipeline)
     # The judge's resampled tempo is the voice's; a delivery that keeps its music has no voice.
     if not path.is_file() and (
         "voiceJudge" not in captions.data or "deliveryAudio" in captions.data
     ):
-        return {"movie": finished["movie"], "remuxed": False}
+        return None
     components, backend = voice_remux.settings(path) if path.is_file() else ([], "resample")
     if "deliveryAudio" in captions.data:
         raise ReplayError(
@@ -1019,13 +1018,32 @@ def voice_remux_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
                                                    float(str(level["truePeakDbtp"])))  # fmt: skip
     audio = encode_audio(tempo, root / "audio" / "tempo.m4a", ffmpeg=pipeline.text("ffmpeg"),
                          loudness=loudness)  # fmt: skip
-    output = captions.media(pipeline) / "final-remux" / "candidate.mp4"
+    return {
+        "tempoBackend": backend, **({"settings": pin(path)} if path.is_file() else {}),
+        "voice": pin(restored), "tempo": pin(tempo), "judge": pin(judge), "audio": pin(audio),
+    }  # fmt: skip
+
+
+def voice_audio_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+    """The delivered voice made as soon as paging fixed its tempo, beside the cleanup, instead of
+    after the finished movie (about ten minutes of a two-hour recording, CPU only)."""
+    made = voice_audio(pipeline, run)
+    return {"restored": False} if made is None else {"restored": True, **made}
+
+
+def voice_remux_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+    """The finished movie re-muxed with the restored voice (``voice_audio``), its video
+    stream-copied. Otherwise the finished movie unchanged."""
+    finished = record(read_json(pipeline.steps / "finish.json")["outputs"])
+    made = voice_audio(pipeline, run)
+    if made is None:
+        return {"movie": finished["movie"], "remuxed": False}
+    output = load_captions(pipeline).media(pipeline) / "final-remux" / "candidate.mp4"
     if not output.exists():
         movie = Path(str(record(finished["movie"])["path"]))
+        audio = Path(str(record(made["audio"])["path"]))
         voice_remux.remuxed(movie, audio, output, ffmpeg=pipeline.text("ffmpeg"))
-    return {"movie": pin(output), "remuxed": True, "tempoBackend": backend,
-            **({"settings": pin(path)} if path.is_file() else {}), "voice": pin(restored),
-            "tempo": pin(tempo), "judge": pin(judge), "audio": pin(audio)}  # fmt: skip
+    return {"movie": pin(output), "remuxed": True, **made}
 
 
 def delivered_movie(pipeline: Pipeline) -> dict[str, object]:
@@ -1077,10 +1095,24 @@ def youtube_encode_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     return {"youtube": pin(youtube_encode.output_of(movie))}
 
 
+def web_hls_encode_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+    """The HLS ladder of the master-to-be, encoded once its bytes are known: the master is the
+    staged remux published by a hard link, so nothing that follows waits for this and ``web-hls``
+    only uploads it, if the master passes its checks."""
+    earlier = pipeline.steps / "youtube-master.json"
+    if earlier.is_file():  # already the master, in a recording from before this step
+        source = Path(str(record(record(read_json(earlier)["outputs"])["master"])["path"]))
+    else:
+        movie = Path(str(record(read_json(pipeline.steps / "publish.json")["outputs"])["delivery"]))
+        source = youtube_master.stage(movie, ffmpeg=pipeline.text("ffmpeg"))
+    viewer.encode_hls(run, source, pipeline.logs / "web-hls-encode.log")
+    return {"source": str(source)}
+
+
 def youtube_master_step(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     """The verified YouTube encode published as the delivery (``replay.youtube_master``), once
-    the original passed its gate and gave the viewer its summary and clips; then the web viewer
-    is synced with it."""
+    the original passed its gate and gave the viewer its summary; then the web viewer is synced
+    with it."""
     movie = Path(str(record(read_json(pipeline.steps / "publish.json")["outputs"])["delivery"]))
     published = youtube_master.master(
         movie, ffmpeg=pipeline.text("ffmpeg"), ffprobe=pipeline.text("ffprobe")
@@ -1192,12 +1224,14 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "caption-parts": ("placement", "onsets"),
     "compose": ("caption-parts", "cleanup"),
     "finish": ("compose",),
-    "voice-remux": ("finish",),
+    "voice-audio": ("paging",),
+    "voice-remux": ("finish", "voice-audio"),
     "publish": ("finish", "voice-remux"),
     "youtube-encode": ("publish",),
     "caption-plan": ("publish", "caption-parts", "yolo-track"),
     "youtube-master": ("youtube-encode", "caption-plan"),
-    "web-hls": ("youtube-master",),
+    "web-hls-encode": ("youtube-encode",),
+    "web-hls": ("youtube-master", "web-hls-encode"),
     "excitement": ("publish",),
     "upload": ("publish", "excitement"),
     "summarize": ("publish", "caption-plan"),
@@ -1215,11 +1249,13 @@ STEPS: dict[str, front.StepFunction] = {
     "caption-parts": caption_parts_step,
     "compose": compose,
     "finish": finish,
+    "voice-audio": voice_audio_step,
     "voice-remux": voice_remux_step,
     "publish": publish,
     "caption-plan": caption_plan_step,
     "youtube-encode": youtube_encode_step,
     "youtube-master": youtube_master_step,
+    "web-hls-encode": web_hls_encode_step,
     "web-hls": viewer.web_hls,
     "excitement": excitement,
     "upload": upload,
@@ -1253,12 +1289,14 @@ def step_outputs(pipeline: Pipeline, step: str) -> tuple[Path, ...]:
         "caption-parts": (work / "caption-parts-v1", media / "alpha"),
         "compose": (work / "compose-v1", work / DELIVERY_AUDIO, media / "compose", media / "badge"),
         "finish": (media / "final",),
+        "voice-audio": (work / VOICE_REMUX,),
         "voice-remux": (work / VOICE_REMUX, media / "final-remux"),
         "publish": (),  # a published delivery is never deleted by a forced re-run
         "caption-plan": (),  # written once beside the delivery; a re-run keeps an identical one
         "youtube-encode": (work / YOUTUBE_ENCODE,),  # the upload copy stays beside its delivery
         "youtube-master": (),  # a master replaces its delivery once; nothing to redo
-        "web-hls": (),  # the ladder lives only in the bucket; its local encode is always removed
+        "web-hls-encode": (),  # replaced whenever its source changed; web-hls removes it
+        "web-hls": (),  # the ladder lives only in the bucket; its local encode is removed then
         "excitement": (),  # sidecars beside a delivery stay with it
         "upload": (),
         "summarize": (),
