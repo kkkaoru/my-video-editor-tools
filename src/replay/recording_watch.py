@@ -102,9 +102,12 @@ def status_lines(log: Path, *, defaults: dict[str, object], checkout: Path) -> I
         name = str(row["recording"])
         layout = pipelines.layout_of(name, defaults, checkout)
         done = [found[0] for found in finished_steps(layout.steps)]
-        left = [step for step in STEPS if step not in done]
+        # A recording published before a step was added stays done without that step's receipt.
+        finished = row["state"] == "done"
+        left = [] if finished else [step for step in STEPS if step not in done]
+        total = len(done) if finished else len(STEPS)
         yield (
-            f"{name}: {row['state']}, {len(done)}/{len(STEPS)} steps, "
+            f"{name}: {row['state']}, {len(done)}/{total} steps, "
             f"last {done[-1] if done else '-'}, next {', '.join(left[:3]) or '-'}"
         )
         yield from running_lines(name, defaults=defaults, checkout=checkout)

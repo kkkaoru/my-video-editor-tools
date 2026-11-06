@@ -185,3 +185,20 @@ def test_each_finished_step_is_reported_once_with_its_place_and_status_shows_the
         "  web-hls: 42% (read of a.mp4)\n"
         "  asr: ? (no measure yet)\n"
     )
+
+
+def test_the_status_of_a_done_recording_names_no_step_added_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values = setup(tmp_path, monkeypatch, [{"recording": "7", "state": "done"}])
+    steps = pipelines.layout_of("7", values["defaults"], tmp_path).steps
+    steps.mkdir(parents=True)
+    (steps / "web-hls.json").write_text(
+        json.dumps({"endedAt": 1.0, "wallSeconds": 9.0}), encoding="utf-8"
+    )
+    monkeypatch.setattr(pipelines, "load_defaults", lambda _path: values["defaults"])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(recording_progress, "running_steps", lambda *_a, **_k: [])
+    arguments = ["--queue", "q.json", "--defaults", "d.json", "--jobs", "jobs", "--status"]
+    assert watch.main(arguments) == 0
+    assert capsys.readouterr().out == "7: done, 1/1 steps, last web-hls, next -\n"
