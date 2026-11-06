@@ -48,8 +48,9 @@ folder, the Hugging Face cache, and any folder you add. Downloads are pinned to 
 
 In the GeForce build, on a PC with a GeForce, the model manager offers the CUDA runtime download (509 MB) for speaker
 separation; no other build or machine lists it. NVFP4 and Q2_0_M run only on CUDA. Nemotron speaker models reach eight
-speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened. Without a usable
-Nemotron 3.5 every job is for one speaker; the saved number comes back once one is downloaded.
+speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened. One speaker is light: only Whisper
+runs. Automatic detection and two or more speakers are heavy: Nemotron also runs. Without a usable Nemotron 3.5 every job
+is for one speaker; the saved number comes back once one is downloaded.
 
 Models can be downloaded together, each with its own progress bar. Resetting deletes only what the app itself downloaded,
 after a confirmation; folders you added, anything overlapping them and the Hugging Face cache are never touched, and it

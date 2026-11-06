@@ -286,11 +286,12 @@ fn a_job_with_the_default_model_writes_the_chosen_format_and_the_transcript() {
     assert!(!root.join("clip.ttml").exists());
     assert!(!root.join("clip.fcpxml").exists());
     assert_eq!(outcome.speaker_count, 2);
-    assert_eq!(outcome.cue_count, 2);
+    // Each voice talks for under a second right beside the other: one caption, one colour.
+    assert_eq!(outcome.cue_count, 1);
     assert!(!outcome.faceless);
     assert_eq!(
         fs::read_to_string(root.join("clip.srt")).unwrap(),
-        "1\n00:00:00,100 --> 00:00:00,933\n<font color=\"#FFFFFF\">はい</font>\n\n2\n00:00:01,000 --> 00:00:01,870\n<font color=\"#005A9C\">どうも</font>\n\n"
+        "1\n00:00:00,100 --> 00:00:01,870\n<font color=\"#005A9C\">はいどうも</font>\n\n"
     );
     assert_eq!(fs::read_dir(paths.jobs_dir()).unwrap().count(), 0);
 }
@@ -865,7 +866,7 @@ fn relayout_writes_to_the_base_it_is_given() {
     .unwrap();
     assert_eq!(stages, vec![Stage::Export, Stage::Export]);
     assert_eq!(outcome.base.file_name().unwrap(), "clip");
-    assert_eq!(outcome.cue_count, 2);
+    assert_eq!(outcome.cue_count, 1);
     let saved = Transcript::load(&root.join("clip.transcript.json")).unwrap();
     assert_eq!(saved.metrics.font_px, 72.0);
     assert_eq!(

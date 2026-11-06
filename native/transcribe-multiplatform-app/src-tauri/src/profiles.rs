@@ -18,7 +18,6 @@ const FIRST_COPY_NUMBER: u32 = 2;
 #[serde(default)]
 pub struct CaptionLook {
     pub palette: Vec<SpeakerColor>,
-    pub unassigned: SpeakerColor,
     pub font_family: String,
     pub font_ratio: f64,
     pub line_height: f64,
@@ -45,7 +44,6 @@ impl CaptionLook {
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             palette: settings.palette.clone(),
-            unassigned: settings.unassigned.clone(),
             font_family: settings.font_family.clone(),
             font_ratio: settings.font_ratio,
             line_height: settings.line_height,
@@ -62,7 +60,6 @@ impl CaptionLook {
         Settings {
             // A profile saved by an earlier version may hold more colours than can be used.
             palette: self.palette.into_iter().take(MAX_SPEAKER_COLORS).collect(),
-            unassigned: self.unassigned,
             font_family: self.font_family,
             font_ratio: self.font_ratio,
             line_height: self.line_height,
@@ -484,7 +481,7 @@ mod tests {
         assert!(read_import(&file).is_err());
         std::fs::write(
             &file,
-            br##"{"name":"A","look":{"unassigned":{"fill":"red","outline":"#FFFFFF"}}}"##,
+            br##"{"name":"A","look":{"palette":[{"fill":"red","outline":"#FFFFFF"}]}}"##,
         )
         .unwrap();
         assert!(read_import(&file).is_err());

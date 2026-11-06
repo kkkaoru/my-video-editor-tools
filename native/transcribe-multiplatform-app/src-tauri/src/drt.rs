@@ -1091,6 +1091,16 @@ mod tests {
     }
 
     #[test]
+    fn a_caption_without_a_speaker_is_drawn_as_speaker_one_not_grey() {
+        let bytes = default_render(VERTICAL, vec![cue(1.0, 2.0, None, &["はい"])]);
+        let (_, _, sequence, _) = opened(&bytes);
+        let lua = title_lua(&sequence, 0);
+        assert!(lua.contains("Red1 = Input { Value = 1, }"), "{lua}");
+        assert!(lua.contains("Green1 = Input { Value = 1, }"), "{lua}");
+        assert!(lua.contains("Blue1 = Input { Value = 1, }"), "{lua}");
+    }
+
+    #[test]
     fn a_transparent_rim_and_no_shadow_write_no_elements() {
         let bytes = default_render(VERTICAL, vec![cue(1.0, 2.0, Some(2), &["はい"])]);
         let (_, _, sequence, _) = opened(&bytes);

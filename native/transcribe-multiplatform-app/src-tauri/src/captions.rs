@@ -1,7 +1,7 @@
 //! Turns timed words and speaker turns into positioned caption cues.
 //!
-//! Speaker rule from `replay.diarized_words`: a word gets a speaker only when one voice clearly
-//! dominates its time span. Overlapping voices stay unassigned rather than guessed.
+//! Every word gets a speaker, so no caption is left without one's colours: the voice covering it
+//! longest, else the nearest in time.
 //!
 //! Paging is the repo's static whole-phrase display (`caption_phrase_ass.phrase_cues`) over the
 //! morphology of `replay.caption_linguistics`, with the word filters of `caption_timing` and the
@@ -20,11 +20,9 @@ use crate::settings::{Anchor, Settings, SubtitleFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
-/// Fraction of a word one speaker must cover, and the lead it needs over the next (diarized_words).
-const DOMINANT_SHARE: f64 = 0.6;
-const DOMINANT_MARGIN: f64 = 0.2;
-/// Timing noise: a word just outside a turn belongs to the nearest speaker within this gap.
-const SILENT_WORD_REACH_SECONDS: f64 = 1.0;
+const FIRST_SPEAKER: u32 = 1;
+/// A speaker talking for less than this, right beside other speech, is not told apart inside a caption.
+const MIN_TURN_SECONDS: f64 = 1.0;
 /// Two speakers talk at once when their words coincide for this long; less is timing error (0.22 s).
 const SIMULTANEOUS_SECONDS: f64 = 0.25;
 /// `speaker_subtitles.STACK_GAP`: the space between rows of captions shown together.
@@ -271,14 +269,6 @@ const fn unscaled() -> f64 {
     1.0
 }
 
-/// What a word's overlap with the turns says about its speaker.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Voice {
-    Speaker(u32),
-    Overlapped,
-    Silent,
-}
-
 fn fcpxml_title_scale(info: &VideoInfo) -> f64 {
     f64::from(info.height) / FCPXML_REFERENCE_HEIGHT * FCPXML_ADVANCE_RATIO
 }
@@ -314,11 +304,8 @@ fn overlap(word: &Word, turn: &SpeakerTurn) -> f64 {
     (word.end.min(turn.end) - word.start.max(turn.start)).max(0.0)
 }
 
-fn descending_share(left: &(u32, f64), right: &(u32, f64)) -> std::cmp::Ordering {
-    right.1.total_cmp(&left.1)
-}
-
-fn voice_of(word: &Word, turns: &[SpeakerTurn]) -> Voice {
+/// The speaker whose turns cover the word longest; on a tie, whoever spoke the word before.
+fn longest_voice(word: &Word, turns: &[SpeakerTurn], previous: Option<u32>) -> Option<u32> {
     let mut amounts: Vec<(u32, f64)> = Vec::new();
     for turn in turns {
         let share = overlap(word, turn);
@@ -333,19 +320,14 @@ fn voice_of(word: &Word, turns: &[SpeakerTurn]) -> Voice {
             None => amounts.push((turn.speaker, share)),
         }
     }
-    amounts.sort_by(descending_share);
-    let Some(&(top, top_share)) = amounts.first() else {
-        return Voice::Silent;
-    };
-    let duration = (word.end - word.start).max(f64::EPSILON);
-    let runner_up = amounts.get(1).map_or(0.0, |entry| entry.1);
-    if amounts.len() > 1 && top_share - runner_up < DOMINANT_MARGIN * duration {
-        return Voice::Overlapped;
-    }
-    if amounts.len() > 1 && top_share < DOMINANT_SHARE * duration {
-        return Voice::Overlapped;
-    }
-    Voice::Speaker(top)
+    let longest = amounts.iter().map(|entry| entry.1).fold(0.0, f64::max);
+    let mut tied = amounts.iter().filter(|entry| entry.1 == longest);
+    let first = tied.next()?.0;
+    Some(
+        previous
+            .filter(|speaker| tied.any(|entry| entry.0 == *speaker) || first == *speaker)
+            .unwrap_or(first),
+    )
 }
 
 fn distance_to_turn(word: &Word, turn: &SpeakerTurn) -> f64 {
@@ -355,42 +337,22 @@ fn distance_to_turn(word: &Word, turn: &SpeakerTurn) -> f64 {
 fn nearest_speaker(word: &Word, turns: &[SpeakerTurn]) -> Option<u32> {
     turns
         .iter()
-        .map(|turn| (distance_to_turn(word, turn), turn.speaker))
-        .filter(|(distance, _)| *distance <= SILENT_WORD_REACH_SECONDS)
-        .min_by(|left, right| left.0.total_cmp(&right.0))
-        .map(|(_, speaker)| speaker)
+        .min_by(|left, right| {
+            distance_to_turn(word, left).total_cmp(&distance_to_turn(word, right))
+        })
+        .map(|turn| turn.speaker)
 }
 
-/// Words the diarizer heard nothing for, between two words of the same speaker, are that speaker's
-/// quiet speech. Overlapped voices never take a neighbour's identity.
-fn fill_quiet_runs(words: &mut [Word], voices: &[Voice]) {
-    let mut previous = None;
-    let mut run_start = 0;
-    for index in 0..words.len() {
-        let Some(speaker) = words[index].speaker else {
-            continue;
-        };
-        if previous == Some(speaker) && !voices[run_start..index].contains(&Voice::Overlapped) {
-            for word in &mut words[run_start..index] {
-                word.speaker = Some(speaker);
-            }
-        }
-        previous = Some(speaker);
-        run_start = index + 1;
-    }
-}
-
-/// Sets each word's speaker. Overlapped voices stay `None`; silent gaps are timing noise or quiet speech.
+/// Gives every word a speaker: the longest voice over it, else the nearest; with no turns at all, speaker 1.
 pub fn assign_speakers(words: &mut [Word], turns: &[SpeakerTurn]) {
-    let voices: Vec<Voice> = words.iter().map(|word| voice_of(word, turns)).collect();
-    for (word, voice) in words.iter_mut().zip(&voices) {
-        word.speaker = match voice {
-            Voice::Speaker(speaker) => Some(*speaker),
-            Voice::Overlapped => None,
-            Voice::Silent => nearest_speaker(word, turns),
-        };
+    let mut previous = None;
+    for word in words {
+        let speaker = longest_voice(word, turns, previous)
+            .or_else(|| nearest_speaker(word, turns))
+            .unwrap_or(FIRST_SPEAKER);
+        word.speaker = Some(speaker);
+        previous = Some(speaker);
     }
-    fill_quiet_runs(words, &voices);
 }
 
 fn estimated_glyph_em(c: char) -> f64 {
@@ -674,28 +636,16 @@ fn group_words(words: &[Word]) -> Vec<Vec<Word>> {
     groups
 }
 
-fn visible_characters<'a>(words: impl Iterator<Item = &'a Word>) -> usize {
-    words
-        .flat_map(|word| word.text.chars())
-        .filter(|c| !c.is_whitespace())
-        .count()
-}
-
-/// A short stretch the diarizer could not attribute, often one piece of a word (暮|ら|し), stays
-/// with the neighbouring speaker's words on the page; the words themselves keep no speaker.
+/// A stretch too brief to read alone stays with the same speaker's words beside it on the page.
 fn joins_stray(group: &[Word], next: &[Word]) -> bool {
     let (Some(last), Some(first)) = (group.last(), next.first()) else {
         return false;
     };
-    let unattributed = |word: &&Word| word.speaker.is_none();
-    let stray = visible_characters(group.iter().rev().take_while(unattributed))
-        .max(visible_characters(next.iter().take_while(unattributed)));
-    let speakers = [group, next].map(|words| words.iter().find_map(|word| word.speaker));
     let too_brief = next.iter().last().map_or(0.0, |word| word.end) - first.start
         < SHORTEST_GROUP_SECONDS
         || last.end - group.first().map_or(last.start, |word| word.start) < SHORTEST_GROUP_SECONDS;
-    (stray > 0 && stray <= WRAP_ORPHAN_MAXIMUM || too_brief)
-        && (speakers[0].is_none() || speakers[1].is_none() || speakers[0] == speakers[1])
+    too_brief
+        && last.speaker == first.speaker
         && first.start - last.end <= CUE_BREAK_PAUSE_SECONDS
         && !ends_sentence(last)
 }
@@ -1508,6 +1458,165 @@ fn following_silence(group: &[Word], next: Option<&Vec<Word>>) -> f64 {
         .map_or(f64::INFINITY, |word| word.start - last_end)
 }
 
+/// Consecutive words of one speaker: `words[first..end]`, sounding from `start` to `stop`.
+struct Turn {
+    first: usize,
+    end: usize,
+    speaker: Option<u32>,
+    start: f64,
+    stop: f64,
+    /// Sounds at once with the turn beside it: real overlap, shown on rows of its own.
+    together: bool,
+}
+
+fn turns_of(words: &[Word]) -> Vec<Turn> {
+    let mut turns: Vec<Turn> = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        match turns.last_mut() {
+            Some(turn) if turn.speaker == word.speaker => {
+                turn.end = index + 1;
+                turn.stop = turn.stop.max(word.end);
+            }
+            _ => turns.push(Turn {
+                first: index,
+                end: index + 1,
+                speaker: word.speaker,
+                start: word.start,
+                stop: word.end,
+                together: false,
+            }),
+        }
+    }
+    for index in 1..turns.len() {
+        let (left, right) = turns.split_at_mut(index);
+        let (before, after) = (&mut left[index - 1], &mut right[0]);
+        let at_once: f64 = words[before.first..before.end]
+            .iter()
+            .flat_map(|a| words[after.first..after.end].iter().map(move |b| (a, b)))
+            .map(|(a, b)| (a.end.min(b.end) - a.start.max(b.start)).max(0.0))
+            .sum();
+        if at_once >= SIMULTANEOUS_SECONDS {
+            before.together = true;
+            after.together = true;
+        }
+    }
+    turns
+}
+
+/// The neighbour a brief turn belongs with: right beside it, the same speaker on both sides first,
+/// then the closer one. A turn set apart by pauses is a caption of its own and keeps its speaker.
+fn turn_to_join(turns: &[Turn], index: usize) -> Option<usize> {
+    let turn = &turns[index];
+    let beside = |other: usize, gap: f64| {
+        (!turns[other].together && gap <= CUE_BREAK_PAUSE_SECONDS).then_some((other, gap))
+    };
+    let before = index
+        .checked_sub(1)
+        .and_then(|other| beside(other, turn.start - turns[other].stop));
+    let after = turns
+        .get(index + 1)
+        .and_then(|next| beside(index + 1, next.start - turn.stop));
+    match (before, after) {
+        (Some((left, _)), Some((right, _))) if turns[left].speaker == turns[right].speaker => {
+            Some(left)
+        }
+        (Some((left, gap_left)), Some((right, gap_right))) => {
+            Some(if gap_left <= gap_right { left } else { right })
+        }
+        (one, other) => one.or(other).map(|(neighbour, _)| neighbour),
+    }
+}
+
+fn merge_turn_into_neighbours(turns: &mut Vec<Turn>, index: usize, speaker: Option<u32>) {
+    turns[index].speaker = speaker;
+    if turns
+        .get(index + 1)
+        .is_some_and(|next| next.speaker == speaker)
+    {
+        let next = turns.remove(index + 1);
+        turns[index].end = next.end;
+        turns[index].stop = turns[index].stop.max(next.stop);
+    }
+    if index > 0 && turns[index - 1].speaker == speaker {
+        let turn = turns.remove(index);
+        let before = &mut turns[index - 1];
+        before.end = turn.end;
+        before.stop = before.stop.max(turn.stop);
+    }
+}
+
+/// Moves a change of speaker inside a word to the end of that word, whichever side is shorter to move.
+fn keep_words_whole(words: &mut [Word], turns: &[Turn], segmenter: &Segmenter) -> AppResult<()> {
+    let text: String = words.iter().map(|word| word.text.as_str()).collect();
+    let inside: HashSet<usize> = segmenter.boundaries(&text)?.morphemes.into_iter().collect();
+    let mut offsets = Vec::with_capacity(words.len());
+    let mut offset = 0;
+    for word in words.iter() {
+        offset += word.text.chars().count();
+        offsets.push(offset);
+    }
+    for pair in turns
+        .windows(2)
+        .filter(|pair| !pair[0].together && !pair[1].together)
+    {
+        let change = pair[1].first;
+        let word_start = (pair[0].first..change)
+            .rev()
+            .find(|index| *index == pair[0].first || inside.contains(&offsets[index - 1]))
+            .unwrap_or(change);
+        let word_end = (change..pair[1].end)
+            .find(|index| inside.contains(&offsets[*index]))
+            .map_or(pair[1].end, |index| index + 1);
+        if inside.contains(&offsets[change - 1]) {
+            continue;
+        }
+        let seconds = |range: std::ops::Range<usize>| -> f64 {
+            words[range].iter().map(|word| word.end - word.start).sum()
+        };
+        let (range, speaker) = if seconds(word_start..change) <= seconds(change..word_end) {
+            (word_start..change, pair[1].speaker)
+        } else {
+            (change..word_end, pair[0].speaker)
+        };
+        words[range]
+            .iter_mut()
+            .for_each(|word| word.speaker = speaker);
+    }
+    Ok(())
+}
+
+/// Takes the flicker out of the diarizer's labels: a brief turn right beside other speech joins its
+/// neighbour, shortest first, and no word is split between two speakers. Real overlap stays as it is.
+pub fn smooth_speakers(words: &mut [Word], segmenter: &Segmenter) -> AppResult<()> {
+    let mut turns = turns_of(words);
+    if turns.len() < 2 {
+        return Ok(());
+    }
+    loop {
+        let shortest = (0..turns.len())
+            .filter(|index| {
+                !turns[*index].together
+                    && turns[*index].stop - turns[*index].start < MIN_TURN_SECONDS
+            })
+            .filter_map(|index| turn_to_join(&turns, index).map(|neighbour| (index, neighbour)))
+            .min_by(|left, right| {
+                let length = |index: usize| turns[index].stop - turns[index].start;
+                length(left.0).total_cmp(&length(right.0))
+            });
+        let Some((index, neighbour)) = shortest else {
+            break;
+        };
+        let speaker = turns[neighbour].speaker;
+        merge_turn_into_neighbours(&mut turns, index, speaker);
+    }
+    for turn in &turns {
+        words[turn.first..turn.end]
+            .iter_mut()
+            .for_each(|word| word.speaker = turn.speaker);
+    }
+    keep_words_whole(words, &turns, segmenter)
+}
+
 /// One speaker's words without a real pause, as indexes into the words.
 struct SpeakerSpan {
     speaker: Option<u32>,
@@ -1625,7 +1734,7 @@ fn stack_rows(
     let (margin, gap) = (MARGIN_PX * short_edge, ROW_GAP_PX * short_edge);
     let height_of = |cue: &Cue| block_height(cue.lines.len(), metrics, settings);
     let mut speakers: Vec<Option<u32>> = cues.iter().map(|cue| cue.speaker).collect();
-    speakers.sort_by_key(|speaker| speaker.unwrap_or(u32::MAX));
+    speakers.sort_unstable();
     speakers.dedup();
     let rows: Vec<f64> = speakers
         .iter()
@@ -1731,6 +1840,7 @@ pub fn build_cues(
     let mut placer = FacePlacer::new(faces, info, metrics, settings);
     let rate = f64::from(info.fps_num) / f64::from(info.fps_den);
     let mut shown = display_words(words, info.duration);
+    smooth_speakers(&mut shown, segmenter)?;
     let apart = speakers_apart(&shown);
     let talk_at_once = apart.is_some();
     if let Some(words) = apart {
@@ -1952,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_voices_are_not_guessed() {
+    fn a_tie_with_nobody_before_goes_to_the_first_voice() {
         let mut words = [word(0.0, 1.0, "は")];
         assign_speakers(
             &mut words,
@@ -1969,7 +2079,7 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(words[0].speaker, None);
+        assert_eq!(words[0].speaker, Some(1));
     }
 
     #[test]
@@ -1987,7 +2097,7 @@ mod tests {
     }
 
     #[test]
-    fn a_word_far_from_any_speech_stays_unassigned() {
+    fn a_word_far_from_any_speech_takes_the_nearest_speaker() {
         let mut words = [word(9.0, 9.1, "ね")];
         assign_speakers(
             &mut words,
@@ -1997,7 +2107,7 @@ mod tests {
                 speaker: 3,
             }],
         );
-        assert_eq!(words[0].speaker, None);
+        assert_eq!(words[0].speaker, Some(3));
     }
 
     #[test]
@@ -2026,7 +2136,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_words_between_two_speakers_stay_unassigned() {
+    fn quiet_words_between_two_speakers_take_the_nearer_one() {
         let mut words = [
             word(0.0, 1.0, "あ"),
             word(5.0, 5.1, "い"),
@@ -2047,11 +2157,11 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(words[1].speaker, None);
+        assert_eq!(words[1].speaker, Some(2));
     }
 
     #[test]
-    fn overlapped_words_never_take_a_neighbours_speaker() {
+    fn a_tie_goes_to_the_speaker_of_the_word_before() {
         let mut words = [
             word(0.0, 1.0, "あ"),
             word(2.0, 3.0, "い"),
@@ -2077,12 +2187,12 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(words[1].speaker, None);
+        assert_eq!(words[1].speaker, Some(1));
     }
 
     #[test]
     fn speaker_changes_start_a_new_cue() {
-        let words = [spoken(0.0, 1.0, "はい", 1), spoken(1.1, 2.0, "いいえ", 2)];
+        let words = [spoken(0.0, 1.0, "はい", 1), spoken(1.1, 2.2, "いいえ", 2)];
         let (cues, _) =
             build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(cues.len(), 2);
@@ -2165,7 +2275,10 @@ mod tests {
 
     #[test]
     fn a_short_cue_gets_its_minimum_time_before_a_late_next_cue() {
-        let words = [spoken(0.0, 0.3, "はい。", 1), spoken(0.4, 2.0, "いいえ", 2)];
+        let words = [
+            spoken(0.0, 0.3, "はい。", 1),
+            spoken(0.81, 2.0, "いいえ", 2),
+        ];
         let (cues, _) =
             build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
         assert_eq!(
@@ -2867,7 +2980,7 @@ mod tests {
 
     #[test]
     fn a_stray_at_the_cue_time_limit_joins_by_time_too() {
-        let group = [word(0.0, 0.3, "はいそうですありがとう")];
+        let group = [spoken(0.0, 0.3, "はいそうですありがとう", 1)];
         let next = [spoken(0.3, 0.5, "いいですよそのとおり", 1)];
         assert!(joins_stray(&group, &next));
     }
@@ -2917,7 +3030,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leading_voice_below_the_dominant_share_is_not_guessed() {
+    fn the_voice_covering_a_word_longest_gets_it() {
         let mut words = [word(0.0, 1.0, "は")];
         assign_speakers(
             &mut words,
@@ -2934,7 +3047,7 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(words[0].speaker, None);
+        assert_eq!(words[0].speaker, Some(1));
     }
 
     #[test]
@@ -3621,37 +3734,185 @@ mod tests {
         );
     }
 
+    fn speakers_after_smoothing(mut words: Vec<Word>) -> Vec<Option<u32>> {
+        smooth_speakers(&mut words, test_segmenter()).unwrap();
+        words.iter().map(|word| word.speaker).collect()
+    }
+
     #[test]
-    fn stray_words_of_no_speaker_join_the_speakers_words_on_the_page() {
-        let words = [
-            spoken(0.0, 0.5, "二人暮", 1),
-            word(0.5, 0.7, "ら"),
-            spoken(0.7, 1.0, "しで", 1),
-        ];
-        let (cues, _) =
-            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
-        assert_eq!(cues[0].lines, vec!["二人暮らしで"]);
-        assert_eq!(cues[0].speaker, Some(1));
-        assert_eq!(words[1].speaker, None);
+    fn a_brief_turn_between_two_of_the_same_speaker_joins_them() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は", 1),
+                spoken(2.0, 2.4, "うん", 2),
+                spoken(2.4, 4.0, "いい天気", 1),
+            ]),
+            vec![Some(1), Some(1), Some(1)]
+        );
+    }
+
+    #[test]
+    fn a_brief_turn_set_apart_by_pauses_keeps_its_speaker() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は", 1),
+                spoken(3.0, 3.4, "うん", 2),
+                spoken(4.0, 6.0, "いい天気", 1),
+            ]),
+            vec![Some(1), Some(2), Some(1)]
+        );
+    }
+
+    #[test]
+    fn a_long_enough_turn_keeps_its_colour_inside_a_sentence() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は。", 1),
+                spoken(2.0, 3.0, "本当に。", 2),
+                spoken(3.0, 5.0, "いい天気。", 1),
+            ]),
+            vec![Some(1), Some(2), Some(1)]
+        );
+    }
+
+    #[test]
+    fn a_brief_turn_between_two_others_joins_the_closer_one() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は", 1),
+                spoken(2.3, 2.5, "もう", 2),
+                spoken(2.6, 5.0, "いい天気", 3),
+            ]),
+            vec![Some(1), Some(3), Some(3)]
+        );
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は", 1),
+                spoken(2.1, 2.3, "もう", 2),
+                spoken(2.7, 5.0, "いい天気", 3),
+            ]),
+            vec![Some(1), Some(1), Some(3)]
+        );
+    }
+
+    #[test]
+    fn a_brief_first_or_last_turn_joins_the_one_beside_it() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 0.3, "ね", 2),
+                spoken(0.3, 3.0, "今日は", 1),
+                spoken(3.1, 3.3, "ね", 2),
+            ]),
+            vec![Some(1), Some(1), Some(1)]
+        );
+    }
+
+    #[test]
+    fn flickering_labels_settle_on_one_speaker() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 0.2, "あ", 1),
+                spoken(0.2, 0.4, "い", 2),
+                spoken(0.4, 0.6, "う", 1),
+                spoken(0.6, 0.8, "え", 2),
+                spoken(0.8, 3.0, "お", 2),
+            ]),
+            vec![Some(2), Some(2), Some(2), Some(2), Some(2)]
+        );
+    }
+
+    #[test]
+    fn a_change_of_speaker_never_falls_inside_a_word() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日はとても", 1),
+                spoken(2.0, 2.1, "眠", 1),
+                spoken(2.1, 2.3, "く", 2),
+                spoken(2.3, 4.0, "なってきましたね", 2),
+            ]),
+            vec![Some(1), Some(2), Some(2), Some(2)]
+        );
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日はとても", 1),
+                spoken(2.0, 2.3, "眠", 1),
+                spoken(2.3, 2.4, "く", 2),
+                spoken(2.4, 4.0, "なってきましたね", 2),
+            ]),
+            vec![Some(1), Some(1), Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn a_change_between_two_words_stays_where_it_is() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 2.0, "今日は", 1),
+                spoken(2.0, 4.0, "天気です", 2),
+            ]),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn voices_really_at_once_are_not_smoothed() {
+        assert_eq!(
+            speakers_after_smoothing(vec![
+                spoken(0.0, 3.0, "今日は", 1),
+                spoken(1.0, 1.5, "うん", 2),
+            ]),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn one_speaker_has_nothing_to_smooth() {
+        assert_eq!(
+            speakers_after_smoothing(vec![spoken(0.0, 0.2, "あ", 1), spoken(5.0, 5.2, "い", 1)]),
+            vec![Some(1), Some(1)]
+        );
     }
 
     #[test]
     fn a_stray_never_bridges_two_speakers() {
-        let words = [
-            spoken(0.0, 0.5, "はい", 1),
-            word(0.5, 0.7, "ん"),
-            spoken(0.7, 1.0, "いいえ", 2),
-        ];
-        let (cues, _) =
-            build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
+        let group = [spoken(0.0, 0.3, "はい", 1)];
+        let next = [spoken(0.3, 0.5, "いいえ", 2)];
+        assert!(!joins_stray(&group, &next));
+    }
+
+    #[test]
+    fn a_tie_prefers_the_speaker_before_over_the_first_voice() {
+        let mut words = [word(0.0, 1.0, "あ"), word(2.0, 3.0, "い")];
+        assign_speakers(
+            &mut words,
+            &[
+                SpeakerTurn {
+                    start: 0.0,
+                    end: 1.0,
+                    speaker: 2,
+                },
+                SpeakerTurn {
+                    start: 2.0,
+                    end: 2.5,
+                    speaker: 1,
+                },
+                SpeakerTurn {
+                    start: 2.5,
+                    end: 3.0,
+                    speaker: 2,
+                },
+            ],
+        );
+        assert_eq!(words[1].speaker, Some(2));
+    }
+
+    #[test]
+    fn no_turns_at_all_make_everyone_speaker_one() {
+        let mut words = [word(0.0, 1.0, "あ"), word(2.0, 3.0, "い")];
+        assign_speakers(&mut words, &[]);
         assert_eq!(
-            cues.iter()
-                .map(|cue| (cue.lines.join(""), cue.speaker))
-                .collect::<Vec<_>>(),
-            vec![
-                ("はいん".to_owned(), Some(1)),
-                ("いいえ".to_owned(), Some(2))
-            ]
+            words.iter().map(|word| word.speaker).collect::<Vec<_>>(),
+            vec![Some(1), Some(1)]
         );
     }
 
@@ -3756,11 +4017,11 @@ mod tests {
     }
 
     #[test]
-    fn three_people_and_an_unknown_voice_stack_with_the_unknown_last() {
+    fn four_people_stack_in_speaker_order() {
         let words = [
             spoken(0.0, 3.0, "今日はいい天気です", 3),
             spoken(0.5, 3.0, "本当にそうですね", 1),
-            word(1.0, 3.0, "聞こえますか"),
+            spoken(1.0, 3.0, "聞こえますか", 4),
             spoken(1.0, 3.0, "出かけましょう", 2),
         ];
         let settings = anchored(Anchor::VideoBottom);
@@ -3769,7 +4030,7 @@ mod tests {
         by_height.sort_by(|left, right| right.2.total_cmp(&left.2));
         assert_eq!(
             by_height.iter().map(|row| row.0).collect::<Vec<_>>(),
-            vec![Some(1), Some(2), Some(3), None]
+            vec![Some(1), Some(2), Some(3), Some(4)]
         );
         assert!(by_height.windows(2).all(|pair| pair[1].2 < pair[0].1));
     }
@@ -4217,9 +4478,9 @@ mod tests {
     #[test]
     fn cues_stay_long_enough_to_read_and_never_overlap_the_next() {
         let words = [
-            spoken(0.0, 0.1, "あ", 1),
-            spoken(0.3, 2.0, "い", 2),
-            spoken(2.0, 2.1, "う", 1),
+            spoken(0.0, 0.1, "はい。", 1),
+            spoken(0.7, 2.0, "いいえ。", 2),
+            spoken(2.6, 2.7, "はい。", 1),
         ];
         let (cues, _) =
             build_cues(&words, &[], &FULL_HD, &fcpxml_settings(), test_segmenter()).unwrap();
@@ -4227,7 +4488,7 @@ mod tests {
             cues.iter()
                 .map(|cue| (cue.start, (cue.end * 1000.0).round()))
                 .collect::<Vec<_>>(),
-            vec![(0.0, 833.0), (0.8333333333333334, 2000.0), (2.0, 2833.0)]
+            vec![(0.0, 833.0), (0.8333333333333334, 2120.0), (2.6, 3433.0)]
         );
     }
 

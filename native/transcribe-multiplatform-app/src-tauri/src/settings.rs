@@ -26,7 +26,6 @@ const OTHER_FILLS: [&str; MAX_SPEAKER_COLORS - 1] = [
     "#005A9C", "#6A1FA8", "#0B672C", "#A3123A", "#8A4500", "#7A1D7A", "#006262",
 ];
 /// Speaker-less words stay grey instead of borrowing someone's identity.
-const UNASSIGNED_FILL: &str = "#595959";
 const FONT_FAMILY: &str = "Noto Sans JP";
 /// 52 px at 1080p: the repository's single-speaker caption size.
 const DEFAULT_FONT_RATIO: f64 = 0.048;
@@ -138,7 +137,6 @@ fn known_ui_language<'de, D: Deserializer<'de>>(values: D) -> Result<String, D::
 pub struct Settings {
     /// One entry per speaker slot, editable in the app; only the first `MAX_SPEAKER_COLORS` are used.
     pub palette: Vec<SpeakerColor>,
-    pub unassigned: SpeakerColor,
     pub font_family: String,
     /// Font size as a fraction of the frame's short edge.
     pub font_ratio: f64,
@@ -187,7 +185,6 @@ impl Default for Settings {
             })
             .chain(OTHER_FILLS.iter().map(|fill| white_outlined(fill)))
             .collect(),
-            unassigned: white_outlined(UNASSIGNED_FILL),
             font_family: FONT_FAMILY.to_owned(),
             font_ratio: DEFAULT_FONT_RATIO,
             line_height: DEFAULT_LINE_HEIGHT,
@@ -313,9 +310,6 @@ pub(crate) fn migrate_look(look: &mut Value) {
         .into_iter()
         .flatten()
         .for_each(|color| migrate_color(color, outline, rim));
-    if let Some(color) = look.get_mut("unassigned") {
-        migrate_color(color, outline, rim);
-    }
 }
 
 fn migrate_color(color: &mut Value, outline: f64, rim: f64) {
@@ -360,9 +354,6 @@ fn parse_settings(text: &str) -> serde_json::Result<Settings> {
     if saved_version.unwrap_or(0) < SETTINGS_VERSION {
         let palette = value.get_mut("palette").and_then(Value::as_array_mut);
         palette.into_iter().flatten().for_each(clear_widthless_rim);
-        if let Some(color) = value.get_mut("unassigned") {
-            clear_widthless_rim(color);
-        }
     }
     serde_json::from_value(value)
 }
@@ -395,7 +386,6 @@ impl Settings {
             ));
         }
         self.palette.iter().try_for_each(validate_color)?;
-        validate_color(&self.unassigned)?;
         validate_ratio("font_ratio", self.font_ratio, 0.01, 0.3)?;
         validate_ratio("line_height", self.line_height, 1.0, 3.0)?;
         validate_ratio("width_ratio", self.width_ratio, 0.2, 1.0)?;
@@ -451,17 +441,15 @@ impl Settings {
     pub fn widest_edge_ratio(&self) -> f64 {
         self.palette
             .iter()
-            .chain(std::iter::once(&self.unassigned))
             .map(SpeakerColor::edge_ratio)
             .fold(0.0, f64::max)
     }
 
-    /// The colour for a 1-based speaker; extra speakers reuse slots instead of failing a finished run.
+    /// The colour for a 1-based speaker, speaker 1's without one; extra speakers reuse slots instead of
+    /// failing a finished run.
     #[must_use]
     pub fn color_for(&self, speaker: Option<u32>) -> &SpeakerColor {
-        let Some(number) = speaker.filter(|number| *number > 0) else {
-            return &self.unassigned;
-        };
+        let number = speaker.unwrap_or(1).max(1);
         let slot = (number as usize - 1) % self.palette.len().min(MAX_SPEAKER_COLORS);
         &self.palette[slot]
     }
@@ -530,8 +518,8 @@ mod tests {
         assert_eq!(settings.color_for(Some(1)).fill, "#FFFFFF");
         assert_eq!(settings.color_for(Some(2)).fill, "#005A9C");
         assert_eq!(settings.color_for(Some(9)).fill, "#FFFFFF");
-        assert_eq!(settings.color_for(None).fill, "#595959");
-        assert_eq!(settings.color_for(Some(0)).fill, "#595959");
+        assert_eq!(settings.color_for(None).fill, "#FFFFFF");
+        assert_eq!(settings.color_for(Some(0)).fill, "#FFFFFF");
     }
 
     #[test]
@@ -617,13 +605,18 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_unassigned_colour_is_rejected() {
-        let mut settings = Settings::default();
-        settings.unassigned.outline = "#12345".to_owned();
-        assert_eq!(
-            settings.validate().unwrap_err().to_string(),
-            "colours must be #RRGGBB: #595959 / #12345 / transparent"
-        );
+    fn a_file_with_the_retired_unassigned_colour_still_opens() {
+        let settings = parse_settings(
+            r##"{"settings_version":2,"language":"en","unassigned":{"fill":"red","outline":"#FFFFFF"}}"##,
+        )
+        .unwrap();
+        assert_eq!(settings.language, "en");
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("unassigned"));
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("#595959"));
     }
 
     #[test]
@@ -686,7 +679,6 @@ mod tests {
         let too_faint: Vec<&str> = settings
             .palette
             .iter()
-            .chain(std::iter::once(&settings.unassigned))
             .filter(|color| contrast(&color.fill, &color.outline) < 7.0)
             .map(|color| color.fill.as_str())
             .collect();
@@ -698,7 +690,6 @@ mod tests {
         let settings = Settings::default();
         let not_white: Vec<&str> = settings.palette[1..]
             .iter()
-            .chain(std::iter::once(&settings.unassigned))
             .filter(|color| color.outline != "#FFFFFF")
             .map(|color| color.fill.as_str())
             .collect();
@@ -862,15 +853,13 @@ mod tests {
                     {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0},
                     {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000"},
                     {"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.03}
-                ],
-                "unassigned":{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}}"##,
+                ]}"##,
         )
         .unwrap();
         assert_eq!(settings.subtitle_format, SubtitleFormat::Fcpxml);
         assert_eq!(settings.palette[0].rim, None);
         assert_eq!(settings.palette[1].rim, None);
         assert_eq!(settings.palette[2].rim.as_deref(), Some("#000000"));
-        assert_eq!(settings.unassigned.rim, None);
     }
 
     #[test]
@@ -893,12 +882,10 @@ mod tests {
     fn a_rim_of_no_width_saved_by_version_two_stays() {
         let settings = parse_settings(
             r##"{"settings_version":2,
-                "palette":[{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}],
-                "unassigned":{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}}"##,
+                "palette":[{"fill":"#111111","outline":"#222222","outline_width":0.1,"rim":"#000000","rim_width":0.0}]}"##,
         )
         .unwrap();
         assert_eq!(settings.palette[0].rim.as_deref(), Some("#000000"));
-        assert_eq!(settings.unassigned.rim.as_deref(), Some("#000000"));
     }
 
     #[test]
@@ -1050,7 +1037,6 @@ mod tests {
         );
         assert_eq!(settings.palette[1].outline, "#FFFFFF");
         assert_eq!(settings.palette[1].rim, None);
-        assert_eq!(settings.unassigned.rim, None);
         assert_eq!(settings.widest_edge_ratio(), 0.115);
     }
 
@@ -1107,8 +1093,7 @@ mod tests {
         std::fs::write(
             &file,
             br##"{"outline_ratio":0.2,"rim_ratio":0.05,
-                "palette":[{"fill":"#FFFFFF","outline":"#000000"},{"fill":"#005A9C","outline":"#FFFFFF"}],
-                "unassigned":{"fill":"#595959","outline":"#FFFFFF"}}"##,
+                "palette":[{"fill":"#FFFFFF","outline":"#000000"},{"fill":"#005A9C","outline":"#FFFFFF"}]}"##,
         )
         .unwrap();
         let settings = Settings::load(&file).unwrap();
@@ -1142,7 +1127,6 @@ mod tests {
                 shadow_blur: DEFAULT_SHADOW_BLUR,
             }
         );
-        assert_eq!(settings.unassigned.rim_width, 0.05);
     }
 
     #[test]
@@ -1182,8 +1166,7 @@ mod tests {
     fn colours_already_in_the_new_form_are_left_alone() {
         let new_form = serde_json::json!({
             "outline_ratio": 0.3,
-            "palette": [{ "fill": "#111111", "outline": "#222222", "outline_width": 0.1, "rim": null }],
-            "unassigned": "not an object"
+            "palette": [{ "fill": "#111111", "outline": "#222222", "outline_width": 0.1, "rim": null }]
         });
         let mut look = new_form.clone();
         migrate_look(&mut look);

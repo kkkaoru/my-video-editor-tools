@@ -106,8 +106,15 @@ impl Transcript {
     pub fn load(path: &Path) -> AppResult<Self> {
         let bytes = std::fs::read(path)
             .map_err(crate::error::io_context(format!("read {}", path.display())))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|error| AppError::Invalid(format!("transcript file: {error}")))
+        let mut transcript: Self = serde_json::from_slice(&bytes)
+            .map_err(|error| AppError::Invalid(format!("transcript file: {error}")))?;
+        // Earlier versions left overlapped words without a speaker.
+        transcript
+            .words
+            .iter_mut()
+            .filter(|word| word.speaker.is_none())
+            .for_each(|word| word.speaker = Some(1));
+        Ok(transcript)
     }
 }
 
@@ -176,7 +183,7 @@ fn shown_together(cues: &[Cue]) -> Vec<ShownTogether<'_>> {
                 .iter()
                 .filter(|cue| cue.start <= pair[0] && cue.end >= pair[1])
                 .collect();
-            active.sort_by_key(|cue| cue.speaker.unwrap_or(u32::MAX));
+            active.sort_by_key(|cue| cue.speaker);
             (!active.is_empty()).then_some(ShownTogether {
                 start: pair[0],
                 end: pair[1],
@@ -814,9 +821,69 @@ mod tests {
     }
 
     #[test]
-    fn unassigned_speech_uses_the_grey_colour() {
-        let out = render_ttml(&[cue(None, "x")], &INFO, &METRICS, &Settings::default());
-        assert!(out.contains("tts:color=\"#595959\""), "{out}");
+    fn no_format_draws_a_caption_without_a_speaker_in_grey() {
+        let settings = Settings::default();
+        let cues = [cue(None, "x")];
+        let doc = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            Vec::new(),
+            Vec::new(),
+            cues.to_vec(),
+        );
+        let ttml = render_ttml(&cues, &INFO, &METRICS, &settings);
+        assert!(ttml.contains("tts:color=\"#FFFFFF\""), "{ttml}");
+        let srt = render_srt(&cues, &settings);
+        assert!(srt.contains("<font color=\"#FFFFFF\">"), "{srt}");
+        let fcpxml = render_fcpxml(&doc, &settings);
+        assert!(
+            fcpxml.contains("fontColor=\"1.0000 1.0000 1.0000 1\""),
+            "{fcpxml}"
+        );
+        let grey = fcp_color("#595959");
+        assert!(!fcpxml.contains(&grey), "{fcpxml}");
+        assert!(!ttml.contains("#595959"), "{ttml}");
+        assert!(!srt.contains("#595959"), "{srt}");
+    }
+
+    #[test]
+    fn an_old_transcript_with_words_without_a_speaker_reads_them_as_speaker_one() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/export-null-speaker");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("a.transcript.json");
+        let mut old = Transcript::new(
+            PathBuf::from("/v/a.mp4"),
+            INFO,
+            METRICS,
+            vec![
+                Word {
+                    start: 0.0,
+                    end: 1.0,
+                    text: "あ".to_owned(),
+                    speaker: None,
+                },
+                Word {
+                    start: 1.0,
+                    end: 2.0,
+                    text: "い".to_owned(),
+                    speaker: Some(2),
+                },
+            ],
+            Vec::new(),
+            vec![cue(None, "x")],
+        );
+        old.speaker_count = 2;
+        std::fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+        let read = Transcript::load(&file).unwrap();
+        assert_eq!(
+            read.words
+                .iter()
+                .map(|word| word.speaker)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
     }
 
     #[test]
@@ -1106,7 +1173,7 @@ mod tests {
         let srt = render_srt(
             &[
                 timed(0.0, 3.0, Some(2), "b"),
-                timed(1.0, 2.0, None, "x"),
+                timed(1.0, 2.0, Some(3), "x"),
                 timed(1.0, 4.0, Some(1), "a"),
             ],
             &Settings::default(),
@@ -1115,7 +1182,7 @@ mod tests {
             srt,
             concat!(
                 "1\n00:00:00,000 --> 00:00:01,000\n<font color=\"#005A9C\">b</font>\n\n",
-                "2\n00:00:01,000 --> 00:00:02,000\n<font color=\"#FFFFFF\">a</font>\n<font color=\"#005A9C\">b</font>\n<font color=\"#595959\">x</font>\n\n",
+                "2\n00:00:01,000 --> 00:00:02,000\n<font color=\"#FFFFFF\">a</font>\n<font color=\"#005A9C\">b</font>\n<font color=\"#6A1FA8\">x</font>\n\n",
                 "3\n00:00:02,000 --> 00:00:03,000\n<font color=\"#FFFFFF\">a</font>\n<font color=\"#005A9C\">b</font>\n\n",
                 "4\n00:00:03,000 --> 00:00:04,000\n<font color=\"#FFFFFF\">a</font>\n\n",
             )
