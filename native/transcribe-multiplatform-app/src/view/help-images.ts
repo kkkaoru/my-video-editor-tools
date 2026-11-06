@@ -10,11 +10,11 @@ export interface HelpImageSize {
 
 export const HELP_IMAGE_SIZES: Record<HelpImageName, HelpImageSize> = {
   models: { width: 1100, height: 980 },
-  transcribe: { width: 1100, height: 680 },
+  transcribe: { width: 1100, height: 600 },
   look: { width: 1100, height: 1500 },
   font: { width: 1100, height: 640 },
   profiles: { width: 1100, height: 400 },
-  rewrite: { width: 1100, height: 900 },
+  rewrite: { width: 1100, height: 800 },
 };
 
 /** `section.part` of the help text to its picture; the picture's numbers are that part's step numbers. */

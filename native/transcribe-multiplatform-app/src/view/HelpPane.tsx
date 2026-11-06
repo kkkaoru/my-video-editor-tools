@@ -62,7 +62,9 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
+  speakerLoadHeavyEstimate,
   updateCheck,
+  runWithOneSpeaker,
   updateInstall,
 }: Messages): Params => ({
   tabJobs,
@@ -94,7 +96,9 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
+  speakerLoadHeavyEstimate,
   updateCheck,
+  runWithOneSpeaker,
   updateInstall,
 });
 

@@ -46,11 +46,17 @@ export const deMessages: Messages = {
   speakerLoadLight: "Leicht",
   speakerLoadHeavy: "Hohe Last",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Nutzt nur Whisper.",
+  speakerLoadLightDetail: "Nutzt nur Whisper, ohne Stimmentrennung und Sprechertrennung.",
   speakerLoadHeavyDetail:
-    "Unterscheidet die Stimmen mit Nemotron. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
-  speakerCountOnlyOne:
-    "Ohne ein Nemotron-3.5-Modell geht nur 1 Sprecher. Lade unter „{tabModels}“ eines, dann kannst du mehr wählen.",
+    "Führt Nemotron, dann MossFormer2, dann Whisper aus. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
+  speakerLoadHeavyEstimate:
+    "Gemessen auf einem Mac: Bei einem 4-stündigen Video dauert allein die Stimmentrennung etwa 2 Std. 20 Min., dazu kommt die Zeit für Whisper. Arbeitsspeicher: bis etwa 8 GB für die Stimmentrennung und etwa 22 GB für die Sprechertrennung (Nemotron). Das hängt vom Video und vom Computer ab. Windows wurde nicht gemessen.",
+  speakerModelsMissing: "Für diese Anzahl von Sprechern fehlen Modelle: {roles}.",
+  openModelsTab: "Tab „{tabModels}“ öffnen",
+  runWithOneSpeaker: "Mit 1 Sprecher ausführen",
+  roleSeparate: "Stimmentrennung",
+  badgeRequiredForSpeakers: "Nötig ab 2 Sprechern",
+  speakerRolesHint: "Nötig, wenn 2 oder mehr Menschen sprechen oder die Anzahl automatisch erkannt wird.",
   profilesHeading: "Profile",
   profilesHint:
     "Aussehen und Position der Untertitel unter einem Namen speichern und später wiederherstellen. Modelle und die gesprochene Sprache gehören nicht zum Profil.",
@@ -255,6 +261,8 @@ export const deMessages: Messages = {
       "Während eine Aufgabe oder ein Download läuft, können Modelle nicht zurückgesetzt werden. Warte das Ende ab oder brich ab und versuche es erneut.",
     models_missing:
       "Die Videos wurden nicht hinzugefügt, weil für Folgendes kein Modell verfügbar ist: {roles}. Lade sie unter Modelle herunter oder füge einen Ordner hinzu, der sie enthält.",
+    speaker_models_missing:
+      "Ab 2 Sprechern oder bei automatischer Erkennung braucht es diese Modelle: {roles}. Lade sie unter Modelle, oder stelle die Anzahl der Sprecher auf 1 und füge das Video noch einmal hinzu.",
     update_busy:
       "Während Videos bearbeitet oder Modelle geladen werden, geht kein Update. Warte, bis sie fertig sind, und versuche es noch einmal.",
     no_supported_files:
@@ -273,6 +281,7 @@ export const deMessages: Messages = {
     "nemotron-3.5-transcribe-q2m":
       "Sprechertrennung. Für GPUs mit 16 GB; jede Aufnahme kann etwa 7 Minuten lang sein.",
     "nemotron-3.5-transcribe-q2l": "Sprechertrennung. Für Macs mit 24 GB.",
+    "mossformer2-ss-16k": "Trennt Stimmen, die sich überlagern. Nötig ab 2 Sprechern.",
     "nemotron-3.5-transcribe-q8":
       "Sprechertrennung. Höchste Qualität, für Macs mit 64 GB und GPUs mit 48 GB.",
     yunet: "Echte Gesichter. Im Lieferumfang der App; liefert auf Mac und Windows dasselbe Ergebnis.",
@@ -349,7 +358,8 @@ export const deMessages: Messages = {
             notes: [
               "Das „?“ neben der Anzahl erklärt, warum sie hilft.",
               "Spricht nur eine Person, lass 1 stehen. Das geht schneller.",
-              "1 Sprecher ist leicht: Nur Whisper läuft. Automatische Erkennung und 2 oder mehr Sprecher sind hohe Last: Auch Nemotron läuft. Das dauert viel länger und braucht viel mehr Arbeitsspeicher. Du kannst sie wählen, sobald ein Nemotron-3.5-Modell auf diesem Computer ist. Du holst es unter „{tabModels}“.",
+              "1 Sprecher ist leicht: Nur Whisper läuft. Automatische Erkennung und 2 oder mehr Sprecher sind hohe Last: Nemotron, MossFormer2 und Whisper laufen. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
+              "Die Stimmentrennung dauert etwa so lange wie der Ton, den sie bearbeitet. Das ist etwa die Hälfte des Tons. {speakerLoadHeavyEstimate}",
               "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .drt .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
               "Mehrere Videos werden eines nach dem anderen bearbeitet.",
               "Beim ersten Mal bringt die App außerdem ein Modell in eine Form, die sie nutzen kann.",
@@ -565,13 +575,13 @@ export const deMessages: Messages = {
             notes: [],
           },
           {
-            heading: "Du kannst die Anzahl der Sprecher nicht wählen",
+            heading: "Untertitel für 2 oder mehr Sprecher starten nicht",
             intro:
-              "Dafür brauchst du ein Nemotron-3.5-Modell. Ohne es macht die App Untertitel für 1 Sprecher.",
+              "Automatische Erkennung und 2 oder mehr Sprecher brauchen ein Nemotron-3.5-Modell und MossFormer2.",
             steps: [],
             notes: [
-              "Passt ein Nemotron-3.5-Modell zu diesem Computer, lade es im Tab „{tabModels}“.",
-              "Passt keines, kannst du trotzdem Untertitel für 1 Sprecher machen.",
+              "Lade im Tab „{tabModels}“ die fehlenden Modelle. Passen sie nicht zu diesem Computer, drücke „{runWithOneSpeaker}“.",
+              "Mit 1 Sprecher brauchst du diese Modelle nicht. Alle Untertitel haben dann dieselbe Farbe.",
             ],
           },
           {

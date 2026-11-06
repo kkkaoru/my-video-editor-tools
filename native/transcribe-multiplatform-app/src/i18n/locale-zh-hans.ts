@@ -41,9 +41,16 @@ export const zhHansMessages: Messages = {
   speakerLoadLight: "轻量",
   speakerLoadHeavy: "高负载",
   speakerOptionLoad: "{label}（{load}）",
-  speakerLoadLightDetail: "只使用 Whisper 处理。",
-  speakerLoadHeavyDetail: "使用 Nemotron 区分说话人。处理时间会大幅增加，也会占用更多内存。",
-  speakerCountOnlyOne: "没有 Nemotron 3.5 模型，只能选 1 人。在“{tabModels}”标签页下载后可以选择更多人数。",
+  speakerLoadLightDetail: "只使用 Whisper，不进行声音分离和说话人分离。",
+  speakerLoadHeavyDetail: "依次运行 Nemotron、MossFormer2 和 Whisper。处理时间会大幅增加，也会占用更多内存。",
+  speakerLoadHeavyEstimate:
+    "这是在 Mac 上实测的参考值：4 小时的视频，仅声音分离就需要约 2 小时 20 分钟（Whisper 的时间另算）。内存方面，声音分离最多约 8 GB，说话人分离（Nemotron）约 22 GB。会因视频和电脑而异。Windows 尚未测量。",
+  speakerModelsMissing: "这个人数缺少以下模型：{roles}。",
+  openModelsTab: "打开“{tabModels}”标签页",
+  runWithOneSpeaker: "按 1 人运行",
+  roleSeparate: "声音分离",
+  badgeRequiredForSpeakers: "2 位以上说话人时必需",
+  speakerRolesHint: "有 2 位以上说话人或自动判断人数时需要。",
   profilesHeading: "配置",
   profilesHint: "为字幕的外观和位置命名并保存,之后可以恢复。模型和语音语言不包含在配置中。",
   profileName: "配置名称",
@@ -229,6 +236,8 @@ export const zhHansMessages: Messages = {
     profile_missing: "配置 {name} 已不存在。",
     models_busy: "有任务或下载正在进行时无法重置模型。请等待完成或取消后再试。",
     models_missing: "由于缺少以下模型,视频未添加:{roles}。请在模型页下载,或添加已有模型的文件夹。",
+    speaker_models_missing:
+      "2 位以上说话人或自动判断人数时需要以下模型：{roles}。请在模型页下载，或把说话人数设为 1 后重新加入视频。",
     update_busy: "正在处理视频或下载模型，无法更新。请等完成后再试。",
     no_supported_files:
       "不能加入这个文件。请选择视频（.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts）或字幕文件（.drt .fcpxml .srt .ttml .transcript.json）。",
@@ -242,6 +251,7 @@ export const zhHansMessages: Messages = {
     "nemotron-3.5-transcribe-nvfp4": "说话人分离。适用于 GeForce RTX 50 系列等 Blackwell GPU。",
     "nemotron-3.5-transcribe-q2m": "说话人分离。适用于 16 GB GPU；每段录音约 7 分钟。",
     "nemotron-3.5-transcribe-q2l": "说话人分离。适用于 24 GB 的 Mac。",
+    "mossformer2-ss-16k": "分离重叠的声音。2 位以上说话人时必需。",
     "nemotron-3.5-transcribe-q8": "说话人分离。质量最高，适用于 64 GB 的 Mac 和 48 GB 的 GPU。",
     yunet: "真人人脸。随应用附带；在 Mac 和 Windows 上结果相同。",
     "avatar-face-yolo": "虚拟形象的脸。将导出的 ONNX 文件放入模型文件夹后即可使用。",
@@ -305,7 +315,8 @@ export const zhHansMessages: Messages = {
             notes: [
               "按人数旁边的“?”，可以看到为什么要选人数。",
               "只有一个人说话时，保持 1 人。这样更快。",
-              "1 人是轻量处理，只运行 Whisper。自动判断和 2 人以上是高负载，还会运行 Nemotron，处理时间大幅增加，也会占用更多内存。有 Nemotron 3.5 模型时才能选择。可以在“{tabModels}”标签页下载。",
+              "1 人是轻量处理，只运行 Whisper。自动判断和 2 人以上是高负载，会运行 Nemotron、MossFormer2 和 Whisper，处理时间大幅增加，也会占用更多内存。",
+              "声音分离所需的时间与要分离的音频长度差不多。要分离的部分约占音频的一半。 {speakerLoadHeavyEstimate}",
               "可以加入的视频：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。字幕文件：.drt .fcpxml .srt .ttml .transcript.json。加入其他文件时，应用会提示不能加入。",
               "加入多个视频时，会一个一个按顺序处理。",
               "第一次做字幕时，应用还要把模型转换成能用的形式。",
@@ -488,12 +499,12 @@ export const zhHansMessages: Messages = {
             notes: [],
           },
           {
-            heading: "不能选择说话人数时",
-            intro: "选择人数需要 Nemotron 3.5 模型。没有时，应用程序会制作 1 人的字幕。",
+            heading: "无法制作 2 位以上说话人的字幕时",
+            intro: "自动判断和 2 人以上需要 Nemotron 3.5 模型和 MossFormer2。",
             steps: [],
             notes: [
-              "这台电脑能用 Nemotron 3.5 时，在“{tabModels}”标签页下载。",
-              "没有合适的模型时，也能制作 1 人的字幕。",
+              "在“{tabModels}”标签页下载缺少的模型。不适合这台电脑时，按“{runWithOneSpeaker}”。",
+              "1 人时不需要这些模型，所有字幕颜色相同。",
             ],
           },
           {

@@ -124,7 +124,7 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/2 3/0 0/2 3/2 3/3 2/0"]),
+    new Set(["3/6 3/4 3/1 4/8 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/2 3/0 0/2 3/2 3/3 2/0"]),
   );
 });
 
@@ -194,12 +194,17 @@ it("says what a picture's marks point at, by the step numbers of the text", () =
 it("explains why the number of speakers cannot be chosen", () => {
   render(<HelpPane />);
   expect(
-    screen.getByRole("heading", { level: 3, name: "You cannot choose the number of speakers" }).tagName,
+    screen.getByRole("heading", { level: 3, name: "Subtitles for 2 or more speakers cannot start" }).tagName,
   ).toBe("H3");
   expect(
-    screen.getByText("If a Nemotron 3.5 model fits this computer, download it on the “Models” tab.").tagName,
+    screen.getByText(
+      "On the “Models” tab, download the missing models. If they do not fit this computer, press “Run with 1 speaker”.",
+    ).tagName,
   ).toBe("LI");
-  expect(screen.getByText("If none fits, you can still make subtitles for 1 speaker.").tagName).toBe("LI");
+  expect(
+    screen.getByText("With 1 speaker, these models are not needed, and everyone gets the same colours.")
+      .tagName,
+  ).toBe("LI");
 });
 
 it("captions a DaVinci Resolve picture in the language, from the one folder", () => {
@@ -229,4 +234,13 @@ it("shows each DaVinci Resolve picture under the step it belongs to", () => {
   expect(container.querySelector('img[src="/help/resolve/menu.webp"]')?.className.includes("max-w-sm")).toBe(
     false,
   );
+});
+
+it("gives the same measured Mac figures as the jobs tab", () => {
+  render(<HelpPane />);
+  expect(
+    screen.getByText(
+      "Voice separation takes about as long as the audio it handles, which is about half of the audio. Measured on a Mac: for a 4-hour video, voice separation alone takes about 2 h 20 min, and Whisper's time comes on top. Memory: up to about 8 GB for voice separation and about 22 GB for speaker separation (Nemotron). It varies by video and computer. Windows has not been measured.",
+    ).tagName,
+  ).toBe("LI");
 });

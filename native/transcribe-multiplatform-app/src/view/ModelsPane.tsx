@@ -17,7 +17,7 @@ import {
 import type { ModelStatus, Role, Settings, Snapshot } from "../backend/types.ts";
 import { errorText, format, type Messages, type ModelNotes, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
-import { type AppState, type DownloadRow, startedDownload } from "../state/app-state.ts";
+import { type AppState, type DownloadRow, isHeavyRole, startedDownload } from "../state/app-state.ts";
 import { type AppStore, reportFailure } from "../state/use-app-store.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
 
@@ -35,7 +35,7 @@ interface ModelRowProps {
 
 const GIB: number = 2 ** 30;
 const MIB: number = 2 ** 20;
-const ROLE_ORDER: Role[] = ["transcribe", "diarize", "face", "runtime"];
+const ROLE_ORDER: Role[] = ["transcribe", "diarize", "separate", "face", "runtime"];
 
 export const formatBytes = (bytes: number): string =>
   bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.ceil(bytes / MIB)} MB`;
@@ -164,6 +164,7 @@ function ModelRow({ model, store, snapshot, download }: ModelRowProps): VNode {
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-medium">{model.label}</h3>
         {model.recommended ? <Badge variant="default">{messages.badgeRecommended}</Badge> : null}
+        {model.role === "separate" ? <Badge>{messages.badgeRequiredForSpeakers}</Badge> : null}
         {model.found_at === null ? null : <Badge variant="success">{messages.badgePresent}</Badge>}
       </div>
       <p className="text-muted-foreground">{noteFor(messages.modelNotes, model.id)}</p>
@@ -260,6 +261,7 @@ export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
           <Card key={role}>
             <CardHeader>
               <CardTitle>{roleName(messages, role)}</CardTitle>
+              {isHeavyRole(role) ? <CardDescription>{messages.speakerRolesHint}</CardDescription> : null}
             </CardHeader>
             <CardContent>
               <ul className="grid grid-cols-1 gap-3">

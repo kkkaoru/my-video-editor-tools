@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
 import type { ModelStatus, Settings, Snapshot } from "../backend/types.ts";
 import { enMessages } from "../i18n/locale-en.ts";
 import { initialState, type JobRow } from "../state/app-state.ts";
@@ -93,7 +93,7 @@ const storeWith = (snapshot: Snapshot, jobs: JobRow[], hovering: boolean): AppSt
 
 function showJob(job: JobRow): AppStore {
   const store: AppStore = storeWith(READY, [job], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   return store;
 }
 
@@ -159,7 +159,7 @@ it("labels a model by id, and falls back to the id or nothing", () => {
 });
 
 it("invites a drop and hides the readiness note when ready", () => {
-  render(<JobsPane store={storeWith(READY, [], false)} snapshot={READY} />);
+  render(<JobsPane store={storeWith(READY, [], false)} snapshot={READY} onOpenModels={vi.fn()} />);
   expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Drop videos or subtitle files here");
   expect(screen.queryByRole("alert")).toBe(null);
   expect(screen.getByRole("region", { name: "Drop videos or subtitle files here" }).className).toBe(
@@ -168,7 +168,7 @@ it("invites a drop and hides the readiness note when ready", () => {
 });
 
 it("changes the drop target while files hover", () => {
-  render(<JobsPane store={storeWith(READY, [], true)} snapshot={READY} />);
+  render(<JobsPane store={storeWith(READY, [], true)} snapshot={READY} onOpenModels={vi.fn()} />);
   expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Release to add the files");
   expect(screen.getByRole("region", { name: "Drop videos or subtitle files here" }).className).toBe(
     "flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors border-primary bg-muted",
@@ -177,7 +177,7 @@ it("changes the drop target while files hover", () => {
 
 it("names the missing roles", () => {
   const snapshot: Snapshot = { ...READY, models: [] };
-  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
+  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />);
   expect(screen.getByRole("alert").textContent).toBe(
     "No model is available for: transcription. Download one in Models, or add a folder that already has it.",
   );
@@ -185,7 +185,7 @@ it("names the missing roles", () => {
 
 it("names the missing roles in a POSIX locale that is not a language tag", () => {
   const snapshot: Snapshot = { ...READY, locale: "C", models: [] };
-  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
+  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />);
   expect(screen.getByRole("alert").textContent).toBe(
     "No model is available for: transcription. Download one in Models, or add a folder that already has it.",
   );
@@ -194,7 +194,7 @@ it("names the missing roles in a POSIX locale that is not a language tag", () =>
 it("adds the chosen videos", async () => {
   vi.mocked(open).mockResolvedValue(["/a.mp4"]);
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   await waitFor((): void => {
     expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([[["/a.mp4"]]]);
@@ -204,7 +204,7 @@ it("adds the chosen videos", async () => {
 it("adds nothing when the file dialog is dismissed", async () => {
   vi.mocked(open).mockResolvedValue(null);
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   });
@@ -214,7 +214,7 @@ it("adds nothing when the file dialog is dismissed", async () => {
 it("reports a file dialog that fails", async () => {
   vi.mocked(open).mockRejectedValue(new Error("no dialog"));
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   await waitFor((): void => {
     expect(failureOf(store)).toStrictEqual({ code: "internal", detail: "Error: no dialog" });
@@ -222,7 +222,7 @@ it("reports a file dialog that fails", async () => {
 });
 
 it("draws no job list before the first job", () => {
-  render(<JobsPane store={storeWith(READY, [], false)} snapshot={READY} />);
+  render(<JobsPane store={storeWith(READY, [], false)} snapshot={READY} onOpenModels={vi.fn()} />);
   expect(screen.queryByRole("list")).toBe(null);
 });
 
@@ -377,73 +377,96 @@ it("says each speaker count's load in the option itself", () => {
   expect(speakerCountOptions(enMessages).length).toBe(9);
 });
 
-function showSpeakers(speakers: number, models: ModelStatus[]): AppStore {
+function showSpeakers(speakers: number, models: ModelStatus[]): { store: AppStore; open: Mock<() => void> } {
   const snapshot: Snapshot = { ...READY, models, settings: { ...READY.settings, speaker_count: speakers } };
   const store: AppStore = storeWith(snapshot, [], false);
+  const open: Mock<() => void> = vi.fn();
   render(
     <main>
-      <JobsPane store={store} snapshot={snapshot} />
+      <JobsPane store={store} snapshot={snapshot} onOpenModels={open} />
     </main>,
   );
-  return store;
+  return { store, open };
 }
 
+const SEPARATOR: ModelStatus = {
+  ...WHISPER,
+  id: "mossformer2-ss-16k",
+  role: "separate",
+  label: "MossFormer2",
+};
 const HEAVY_TEXT: string =
-  "Heavy: Tells the voices apart with Nemotron. It takes much longer and uses much more memory.";
-const ONLY_ONE_TEXT: string =
-  "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.";
+  "Heavy: Runs Nemotron, then MossFormer2, then Whisper. It takes much longer and uses much more memory.";
 
-const loadText = (): string | null | undefined =>
-  document.querySelector('[data-slot="speaker-load"]')?.textContent;
+const loadText = (container: Element): string | null | undefined =>
+  container.querySelector('[data-slot="speaker-load"]')?.textContent;
 
 it("says one speaker is light, in words and not only by its icon", () => {
-  showSpeakers(1, [WHISPER, DIARIZER]);
-  expect(loadText()).toBe("Light: Uses Whisper only.");
+  const snapshot: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 1 } };
+  const { container } = render(
+    <JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />,
+  );
+  expect(loadText(container)).toBe(
+    "Light: Uses Whisper only, with no voice separation or speaker separation.",
+  );
 });
 
 it("says automatic detection and more speakers are heavy", () => {
-  showSpeakers(0, [WHISPER, DIARIZER]);
-  expect(loadText()).toBe(HEAVY_TEXT);
+  showSpeakers(0, [WHISPER, DIARIZER, SEPARATOR]);
+  expect(loadText(document.body)).toBe(HEAVY_TEXT);
   cleanup();
-  showSpeakers(3, [WHISPER, DIARIZER]);
-  expect(loadText()).toBe(HEAVY_TEXT);
+  showSpeakers(3, [WHISPER, DIARIZER, SEPARATOR]);
+  expect(loadText(document.body)).toBe(HEAVY_TEXT);
   expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
 });
 
-it("offers only one speaker, and says why, without a Nemotron 3.5 model", async () => {
-  showSpeakers(0, [WHISPER, { ...DIARIZER, id: "other-diarizer" }]);
-  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker (Light)");
-  expect(loadText()).toBe("Light: Uses Whisper only.");
-  expect(screen.getByText(ONLY_ONE_TEXT).tagName).toBe("P");
-  await act(async (): Promise<void> => {
-    fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
-  });
-  expect(
-    screen.getAllByRole("option").map(({ textContent }: HTMLElement): string | null => textContent),
-  ).toStrictEqual(["1 speaker (Light)"]);
+it("gives the measured Mac figures for a heavy choice, and none for one speaker", () => {
+  const estimate: string =
+    "Measured on a Mac: for a 4-hour video, voice separation alone takes about 2 h 20 min, and Whisper's time comes on top. Memory: up to about 8 GB for voice separation and about 22 GB for speaker separation (Nemotron). It varies by video and computer. Windows has not been measured.";
+  showSpeakers(2, [WHISPER, DIARIZER, SEPARATOR]);
+  expect(screen.getByText(estimate).tagName).toBe("P");
+  cleanup();
+  showSpeakers(1, [WHISPER, DIARIZER, SEPARATOR]);
+  expect(screen.queryByText(estimate)).toBe(null);
 });
 
-it("offers every number again once a Nemotron 3.5 model has been downloaded, with the saved one", async () => {
-  const saved: Settings = { ...READY.settings, speaker_count: 3 };
-  const before: Snapshot = { ...READY, settings: saved, models: [WHISPER] };
-  const after: Snapshot = { ...READY, settings: saved, models: [WHISPER, DIARIZER] };
-  const { rerender } = render(
-    <main>
-      <JobsPane store={storeWith(before, [], false)} snapshot={before} />
-    </main>,
+it("asks for nothing when a heavy choice has every model", () => {
+  showSpeakers(2, [WHISPER, DIARIZER, SEPARATOR]);
+  expect(screen.queryByRole("alert")).toBe(null);
+  expect(screen.queryByRole("button", { name: "Run with 1 speaker" })).toBe(null);
+});
+
+it("needs no speaker models for one speaker", () => {
+  showSpeakers(1, [WHISPER]);
+  expect(screen.queryByRole("alert")).toBe(null);
+});
+
+it("names what a heavy choice lacks, with a way to the models", () => {
+  const { open } = showSpeakers(2, [WHISPER, DIARIZER]);
+  expect(screen.getByRole("alert").textContent).toBe(
+    "This number of speakers needs models that are missing: voice separation.",
   );
-  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker (Light)");
-  rerender(
-    <main>
-      <JobsPane store={storeWith(after, [], false)} snapshot={after} />
-    </main>,
+  fireEvent.click(screen.getByRole("button", { name: "Open the “Models” tab" }));
+  expect(open).toHaveBeenCalledTimes(1);
+});
+
+it("lists both speaker models when both are missing", () => {
+  showSpeakers(0, [WHISPER]);
+  expect(screen.getByRole("alert").textContent).toBe(
+    "This number of speakers needs models that are missing: speaker separation and voice separation.",
   );
+});
+
+it("runs for one speaker only when the person says so", () => {
+  const { store } = showSpeakers(3, [WHISPER]);
+  expect(store.updateSettings).toHaveBeenCalledTimes(0);
+  fireEvent.click(screen.getByRole("button", { name: "Run with 1 speaker" }));
+  expect(vi.mocked(store.updateSettings).mock.lastCall?.[0].speaker_count).toBe(1);
+});
+
+it("keeps a saved speaker count, whatever models there are", () => {
+  showSpeakers(3, [WHISPER]);
   expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
-  expect(screen.queryByText(ONLY_ONE_TEXT)).toBe(null);
-  await act(async (): Promise<void> => {
-    fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
-  });
-  expect(screen.getAllByRole("option").length).toBe(9);
 });
 
 it("offers the three subtitle formats by their names", () => {
@@ -457,7 +480,7 @@ it("offers the three subtitle formats by their names", () => {
 
 it("says what the chosen subtitle format is for", () => {
   const srt: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "srt" } };
-  render(<JobsPane store={storeWith(srt, [], false)} snapshot={srt} />);
+  render(<JobsPane store={storeWith(srt, [], false)} snapshot={srt} onOpenModels={vi.fn()} />);
   expect(screen.getByRole("combobox", { name: "Subtitle file format" }).textContent).toBe("SRT");
   expect(
     screen.getByText("Subtitles with words and times (colours may not show; no outlines or positions)")
@@ -467,11 +490,13 @@ it("says what the chosen subtitle format is for", () => {
 
 it("says what a format other than DRT cannot show, and nothing for DRT", () => {
   const ttml: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "ttml" } };
-  const { unmount } = render(<JobsPane store={storeWith(ttml, [], false)} snapshot={ttml} />);
+  const { unmount } = render(
+    <JobsPane store={storeWith(ttml, [], false)} snapshot={ttml} onOpenModels={vi.fn()} />,
+  );
   expect(screen.getByText("TTML shows no outer edge or shadow. Choose DRT to use them.").tagName).toBe("P");
   unmount();
   const drt: Snapshot = { ...READY, settings: { ...READY.settings, subtitle_format: "drt" } };
-  render(<JobsPane store={storeWith(drt, [], false)} snapshot={drt} />);
+  render(<JobsPane store={storeWith(drt, [], false)} snapshot={drt} onOpenModels={vi.fn()} />);
   expect(screen.queryByText("TTML shows no outer edge or shadow. Choose DRT to use them.")).toBe(null);
   expect(
     screen.getByText("DaVinci Resolve timeline of Text+ clips: colours, outlines, outer edges and shadows")
@@ -483,7 +508,7 @@ it("saves the chosen subtitle format", async () => {
   const store: AppStore = storeWith(READY, [], false);
   render(
     <main>
-      <JobsPane store={store} snapshot={READY} />
+      <JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />
     </main>,
   );
   await act(async (): Promise<void> => {
@@ -621,7 +646,7 @@ it("says subtitle files follow the current settings without a saved selection", 
 it("keeps the speaker count above the drop target and explains it", async () => {
   render(
     <main>
-      <JobsPane store={storeWith(READY, [], false)} snapshot={READY} />
+      <JobsPane store={storeWith(READY, [], false)} snapshot={READY} onOpenModels={vi.fn()} />
     </main>,
   );
   const count: HTMLElement = screen.getByRole("combobox", { name: "Number of speakers" });
@@ -638,7 +663,7 @@ it("keeps the speaker count above the drop target and explains it", async () => 
 it("refuses to choose videos without their models, saying what is missing", () => {
   const snapshot: Snapshot = { ...READY, models: [] };
   const store: AppStore = storeWith(snapshot, [], false);
-  render(<JobsPane store={store} snapshot={snapshot} />);
+  render(<JobsPane store={store} snapshot={snapshot} onOpenModels={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose videos" }));
   expect(vi.mocked(open).mock.calls).toStrictEqual([]);
   expect(failureOf(store)).toStrictEqual({ code: "models_missing", roles: ["transcribe"] });
@@ -647,7 +672,7 @@ it("refuses to choose videos without their models, saying what is missing", () =
 it("rewrites the chosen subtitle files", async () => {
   vi.mocked(open).mockResolvedValue(["/a.srt"]);
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
   await waitFor((): void => {
     expect(vi.mocked(store.dropFiles).mock.calls).toStrictEqual([[["/a.srt"]]]);
@@ -661,7 +686,7 @@ it("rewrites the chosen subtitle files", async () => {
 it("rewrites nothing when the subtitle dialog is dismissed", async () => {
   vi.mocked(open).mockResolvedValue(null);
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
   });
@@ -671,7 +696,7 @@ it("rewrites nothing when the subtitle dialog is dismissed", async () => {
 it("reports a subtitle dialog that fails", async () => {
   vi.mocked(open).mockRejectedValue(new Error("no dialog"));
   const store: AppStore = storeWith(READY, [], false);
-  render(<JobsPane store={store} snapshot={READY} />);
+  render(<JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Choose subtitle files" }));
   await waitFor((): void => {
     expect(failureOf(store)).toStrictEqual({ code: "internal", detail: "Error: no dialog" });
@@ -682,7 +707,7 @@ it("saves the chosen number of speakers", async () => {
   const store: AppStore = storeWith(READY, [], false);
   render(
     <main>
-      <JobsPane store={store} snapshot={READY} />
+      <JobsPane store={store} snapshot={READY} onOpenModels={vi.fn()} />
     </main>,
   );
   await act(async (): Promise<void> => {
@@ -715,7 +740,7 @@ it("warns when speakers run on the CPU until the GeForce runtime is here", () =>
     backend: "speakers_on_cpu",
     hardware: { is_mac: false, memory_gib: 8, gpu: { vendor: "nvidia", name: "RTX", memory_gib: 16 } },
   };
-  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} />);
+  render(<JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />);
   expect(
     screen.getByText(
       "Telling speakers apart runs on the CPU until you download the GeForce runtime in Models, so it is slower.",

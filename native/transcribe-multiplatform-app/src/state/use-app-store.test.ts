@@ -378,6 +378,24 @@ it("refuses videos without their models, naming what is missing, and starts noth
   });
 });
 
+it("refuses videos for several speakers without the speaker models, and starts nothing", () => {
+  const heavy: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 2 } };
+  const view: HookView = renderHook((): AppStore => useAppStore(heavy));
+  act((): void => view.result.current.dropFiles(["/a.mp4"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(view.result.current.state.loadError).toStrictEqual({
+    code: "models_missing",
+    roles: ["separate"],
+  });
+});
+
+it("refuses videos for automatic detection without the speaker models", () => {
+  const automatic: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 0 } };
+  const view: HookView = renderHook((): AppStore => useAppStore(automatic));
+  act((): void => view.result.current.dropFiles(["/a.mp4"]));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+});
+
 it("still rewrites subtitle files without any model", () => {
   const view: HookView = mounted();
   act((): void => view.result.current.dropFiles(["/a.srt"]));

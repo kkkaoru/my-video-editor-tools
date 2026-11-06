@@ -7,13 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import { Progress } from "@/components/ui/progress.tsx";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
 import type { Profile, Role, Snapshot, Stage, SubtitleFormat } from "../backend/types.ts";
-import { keepWordsWhole, languageFor } from "../i18n/language.ts";
+import { languageFor } from "../i18n/language.ts";
 import { errorText, format, type Messages, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import {
-  canChooseSpeakerCount,
-  effectiveSpeakerCount,
   type FinishedJobRow,
+  isHeavyRole,
   isHeavySpeakerCount,
   type JobRow,
   missingModelRoles,
@@ -35,6 +34,11 @@ export type StepPosition = "done" | "current" | "pending";
 export interface JobsPaneProps {
   store: AppStore;
   snapshot: Snapshot;
+  onOpenModels: () => void;
+}
+
+interface SpeakerModelsMissingProps extends JobsPaneProps {
+  roles: Role[];
 }
 
 interface JobItemProps {
@@ -93,8 +97,6 @@ export const slowProcessingNotice = ({ backend, hardware }: Snapshot, messages: 
   return !hardware.is_mac && hardware.gpu === null ? messages.noticeCpuOnly : null;
 };
 
-const isOneSpeaker = ({ value }: SelectOption): boolean => value === "1";
-
 const loadedOption = (messages: Messages, value: string, label: string, heavy: boolean): SelectOption => ({
   value,
   label: format(messages.speakerOptionLoad, {
@@ -124,14 +126,17 @@ const SpeakerLoad = ({ heavy }: { heavy: boolean }): VNode => {
   const messages: Messages = useMessages();
   const Icon = heavy ? FlameIcon : FeatherIcon;
   return (
-    <p data-slot="speaker-load" className="text-muted-foreground">
-      <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
-      <span className="font-medium text-foreground">
-        {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
-      </span>
-      {": "}
-      {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
-    </p>
+    <>
+      <p data-slot="speaker-load" className="text-muted-foreground">
+        <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
+        <span className="font-medium text-foreground">
+          {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
+        </span>
+        {": "}
+        {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
+      </p>
+      {heavy ? <p className="text-muted-foreground">{messages.speakerLoadHeavyEstimate}</p> : null}
+    </>
   );
 };
 
@@ -149,6 +154,33 @@ const listOf = (snapshot: Snapshot, names: string[]): string =>
 
 export const missingRoles = (snapshot: Snapshot, messages: Messages): string[] =>
   missingModelRoles(snapshot).map((role: Role): string => roleName(messages, role));
+
+const SpeakerModelsMissing = ({ store, snapshot, onOpenModels, roles }: SpeakerModelsMissingProps): VNode => {
+  const messages: Messages = useMessages();
+  return (
+    <div data-slot="speaker-models-missing" className="grid grid-cols-1 gap-2">
+      <Alert>
+        {format(messages.speakerModelsMissing, {
+          roles: listOf(
+            snapshot,
+            roles.map((role: Role): string => roleName(messages, role)),
+          ),
+        })}
+      </Alert>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={onOpenModels}>
+          {format(messages.openModelsTab, { tabModels: messages.tabModels })}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={(): void => store.updateSettings({ ...snapshot.settings, speaker_count: 1 })}
+        >
+          {messages.runWithOneSpeaker}
+        </Button>
+      </div>
+    </div>
+  );
+};
 
 /** Says which look dropped subtitle files get; a selection left over from a deleted profile does not count. */
 export const subtitleTargetText = (snapshot: Snapshot, messages: Messages): string =>
@@ -336,13 +368,14 @@ function chooseVideos(store: AppStore, messages: Messages): void {
     .catch((error: unknown): void => reportFailure(store.setState, error));
 }
 
-export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
+export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNode {
   const messages: Messages = useMessages();
   const { hovering, jobs } = store.state;
   const notice: string | null = slowProcessingNotice(snapshot, messages);
-  const choosable: boolean = canChooseSpeakerCount(snapshot);
-  const shownCount: number = effectiveSpeakerCount(snapshot);
-  const missing: string[] = missingRoles(snapshot, messages);
+  const missingForSpeakers: Role[] = missingModelRoles(snapshot).filter(isHeavyRole);
+  const missingOthers: Role[] = missingModelRoles(snapshot).filter(
+    (role: Role): boolean => !isHeavyRole(role),
+  );
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
@@ -350,24 +383,14 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
         <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
             label={messages.speakerCount}
-            value={String(shownCount)}
-            options={
-              choosable ? speakerCountOptions(messages) : speakerCountOptions(messages).filter(isOneSpeaker)
-            }
+            value={String(snapshot.settings.speaker_count)}
+            options={speakerCountOptions(messages)}
             help={<HelpTip label={messages.speakerCountHelpLabel}>{messages.speakerCountHelp}</HelpTip>}
             onChange={(value: string): void =>
               store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
             }
           />
-          <SpeakerLoad heavy={isHeavySpeakerCount(shownCount)} />
-          {choosable ? null : (
-            <p className="text-muted-foreground">
-              {keepWordsWhole(
-                format(messages.speakerCountOnlyOne, { tabModels: messages.tabModels }),
-                languageFor(uiLocale(snapshot)).tag,
-              )}
-            </p>
-          )}
+          <SpeakerLoad heavy={isHeavySpeakerCount(snapshot.settings)} />
         </div>
         <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
@@ -388,6 +411,14 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
           <FormatLimit format={snapshot.settings.subtitle_format} />
         </div>
       </div>
+      {missingForSpeakers.length === 0 ? null : (
+        <SpeakerModelsMissing
+          store={store}
+          snapshot={snapshot}
+          onOpenModels={onOpenModels}
+          roles={missingForSpeakers}
+        />
+      )}
       <section
         aria-label={messages.dropTitle}
         className={`flex flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${hovering ? "border-primary bg-muted" : "border-border bg-card"}`}
@@ -406,8 +437,15 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
           </Button>
         </div>
       </section>
-      {missing.length === 0 ? null : (
-        <Alert>{format(messages.readinessMissing, { roles: listOf(snapshot, missing) })}</Alert>
+      {missingOthers.length === 0 ? null : (
+        <Alert>
+          {format(messages.readinessMissing, {
+            roles: listOf(
+              snapshot,
+              missingOthers.map((role: Role): string => roleName(messages, role)),
+            ),
+          })}
+        </Alert>
       )}
       {jobs.length === 0 ? null : (
         <ul className="grid grid-cols-1 gap-3">

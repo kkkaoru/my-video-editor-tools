@@ -1,5 +1,6 @@
 // Runs with bun: the window: language selection, tabs and the failure banner.
 import type { VNode } from "preact";
+import { useState } from "preact/hooks";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
 import type { ModelStatus, Snapshot, UiTheme } from "../backend/types.ts";
@@ -42,19 +43,31 @@ function applyToDocument({ tag, messages }: Language, theme: UiTheme): void {
 function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
   const store = useAppStore(snapshot);
   const updater: Updater = useUpdater();
+  const [tab, setTab] = useState<string>("jobs");
+  const openModels = (): void => {
+    setTab("models");
+    // The button pressed goes away with its tab; the keyboard stays with what replaced it.
+    document.querySelector<HTMLElement>('[data-tab="models"]')?.focus();
+  };
   const live: Snapshot = store.state.snapshot;
   const language: Language = languageFor(uiLocale(live));
   const { messages } = language;
   applyToDocument(language, live.settings.ui_theme);
   return (
     <MessagesContext.Provider value={messages}>
-      <Tabs defaultValue="jobs" className="mx-auto min-h-screen w-full max-w-5xl p-4">
+      <Tabs
+        value={tab}
+        onValueChange={(next: string): void => setTab(next)}
+        className="mx-auto min-h-screen w-full max-w-5xl p-4"
+      >
         <header className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h1 className="sr-only">{messages.appName}</h1>
           <TabsList className="w-full">
             <TabsTrigger value="jobs">{messages.tabJobs}</TabsTrigger>
             <TabsTrigger value="style">{messages.tabStyle}</TabsTrigger>
-            <TabsTrigger value="models">{messages.tabModels}</TabsTrigger>
+            <TabsTrigger value="models" data-tab="models">
+              {messages.tabModels}
+            </TabsTrigger>
             <TabsTrigger value="help">{messages.tabHelp}</TabsTrigger>
             <TabsTrigger value="settings">{messages.tabSettings}</TabsTrigger>
           </TabsList>
@@ -67,7 +80,7 @@ function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
             </Alert>
           )}
           <TabsContent value="jobs" keepMounted>
-            <JobsPane store={store} snapshot={live} />
+            <JobsPane store={store} snapshot={live} onOpenModels={openModels} />
           </TabsContent>
           <TabsContent value="style" keepMounted>
             <StylePane

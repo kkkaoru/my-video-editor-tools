@@ -44,10 +44,17 @@ export const jaMessages: Messages = {
   speakerLoadLight: "軽量",
   speakerLoadHeavy: "高負荷",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Whisper だけで処理します。",
-  speakerLoadHeavyDetail: "Nemotron で話す人を聞き分けます。時間が大きく増え、メモリも多く使います。",
-  speakerCountOnlyOne:
-    "Nemotron 3.5 のモデルがないので、1 人だけ選べます。「{tabModels}」のタブでダウンロードすると、人数を選べます。",
+  speakerLoadLightDetail: "Whisper だけで処理します。声の分離も話す人の聞き分けもしません。",
+  speakerLoadHeavyDetail:
+    "Nemotron、MossFormer2、Whisper の順に処理します。時間が大きく増え、メモリも多く使います。",
+  speakerLoadHeavyEstimate:
+    "Mac での実測の目安です。4 時間の動画で、声の分離だけで約 2 時間 20 分かかります (Whisper は別)。メモリは、声の分離で最大約 8 GB、話す人の聞き分け (Nemotron) で約 22 GB です。動画と PC で変わります。Windows は計測していません。",
+  speakerModelsMissing: "この人数には、次のモデルが足りません: {roles}。",
+  openModelsTab: "「{tabModels}」のタブを開く",
+  runWithOneSpeaker: "1 人で実行",
+  roleSeparate: "声の分離",
+  badgeRequiredForSpeakers: "話す人が 2 人以上で必須",
+  speakerRolesHint: "話す人が 2 人以上のときと、人数を自動で決めるときに要ります。",
   profilesHeading: "プロファイル",
   profilesHint:
     "プロファイルは、字幕の見た目と位置の設定に名前を付けて保存したものです。あとで読み込むと元に戻せます。モデルと話す言葉の設定は入りません。",
@@ -245,6 +252,8 @@ export const jaMessages: Messages = {
       "字幕を作っている間とダウンロードの間は、モデルを消せません。終わるのを待つか、やめてから、もう一度試してください。",
     models_missing:
       "動画を入れられませんでした。{roles}のモデルがありません。「モデル」のタブでダウンロードするか、モデルが入っているフォルダを追加してください。",
+    speaker_models_missing:
+      "話す人が 2 人以上のときと、人数を自動で決めるときは、次のモデルが要ります: {roles}。「モデル」のタブでダウンロードするか、話す人の数を 1 人にして動画を入れ直してください。",
     update_busy:
       "動画の処理かモデルのダウンロードの途中なので、更新できません。終わってから、もう一度試してください。",
     no_supported_files:
@@ -263,6 +272,7 @@ export const jaMessages: Messages = {
     "nemotron-3.5-transcribe-q2m":
       "話す人の聞き分けに使います。16 GB の GPU 向けです。1 回の音声は 7 分くらいまでです。",
     "nemotron-3.5-transcribe-q2l": "話す人の聞き分けに使います。メモリ 24 GB の Mac 向けです。",
+    "mossformer2-ss-16k": "重なった声を分けるモデルです。話す人が 2 人以上のときに必須です。",
     "nemotron-3.5-transcribe-q8":
       "話す人の聞き分けに使います。一番ていねいです。メモリ 64 GB の Mac と 48 GB の GPU 向けです。",
     yunet: "人の顔を見つけます。アプリに入っています。",
@@ -338,7 +348,8 @@ export const jaMessages: Messages = {
             notes: [
               "人数の横の「?」を押すと、人数を選ぶ理由が読めます。",
               "1 人しか話さない動画は「1 人」のままにします。速く終わります。",
-              "1 人は軽量で、Whisper だけが動きます。自動と 2 人以上は高負荷で、Nemotron も動きます。時間が大きく増え、メモリも多く使います。選べるのは、Nemotron 3.5 のモデルがあるときです。「{tabModels}」のタブでダウンロードできます。",
+              "1 人は軽量で、Whisper だけが動きます。自動と 2 人以上は高負荷で、Nemotron、MossFormer2、Whisper が動きます。時間が大きく増え、メモリも多く使います。",
+              "声の分離には、分離する音声と同じくらいの時間がかかります。分離するのは、音声の約半分です。 {speakerLoadHeavyEstimate}",
               "動画を入れられる形は .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts です。字幕ファイルは .drt .fcpxml .srt .ttml .transcript.json です。ほかのファイルを入れると、入れられないと出ます。",
               "動画を何本も入れると、1 本ずつ順番に作ります。",
               "はじめて作るときは、モデルをこのアプリで使える形に直す作業が入ります。",
@@ -551,12 +562,12 @@ export const jaMessages: Messages = {
             notes: [],
           },
           {
-            heading: "話す人の数を選べないとき",
-            intro: "人数を選ぶには、Nemotron 3.5 のモデルが要ります。ないときは、1 人の字幕を作ります。",
+            heading: "話す人が 2 人以上の字幕を作れないとき",
+            intro: "自動と 2 人以上には、Nemotron 3.5 のモデルと MossFormer2 が要ります。",
             steps: [],
             notes: [
-              "このパソコンに合う Nemotron 3.5 があるときは、「{tabModels}」のタブでダウンロードします。",
-              "合うモデルがないときも、1 人の字幕は作れます。",
+              "「{tabModels}」のタブで、足りないモデルをダウンロードします。このパソコンに合わないときは「{runWithOneSpeaker}」を押します。",
+              "1 人なら、このモデルは要りません。字幕の色は全部同じになります。",
             ],
           },
           {

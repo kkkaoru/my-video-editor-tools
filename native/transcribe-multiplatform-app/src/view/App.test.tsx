@@ -301,3 +301,12 @@ it("says nothing when the check at startup fails", async () => {
   expect(screen.queryByRole("alert")).toBe(null);
   warn.mockRestore();
 });
+
+it("opens the models tab from a missing speaker model, and takes the focus along", async () => {
+  render(<App initial={{ ...SNAPSHOT, models: [], settings: { ...SETTINGS, speaker_count: 2 } }} />);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Open the “Models” tab" }));
+  });
+  expect(screen.getByRole("tab", { selected: true }).textContent).toBe("Models");
+  expect(document.activeElement?.textContent).toBe("Models");
+});

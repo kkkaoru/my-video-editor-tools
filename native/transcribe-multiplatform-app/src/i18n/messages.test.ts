@@ -97,3 +97,11 @@ it("names the file that is not a profile", () => {
     "bad.json cannot be read as a profile. Choose a file this app exported.",
   );
 });
+
+it("names the kinds of model a job lacks", () => {
+  expect(
+    errorText(enMessages, { code: "speaker_models_missing", missing: ["diarize", "separate"] }, ""),
+  ).toBe(
+    "These models are needed for 2 or more speakers, or for automatic detection: speaker separation, voice separation. Download them in Models, or set the number of speakers to 1 and add the video again.",
+  );
+});

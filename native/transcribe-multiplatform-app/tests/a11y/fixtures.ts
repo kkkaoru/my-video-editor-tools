@@ -111,6 +111,10 @@ export const ALL_MODELS: ModelStatus[] = [
   model("nemotron-3.5-transcribe-q8", "diarize", "Nemotron 3.5 Transcribe 30B-A4B (Q8_0)", {
     blocked: { code: "needs_memory", model: "nemotron-3.5-transcribe-q8", required: 48, available: 12 },
   }),
+  model("mossformer2-ss-16k", "separate", "MossFormer2 SS 16K", {
+    download_bytes: 230_156_008,
+    recommended: true,
+  }),
   model("yunet", "face", "YuNet", { found_at: "/app/yunet.onnx", download_bytes: 0, recommended: true }),
   model("avatar-face-yolo", "face", "Avatar face YOLO", { download_bytes: 0, source_url: "" }),
 ];
@@ -316,16 +320,27 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
   }),
   state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
-  state("jobs heavy with a nemotron 3.5 model", "jobs", {
+  state("jobs heavy with every model", "jobs", {
     snapshot: snapshot({
       settings: { ...snapshot({}).settings, speaker_count: 3 },
+      models: ALL_MODELS.map(
+        (row: ModelStatus): ModelStatus =>
+          row.id === "nemotron-3.5-transcribe-iq4" || row.id === "mossformer2-ss-16k"
+            ? { ...row, found_at: "/data/models/found" }
+            : row,
+      ),
+    }),
+  }),
+  state("jobs heavy missing mossformer2", "jobs", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, speaker_count: 2 },
       models: ALL_MODELS.map(
         (row: ModelStatus): ModelStatus =>
           row.id === "nemotron-3.5-transcribe-iq4" ? { ...row, found_at: "/data/models/iq4.gguf" } : row,
       ),
     }),
   }),
-  state("jobs saved as automatic without a nemotron 3.5 model", "jobs", {
+  state("jobs automatic missing both speaker models", "jobs", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, speaker_count: 0 } }),
   }),
   state("jobs speaker count list open", "jobs", { steps: ["open-speaker-count"] }),

@@ -15,8 +15,6 @@ import type {
 
 const SYSTEM_LANGUAGE: string = "";
 
-const SPEAKER_CHOICE_MODEL_PREFIX: string = "nemotron-3.5-transcribe-";
-
 interface JobBase {
   id: number;
   path: string;
@@ -163,23 +161,20 @@ export const isWorking = ({ jobs, downloads }: Pick<AppState, "jobs" | "download
 export const uiLocale = ({ locale, settings }: Pick<Snapshot, "locale" | "settings">): string =>
   settings.ui_language === SYSTEM_LANGUAGE ? locale : settings.ui_language;
 
-/** Only these models take a number of speakers; without one, every job is for one speaker. */
-export const canChooseSpeakerCount = ({ models }: Pick<Snapshot, "models">): boolean =>
-  models.some(
-    ({ id, found_at: foundAt, blocked }: ModelStatus): boolean =>
-      id.startsWith(SPEAKER_CHOICE_MODEL_PREFIX) && foundAt !== null && blocked === null,
-  );
+/** One speaker runs Whisper alone; automatic detection and more speakers run the whole chain. */
+export const isHeavySpeakerCount = ({ speaker_count: count }: Pick<Settings, "speaker_count">): boolean =>
+  count !== 1;
 
-/** What a job runs with; the saved number stays, so it comes back once such a model is there. */
-export const effectiveSpeakerCount = (snapshot: Pick<Snapshot, "models" | "settings">): number =>
-  canChooseSpeakerCount(snapshot) ? snapshot.settings.speaker_count : 1;
+const HEAVY_ROLES: ReadonlySet<Role> = new Set<Role>(["diarize", "separate"]);
 
-/** One speaker runs Whisper alone; automatic detection and more speakers also run speaker separation. */
-export const isHeavySpeakerCount = (count: number): boolean => count !== 1;
+export const isHeavyRole = (role: Role): boolean => HEAVY_ROLES.has(role);
 
-/** Speaker separation is never required: without its model, a job is for one speaker. */
-export const missingModelRoles = ({ models }: Pick<Snapshot, "models">): Role[] =>
-  (["transcribe"] satisfies Role[]).filter(
+/** A job refused here never starts, so the choice of the speaker count is never overruled in silence. */
+export const missingModelRoles = ({ models, settings }: Pick<Snapshot, "models" | "settings">): Role[] =>
+  (isHeavySpeakerCount(settings)
+    ? (["transcribe", "diarize", "separate"] satisfies Role[])
+    : (["transcribe"] satisfies Role[])
+  ).filter(
     (role: Role): boolean =>
       !models.some(
         (model: ModelStatus): boolean =>

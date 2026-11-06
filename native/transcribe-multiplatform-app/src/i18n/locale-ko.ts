@@ -42,10 +42,17 @@ export const koMessages: Messages = {
   speakerLoadLight: "가벼움",
   speakerLoadHeavy: "고부하",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Whisper만으로 처리합니다.",
-  speakerLoadHeavyDetail: "Nemotron으로 화자를 구별합니다. 시간이 크게 늘고 메모리도 많이 씁니다.",
-  speakerCountOnlyOne:
-    "Nemotron 3.5 모델이 없어 1명만 고를 수 있습니다. “{tabModels}” 탭에서 내려받으면 인원수를 고를 수 있습니다.",
+  speakerLoadLightDetail: "Whisper만 사용하며, 음성 분리와 화자 분리는 하지 않습니다.",
+  speakerLoadHeavyDetail:
+    "Nemotron, MossFormer2, Whisper 순서로 처리합니다. 시간이 크게 늘고 메모리도 많이 씁니다.",
+  speakerLoadHeavyEstimate:
+    "Mac에서 측정한 기준입니다. 4시간 동영상은 음성 분리에만 약 2시간 20분이 걸립니다(Whisper 시간은 별도). 메모리는 음성 분리에 최대 약 8GB, 화자 분리(Nemotron)에 약 22GB를 씁니다. 동영상과 컴퓨터에 따라 달라집니다. Windows는 측정하지 않았습니다.",
+  speakerModelsMissing: "이 인원수에 필요한 모델이 없습니다: {roles}.",
+  openModelsTab: "“{tabModels}” 탭 열기",
+  runWithOneSpeaker: "1명으로 실행",
+  roleSeparate: "음성 분리",
+  badgeRequiredForSpeakers: "화자 2명 이상일 때 필수",
+  speakerRolesHint: "화자가 2명 이상이거나 인원수를 자동으로 정할 때 필요합니다.",
   profilesHeading: "프로필",
   profilesHint:
     "자막의 모양과 위치에 이름을 붙여 저장하고 나중에 복원합니다. 모델과 음성 언어는 프로필에 포함되지 않습니다.",
@@ -241,6 +248,8 @@ export const koMessages: Messages = {
       "작업이나 다운로드가 진행 중일 때는 모델을 초기화할 수 없습니다. 끝나기를 기다리거나 취소한 뒤 다시 시도하세요.",
     models_missing:
       "다음 모델이 없어 동영상을 추가하지 않았습니다: {roles}. 모델 탭에서 다운로드하거나 모델이 있는 폴더를 추가하세요.",
+    speaker_models_missing:
+      "화자가 2명 이상이거나 인원수를 자동으로 정할 때는 다음 모델이 필요합니다: {roles}. 모델 탭에서 내려받거나, 화자 수를 1명으로 하고 동영상을 다시 넣으세요.",
     update_busy:
       "동영상을 처리하거나 모델을 내려받는 중이라 업데이트할 수 없습니다. 끝난 뒤 다시 시도하세요.",
     no_supported_files:
@@ -255,6 +264,7 @@ export const koMessages: Messages = {
     "nemotron-3.5-transcribe-nvfp4": "화자 분리. GeForce RTX 50 시리즈 같은 Blackwell GPU용입니다.",
     "nemotron-3.5-transcribe-q2m": "화자 분리. 16 GB GPU용이며, 녹음 한 건은 약 7분까지입니다.",
     "nemotron-3.5-transcribe-q2l": "화자 분리. 24 GB Mac용입니다.",
+    "mossformer2-ss-16k": "겹친 목소리를 나눕니다. 화자가 2명 이상일 때 필수입니다.",
     "nemotron-3.5-transcribe-q8": "화자 분리. 최고 품질이며 64 GB Mac과 48 GB GPU용입니다.",
     yunet: "실제 얼굴. 앱에 포함되어 있으며 Mac과 Windows에서 같은 결과를 냅니다.",
     "avatar-face-yolo": "아바타 얼굴. 내보낸 ONNX 파일을 모델 폴더에 넣으면 사용할 수 있습니다.",
@@ -327,7 +337,8 @@ export const koMessages: Messages = {
             notes: [
               "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
               "한 사람만 말하면 1명 그대로 둡니다. 더 빨리 끝납니다.",
-              "1명은 가벼운 처리로 Whisper만 실행됩니다. 자동과 2명 이상은 고부하로 Nemotron도 실행되어 시간이 크게 늘고 메모리도 많이 씁니다. Nemotron 3.5 모델이 있어야 고를 수 있습니다. “{tabModels}” 탭에서 내려받을 수 있습니다.",
+              "1명은 가벼운 처리로 Whisper만 실행됩니다. 자동과 2명 이상은 고부하로 Nemotron, MossFormer2, Whisper가 실행되어 시간이 크게 늘고 메모리도 많이 씁니다.",
+              "음성 분리에는 분리할 음성과 비슷한 시간이 걸립니다. 분리할 부분은 음성의 약 절반입니다. {speakerLoadHeavyEstimate}",
               "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .drt .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
               "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
               "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",
@@ -532,12 +543,12 @@ export const koMessages: Messages = {
             notes: [],
           },
           {
-            heading: "화자 수를 고를 수 없을 때",
-            intro: "인원수를 고르려면 Nemotron 3.5 모델이 필요합니다. 없으면 화자 1명의 자막을 만듭니다.",
+            heading: "화자 2명 이상의 자막을 만들 수 없을 때",
+            intro: "자동과 2명 이상에는 Nemotron 3.5 모델과 MossFormer2가 필요합니다.",
             steps: [],
             notes: [
-              "이 컴퓨터에서 Nemotron 3.5를 쓸 수 있으면 “{tabModels}” 탭에서 내려받습니다.",
-              "맞는 모델이 없어도 화자 1명의 자막은 만들 수 있습니다.",
+              "“{tabModels}” 탭에서 없는 모델을 내려받습니다. 이 컴퓨터에 맞지 않으면 “{runWithOneSpeaker}” 버튼을 누릅니다.",
+              "1명이면 이 모델은 필요 없고, 자막 색은 모두 같습니다.",
             ],
           },
           {

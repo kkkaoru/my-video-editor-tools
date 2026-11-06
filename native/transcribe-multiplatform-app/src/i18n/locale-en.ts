@@ -42,11 +42,17 @@ export const enMessages: Messages = {
   speakerLoadLight: "Light",
   speakerLoadHeavy: "Heavy",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Uses Whisper only.",
+  speakerLoadLightDetail: "Uses Whisper only, with no voice separation or speaker separation.",
   speakerLoadHeavyDetail:
-    "Tells the voices apart with Nemotron. It takes much longer and uses much more memory.",
-  speakerCountOnlyOne:
-    "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “{tabModels}” tab to choose more.",
+    "Runs Nemotron, then MossFormer2, then Whisper. It takes much longer and uses much more memory.",
+  speakerLoadHeavyEstimate:
+    "Measured on a Mac: for a 4-hour video, voice separation alone takes about 2 h 20 min, and Whisper's time comes on top. Memory: up to about 8 GB for voice separation and about 22 GB for speaker separation (Nemotron). It varies by video and computer. Windows has not been measured.",
+  speakerModelsMissing: "This number of speakers needs models that are missing: {roles}.",
+  openModelsTab: "Open the “{tabModels}” tab",
+  runWithOneSpeaker: "Run with 1 speaker",
+  roleSeparate: "voice separation",
+  badgeRequiredForSpeakers: "Required for 2 or more speakers",
+  speakerRolesHint: "Needed when 2 or more people speak, or when the number is detected automatically.",
   profilesHeading: "Profiles",
   profilesHint:
     "Save the caption look and position under a name and restore it later. Models and the spoken language are not part of a profile.",
@@ -246,6 +252,8 @@ export const enMessages: Messages = {
       "Models cannot be reset while a job or a download is running. Wait for it to finish or cancel it, then try again.",
     models_missing:
       "The videos were not added because no model is available for: {roles}. Download them in Models, or add a folder that already has them.",
+    speaker_models_missing:
+      "These models are needed for 2 or more speakers, or for automatic detection: {roles}. Download them in Models, or set the number of speakers to 1 and add the video again.",
     update_busy:
       "An update cannot start while videos or model downloads are running. Wait until they are finished, then try again.",
     no_supported_files:
@@ -262,6 +270,7 @@ export const enMessages: Messages = {
     "nemotron-3.5-transcribe-q2m":
       "Speaker separation. For 16 GB GPUs; each recording can be about 7 minutes.",
     "nemotron-3.5-transcribe-q2l": "Speaker separation. For 24 GB Macs.",
+    "mossformer2-ss-16k": "Splits overlapping voices. Required for 2 or more speakers.",
     "nemotron-3.5-transcribe-q8": "Speaker separation. Highest quality, for 64 GB Macs and 48 GB GPUs.",
     yunet: "Real faces. Included with the app; gives the same result on Mac and Windows.",
     "avatar-face-yolo": "Avatar faces. Works once the exported ONNX file is in a model folder.",
@@ -335,7 +344,8 @@ export const enMessages: Messages = {
             notes: [
               "Press the “?” next to the number to read why it helps.",
               "If only one person speaks, leave it at 1. It finishes faster.",
-              "1 speaker is light: only Whisper runs. Automatic detection and 2 or more speakers are heavy: Nemotron also runs, so it takes much longer and uses much more memory. You can choose them once a Nemotron 3.5 model is on this computer. Get one on the “{tabModels}” tab.",
+              "1 speaker is light: only Whisper runs. Automatic detection and 2 or more speakers are heavy: Nemotron, MossFormer2 and Whisper all run, so it takes much longer and uses much more memory.",
+              "Voice separation takes about as long as the audio it handles, which is about half of the audio. {speakerLoadHeavyEstimate}",
               "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Subtitle files can be .drt .fcpxml .srt .ttml .transcript.json. With any other file, the app says it cannot be added.",
               "If you add several videos, they are done one at a time.",
               "The first time, the app also changes a model into a form it can use.",
@@ -546,13 +556,12 @@ export const enMessages: Messages = {
             notes: [],
           },
           {
-            heading: "You cannot choose the number of speakers",
-            intro:
-              "Choosing the number needs a Nemotron 3.5 model. Without one, the app makes subtitles for 1 speaker.",
+            heading: "Subtitles for 2 or more speakers cannot start",
+            intro: "Automatic detection and 2 or more speakers need a Nemotron 3.5 model and MossFormer2.",
             steps: [],
             notes: [
-              "If a Nemotron 3.5 model fits this computer, download it on the “{tabModels}” tab.",
-              "If none fits, you can still make subtitles for 1 speaker.",
+              "On the “{tabModels}” tab, download the missing models. If they do not fit this computer, press “{runWithOneSpeaker}”.",
+              "With 1 speaker, these models are not needed, and everyone gets the same colours.",
             ],
           },
           {

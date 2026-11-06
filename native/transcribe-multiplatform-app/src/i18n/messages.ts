@@ -12,6 +12,7 @@ export interface ModelNotes {
   "nemotron-3.5-transcribe-iq4": string;
   "nemotron-3.5-transcribe-nvfp4": string;
   "nemotron-3.5-transcribe-q2l": string;
+  "mossformer2-ss-16k": string;
   "nemotron-3.5-transcribe-q8": string;
   "nemotron-3.5-transcribe-q2m": string;
   yunet: string;
@@ -34,6 +35,7 @@ export interface ErrorMessages {
   profile_missing: string;
   models_busy: string;
   models_missing: string;
+  speaker_models_missing: string;
   update_busy: string;
   no_supported_files: string;
   profile_invalid: string;
@@ -137,9 +139,14 @@ export interface Messages {
   speakerLoadHeavy: string;
   speakerOptionLoad: string;
   speakerLoadLightDetail: string;
-  /** Says how much heavier in words; measured times can go here once there are any. */
   speakerLoadHeavyDetail: string;
-  speakerCountOnlyOne: string;
+  /** Measured on a Mac only; the help shows the same text, so numbers change here once. */
+  speakerLoadHeavyEstimate: string;
+  speakerModelsMissing: string;
+  openModelsTab: string;
+  runWithOneSpeaker: string;
+  badgeRequiredForSpeakers: string;
+  speakerRolesHint: string;
   profilesHeading: string;
   profilesHint: string;
   profileName: string;
@@ -179,6 +186,7 @@ export interface Messages {
   readinessMissing: string;
   roleTranscribe: string;
   roleDiarize: string;
+  roleSeparate: string;
   roleFace: string;
   roleRuntime: string;
   jobQueued: string;
@@ -298,6 +306,7 @@ export const roleName = (messages: Messages, role: Role): string =>
     ({
       transcribe: messages.roleTranscribe,
       diarize: messages.roleDiarize,
+      separate: messages.roleSeparate,
       face: messages.roleFace,
       runtime: messages.roleRuntime,
     }) satisfies Record<Role, string>
@@ -315,6 +324,8 @@ export const errorText = (messages: Messages, error: BackendError, modelLabel: s
         detail: error.detail ?? "",
         file: error.file ?? "",
         name: error.name ?? "",
-        roles: (error.roles ?? []).map((role: Role): string => roleName(messages, role)).join(", "),
+        roles: (error.roles ?? error.missing ?? [])
+          .map((role: Role): string => roleName(messages, role))
+          .join(", "),
       })
     : (error.detail ?? error.code);

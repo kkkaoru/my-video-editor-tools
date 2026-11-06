@@ -1,7 +1,7 @@
 // Runs with bun: the JSON shapes the Rust backend sends, kept in step with src-tauri by hand.
 
 export type Anchor = "face_above" | "face_below" | "video_top" | "video_bottom";
-export type Role = "transcribe" | "diarize" | "face" | "runtime";
+export type Role = "transcribe" | "diarize" | "separate" | "face" | "runtime";
 export type Stage = "convert_model" | "extract_audio" | "transcribe" | "diarize" | "faces" | "export";
 
 /** Widths are layer thicknesses, as ratios of the text size; they stack from the glyph outwards. */
@@ -79,6 +79,8 @@ export interface Hardware {
 
 export interface BackendError {
   code: string;
+  /** `speaker_models_missing`: the kinds of model a job needs. */
+  missing?: Role[];
   detail?: string;
   model?: string;
   role?: string;

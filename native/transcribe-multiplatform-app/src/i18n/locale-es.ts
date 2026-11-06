@@ -46,10 +46,18 @@ export const esMessages: Messages = {
   speakerLoadLight: "Ligero",
   speakerLoadHeavy: "Carga alta",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Usa solo Whisper.",
-  speakerLoadHeavyDetail: "Distingue las voces con Nemotron. Tarda mucho más y usa mucha más memoria.",
-  speakerCountOnlyOne:
-    "Sin un modelo Nemotron 3.5 solo se puede elegir 1 hablante. Descarga uno en «{tabModels}» para elegir más.",
+  speakerLoadLightDetail: "Usa solo Whisper, sin separación de voces ni separación de hablantes.",
+  speakerLoadHeavyDetail:
+    "Ejecuta Nemotron, luego MossFormer2 y luego Whisper. Tarda mucho más y usa mucha más memoria.",
+  speakerLoadHeavyEstimate:
+    "Medido en un Mac: en un vídeo de 4 horas, solo la separación de voces tarda unas 2 h 20 min, sin contar Whisper. Memoria: hasta unos 8 GB para la separación de voces y unos 22 GB para la separación de hablantes (Nemotron). Depende del vídeo y del ordenador. Windows no se ha medido.",
+  speakerModelsMissing: "Faltan modelos para este número de hablantes: {roles}.",
+  openModelsTab: "Abrir la pestaña «{tabModels}»",
+  runWithOneSpeaker: "Ejecutar con 1 hablante",
+  roleSeparate: "separación de voces",
+  badgeRequiredForSpeakers: "Necesario desde 2 hablantes",
+  speakerRolesHint:
+    "Hace falta cuando hablan 2 o más personas, o cuando el número se detecta automáticamente.",
   profilesHeading: "Perfiles",
   profilesHint:
     "Guarda el aspecto y la posición de los subtítulos con un nombre y restáuralos más tarde. Los modelos y el idioma hablado no forman parte de un perfil.",
@@ -251,6 +259,8 @@ export const esMessages: Messages = {
       "No se pueden restablecer los modelos mientras hay una tarea o una descarga en curso. Espera a que termine o cancela e inténtalo de nuevo.",
     models_missing:
       "Los vídeos no se añadieron porque no hay modelo disponible para: {roles}. Descárgalos en Modelos o añade una carpeta que ya los tenga.",
+    speaker_models_missing:
+      "Desde 2 hablantes, o con la detección automática, hacen falta estos modelos: {roles}. Descárgalos en Modelos, o pon el número de hablantes en 1 y vuelve a añadir el vídeo.",
     update_busy:
       "No se puede actualizar mientras se procesan vídeos o se descargan modelos. Espera a que terminen y vuelve a intentarlo.",
     no_supported_files:
@@ -269,6 +279,7 @@ export const esMessages: Messages = {
     "nemotron-3.5-transcribe-q2m":
       "Separación de hablantes. Para GPU de 16 GB; cada grabación puede durar unos 7 minutos.",
     "nemotron-3.5-transcribe-q2l": "Separación de hablantes. Para Mac de 24 GB.",
+    "mossformer2-ss-16k": "Separa las voces que se solapan. Necesario desde 2 hablantes.",
     "nemotron-3.5-transcribe-q8":
       "Separación de hablantes. La mejor calidad, para Mac de 64 GB y GPU de 48 GB.",
     yunet: "Caras reales. Incluido con la app; da el mismo resultado en Mac y Windows.",
@@ -345,7 +356,8 @@ export const esMessages: Messages = {
             notes: [
               "El «?» junto al número explica para qué sirve.",
               "Si solo habla una persona, deja 1. Es más rápido.",
-              "1 hablante es ligero: solo se ejecuta Whisper. La detección automática y 2 o más hablantes son carga alta: también se ejecuta Nemotron, por lo que tarda mucho más y usa mucha más memoria. Puedes elegirlos cuando haya un modelo Nemotron 3.5 en este ordenador. Se descarga en «{tabModels}».",
+              "1 hablante es ligero: solo se ejecuta Whisper. La detección automática y 2 o más hablantes son carga alta: se ejecutan Nemotron, MossFormer2 y Whisper, por lo que tarda mucho más y usa mucha más memoria.",
+              "La separación de voces tarda más o menos lo que dura el audio que procesa, que es cerca de la mitad del audio. {speakerLoadHeavyEstimate}",
               "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Archivos de subtítulos: .drt .fcpxml .srt .ttml .transcript.json. Con otro archivo, la aplicación dice que no se puede añadir.",
               "Si añades varios vídeos, se hacen uno por uno.",
               "La primera vez, la aplicación también pasa un modelo a una forma que puede usar.",
@@ -557,13 +569,13 @@ export const esMessages: Messages = {
             notes: [],
           },
           {
-            heading: "No puedes elegir el número de hablantes",
+            heading: "Los subtítulos para 2 o más hablantes no empiezan",
             intro:
-              "Para eso hace falta un modelo Nemotron 3.5. Sin él, la aplicación crea subtítulos para 1 hablante.",
+              "La detección automática y 2 o más hablantes necesitan un modelo Nemotron 3.5 y MossFormer2.",
             steps: [],
             notes: [
-              "Si un modelo Nemotron 3.5 sirve para este ordenador, descárgalo en la pestaña «{tabModels}».",
-              "Si ninguno sirve, aun así puedes crear subtítulos para 1 hablante.",
+              "En la pestaña «{tabModels}», descarga los modelos que faltan. Si no sirven para este ordenador, pulsa «{runWithOneSpeaker}».",
+              "Con 1 hablante no hacen falta estos modelos, y todos los subtítulos tienen el mismo color.",
             ],
           },
           {

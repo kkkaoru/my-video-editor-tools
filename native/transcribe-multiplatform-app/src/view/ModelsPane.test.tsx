@@ -502,3 +502,21 @@ it("stays quiet when a speaker model is recommended", () => {
   render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
   expect(screen.queryByText(/No speaker separation model/)).toBe(null);
 });
+
+it("says the voice separation model is required for 2 or more speakers", () => {
+  const separator: ModelStatus = {
+    ...SNAPSHOT.models[0],
+    id: "mossformer2-ss-16k",
+    role: "separate",
+    label: "MossFormer2 SS 16K",
+  };
+  const snapshot: Snapshot = { ...SNAPSHOT, models: [separator] };
+  render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
+  expect(screen.getByRole("heading", { name: "voice separation" }).tagName).toBe("H2");
+  expect(screen.getByText("Required for 2 or more speakers").getAttribute("data-slot")).toBe("badge");
+  expect(
+    screen.getByText("Needed when 2 or more people speak, or when the number is detected automatically.")
+      .tagName,
+  ).toBe("P");
+  expect(screen.getByText("Splits overlapping voices. Required for 2 or more speakers.").tagName).toBe("P");
+});

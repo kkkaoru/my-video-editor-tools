@@ -5,9 +5,8 @@ import {
   type AppState,
   applyDownloadEvent,
   applyJobEvent,
-  canChooseSpeakerCount,
-  effectiveSpeakerCount,
   initialState,
+  isHeavyRole,
   isHeavySpeakerCount,
   isWorking,
   lookChanged,
@@ -269,33 +268,46 @@ const MODEL: ModelStatus = {
   recommended: true,
 };
 
-it("needs a present, unblocked model for transcription only", () => {
-  expect(missingModelRoles(SNAPSHOT)).toStrictEqual(["transcribe"]);
+it("needs only a transcription model for one speaker", () => {
+  const one: Settings = { ...SETTINGS, speaker_count: 1 };
+  expect(missingModelRoles({ settings: one, models: [] })).toStrictEqual(["transcribe"]);
+  expect(missingModelRoles({ settings: one, models: [MODEL] })).toStrictEqual([]);
   expect(
-    missingModelRoles({ ...SNAPSHOT, models: [{ ...MODEL, blocked: { code: "needs_nvidia" } }] }),
+    missingModelRoles({ settings: one, models: [{ ...MODEL, blocked: { code: "needs_nvidia" } }] }),
   ).toStrictEqual(["transcribe"]);
-  expect(missingModelRoles({ ...SNAPSHOT, models: [MODEL] })).toStrictEqual([]);
 });
 
-it("lets the speaker count be chosen only with a present, unblocked Nemotron 3.5 model", () => {
-  const nemotron: ModelStatus = { ...MODEL, id: "nemotron-3.5-transcribe-q8", role: "diarize" };
-  expect(canChooseSpeakerCount({ models: [nemotron] })).toBe(true);
-  expect(canChooseSpeakerCount({ models: [{ ...nemotron, found_at: null }] })).toBe(false);
-  expect(canChooseSpeakerCount({ models: [{ ...nemotron, blocked: { code: "needs_nvidia" } }] })).toBe(false);
-  expect(canChooseSpeakerCount({ models: [{ ...nemotron, id: "other-diarizer" }] })).toBe(false);
-});
-
-it("runs with one speaker without such a model, and the saved number with it", () => {
-  const saved: Settings = { ...SETTINGS, speaker_count: 4 };
-  const nemotron: ModelStatus = { ...MODEL, id: "nemotron-3.5-transcribe-q8", role: "diarize" };
-  expect(effectiveSpeakerCount({ models: [], settings: saved })).toBe(1);
-  expect(effectiveSpeakerCount({ models: [nemotron], settings: saved })).toBe(4);
+it("needs every model of the chain for automatic detection and for more speakers", () => {
+  const diarizer: ModelStatus = { ...MODEL, id: "n", role: "diarize" };
+  const separator: ModelStatus = { ...MODEL, id: "m", role: "separate" };
+  expect(missingModelRoles({ settings: { ...SETTINGS, speaker_count: 0 }, models: [MODEL] })).toStrictEqual([
+    "diarize",
+    "separate",
+  ]);
+  expect(
+    missingModelRoles({ settings: { ...SETTINGS, speaker_count: 2 }, models: [MODEL, diarizer] }),
+  ).toStrictEqual(["separate"]);
+  expect(
+    missingModelRoles({ settings: { ...SETTINGS, speaker_count: 2 }, models: [MODEL, diarizer, separator] }),
+  ).toStrictEqual([]);
+  expect(
+    missingModelRoles({
+      settings: { ...SETTINGS, speaker_count: 2 },
+      models: [MODEL, { ...diarizer, blocked: { code: "needs_nvidia" } }, separator],
+    }),
+  ).toStrictEqual(["diarize"]);
 });
 
 it("calls only one speaker light", () => {
-  expect(isHeavySpeakerCount(1)).toBe(false);
-  expect(isHeavySpeakerCount(0)).toBe(true);
-  expect(isHeavySpeakerCount(2)).toBe(true);
+  expect(isHeavySpeakerCount({ speaker_count: 1 })).toBe(false);
+  expect(isHeavySpeakerCount({ speaker_count: 0 })).toBe(true);
+  expect(isHeavySpeakerCount({ speaker_count: 2 })).toBe(true);
+});
+
+it("knows which kinds of model only the heavy chain needs", () => {
+  expect(isHeavyRole("separate")).toBe(true);
+  expect(isHeavyRole("diarize")).toBe(true);
+  expect(isHeavyRole("transcribe")).toBe(false);
 });
 
 it("notices a look that differs from the saved one, and ignores everything else", () => {
