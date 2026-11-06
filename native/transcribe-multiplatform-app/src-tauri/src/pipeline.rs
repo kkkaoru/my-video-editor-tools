@@ -37,6 +37,8 @@ pub struct JobOutcome {
     pub faceless: bool,
     /// The chosen font is not on this computer, so line widths were estimated.
     pub font_missing: bool,
+    /// Speakers were asked for and the model heard none, so every caption has one colour.
+    pub speakers_missing: bool,
 }
 
 /// Removes the job's working folder (its large WAV) however the job ends.
@@ -188,7 +190,6 @@ struct SpeakerRun<'a> {
     hardware: &'a Hardware,
     wav: &'a Path,
     settings: &'a Settings,
-    work: &'a Path,
     cancel: &'a CancelToken,
 }
 
@@ -232,17 +233,8 @@ fn separate_speakers(
         main_file: &prepared.main_file,
         encoder: prepared.encoder.as_deref(),
         device: catalog::device_for(prepared.entry, run.hardware, run.tools.backend),
-        speaker_count: run.settings.speaker_count,
     };
-    let turns = engines::diarize(
-        run.tools,
-        &model,
-        run.wav,
-        &run.settings.language,
-        run.work,
-        run.cancel,
-        on_tick,
-    )?;
+    let turns = engines::diarize(run.tools, &model, run.wav, run.cancel, on_tick)?;
     Ok(limit_speakers(&turns, run.settings.speaker_count))
 }
 
@@ -346,7 +338,6 @@ pub fn run_job(
                     hardware,
                     wav: &wav,
                     settings,
-                    work: &work.0,
                     cancel,
                 },
                 &mut || report(Stage::Diarize, None),
@@ -354,6 +345,7 @@ pub fn run_job(
         }
         None => Vec::new(),
     };
+    let speakers_missing = speaker_model.is_some() && turns.is_empty();
     if speaker_model.is_some() {
         assign_speakers(&mut words, &turns);
     } else {
@@ -401,6 +393,7 @@ pub fn run_job(
         cue_count: transcript.cues.len(),
         faceless,
         font_missing: glyphs.is_none(),
+        speakers_missing,
     })
 }
 
@@ -484,6 +477,7 @@ pub fn relayout_to(
         cue_count: transcript.cues.len(),
         faceless,
         font_missing: glyphs.is_none(),
+        speakers_missing: false,
     })
 }
 

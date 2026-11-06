@@ -10,11 +10,23 @@ use crate::process::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::OsStr;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const TOOL_SEARCH_DEPTH: usize = 3;
 const EXE_SUFFIX: &str = if cfg!(windows) { ".exe" } else { "" };
-const AUTO_LANGUAGE: &str = "auto";
+const LOOPBACK: &str = "127.0.0.1";
+const SERVER_POLL: Duration = Duration::from_millis(100);
+/// Loading about 20 GB from a slow disk can take minutes; past this the server is stuck.
+const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(1800);
+/// The most `serve` accepts; an hour of audio takes minutes even on a CPU.
+const SERVER_SOCKET_SECONDS: &str = "3600";
+const UPLOAD_BOUNDARY: &str = "transcribe-captions-3f7c1e9a5b2d4860a1c7e3f95d0b6824";
+/// More than any real answer, and the bound on what is held in memory.
+const MOST_SEGMENT_BYTES: u64 = 256 * 1024 * 1024;
+const AUDIO_CONTENT_TYPE: &str = "audio/wav";
+const HTTP_OK: u16 = 200;
 const AUDIO_ARGS: [&str; 8] = ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y"];
 const MILLIS_PER_SECOND: f64 = 1000.0;
 /// Dynamic time warping over the decoder's attention gives each token a time of its own (mean
@@ -599,37 +611,27 @@ fn or_plain_times(
     }
 }
 
-fn speaker_number(value: &Value) -> Option<u32> {
-    value
+fn segment_to_turn(segment: &Value) -> Option<SpeakerTurn> {
+    let (start, end) = (segment["start"].as_f64()?, segment["end"].as_f64()?);
+    let speaker = segment["speaker"]
         .as_u64()
         .and_then(|number| u32::try_from(number).ok())
-        .filter(|number| *number > 0)
-}
-
-fn word_to_turn(word: &Value) -> Option<SpeakerTurn> {
-    let (start, end) = (word["start"].as_f64()?, word["end"].as_f64()?);
+        .filter(|number| *number > 0)?;
     Some(SpeakerTurn {
         start,
         end: end.max(start),
-        speaker: speaker_number(&word["speaker"])?,
+        speaker,
     })
 }
 
-/// `nemo-speech transcribe --diarize --format json`: per-word speakers, merged into turns.
-pub fn parse_speech_llm(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
+/// `/v1/audio/diarizations`: speaker turns, which overlap when people talk at once.
+pub fn parse_speaker_segments(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
     let value: Value = serde_json::from_slice(bytes)
-        .map_err(|error| AppError::Invalid(format!("speech-LLM JSON: {error}")))?;
-    let words = value["words"]
+        .map_err(|error| AppError::Invalid(format!("speaker JSON: {error}")))?;
+    let segments = value["segments"]
         .as_array()
-        .ok_or_else(|| AppError::Invalid("speech-LLM JSON has no words".into()))?;
-    let mut turns: Vec<SpeakerTurn> = Vec::new();
-    for turn in words.iter().filter_map(word_to_turn) {
-        match turns.last_mut() {
-            Some(last) if last.speaker == turn.speaker => last.end = last.end.max(turn.end),
-            _ => turns.push(turn),
-        }
-    }
-    Ok(turns)
+        .ok_or_else(|| AppError::Invalid("speaker JSON has no segments".into()))?;
+    Ok(segments.iter().filter_map(segment_to_turn).collect())
 }
 
 /// Decoder and encoder paths of a speech-LLM model.
@@ -640,27 +642,12 @@ pub struct DiarizeModel<'a> {
     pub encoder: Option<&'a Path>,
     /// `--device`: the GPU when the model fits, else the CPU.
     pub device: &'a str,
-    /// How many people speak, 0 when unknown.
-    pub speaker_count: u32,
 }
 
-/// The prompt guide's speaker instruction, naming exactly the tags for the people known to be speaking.
-fn speaker_instruction(speaker_count: u32) -> Option<String> {
-    (speaker_count >= 2).then(|| {
-        let tags: Vec<String> = (0..speaker_count).map(|index| format!("<spk:{index}>")).collect();
-        format!(
-            "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Put speaker tags {} on the transcription.",
-            tags.join(" ")
-        )
-    })
-}
-
-fn diarize_command(
+fn speaker_server_command(
     tools: &Tools,
     model: &DiarizeModel<'_>,
-    wav: &Path,
-    language: &str,
-    out: &Path,
+    port: u16,
 ) -> AppResult<std::process::Command> {
     if model.entry.role != Role::Diarize {
         return Err(AppError::Invalid(format!(
@@ -670,26 +657,111 @@ fn diarize_command(
     }
     let mut command = background_command(&tools.nemo);
     command
-        .arg("transcribe")
-        .arg(wav)
-        .arg("--model")
-        .arg(model.main_file)
-        .args(["--format", "json", "--diarize", "--force"]);
-    if language != AUTO_LANGUAGE {
-        command.args(["--language", language]);
-    }
-    if let Some(instruction) = speaker_instruction(model.speaker_count) {
-        command.arg("--instruction").arg(instruction);
-    }
+        .args(["serve", "--no-ui", "--host", LOOPBACK, "--port"])
+        .arg(port.to_string())
+        .arg("--asr-model")
+        .arg(model.main_file);
     if let Some(encoder) = model.encoder {
         command.arg("--salm-encoder").arg(encoder);
     }
     command.args(model.entry.extra_args.iter().map(OsStr::new));
-    command
-        .args(["--device", model.device])
-        .arg("--output")
-        .arg(out);
+    command.args(["--device", model.device]);
+    command.args(["--read-timeout", SERVER_SOCKET_SECONDS]);
+    command.args(["--write-timeout", SERVER_SOCKET_SECONDS]);
     Ok(command)
+}
+
+fn free_port() -> AppResult<u16> {
+    let listener = TcpListener::bind((LOOPBACK, 0)).map_err(io_context("reserve a local port"))?;
+    let address = listener
+        .local_addr()
+        .map_err(io_context("reserve a local port"))?;
+    Ok(address.port())
+}
+
+fn server_failure(detail: impl ToString) -> AppError {
+    AppError::Tool {
+        tool: "nemo-speech".to_owned(),
+        detail: detail.to_string(),
+    }
+}
+
+/// The server is on this computer, whatever proxy the system names.
+fn local_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+fn wait_for_server(agent: &ureq::Agent, base: &str, stop: &CancelToken) -> AppResult<()> {
+    let began = Instant::now();
+    while !stop.is_cancelled() {
+        let health = agent.get(format!("{base}/health")).call();
+        if health.is_ok_and(|reply| reply.status() == HTTP_OK) {
+            return Ok(());
+        }
+        if began.elapsed() > SERVER_READY_TIMEOUT {
+            return Err(server_failure("the speaker server never became ready"));
+        }
+        std::thread::sleep(SERVER_POLL);
+    }
+    Err(server_failure(
+        "the speaker server stopped before it was ready",
+    ))
+}
+
+fn wav_upload(wav: &Path) -> AppResult<Vec<u8>> {
+    let audio = std::fs::read(wav).map_err(io_context("read the audio for speakers"))?;
+    let head = format!(
+        "--{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: {AUDIO_CONTENT_TYPE}\r\n\r\n"
+    );
+    let tail = format!("\r\n--{UPLOAD_BOUNDARY}--\r\n");
+    Ok([head.as_bytes(), &audio, tail.as_bytes()].concat())
+}
+
+/// Asks once the server is up. Its speaker branch needs no decoding, so a transcript the alignment
+/// cannot place (one character outside its vocabulary loses a whole recording's word times) costs
+/// nothing here.
+fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<SpeakerTurn>> {
+    let agent = local_agent();
+    let base = format!("http://{LOOPBACK}:{port}");
+    let upload = wav_upload(wav)?;
+    wait_for_server(&agent, &base, stop)?;
+    let mut reply = agent
+        .post(format!("{base}/v1/audio/diarizations"))
+        .content_type(format!("multipart/form-data; boundary={UPLOAD_BOUNDARY}"))
+        .send(&upload[..])
+        .map_err(server_failure)?;
+    let status = reply.status();
+    let body = reply
+        .body_mut()
+        .with_config()
+        .limit(MOST_SEGMENT_BYTES)
+        .read_to_vec()
+        .map_err(server_failure)?;
+    if status != HTTP_OK {
+        return Err(server_failure(format!(
+            "{status}: {}",
+            String::from_utf8_lossy(&body)
+        )));
+    }
+    parse_speaker_segments(&body)
+}
+
+/// Cancelling wins; then the answer; then why the server died, which says more than a lost connection.
+fn settled_turns(
+    cancel: &CancelToken,
+    server: AppResult<()>,
+    turns: AppResult<Vec<SpeakerTurn>>,
+) -> AppResult<Vec<SpeakerTurn>> {
+    cancel.check()?;
+    match (turns, server) {
+        (Ok(turns), _) => Ok(turns),
+        (Err(_), Err(failure @ AppError::Tool { .. })) => Err(failure),
+        (Err(failure), _) => Err(failure),
+    }
 }
 
 /// Runs the chosen speaker model; it reports no percentage, so callers show elapsed time.
@@ -697,16 +769,31 @@ pub fn diarize(
     tools: &Tools,
     model: &DiarizeModel<'_>,
     wav: &Path,
-    language: &str,
-    work: &Path,
     cancel: &CancelToken,
     on_tick: &mut dyn FnMut(),
 ) -> AppResult<Vec<SpeakerTurn>> {
-    let out = work.join("speakers.json");
-    let command = diarize_command(tools, model, wav, language, &out)?;
-    run_with_ticks(command, "nemo-speech", cancel, on_tick)?;
-    let bytes = std::fs::read(&out).map_err(io_context("read speaker output"))?;
-    parse_speech_llm(&bytes)
+    let port = free_port()?;
+    let command = speaker_server_command(tools, model, port)?;
+    let stop = CancelToken::default();
+    std::thread::scope(|scope| {
+        let answer = scope.spawn(|| {
+            let turns = ask_for_turns(port, wav, &stop);
+            stop.cancel();
+            turns
+        });
+        let server = run_with_ticks(command, "nemo-speech", &stop, || {
+            if cancel.is_cancelled() {
+                stop.cancel();
+            }
+            on_tick();
+        });
+        // A server that exited by itself must end the wait for it.
+        stop.cancel();
+        let turns = answer
+            .join()
+            .unwrap_or_else(|_| Err(server_failure("the speaker request stopped")));
+        settled_turns(cancel, server, turns)
+    })
 }
 
 #[cfg(test)]
@@ -845,15 +932,16 @@ mod tests {
     }
 
     #[test]
-    fn speech_llm_words_merge_into_turns() {
-        let json = br#"{"words":[
-            {"word":"a","start":0.0,"end":0.5,"speaker":1},
-            {"word":"b","start":0.5,"end":1.0,"speaker":1},
-            {"word":"c","start":1.2,"end":1.5,"speaker":2},
-            {"word":"d","start":1.6,"end":1.7}
+    fn speaker_segments_keep_their_overlap() {
+        let json = br#"{"segments":[
+            {"start":0.0,"end":1.0,"speaker":1},
+            {"start":0.5,"end":1.5,"speaker":2},
+            {"start":2.0,"end":1.0,"speaker":1},
+            {"start":3.0,"end":4.0,"speaker":0},
+            {"start":5.0,"end":6.0}
         ]}"#;
         assert_eq!(
-            parse_speech_llm(json).unwrap(),
+            parse_speaker_segments(json).unwrap(),
             vec![
                 SpeakerTurn {
                     start: 0.0,
@@ -861,9 +949,14 @@ mod tests {
                     speaker: 1
                 },
                 SpeakerTurn {
-                    start: 1.2,
+                    start: 0.5,
                     end: 1.5,
                     speaker: 2
+                },
+                SpeakerTurn {
+                    start: 2.0,
+                    end: 2.0,
+                    speaker: 1
                 },
             ]
         );
@@ -977,12 +1070,12 @@ mod tests {
             "whisper JSON: EOF while parsing an object at line 1 column 1"
         );
         assert_eq!(
-            parse_speech_llm(b"{").unwrap_err().to_string(),
-            "speech-LLM JSON: EOF while parsing an object at line 1 column 1"
+            parse_speaker_segments(b"{").unwrap_err().to_string(),
+            "speaker JSON: EOF while parsing an object at line 1 column 1"
         );
         assert_eq!(
-            parse_speech_llm(b"{}").unwrap_err().to_string(),
-            "speech-LLM JSON has no words"
+            parse_speaker_segments(b"{}").unwrap_err().to_string(),
+            "speaker JSON has no segments"
         );
     }
 
@@ -994,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn a_speech_llm_gets_its_language_encoder_and_extra_arguments() {
+    fn the_speaker_server_gets_its_encoder_and_extra_arguments() {
         let tools = Tools {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
@@ -1009,29 +1102,19 @@ mod tests {
             main_file: Path::new("m.gguf"),
             encoder: Some(Path::new("e.gguf")),
             device: "cpu",
-            speaker_count: 0,
         };
-        let command = diarize_command(
-            &tools,
-            &model,
-            Path::new("a.wav"),
-            "ja",
-            Path::new("o.json"),
-        )
-        .unwrap();
+        let command = speaker_server_command(&tools, &model, 4321).unwrap();
         assert_eq!(
             args_of(&command),
             vec![
-                "transcribe",
-                "a.wav",
-                "--model",
+                "serve",
+                "--no-ui",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4321",
+                "--asr-model",
                 "m.gguf",
-                "--format",
-                "json",
-                "--diarize",
-                "--force",
-                "--language",
-                "ja",
                 "--salm-encoder",
                 "e.gguf",
                 "--asr.salm.max_sequences",
@@ -1048,59 +1131,16 @@ mod tests {
                 "2",
                 "--device",
                 "cpu",
-                "--output",
-                "o.json"
+                "--read-timeout",
+                "3600",
+                "--write-timeout",
+                "3600"
             ]
         );
     }
 
     #[test]
-    fn an_automatic_language_is_left_to_the_model() {
-        let tools = Tools {
-            ffmpeg: "f".into(),
-            ffprobe: "p".into(),
-            whisper: "w".into(),
-            whisper_cpu: None,
-            voice_detector: "d".into(),
-            nemo: "n".into(),
-            backend: Backend::Default,
-        };
-        let model = DiarizeModel {
-            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-            main_file: Path::new("m.gguf"),
-            encoder: None,
-            device: "cpu",
-            speaker_count: 0,
-        };
-        let command = diarize_command(
-            &tools,
-            &model,
-            Path::new("a.wav"),
-            "auto",
-            Path::new("o.json"),
-        )
-        .unwrap();
-        assert_eq!(
-            args_of(&command),
-            vec![
-                "transcribe",
-                "a.wav",
-                "--model",
-                "m.gguf",
-                "--format",
-                "json",
-                "--diarize",
-                "--force",
-                "--device",
-                "cpu",
-                "--output",
-                "o.json"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_known_speaker_count_names_exactly_those_tags() {
+    fn a_model_with_its_encoder_named_beside_it_needs_no_encoder_argument() {
         let tools = Tools {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
@@ -1115,31 +1155,90 @@ mod tests {
             main_file: Path::new("m.gguf"),
             encoder: None,
             device: "auto",
-            speaker_count: 2,
         };
-        let command = diarize_command(
-            &tools,
-            &model,
-            Path::new("a.wav"),
-            "auto",
-            Path::new("o.json"),
-        )
-        .unwrap();
+        let command = speaker_server_command(&tools, &model, 1).unwrap();
         assert_eq!(
             args_of(&command),
             vec![
-                "transcribe", "a.wav", "--model", "m.gguf", "--format", "json", "--diarize", "--force",
-                "--instruction",
-                "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Put speaker tags <spk:0> <spk:1> on the transcription.",
-                "--device", "auto", "--output", "o.json"
+                "serve",
+                "--no-ui",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1",
+                "--asr-model",
+                "m.gguf",
+                "--device",
+                "auto",
+                "--read-timeout",
+                "3600",
+                "--write-timeout",
+                "3600"
             ]
         );
     }
 
     #[test]
-    fn an_unknown_or_single_speaker_count_needs_no_instruction() {
-        assert_eq!(speaker_instruction(0), None);
-        assert_eq!(speaker_instruction(1), None);
+    fn the_upload_wraps_the_audio_as_one_form_field() {
+        let root = std::env::temp_dir().join(format!("wav-upload-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wav = root.join("a.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let body = wav_upload(&wav).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            "--transcribe-captions-3f7c1e9a5b2d4860a1c7e3f95d0b6824\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n--transcribe-captions-3f7c1e9a5b2d4860a1c7e3f95d0b6824--\r\n"
+        );
+    }
+
+    #[test]
+    fn an_answer_outlives_the_server_it_stopped() {
+        let turn = SpeakerTurn {
+            start: 0.0,
+            end: 1.0,
+            speaker: 1,
+        };
+        let kept = settled_turns(
+            &CancelToken::default(),
+            Err(AppError::Cancelled),
+            Ok(vec![turn]),
+        );
+        assert_eq!(kept.unwrap(), vec![turn]);
+    }
+
+    #[test]
+    fn a_server_that_died_explains_the_lost_answer() {
+        let error = settled_turns(
+            &CancelToken::default(),
+            Err(crashed()),
+            Err(AppError::Invalid("connection lost".into())),
+        );
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            "whisper-cli failed: exit code: 0xc000001d"
+        );
+    }
+
+    #[test]
+    fn a_bad_answer_from_a_living_server_is_reported() {
+        let error = settled_turns(
+            &CancelToken::default(),
+            Err(AppError::Cancelled),
+            Err(AppError::Invalid("speaker JSON has no segments".into())),
+        );
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            "speaker JSON has no segments"
+        );
+    }
+
+    #[test]
+    fn cancelling_wins_over_any_answer() {
+        let cancel = CancelToken::default();
+        cancel.cancel();
+        let error = settled_turns(&cancel, Ok(()), Ok(Vec::new()));
+        assert_eq!(error.unwrap_err().to_string(), "cancelled");
     }
 
     #[test]

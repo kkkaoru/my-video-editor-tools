@@ -38,7 +38,9 @@ const VIDEO: VideoInfo = VideoInfo {
 const FFMPEG: &str = r#"
 case "$*" in
   *rawvideo*) head -c 1228800 /dev/zero ;;
-  *) echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2; echo 'no status here' >&2 ;;
+  *) echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2; echo 'no status here' >&2
+     for last; do :; done
+     printf RIFF > "$last" ;;
 esac
 "#;
 const FFPROBE: &str = r#"
@@ -62,15 +64,40 @@ cat > "$out.json" <<'EOF'
   {"text":"どうも","offsets":{"from":1000,"to":1800}}]}]}
 EOF
 "#;
-const NEMO: &str = r#"
+/// `nemo-speech serve` for one fixed answer; a job ends it by killing it, as the app does.
+const NEMO_SERVER: &str = r#"
 while [ $# -gt 0 ]; do
-  if [ "$1" = "--output" ]; then out="$2"; fi
+  if [ "$1" = "--port" ]; then port="$2"; fi
   shift
 done
-echo '{"words":[{"word":"a","start":0.0,"end":0.95,"speaker":1},{"word":"b","start":0.95,"end":2.0,"speaker":2}]}' > "$out"
+exec python3 -c '
+import http.server, sys
+class Fake(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+    def answer(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        self.answer(200, b"ok")
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.answer(STATUS, BODY)
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Fake).serve_forever()
+' "$port"
 "#;
+const TWO_VOICES: &str =
+    r#"{"segments":[{"start":0.0,"end":0.95,"speaker":1},{"start":0.95,"end":2.0,"speaker":2}]}"#;
 /// ModelProto with one Identity node: lets the real detector run without a real face model.
 const IDENTITY_ONNX: &[u8] = b"\x08\x08\x3a\x2b\x0a\x10\x0a\x01x\x12\x01y\x22\x08Identity\x12\x01g\x5a\x09\x0a\x01x\x12\x04\x0a\x02\x08\x01\x62\x09\x0a\x01y\x12\x04\x0a\x02\x08\x01\x42\x02\x10\x0d";
+
+fn fake_server(status: u16, body: &str) -> String {
+    NEMO_SERVER
+        .replace("STATUS", &status.to_string())
+        .replace("BODY", &format!("b\"\"\"{body}\"\"\""))
+}
 
 fn scratch(name: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
@@ -107,7 +134,10 @@ fn with_tools(root: &Path) -> AppPaths {
         &runtime.join("whisper/whisper-vad-speech-segments"),
         VOICE_DETECTOR,
     );
-    write_tool(&runtime.join("nemo/bin/nemo-speech"), NEMO);
+    write_tool(
+        &runtime.join("nemo/bin/nemo-speech"),
+        &fake_server(200, TWO_VOICES),
+    );
     install_ipadic(&paths);
     paths
 }
@@ -296,7 +326,7 @@ fn a_second_job_on_the_same_video_keeps_the_first_files() {
 }
 
 #[test]
-fn a_job_with_a_speech_llm_merges_word_speakers_into_turns() {
+fn a_job_with_a_speech_llm_takes_its_speaker_turns() {
     let root = scratch("job-speech-llm");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
@@ -306,7 +336,7 @@ fn a_job_with_a_speech_llm_merges_word_speakers_into_turns() {
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         &counting_nemo(
             &root,
-            r#"{"words":[{"word":"a","start":0.0,"end":0.9,"speaker":1},{"word":"b","start":1.0,"end":2.0,"speaker":1}]}"#,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#,
         ),
     );
     let settings = Settings {
@@ -1047,9 +1077,10 @@ fn a_transcriber_that_writes_nothing_is_an_error() {
 }
 
 #[test]
-fn a_diarizer_that_writes_nothing_is_an_error() {
+fn a_server_that_exits_at_once_is_an_error() {
     let root = scratch("diarize-empty");
     let paths = with_tools(&root);
+    fs::write(root.join("a.wav"), b"RIFF").unwrap();
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         "",
@@ -1059,20 +1090,156 @@ fn a_diarizer_that_writes_nothing_is_an_error() {
         main_file: Path::new("m.gguf"),
         encoder: None,
         device: "auto",
-        speaker_count: 0,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
-        "auto",
-        &root,
         &CancelToken::default(),
         &mut || {},
     )
     .unwrap_err()
     .to_string();
-    assert!(error.starts_with("read speaker output: "), "{error}");
+    assert_eq!(
+        error,
+        "nemo-speech failed: the speaker server stopped before it was ready"
+    );
+}
+
+#[test]
+fn audio_that_cannot_be_read_stops_the_server_too() {
+    let root = scratch("diarize-no-audio");
+    let paths = with_tools(&root);
+    let model = DiarizeModel {
+        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+        main_file: Path::new("m.gguf"),
+        encoder: None,
+        device: "auto",
+    };
+    let error = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &root.join("missing.wav"),
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.starts_with("read the audio for speakers: "),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_refusal_from_the_server_says_why() {
+    let root = scratch("diarize-refused");
+    let paths = with_tools(&root);
+    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(422, "bad audio"),
+    );
+    let model = DiarizeModel {
+        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+        main_file: Path::new("m.gguf"),
+        encoder: None,
+        device: "auto",
+    };
+    let error = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &root.join("a.wav"),
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "nemo-speech failed: 422 Unprocessable Entity: bad audio"
+    );
+}
+
+#[test]
+fn turns_come_from_the_server_and_it_is_stopped_afterwards() {
+    let root = scratch("diarize-answer");
+    let paths = with_tools(&root);
+    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    let model = DiarizeModel {
+        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+        main_file: Path::new("m.gguf"),
+        encoder: None,
+        device: "auto",
+    };
+    let turns = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &root.join("a.wav"),
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[1].speaker, 2);
+}
+
+#[test]
+fn cancelling_stops_the_speaker_server() {
+    let root = scratch("diarize-cancel");
+    let paths = with_tools(&root);
+    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        "exec sleep 60",
+    );
+    let model = DiarizeModel {
+        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
+        main_file: Path::new("m.gguf"),
+        encoder: None,
+        device: "auto",
+    };
+    let cancel = CancelToken::default();
+    let began = std::time::Instant::now();
+    let error = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &root.join("a.wav"),
+        &cancel,
+        &mut || cancel.cancel(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "cancelled");
+    assert!(began.elapsed().as_secs() < 30);
+}
+
+#[test]
+fn a_model_that_hears_nobody_is_reported_on_the_job() {
+    let root = scratch("job-no-speakers");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(200, r#"{"segments":[]}"#),
+    );
+    let settings = Settings {
+        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
+        ..bottom_anchored()
+    };
+    let outcome = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &settings,
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(outcome.speakers_missing);
+    assert_eq!(outcome.speaker_count, 1);
 }
 
 #[test]
@@ -1084,14 +1251,11 @@ fn only_diarization_models_can_diarize() {
         main_file: Path::new("m.gguf"),
         encoder: None,
         device: "auto",
-        speaker_count: 0,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
-        "auto",
-        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1709,9 +1873,10 @@ while [ ! -f "$released" ] && [ $tries -lt 3000 ]; do
   tries=$((tries + 1))
 done
 [ -f "$released" ] || exit 8
-{NEMO}
+{server}
 "#,
             released = released.display(),
+            server = fake_server(200, TWO_VOICES),
         ),
     );
     let mut diarize_updates = 0;
@@ -1886,15 +2051,9 @@ fn one_known_speaker_skips_separation_entirely() {
 /// Logs each call beside the job, then writes `body`.
 fn counting_nemo(root: &Path, body: &str) -> String {
     format!(
-        r#"
-echo "$*" >> "{log}"
-while [ $# -gt 0 ]; do
-  if [ "$1" = "--output" ]; then out="$2"; fi
-  shift
-done
-echo '{body}' > "$out"
-"#,
+        "echo \"$*\" >> \"{log}\"\n{server}",
         log = root.join("nemo-calls.log").display(),
+        server = fake_server(200, body),
     )
 }
 
@@ -1905,7 +2064,7 @@ fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    let one_word = r#"{"words":[{"word":"a","start":0.0,"end":2.0,"speaker":1}]}"#;
+    let one_word = r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#;
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         &counting_nemo(&root, one_word),
@@ -1926,7 +2085,7 @@ fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
     .unwrap();
     let log = fs::read_to_string(root.join("nemo-calls.log")).unwrap();
     assert_eq!(log.lines().count(), 1);
-    assert!(log.contains("--instruction"));
+    assert!(log.starts_with("serve --no-ui"), "{log}");
     fs::remove_dir_all(&root).unwrap();
 }
 

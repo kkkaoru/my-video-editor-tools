@@ -143,6 +143,7 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 - Resolve draws FCPXML text at height / 1080 x 0.974 of `fontSize` (measured at 720x1280, 1280x720, 1920x1080 and 3840x2160) and half of `strokeWidth` in frame pixels. It ignores shadow and `kerning`, so the app offers neither.
 - A real download of whisper-large-v3-turbo and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
+- Speaker turns through Metal from `nemo-speech serve` on a real hour of three people: 2770 turns in 13 s, with the same hour losing every word time through `transcribe --diarize` (`Unrepresentable character`). Purity against an assignment no one checked by hand: 0.81 on that hour.
 
 Windows: the Radeon installer on Windows 11 ARM in Parallels, without a GPU: a 30-second clip through the command line and the first screen. Not checked there: drag and drop, Whisper on Vulkan (if warping fails, the job falls back to coarser times).
 

@@ -703,6 +703,7 @@ mod tests {
             cue_count: 3,
             faceless: false,
             font_missing: false,
+            speakers_missing: false,
         };
         assert!(matches!(
             job_result_event(5, Ok(outcome)),

@@ -13,11 +13,11 @@ use std::time::Instant;
 /// Measured on an M5 Pro with Whisper turbo and YOLO faces: 85 min video in 18 min.
 const FAST_TRANSCRIBE_RATE: f64 = 0.09;
 const FAST_DIARIZE_RATE: f64 = 0.02;
-const FAST_SPEECH_LLM_RATE: f64 = 0.2;
+const FAST_SPEECH_LLM_RATE: f64 = 0.01;
 /// Measured under x64 emulation on a 4-core ARM VM: 20 s of video in 84 s; plain x64 CPUs do better.
 const CPU_TRANSCRIBE_RATE: f64 = 3.0;
 const CPU_DIARIZE_RATE: f64 = 0.5;
-const CPU_SPEECH_LLM_RATE: f64 = 3.0;
+const CPU_SPEECH_LLM_RATE: f64 = 0.1;
 const EXTRACT_RATE: f64 = 0.01;
 const FACES_RATE: f64 = 0.1;
 const CONVERT_SECONDS: f64 = 60.0;
@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(default_rate(Stage::Transcribe, slow), 3.0);
         assert_eq!(default_rate(Stage::Diarize, fast), 0.02);
         assert_eq!(default_rate(Stage::Diarize, slow), 0.5);
-        assert_eq!(default_rate(Stage::Diarize, llm), 0.2);
+        assert_eq!(default_rate(Stage::Diarize, llm), 0.01);
         assert_eq!(default_rate(Stage::Faces, slow), 0.1);
         assert_eq!(default_rate(Stage::ExtractAudio, slow), 0.01);
     }
@@ -506,7 +506,7 @@ mod tests {
             accelerated: false,
             speech_llm: true,
         };
-        assert_eq!(default_rate(Stage::Diarize, slow_llm), 3.0);
+        assert_eq!(default_rate(Stage::Diarize, slow_llm), 0.1);
     }
 
     #[test]
