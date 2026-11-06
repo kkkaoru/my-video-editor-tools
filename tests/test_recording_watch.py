@@ -165,7 +165,7 @@ def test_each_finished_step_is_reported_once_with_its_place_and_status_shows_the
             "kind": "step-ok",
             "recording": "7",
             "step": "audio-clock",
-            "done": "1/31",
+            "done": "1/32",
             "wallSeconds": 9.0,
         }
     ]
@@ -181,7 +181,7 @@ def test_each_finished_step_is_reported_once_with_its_place_and_status_shows_the
     arguments = ["--queue", "q.json", "--defaults", "d.json", "--jobs", "jobs", "--status"]
     assert watch.main(arguments) == 0
     assert capsys.readouterr().out == (
-        "7: running, 1/31 steps, last audio-clock, next clocks, yolo-track, separation\n"
+        "7: running, 1/32 steps, last audio-clock, next clocks, yolo-track, separation\n"
         "  web-hls: 42% (read of a.mp4)\n"
         "  asr: ? (no measure yet)\n"
     )

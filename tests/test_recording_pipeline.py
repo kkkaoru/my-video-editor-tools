@@ -250,7 +250,7 @@ def test_run_executes_every_step_then_skips_them_all(
     assert pipeline.SCHEDULE["cleanup"] == ("cleanup-bootstrap",)
     second = pipeline.run("42", path, checkout=tmp_path)
     assert set(second.values()) == {"reused"}
-    assert len(ran(tmp_path)) == 31
+    assert len(ran(tmp_path)) == 32
 
 
 def test_forcing_a_step_redoes_it_and_its_dependents(
@@ -287,6 +287,7 @@ def test_forcing_a_step_redoes_it_and_its_dependents(
         "excitement": "completed",
         "upload": "completed",
         "summary": "completed",
+        "clips-answers": "completed",
         "clips": "completed",
         "retire-renders": "completed",
         "web-hls-encode": "completed",
@@ -303,7 +304,7 @@ def test_forcing_everything_redoes_every_step(
     pipeline.run("42", path, checkout=tmp_path)
     results = pipeline.run("42", path, checkout=tmp_path, forcing=pipeline.Forcing(every=True))
     assert set(results.values()) == {"completed"}
-    assert len(ran(tmp_path)) == 62
+    assert len(ran(tmp_path)) == 64
 
 
 def test_a_second_run_of_the_same_recording_is_refused(
@@ -336,6 +337,7 @@ def test_downstream_includes_every_dependent_step() -> None:
         "upload",
         "summarize",
         "summary",
+        "clips-answers",
         "clips",
         "retire-renders",
     ]
@@ -608,7 +610,9 @@ def test_a_reframe_intent_crops_the_decodable_copy_before_the_lead_in(
 
 def test_caption_render_waits_on_compressor_without_a_gpu_lease() -> None:
     assert (
-        frozenset({"separation", "asr", "yolo-track", "onsets", "compose", "clips"})
+        frozenset(
+            {"separation", "asr", "yolo-track", "onsets", "compose", "clips-answers", "clips"}
+        )
         == pipeline.GPU_STEPS
     )
 
@@ -1033,5 +1037,6 @@ def test_an_unpublished_redo_from_cut_plan_keeps_the_normal_behaviour(
 def test_the_youtube_encode_starts_before_the_summary_and_the_clips() -> None:
     assert pipeline.SCHEDULE["summarize"] == ("publish", "caption-plan", "youtube-encode")
     assert pipeline.SCHEDULE["summary"] == ("upload", "summarize")
-    assert pipeline.SCHEDULE["clips"] == ("upload", "summary", "youtube-master")
+    assert pipeline.SCHEDULE["clips-answers"] == ("upload", "summary")
+    assert pipeline.SCHEDULE["clips"] == ("upload", "summary", "youtube-master", "clips-answers")
     assert pipeline.SCHEDULE["youtube-master"] == ("youtube-encode", "caption-plan", "summary")

@@ -860,6 +860,15 @@ def test_a_recording_without_the_step_after_the_new_one_is_not_done(tmp_path: Pa
     assert queue.done(pipelines.layout_of("7", defaults(tmp_path), root)) is False
 
 
+def test_a_recording_with_its_clips_needs_no_clip_answers_ahead(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    recording(tmp_path, "7")
+    finished(tmp_path, "7")
+    steps = tmp_path / "edits/work/recordings/replay-7/steps"
+    (steps / "clips-answers.json").unlink()
+    assert queue.done(pipelines.layout_of("7", defaults(tmp_path), root)) is True
+
+
 def test_a_step_marked_as_added_after_publication_counts_as_done(tmp_path: Path) -> None:
     root = checkout(tmp_path)
     recording(tmp_path, "7")

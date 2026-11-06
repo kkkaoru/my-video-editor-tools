@@ -71,13 +71,14 @@ DEFAULT_PEAKS_GIB = {
     # bun clips-mac.ts loads about 29 GB of local models (clef 18, clef-flash 6.9, Bonsai 3.4;
     # two swap thrashes on 10-24 ran it outside any reservation); a measured footprint
     # replaces this once recorded.
+    "clips-answers": 30.0,
     "clips": 30.0,
     # yolo_learning's retraining (Ultralytics, batch 8 at 960 px on MPS): an estimate until its
     # first run is measured.
     "yolo-train": 10.0,
 }
 # Placeholders until measured: the measured footprint (x MARGIN) then replaces them outright.
-PLACEHOLDER_PEAKS = frozenset({"clips"})
+PLACEHOLDER_PEAKS = frozenset({"clips-answers", "clips"})
 MARGIN = 1.25
 CAP_FACTOR = 2.0  # a hard cap keeps this much room above the largest measured footprint
 # A hard cap needs this many complete measured runs: peaks grow with recording length.

@@ -308,17 +308,9 @@ def web_hls(pipeline: Pipeline, run: Runner) -> dict[str, object]:
     return {"video": video}
 
 
-def clips(pipeline: Pipeline, run: Runner, *, fetch: Fetch = _fetch) -> dict[str, object]:
-    """The Mac computes the clip points from the uploaded data, then the viewer must report them.
-
-    ``bun run clips:mac`` runs one at a time machine-wide (its local models take about 29 GB).
-    Cloudflare AI is never asked here: it runs only for a user's reload. A recording whose
-    ``video-config.json`` sets ``clips: false`` makes none.
-    """
-    if video_config.value(pipeline.path_of("editRoot"), "clips", True) is False:
-        return {"skipped": "video-config.json clips: false"}
-    domain, token = _viewer()
-    video = delivery(pipeline).stem
+def _compute_clips(pipeline: Pipeline, run: Runner, video: str, log: Path) -> None:
+    """``bun run clips:mac`` on a copy of the video's data, one at a time machine-wide (its local
+    models take about 29 GB). Cloudflare AI is never asked here: only a user's reload runs it."""
     bun = shutil.which("bun")
     if bun is None:
         raise ReplayError("bun is required to compute the web viewer's clip points")
@@ -329,10 +321,38 @@ def clips(pipeline: Pipeline, run: Runner, *, fetch: Fetch = _fetch) -> dict[str
         shutil.copyfile(WEB_VIEWER / "data" / f"{video}.json", data)
     with (WEB_VIEWER / "clips-mac.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        run(
-            [bun, str(WEB_VIEWER / "src" / "bin" / "clips-mac.ts"), str(data)],
-            pipeline.logs / "clips.log",
-        )
+        run([bun, str(WEB_VIEWER / "src" / "bin" / "clips-mac.ts"), str(data)], log)
+
+
+def clips_answers(pipeline: Pipeline, run: Runner) -> dict[str, object]:
+    """The clip points computed beside the master, which takes about as long (2026-11-06).
+
+    clips-mac keeps its deciders' answers, and the data's cues do not change with the master, so
+    ``clips`` afterwards asks only for the titles and stores the record under the master's key.
+    A failure here costs only that time: ``clips`` computes them again and stands for the result.
+    """
+    if video_config.value(pipeline.path_of("editRoot"), "clips", True) is False:
+        return {"skipped": "video-config.json clips: false"}
+    log = pipeline.logs / "clips-answers.log"
+    try:
+        _compute_clips(pipeline, run, delivery(pipeline).stem, log)
+    except ReplayError as error:
+        return {"computed": False, "error": str(error)}
+    return {"computed": True}
+
+
+def clips(pipeline: Pipeline, run: Runner, *, fetch: Fetch = _fetch) -> dict[str, object]:
+    """The Mac computes the clip points from the uploaded data, then the viewer must report them.
+
+    The viewer keys a record by the published movie, so this runs after the master; what
+    ``clips_answers`` computed is reused. A recording whose ``video-config.json`` sets
+    ``clips: false`` makes none.
+    """
+    if video_config.value(pipeline.path_of("editRoot"), "clips", True) is False:
+        return {"skipped": "video-config.json clips: false"}
+    domain, token = _viewer()
+    video = delivery(pipeline).stem
+    _compute_clips(pipeline, run, video, pipeline.logs / "clips.log")
     headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
     answer = fetch(
         urllib.request.Request(f"https://{domain}/api/clips/{video}.json", headers=headers)

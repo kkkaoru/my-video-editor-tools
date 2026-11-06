@@ -18,7 +18,8 @@ while its measured utilization leaves room:
         ; publish ── youtube-encode (Compressor's YouTube setting, beside the delivery)
         ; youtube-encode ── web-hls-encode (the web viewer's HLS ladder of the master-to-be)
         ; youtube-encode + summary ── youtube-master (the verified encode replaces it)
-        ── clips (the viewer's clip points of the final delivery are ready)
+        ; summary ── clips-answers (the clip points computed beside the master)
+        ; youtube-master + clips-answers ── clips (stored for the final delivery, then ready)
         ; youtube-master + web-hls-encode ── web-hls (the ladder published)
 
 The caption half (``replay.recording_caption_steps``) reads ``captions.json``, written beside
@@ -115,7 +116,8 @@ ORDER = (
     "voice-repair", "cut-plan",
     "paging", "voice-audio", "onsets", "placement", "caption-parts", "compose", "finish",
     "voice-remux", "publish", "caption-plan",
-    "summarize", "excitement", "upload", "summary", "clips", "retire-renders", "youtube-encode",
+    "summarize", "excitement", "upload", "summary", "clips-answers", "clips", "retire-renders",
+    "youtube-encode",
     "web-hls-encode", "youtube-master", "web-hls",
 )  # fmt: skip
 DEPENDENCIES = {**steps.DEPENDENCIES, **captions.DEPENDENCIES}
@@ -129,9 +131,10 @@ SCHEDULE = {
     # The master replaces the delivery only after its gate and summary read it; a redo of those
     # never redoes the master.
     "youtube-master": (*DEPENDENCIES["youtube-master"], "summary"),
-    # Clips are stored under the published movie's content key: computed before the master, the
-    # viewer stopped finding them when the master replaced the movie (found 2026-11-06).
-    "clips": (*DEPENDENCIES["clips"], "youtube-master"),
+    # Clips are stored under the published movie's content key: stored before the master, the
+    # viewer stopped finding them when the master replaced the movie (found 2026-11-06). Their
+    # answers are computed beside the master (clips-answers), so this only stores them.
+    "clips": (*DEPENDENCIES["clips"], "youtube-master", "clips-answers"),
 }
 OUTER_CAP = 24 * HOUR  # a backstop (stages.Stage allows at most 24 h); IDLE_SECONDS bound each step
 TIMEOUTS = dict.fromkeys(
@@ -140,7 +143,7 @@ TIMEOUTS = dict.fromkeys(
         "retire-intermediates", "upload-original", "cut-plan", "voice-repair", "paging",
         "placement", "onsets", "caption-parts", "compose", "finish",
         "voice-audio", "voice-remux", "publish", "caption-plan",
-        "excitement", "upload", "summarize", "summary", "clips", "retire-renders",
+        "excitement", "upload", "summarize", "summary", "clips-answers", "clips", "retire-renders",
         "youtube-encode", "web-hls-encode", "youtube-master", "web-hls",
     ),
     OUTER_CAP,
@@ -159,7 +162,8 @@ IDLE_SECONDS = {
     "compose": 2 * HOUR, "finish": 2 * HOUR, "voice-audio": 2 * HOUR, "voice-remux": 2 * HOUR,
     "publish": 2 * HOUR, "caption-plan": HOUR,
     "excitement": HOUR, "upload": 2 * HOUR, "summarize": 2 * HOUR, "summary": 2 * HOUR,
-    "clips": 2 * HOUR, "retire-renders": HOUR, "youtube-encode": 2 * HOUR,
+    "clips-answers": 2 * HOUR, "clips": 2 * HOUR, "retire-renders": HOUR,
+    "youtube-encode": 2 * HOUR,
     "web-hls-encode": 2 * HOUR, "youtube-master": 2 * HOUR, "web-hls": 2 * HOUR,
 }  # fmt: skip
 # youtube-encode only waits on Compressor, which renders one job at a time machine-wide: it
@@ -171,7 +175,9 @@ IDLE_SECONDS = {
 # voice-repair is computation only on the CPU (no GPU lease).
 # clips runs clef and clef-flash on Metal for most of its 30-minute budget: beside a compose or an
 # asr its prefill (at the matmul peak alone) slowed to a quarter (11/1, 2026-11-03).
-GPU_STEPS = frozenset({"separation", "asr", "yolo-track", "onsets", "compose", "clips"})
+GPU_STEPS = frozenset(
+    {"separation", "asr", "yolo-track", "onsets", "compose", "clips-answers", "clips"}
+)
 SERIAL_STEPS = {
     "compose": "compose-leases",
     "finish": "compose-leases",

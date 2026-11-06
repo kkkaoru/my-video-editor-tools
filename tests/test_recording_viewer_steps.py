@@ -563,6 +563,44 @@ def test_a_video_config_without_clips_makes_none(tmp_path: Path) -> None:
     assert viewer.clips(pipeline, lambda _command, _log: None) == {
         "skipped": "video-config.json clips: false"
     }
+    assert viewer.clips_answers(pipeline, lambda _command, _log: None) == {
+        "skipped": "video-config.json clips: false"
+    }
+
+
+def test_the_clip_answers_are_computed_ahead_on_their_own_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = published(tmp_path)
+    root = clip_data(web(tmp_path))
+    monkeypatch.setattr(viewer, "WEB_VIEWER", root)
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+    commands: list[tuple[list[str], str]] = []
+
+    def run(command: Sequence[str], log: Path) -> None:
+        commands.append((list(command), log.name))
+
+    assert viewer.clips_answers(pipeline, run) == {"computed": True}
+    copied = pipeline.work / "clips-data.json"
+    assert commands == [
+        (["/bin/bun", str(root / "src/bin/clips-mac.ts"), str(copied)], "clips-answers.log")
+    ]
+
+
+def test_clip_answers_that_fail_only_leave_the_work_to_the_clips_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = published(tmp_path)
+    monkeypatch.setattr(viewer, "WEB_VIEWER", clip_data(web(tmp_path)))
+    monkeypatch.setattr("shutil.which", lambda _name: "/bin/bun")
+
+    def run(_command: Sequence[str], _log: Path) -> None:
+        raise ReplayError("Producer failed (1)")
+
+    assert viewer.clips_answers(pipeline, run) == {
+        "computed": False,
+        "error": "Producer failed (1)",
+    }
 
 
 def test_web_hls_publishes_the_final_delivery_s_ladder(

@@ -76,7 +76,7 @@ RELIEF_SPARE_BYTES = 83 * disk_budget.GIB
 RELIEF_SECONDS = 900.0
 STEP_NAMES = (*pipelines.ORDER, "retire-intermediates")
 # A step added later, and the step after it whose receipt says the recording went on without it.
-ADDED_SINCE = {"web-hls-encode": "web-hls", "voice-audio": "voice-remux"}
+ADDED_SINCE = {"web-hls-encode": "web-hls", "voice-audio": "voice-remux", "clips-answers": "clips"}
 # A failure of one recording or tick is reported and retried; it never stops the runner.
 FAILURES = (ReplayError, StageError, OSError, ValueError)
 

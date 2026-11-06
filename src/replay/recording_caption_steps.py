@@ -1236,6 +1236,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "upload": ("publish", "excitement"),
     "summarize": ("publish", "caption-plan"),
     "summary": ("upload",),
+    "clips-answers": ("upload", "summary"),
     "clips": ("upload", "summary"),
     "retire-renders": ("summary",),
 }
@@ -1261,6 +1262,7 @@ STEPS: dict[str, front.StepFunction] = {
     "upload": upload,
     "summarize": viewer.summarize,
     "summary": viewer.summary,
+    "clips-answers": viewer.clips_answers,
     "clips": viewer.clips,
     "retire-renders": retire_renders,
 }
@@ -1301,6 +1303,7 @@ def step_outputs(pipeline: Pipeline, step: str) -> tuple[Path, ...]:
         "upload": (),
         "summarize": (),
         "summary": (),
+        "clips-answers": (),
         "clips": (),
         "retire-renders": (),
     }
