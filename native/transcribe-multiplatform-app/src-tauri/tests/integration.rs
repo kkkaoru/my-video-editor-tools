@@ -1087,10 +1087,67 @@ fn transcription_reports_progress_and_words() {
         &mut |fraction| seen.push(fraction),
     )
     .unwrap();
-    assert_eq!(seen, vec![0.5]);
+    assert_eq!(seen, vec![0.45]);
     assert_eq!(words[0].text, "はい");
     assert_eq!(words[1].text, "どうも");
     assert_eq!(words.len(), 2);
+}
+
+#[test]
+fn only_the_range_that_looped_is_heard_again_without_context() {
+    let root = scratch("transcribe-loop");
+    let paths = with_tools(&root);
+    let audio = root.join("a.wav");
+    fs::write(&audio, pcm_wav(&vec![8192; 16_000 * 40])).unwrap();
+    let log = root.join("whisper-calls.log");
+    write_tool(
+        &paths.bundled_runtime_dir().join("whisper/whisper-cli"),
+        &format!(
+            r#"
+echo "$*" >> "{log}"
+case "$*" in *"-mc 0"*) fresh=1 ;; *) fresh=0 ;; esac
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-of" ]; then out="$2"; fi
+  shift
+done
+if [ $fresh = 1 ]; then
+cat > "$out.json" <<'EOF'
+{{"transcription":[{{"offsets":{{"from":0,"to":1000}},"text":"fresh","tokens":[
+  {{"text":"fresh","offsets":{{"from":0,"to":1000}}}}]}}]}}
+EOF
+else
+cat > "$out.json" <<'EOF'
+{{"transcription":[
+  {{"offsets":{{"from":0,"to":1000}},"text":"before","tokens":[{{"text":"before","offsets":{{"from":0,"to":1000}}}}]}},
+  {{"offsets":{{"from":10000,"to":12000}},"text":"again","tokens":[{{"text":"again","offsets":{{"from":10000,"to":12000}}}}]}},
+  {{"offsets":{{"from":12000,"to":14000}},"text":"again","tokens":[{{"text":"again","offsets":{{"from":12000,"to":14000}}}}]}},
+  {{"offsets":{{"from":30000,"to":31000}},"text":"after","tokens":[{{"text":"after","offsets":{{"from":30000,"to":31000}}}}]}}]}}
+EOF
+fi
+"#,
+            log = log.display(),
+        ),
+    );
+    let words = engines::transcribe(
+        &tools_in(&paths),
+        &root.join("model.bin"),
+        &audio,
+        "ja",
+        &root,
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| (word.text.as_str(), word.start))
+            .collect::<Vec<_>>(),
+        vec![("before", 0.0), ("fresh", 8.0), ("after", 30.0)]
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 2);
+    assert!(calls.lines().nth(1).unwrap().contains("asr-loop-0.wav"));
 }
 
 #[test]

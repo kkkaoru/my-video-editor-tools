@@ -7,6 +7,7 @@ use crate::paths::AppPaths;
 use crate::process::{
     background_command, run_capture, run_with_progress, run_with_ticks, CancelToken,
 };
+use crate::separation::cut_clips;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::OsStr;
@@ -35,6 +36,23 @@ const MILLIS_PER_SECOND: f64 = 1000.0;
 /// Nemotron's 0.82 against 0.87); the bundled build is patched to warp with flash attention on
 /// (`scripts/release/whisper-cpp.patch`), so one pass gives both.
 const TOKEN_TIMING_ARGS: [&str; 2] = ["-dtw", "large.v3.turbo"];
+/// Whisper conditions each window on the text before it, so one repetition can lock it into saying
+/// the same words for 20 minutes. Without that text it cannot lock, but it also loses about 0.04 of
+/// its recall on speech that was fine, so only the looped ranges run this way.
+const NO_ROLLING_CONTEXT_ARGS: [&str; 2] = ["-mc", "0"];
+/// What the text of a segment is judged without: only the words can repeat.
+const NOT_SPOKEN: &str = "、。!?！？,.・「」『』…ー~〜-";
+/// A loop is at least this many characters said again, or the same short text this many times, since
+/// a person does say `そうそう` twice.
+const LOOP_UNIT_CHARACTERS: usize = 4;
+const SHORT_TEXT_LOOP_SEGMENTS: usize = 3;
+const WHOLE_TEXT_LOOP_SEGMENTS: usize = 2;
+const UNIT_LOOP_REPEATS: usize = 3;
+const LONGEST_LOOP_UNIT_CHARACTERS: usize = 40;
+/// Around a looped range: the loop starts a little before the first segment that shows it.
+const LOOP_MARGIN_SECONDS: f64 = 2.0;
+/// Of the transcription stage's progress; the loops are usually a small part of a video.
+const FIRST_PASS_PROGRESS: f64 = 0.9;
 /// Files per whisper-cli run, as two long paths each must stay under Windows's 32 KB command line.
 const WHISPER_BATCH_FILES: usize = 64;
 /// Speech stays above about five syllables a second: a word after a pause started at most this
@@ -302,7 +320,20 @@ struct WhisperRun<'a> {
     model: &'a Path,
     language: &'a str,
     cancel: &'a CancelToken,
+    /// Whichever other arguments every file of the run takes.
+    context: &'a [&'a str],
 }
+
+/// A segment of whisper.cpp's output, for judging whether it looped.
+#[derive(Debug)]
+struct HeardSegment {
+    from: f64,
+    to: f64,
+    text: Vec<char>,
+}
+
+/// Seconds of a recording, start and end.
+type TimeRange = (f64, f64);
 
 struct TokenTimes {
     start: f64,
@@ -519,6 +550,7 @@ fn run_whisper(
     });
     command
         .args(["-l", run.language, "-ojf", "-pp"])
+        .args(run.context)
         .args(extra_args);
     let (mut finished, mut last) = (0.0, 0.0);
     run_with_progress(command, "whisper-cli", run.cancel, |line| {
@@ -596,12 +628,183 @@ pub fn transcribe(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<Word>> {
+    let base = work.join("asr");
     let clip = WhisperClip {
         wav: wav.to_path_buf(),
-        base: work.join("asr"),
+        base: base.clone(),
     };
-    let heard = transcribe_many(tools, model, &[clip], language, cancel, progress)?;
-    Ok(heard.into_iter().flatten().collect())
+    let run = WhisperRun {
+        model,
+        language,
+        cancel,
+        context: &[],
+    };
+    let heard = transcribe_files(tools, &run, &[clip], &mut |fraction| {
+        progress(fraction * FIRST_PASS_PROGRESS);
+    })?;
+    let words: Vec<Word> = heard.into_iter().flatten().collect();
+    let ranges = std::fs::read(base.with_extension("json"))
+        .ok()
+        .and_then(|json| whisper_segments(&json).ok())
+        .map_or_else(Vec::new, |segments| looped_ranges(&segments));
+    let redone = redo_ranges(tools, &run, wav, work, &ranges, &mut |fraction| {
+        progress(FIRST_PASS_PROGRESS + fraction * (1.0 - FIRST_PASS_PROGRESS));
+    });
+    with_redone_ranges(words, &ranges, redone)
+}
+
+/// Each range on its own, without the text before it.
+fn redo_ranges(
+    tools: &Tools,
+    first: &WhisperRun<'_>,
+    wav: &Path,
+    work: &Path,
+    ranges: &[TimeRange],
+    progress: &mut dyn FnMut(f64),
+) -> AppResult<Vec<Vec<Word>>> {
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let clips: Vec<WhisperClip> = (0..ranges.len())
+        .map(|index| {
+            let base = work.join(format!("asr-loop-{index}"));
+            WhisperClip {
+                wav: base.with_extension("wav"),
+                base,
+            }
+        })
+        .collect();
+    let cuts: Vec<(f64, f64, PathBuf)> = ranges
+        .iter()
+        .zip(&clips)
+        .map(|(range, clip)| (range.0, range.1, clip.wav.clone()))
+        .collect();
+    cut_clips(wav, &cuts)?;
+    let run = WhisperRun {
+        model: first.model,
+        language: first.language,
+        cancel: first.cancel,
+        context: &NO_ROLLING_CONTEXT_ARGS,
+    };
+    transcribe_files(tools, &run, &clips, progress)
+}
+
+/// A redo that failed leaves the first pass's words, which are wrong only where they looped; only
+/// cancelling stops the job.
+fn with_redone_ranges(
+    words: Vec<Word>,
+    ranges: &[TimeRange],
+    redone: AppResult<Vec<Vec<Word>>>,
+) -> AppResult<Vec<Word>> {
+    match redone {
+        Ok(files) if files.is_empty() => Ok(words),
+        Ok(files) => Ok(spliced_words(words, ranges, files)),
+        Err(AppError::Cancelled) => Err(AppError::Cancelled),
+        Err(_) => Ok(words),
+    }
+}
+
+fn is_inside(word: &Word, ranges: &[TimeRange]) -> bool {
+    let middle = (word.start + word.end) / 2.0;
+    ranges
+        .iter()
+        .any(|(from, to)| *from <= middle && middle < *to)
+}
+
+fn by_start(left: &Word, right: &Word) -> std::cmp::Ordering {
+    left.start.total_cmp(&right.start)
+}
+
+fn spliced_words(words: Vec<Word>, ranges: &[TimeRange], files: Vec<Vec<Word>>) -> Vec<Word> {
+    let kept = words.into_iter().filter(|word| !is_inside(word, ranges));
+    let moved = ranges.iter().zip(files).flat_map(|(range, file)| {
+        let offset = range.0;
+        file.into_iter().map(move |word| Word {
+            start: word.start + offset,
+            end: word.end + offset,
+            ..word
+        })
+    });
+    let mut joined: Vec<Word> = kept.chain(moved).collect();
+    joined.sort_by(by_start);
+    close_warped_words(&mut joined);
+    joined
+}
+
+fn whisper_segments(bytes: &[u8]) -> AppResult<Vec<HeardSegment>> {
+    let value: Value = serde_json::from_str(&latin1_string(bytes))
+        .map_err(|error| AppError::Invalid(format!("whisper JSON: {error}")))?;
+    let segments = value["transcription"]
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("whisper JSON has no transcription".into()))?;
+    Ok(segments.iter().filter_map(heard_segment).collect())
+}
+
+fn heard_segment(segment: &Value) -> Option<HeardSegment> {
+    let (from, to) = segment_bounds(segment)?;
+    let bytes = latin1_bytes(segment["text"].as_str()?);
+    let text = String::from_utf8_lossy(&bytes)
+        .chars()
+        .filter(|c| !c.is_whitespace() && !NOT_SPOKEN.contains(*c))
+        .collect();
+    Some(HeardSegment { from, to, text })
+}
+
+fn repeats_at(text: &[char], start: usize, unit: usize) -> usize {
+    let pattern = &text[start..start + unit];
+    text[start..]
+        .chunks_exact(unit)
+        .take_while(|chunk| *chunk == pattern)
+        .count()
+}
+
+/// One text can hold the repetition itself when whisper.cpp did not split it.
+fn holds_a_loop(text: &[char]) -> bool {
+    (LOOP_UNIT_CHARACTERS..=LONGEST_LOOP_UNIT_CHARACTERS).any(|unit| {
+        (0..text.len().saturating_sub(unit))
+            .any(|start| repeats_at(text, start, unit) >= UNIT_LOOP_REPEATS)
+    })
+}
+
+fn same_text_run(segments: &[HeardSegment]) -> usize {
+    let text = &segments[0].text;
+    segments
+        .iter()
+        .take_while(|segment| &segment.text == text)
+        .count()
+}
+
+fn is_loop_run(text: &[char], run: usize) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let long_enough = text.len() >= LOOP_UNIT_CHARACTERS && run >= WHOLE_TEXT_LOOP_SEGMENTS;
+    long_enough || run >= SHORT_TEXT_LOOP_SEGMENTS || holds_a_loop(text)
+}
+
+fn with_merged(mut merged: Vec<TimeRange>, range: TimeRange) -> Vec<TimeRange> {
+    match merged.last_mut() {
+        Some(last) if range.0 <= last.1 => last.1 = last.1.max(range.1),
+        _ => merged.push(range),
+    }
+    merged
+}
+
+/// Where the text repeats itself; the words alone decide, with nothing set per video.
+fn looped_ranges(segments: &[HeardSegment]) -> Vec<TimeRange> {
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < segments.len() {
+        let run = same_text_run(&segments[index..]);
+        if is_loop_run(&segments[index].text, run) {
+            ranges.push((
+                (segments[index].from - LOOP_MARGIN_SECONDS).max(0.0),
+                segments[index + run - 1].to + LOOP_MARGIN_SECONDS,
+            ));
+        }
+        index += run;
+    }
+    ranges.into_iter().fold(Vec::new(), with_merged)
 }
 
 /// `transcribe` for many clips, each with the words it heard, reloading the model only per batch.
@@ -617,7 +820,17 @@ pub fn transcribe_many(
         model,
         language,
         cancel,
+        context: &[],
     };
+    transcribe_files(tools, &run, clips, progress)
+}
+
+fn transcribe_files(
+    tools: &Tools,
+    run: &WhisperRun<'_>,
+    clips: &[WhisperClip],
+    progress: &mut dyn FnMut(f64),
+) -> AppResult<Vec<Vec<Word>>> {
     let mut heard = Vec::with_capacity(clips.len());
     for batch in clips.chunks(WHISPER_BATCH_FILES) {
         let before = heard.len() as f64;
@@ -625,7 +838,7 @@ pub fn transcribe_many(
             progress((before + fraction * batch.len() as f64) / clips.len() as f64);
         };
         let warped = with_cpu_fallback(tools, |program| {
-            run_whisper(program, &run, &TOKEN_TIMING_ARGS, batch, &mut report)
+            run_whisper(program, run, &TOKEN_TIMING_ARGS, batch, &mut report)
         })
         .map(|mut files| {
             files.iter_mut().for_each(|words| close_warped_words(words));
@@ -633,7 +846,7 @@ pub fn transcribe_many(
         });
         heard.extend(or_plain_times(warped, || {
             with_cpu_fallback(tools, |program| {
-                run_whisper(program, &run, &[], batch, &mut report)
+                run_whisper(program, run, &[], batch, &mut report)
             })
         })?);
     }
@@ -1277,6 +1490,129 @@ mod tests {
         cancel.cancel();
         let error = settled_turns(&cancel, Ok(()), Ok(Vec::new()));
         assert_eq!(error.unwrap_err().to_string(), "cancelled");
+    }
+
+    fn heard(from: f64, to: f64, text: &str) -> HeardSegment {
+        HeardSegment {
+            from,
+            to,
+            text: text.chars().collect(),
+        }
+    }
+
+    #[test]
+    fn the_same_sentence_again_is_a_loop_with_a_margin_around_it() {
+        let segments = [
+            heard(5.0, 6.0, "はいどうも"),
+            heard(10.0, 12.0, "おまかに入ってくる"),
+            heard(12.0, 14.0, "おまかに入ってくる"),
+            heard(14.0, 16.0, "おまかに入ってくる"),
+            heard(30.0, 31.0, "さようなら"),
+        ];
+        assert_eq!(looped_ranges(&segments), vec![(8.0, 18.0)]);
+    }
+
+    #[test]
+    fn a_short_word_said_twice_is_speech_and_three_times_a_loop() {
+        let twice = [heard(1.0, 2.0, "そう"), heard(2.0, 3.0, "そう")];
+        assert_eq!(looped_ranges(&twice), Vec::<TimeRange>::new());
+        let thrice = [
+            heard(4.0, 5.0, "そう"),
+            heard(5.0, 6.0, "そう"),
+            heard(6.0, 7.0, "そう"),
+        ];
+        assert_eq!(looped_ranges(&thrice), vec![(2.0, 9.0)]);
+    }
+
+    #[test]
+    fn a_repetition_inside_one_segment_is_a_loop() {
+        let segments = [heard(0.5, 9.0, "はいチェイサ牛乳チェイサ牛乳チェイサ牛乳")];
+        assert_eq!(looped_ranges(&segments), vec![(0.0, 11.0)]);
+    }
+
+    #[test]
+    fn empty_text_and_two_short_repeats_inside_a_segment_are_no_loop() {
+        let segments = [
+            heard(1.0, 2.0, ""),
+            heard(2.0, 3.0, ""),
+            heard(3.0, 4.0, ""),
+            heard(5.0, 6.0, "そうそうそう"),
+            heard(7.0, 8.0, "牛乳チェイサ牛乳チェイサ"),
+        ];
+        assert_eq!(looped_ranges(&segments), Vec::<TimeRange>::new());
+    }
+
+    #[test]
+    fn loops_close_together_become_one_range() {
+        let segments = [
+            heard(10.0, 11.0, "はいどうも"),
+            heard(11.0, 12.0, "はいどうも"),
+            heard(13.0, 14.0, "さようなら"),
+            heard(14.0, 15.0, "さようなら"),
+            heard(40.0, 41.0, "もう一回やる"),
+            heard(41.0, 42.0, "もう一回やる"),
+        ];
+        assert_eq!(looped_ranges(&segments), vec![(8.0, 17.0), (38.0, 44.0)]);
+    }
+
+    #[test]
+    fn a_segments_text_is_judged_without_spaces_or_punctuation() {
+        let json = br#"{"transcription":[
+            {"offsets":{"from":1000,"to":2000},"text":" \u00e3\u0081\u00af\u00e3\u0080\u0081 a"},
+            {"text":"no bounds"}
+        ]}"#;
+        let segments = whisper_segments(json).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!((segments[0].from, segments[0].to), (1.0, 2.0));
+        assert_eq!(segments[0].text, vec!['は', 'a']);
+        assert_eq!(
+            whisper_segments(b"{").unwrap_err().to_string(),
+            "whisper JSON: EOF while parsing an object at line 1 column 1"
+        );
+        assert_eq!(
+            whisper_segments(b"{}").unwrap_err().to_string(),
+            "whisper JSON has no transcription"
+        );
+    }
+
+    #[test]
+    fn redone_words_replace_the_looped_ones_on_the_recordings_clock() {
+        let words = vec![
+            timed(1.0, 2.0, "前"),
+            timed(11.0, 12.0, "ループ"),
+            timed(13.0, 14.0, "ループ"),
+            timed(30.0, 31.0, "後"),
+        ];
+        let redone = vec![vec![timed(1.0, 1.25, "本"), timed(3.0, 3.25, "物")]];
+        let joined = with_redone_ranges(words, &[(10.0, 20.0)], Ok(redone)).unwrap();
+        assert_eq!(
+            joined
+                .iter()
+                .map(|word| (word.text.as_str(), word.start))
+                .collect::<Vec<_>>(),
+            vec![("前", 1.0), ("本", 11.0), ("物", 13.0), ("後", 30.0)]
+        );
+        assert_eq!(joined[0].end, 1.25);
+    }
+
+    #[test]
+    fn with_nothing_to_redo_the_words_stay_exactly_as_heard() {
+        let words = vec![timed(1.0, 9.0, "前")];
+        let kept = with_redone_ranges(words, &[], Ok(Vec::new())).unwrap();
+        assert_eq!(kept, vec![timed(1.0, 9.0, "前")]);
+    }
+
+    #[test]
+    fn a_failed_redo_keeps_the_first_pass_but_a_cancel_stops() {
+        let words = vec![timed(1.0, 2.0, "前")];
+        let kept = with_redone_ranges(
+            words.clone(),
+            &[(0.0, 5.0)],
+            Err(AppError::Invalid("no audio".into())),
+        );
+        assert_eq!(kept.unwrap(), vec![timed(1.0, 2.0, "前")]);
+        let stopped = with_redone_ranges(words, &[(0.0, 5.0)], Err(AppError::Cancelled));
+        assert_eq!(stopped.unwrap_err().to_string(), "cancelled");
     }
 
     #[test]
