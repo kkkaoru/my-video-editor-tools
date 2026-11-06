@@ -521,13 +521,38 @@ def test_the_settle_is_skipped_while_free_memory_covers_two_more_peaks(tmp_path:
 
     runner.run(
         recording, first=0, last=1, runner=job, free=lambda: 100 * runner.GIB,
-        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=0.4, clock=lambda: 0.0,
+        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=0.4, stagger_seconds=0.0,
+        clock=lambda: 0.0,
     )  # fmt: skip
     # The clock never moves, so only the skip can admit the second chunk while the first runs.
     rows = (recording.work / "logs" / "admission.jsonl").read_text(encoding="utf-8").splitlines()
     waits = [(row["settleLeft"], row["lease"] is None) for row in map(json.loads, rows[1:])]
     assert waits == [(0.0, False)]
     assert runner.SETTLE_FREE_PERCENT == MEMORY_FREE_MIN + 2 * runner.JOB_PERCENT
+
+
+def test_chunks_with_room_in_memory_still_start_staggered(tmp_path: Path) -> None:
+    recording = make(tmp_path, streams=2, maxStreams=2)
+    runner.configs(recording)
+    both = threading.Barrier(2, timeout=5)
+    ticks = [0.0]
+
+    def clock() -> float:
+        ticks[0] += 1.0  # one second per poll
+        return ticks[0]
+
+    def job(_command: Sequence[str], _log: Path) -> int:
+        both.wait()  # the first chunk runs until the second one is admitted
+        return 0
+
+    runner.run(
+        recording, first=0, last=1, runner=job, free=lambda: 100 * runner.GIB,
+        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=5.0, stagger_seconds=2.0,
+        clock=clock,
+    )  # fmt: skip
+    rows = (recording.work / "logs" / "admission.jsonl").read_text(encoding="utf-8").splitlines()
+    waits = [(row["settleLeft"], row["lease"] is None) for row in map(json.loads, rows[1:])]
+    assert waits == [(1.0, True), (0.0, False)]
 
 
 def test_a_waiting_chunk_holds_free_leases_only_while_it_could_start(tmp_path: Path) -> None:
@@ -791,11 +816,37 @@ def test_a_stalled_box_stream_stops_every_chunk_from_waiting(tmp_path: Path) -> 
 
     runner.run(
         recording, first=0, last=2, runner=lambda *_a: 0, free=lambda: 100 * runner.GIB,
-        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=0.0, boxes_stall_seconds=0.5,
+        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=0.0, boxes_start_seconds=0.5,
         clock=clock, sleep=sleeps.append,
     )  # fmt: skip
     assert set(sleeps) == {0.01}  # one poll without progress, then the stall stops every chunk
     assert sorted(box_decisions(recording)) == [(0, "fallback"), (1, "fallback"), (2, "fallback")]
+
+
+def test_a_pass_not_started_yet_is_given_longer_than_a_stalled_one(tmp_path: Path) -> None:
+    boxes = tmp_path / "replay-9" / "yolo-boxes-v1"
+    recording = make(tmp_path, yoloBoxes=str(boxes))
+    runner.configs(recording)
+    ticks = [0.0]
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        ticks[0] += 1.0
+        return ticks[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 3:  # yolo-track ends without boxes for this chunk
+            (boxes.parent / "yolo-track-v2.json").write_text("{}", "utf-8")
+
+    boxes.parent.mkdir(parents=True)
+    runner.run(
+        recording, first=0, last=0, runner=lambda *_a: 0, free=lambda: 100 * runner.GIB,
+        measure=lambda: IDLE, poll_seconds=0.01, settle_seconds=0.0, boxes_stall_seconds=0.5,
+        boxes_start_seconds=1000.0, clock=clock, sleep=sleep,
+    )  # fmt: skip
+    assert sleeps == [0.01, 0.01, 0.01]
+    assert box_decisions(recording) == [(0, "fallback")]
 
 
 def test_a_relative_boxes_directory_is_refused(tmp_path: Path) -> None:

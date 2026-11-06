@@ -76,6 +76,8 @@ YOLO_BOXES = "yolo-boxes-v1"
 YOLO_TRACK_OUTPUT = "yolo-track-v2.json"
 # A boxes directory publishing nothing new this long is given up: chunks detect for themselves.
 BOXES_STALL_SECONDS = 300.0
+# The same before the first range: yolo-track may still wait for its GPU lease and memory.
+BOXES_START_SECONDS = 3600.0
 PROBES = "probes"  # accepted chunks' probes, kept until the assembly copies them
 POLL_SECONDS = 15.0
 # Polls to wait after a chunk starts before the next admission: a job reaches its STTN buffers
@@ -93,6 +95,9 @@ JOB_PERCENT = math.ceil(
 # The settle waits for a started chunk to reach its peak; with free memory for two more peaks
 # above the floor that wait protects nothing and is skipped (bottleneck survey REPORT7 #4).
 SETTLE_FREE_PERCENT = MEMORY_FREE_MIN + 2 * JOB_PERCENT
+# Chunks started together run in lockstep, so the GPU idles while all of them decode or audit: on
+# the 11/05 run 10-21% of the span after the skip above took over, 10% before it.
+STAGGER_SECONDS = 8.0
 # Beside the lease directories: chunks waiting for a memory reservation, in lease rank.
 MEMORY_QUEUE = "memory-waiting"
 LEASE_POLL_SECONDS = 2.0  # an admitted chunk waiting only for a GPU lease (REPORT7 #5)
@@ -242,6 +247,8 @@ def run(
     settle_seconds: float = SETTLE_SECONDS,
     leases: Path | None = None,
     boxes_stall_seconds: float = BOXES_STALL_SECONDS,
+    boxes_start_seconds: float = BOXES_START_SECONDS,
+    stagger_seconds: float = STAGGER_SECONDS,
     reservations: Path | None = None,
     pressure: memory_admission.Pressure | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -289,8 +296,9 @@ def run(
         "stored" once they are all there; "fallback" at once when yolo-track has finished
         without them (its evidence file exists but the boxes are not complete: a run before the
         boxes existed), or when an unfinished pass publishes nothing new for
-        ``boxes_stall_seconds``; no later chunk waits then either, and the chunk job detects its
-        boxes itself, as before. None without a boxes directory.
+        ``boxes_stall_seconds`` (``boxes_start_seconds`` before its first range); no later chunk
+        waits then either, and the chunk job detects its boxes itself, as before. None without a
+        boxes directory.
         """
         if boxes_directory is None:
             return None
@@ -314,7 +322,7 @@ def run(
             )
             if published != seen:
                 seen, progressed = published, clock()
-            elif clock() - progressed > boxes_stall_seconds:
+            elif clock() - progressed > (boxes_stall_seconds if published else boxes_start_seconds):
                 stalled.set()
                 break
             sleep(min(poll_seconds, boxes_stall_seconds))
@@ -376,10 +384,12 @@ def run(
             memory_queue.register()
             try:
                 while held is None:
-                    remaining = settle_seconds - (clock() - last_start[0])
+                    elapsed = clock() - last_start[0]
+                    remaining = settle_seconds - elapsed
                     load = measure() if active[0] >= 1 else None
                     if load is not None and load.memory_free_percent >= SETTLE_FREE_PERCENT:
-                        remaining = 0.0  # room for two more peaks: no need to wait for this one
+                        # Room for two more peaks: no need to wait for this one, only to stagger.
+                        remaining = min(remaining, stagger_seconds - elapsed)
                     if remaining > 0:
                         load = None
                     leased = False
