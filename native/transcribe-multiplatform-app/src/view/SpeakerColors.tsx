@@ -19,14 +19,12 @@ import { LayeredText } from "./LayeredText.tsx";
 
 export interface SpeakerColorsProps {
   palette: SpeakerColor[];
-  unassigned: SpeakerColor;
   fontFamily: string;
   subtitleFormat: SubtitleFormat;
   /** The row being edited, the unknown speaker's coming after every numbered one. */
   openSlot: number | null;
   onOpenSlotChange: (slot: number | null) => void;
   onChange: (palette: SpeakerColor[]) => void;
-  onUnassignedChange: (unassigned: SpeakerColor) => void;
 }
 
 interface SlotProps {
@@ -327,13 +325,11 @@ function SpeakerSlot({ slot, color, name, fontFamily, onChange }: SlotProps): VN
 
 export function SpeakerColors({
   palette,
-  unassigned,
   fontFamily,
   subtitleFormat,
   openSlot,
   onOpenSlotChange,
   onChange,
-  onUnassignedChange,
 }: SpeakerColorsProps): VNode {
   const messages: Messages = useMessages();
   return (
@@ -370,13 +366,6 @@ export function SpeakerColors({
               />
             ),
           )}
-          <SpeakerSlot
-            slot={palette.length}
-            color={unassigned}
-            name={messages.unknownSpeaker}
-            fontFamily={fontFamily}
-            onChange={onUnassignedChange}
-          />
         </Accordion>
         <div className="flex flex-wrap gap-2">
           {palette.length < MAX_PALETTE_SIZE ? (

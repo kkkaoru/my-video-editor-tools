@@ -41,6 +41,11 @@ export const jaMessages: Messages = {
   speakerCountHelpLabel: "話す人の数を選ぶ理由",
   speakerCountHelp:
     "字幕の色を分けるには、声を聞き分ける必要があります。人数を選ぶと、まちがいが減ります。1 人を選ぶと、聞き分けをしないので速く終わります。聞き分け用のモデルも要りません。",
+  speakerLoadLight: "軽量",
+  speakerLoadHeavy: "高負荷",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Whisper だけで処理します。",
+  speakerLoadHeavyDetail: "Nemotron で話す人を聞き分けます。時間が大きく増え、メモリも多く使います。",
   speakerCountOnlyOne:
     "Nemotron 3.5 のモデルがないので、1 人だけ選べます。「{tabModels}」のタブでダウンロードすると、人数を選べます。",
   profilesHeading: "プロファイル",
@@ -97,6 +102,7 @@ export const jaMessages: Messages = {
   jobDone: "できました: 字幕 {cues} 個、話す人 {speakers} 人",
   jobDoneOneSpeaker: "できました: 字幕 {cues} 個、話す人 1 人",
   jobFaceless: "顔が見つからない場面の字幕は、動画の下に置きました。",
+  jobSpeakersMissing: "話者のモデルがこの動画から話者を検出できなかったので、字幕はすべて同じ色です。",
   jobFontMissing: "選んだフォントがこのパソコンにないので、字幕の幅はおおよその値で計算しました。",
   jobNoPercent: "このモデルは進み具合を数字で出せません",
   speakerCount: "話す人の数",
@@ -147,7 +153,6 @@ export const jaMessages: Messages = {
   fontSize: "文字の大きさ (動画の短い辺に対する %)",
   captionWidth: "1 行の長さの上限 (動画の横はばに対する %)",
   captionLineHeight: "行と行の間 (文字の大きさの何倍か)",
-  unknownSpeaker: "不明な人",
   contrastWarning:
     "{name}: 文字と縁の色が近くて、読みにくいです (色の差は {ratio}:1、目安は 4.5:1 以上)。明るさのちがう色を選んでください。",
   previewHeading: "プレビュー",
@@ -333,7 +338,7 @@ export const jaMessages: Messages = {
             notes: [
               "人数の横の「?」を押すと、人数を選ぶ理由が読めます。",
               "1 人しか話さない動画は「1 人」のままにします。速く終わります。",
-              "人数を選べるのは、Nemotron 3.5 のモデルがあるときです。「{tabModels}」のタブでダウンロードできます。",
+              "1 人は軽量で、Whisper だけが動きます。自動と 2 人以上は高負荷で、Nemotron も動きます。時間が大きく増え、メモリも多く使います。選べるのは、Nemotron 3.5 のモデルがあるときです。「{tabModels}」のタブでダウンロードできます。",
               "動画を入れられる形は .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts です。字幕ファイルは .drt .fcpxml .srt .ttml .transcript.json です。ほかのファイルを入れると、入れられないと出ます。",
               "動画を何本も入れると、1 本ずつ順番に作ります。",
               "はじめて作るときは、モデルをこのアプリで使える形に直す作業が入ります。",

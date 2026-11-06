@@ -177,6 +177,11 @@ async function applyStep(page: Page, step: string): Promise<void> {
     return;
   }
   // The Jobs tab has the speaker count first and the format second; the speaker count has its own help step.
+  if (step === "open-speaker-count") {
+    await panel.getByRole("combobox").first().click();
+    await page.getByRole("listbox").waitFor();
+    return;
+  }
   const comboboxIndex: number = step === "open-subtitle-format" ? 1 : COMBOBOX_ORDER.indexOf(step);
   await panel.getByRole("combobox").nth(comboboxIndex).click();
   await page.getByRole("listbox").waitFor();

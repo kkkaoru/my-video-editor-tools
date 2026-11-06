@@ -8,6 +8,7 @@ import {
   canChooseSpeakerCount,
   effectiveSpeakerCount,
   initialState,
+  isHeavySpeakerCount,
   isWorking,
   lookChanged,
   missingModelRoles,
@@ -20,18 +21,6 @@ import {
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: {
-    fill: "#AAAAAA",
-    fill_width: 0,
-    outline: "#000000",
-    outline_width: 0.1,
-    rim: null,
-    rim_width: 0.034,
-    shadow: null,
-    shadow_x: 0.03,
-    shadow_y: -0.03,
-    shadow_blur: 5,
-  },
   font_family: "Sans",
   font_ratio: 0.05,
   width_ratio: 0.8,
@@ -77,18 +66,6 @@ it("starts empty", () => {
       backend: "default",
       settings: {
         palette: [],
-        unassigned: {
-          fill: "#AAAAAA",
-          fill_width: 0,
-          outline: "#000000",
-          outline_width: 0.1,
-          rim: null,
-          rim_width: 0.034,
-          shadow: null,
-          shadow_x: 0.03,
-          shadow_y: -0.03,
-          shadow_blur: 5,
-        },
         font_family: "Sans",
         font_ratio: 0.05,
         width_ratio: 0.8,
@@ -179,6 +156,7 @@ it("records the outcome of a finished job", () => {
         cue_count: 9,
         faceless: false,
         font_missing: false,
+        speakers_missing: false,
         requested_speakers: 0,
       },
     },
@@ -197,6 +175,7 @@ it("records the outcome of a finished job", () => {
         cue_count: 9,
         faceless: false,
         font_missing: false,
+        speakers_missing: false,
         requested_speakers: 0,
       },
     },
@@ -311,6 +290,12 @@ it("runs with one speaker without such a model, and the saved number with it", (
   const nemotron: ModelStatus = { ...MODEL, id: "nemotron-3.5-transcribe-q8", role: "diarize" };
   expect(effectiveSpeakerCount({ models: [], settings: saved })).toBe(1);
   expect(effectiveSpeakerCount({ models: [nemotron], settings: saved })).toBe(4);
+});
+
+it("calls only one speaker light", () => {
+  expect(isHeavySpeakerCount(1)).toBe(false);
+  expect(isHeavySpeakerCount(0)).toBe(true);
+  expect(isHeavySpeakerCount(2)).toBe(true);
 });
 
 it("notices a look that differs from the saved one, and ignores everything else", () => {

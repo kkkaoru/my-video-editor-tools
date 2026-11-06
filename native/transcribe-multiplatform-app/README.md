@@ -69,6 +69,12 @@ A profile saves the caption look and position under a name (`profiles.json` in t
 spoken language are not part of it. One font family, chosen from those installed on the computer, applies to every
 speaker in the FCPXML, the TTML and the preview.
 
+Every caption belongs to a speaker. A word goes to the voice covering it longest, on a tie to the speaker of the word
+before, and with no voice over it to the nearest in time; with no speaker separation everyone is speaker 1. Files from
+earlier versions still open: a saved colour for unknown speakers is ignored, and words without a speaker read as speaker 1.
+A speaker talking for under a second right beside other speech joins that speech, and a change of speaker never falls
+inside a word, so colours do not flicker; voices really at once and turns set apart by pauses keep their speaker.
+
 Speakers whose words coincide for 0.25 s or more are shown together, one row each in speaker order, growing away from
 the anchor; rows that cannot fit between the margins shrink together. `.drt` and FCPXML put them on separate tracks or
 lanes; TTML and SRT, whose subtitle track holds one entry at a time, join them in one entry while they overlap.

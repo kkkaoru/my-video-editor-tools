@@ -133,6 +133,12 @@ export interface Messages {
   dropCurrentHint: string;
   speakerCountHelpLabel: string;
   speakerCountHelp: string;
+  speakerLoadLight: string;
+  speakerLoadHeavy: string;
+  speakerOptionLoad: string;
+  speakerLoadLightDetail: string;
+  /** Says how much heavier in words; measured times can go here once there are any. */
+  speakerLoadHeavyDetail: string;
   speakerCountOnlyOne: string;
   profilesHeading: string;
   profilesHint: string;
@@ -183,6 +189,7 @@ export interface Messages {
   jobDoneOneSpeaker: string;
   jobFaceless: string;
   jobFontMissing: string;
+  jobSpeakersMissing: string;
   jobNoPercent: string;
   speakerCount: string;
   subtitleFormat: string;
@@ -218,7 +225,6 @@ export interface Messages {
   fontSize: string;
   captionWidth: string;
   captionLineHeight: string;
-  unknownSpeaker: string;
   contrastWarning: string;
   previewHeading: string;
   previewFrameLabel: string;

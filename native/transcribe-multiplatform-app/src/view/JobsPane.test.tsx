@@ -22,18 +22,6 @@ import {
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: {
-    fill: "#AAAAAA",
-    fill_width: 0,
-    outline: "#000000",
-    outline_width: 0.1,
-    rim: null,
-    rim_width: 0.034,
-    shadow: null,
-    shadow_x: 0.03,
-    shadow_y: -0.03,
-    shadow_blur: 5,
-  },
   font_family: "Sans",
   font_ratio: 0.05,
   width_ratio: 0.8,
@@ -50,7 +38,7 @@ const SETTINGS: Settings = {
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
-  speaker_count: 0,
+  speaker_count: 1,
   subtitle_format: "fcpxml",
   ui_language: "",
   ui_theme: "system",
@@ -320,6 +308,27 @@ it("shows a cancelled job with no action", () => {
   expect(screen.queryByRole("button", { name: "Cancel talk.mp4" })).toBe(null);
 });
 
+it("warns when the speaker model heard nobody", () => {
+  showJob({
+    ...QUEUED_JOB,
+    state: "finished",
+    outcome: {
+      outputs: ["/a.fcpxml"],
+      base: "/videos/talk",
+      speaker_count: 1,
+      cue_count: 9,
+      faceless: false,
+      font_missing: false,
+      speakers_missing: true,
+      requested_speakers: 0,
+    },
+  });
+  expect(
+    screen.getByText("The speaker model heard nobody in this video, so every caption has one colour.")
+      .tagName,
+  ).toBe("P");
+});
+
 it("warns when the chosen font was missing", () => {
   showJob({
     ...QUEUED_JOB,
@@ -331,6 +340,7 @@ it("warns when the chosen font was missing", () => {
       cue_count: 9,
       faceless: false,
       font_missing: true,
+      speakers_missing: false,
       requested_speakers: 0,
     },
   });
@@ -351,35 +361,66 @@ it("says speaker, not speakers, when a finished job found one", () => {
       cue_count: 9,
       faceless: false,
       font_missing: false,
+      speakers_missing: false,
       requested_speakers: 0,
     },
   });
   expect(screen.getByRole("status").textContent).toBe("Finished: 9 captions, 1 speaker");
 });
 
-it("offers only one speaker, and says why, without a Nemotron 3.5 model", async () => {
-  const small: Snapshot = {
-    ...READY,
-    settings: { ...READY.settings, speaker_count: 0 },
-    models: [WHISPER, { ...DIARIZER, id: "other-diarizer" }],
-  };
+it("says each speaker count's load in the option itself", () => {
+  expect(speakerCountOptions(enMessages).slice(0, 3)).toStrictEqual([
+    { value: "0", label: "Detect automatically (Heavy)", disabled: false },
+    { value: "1", label: "1 speaker (Light)", disabled: false },
+    { value: "2", label: "2 speakers (Heavy)", disabled: false },
+  ]);
+  expect(speakerCountOptions(enMessages).length).toBe(9);
+});
+
+function showSpeakers(speakers: number, models: ModelStatus[]): AppStore {
+  const snapshot: Snapshot = { ...READY, models, settings: { ...READY.settings, speaker_count: speakers } };
+  const store: AppStore = storeWith(snapshot, [], false);
   render(
     <main>
-      <JobsPane store={storeWith(small, [], false)} snapshot={small} />
+      <JobsPane store={store} snapshot={snapshot} />
     </main>,
   );
-  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker");
-  expect(
-    screen.getByText(
-      "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.",
-    ).tagName,
-  ).toBe("P");
+  return store;
+}
+
+const HEAVY_TEXT: string =
+  "Heavy: Tells the voices apart with Nemotron. It takes much longer and uses much more memory.";
+const ONLY_ONE_TEXT: string =
+  "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.";
+
+const loadText = (): string | null | undefined =>
+  document.querySelector('[data-slot="speaker-load"]')?.textContent;
+
+it("says one speaker is light, in words and not only by its icon", () => {
+  showSpeakers(1, [WHISPER, DIARIZER]);
+  expect(loadText()).toBe("Light: Uses Whisper only.");
+});
+
+it("says automatic detection and more speakers are heavy", () => {
+  showSpeakers(0, [WHISPER, DIARIZER]);
+  expect(loadText()).toBe(HEAVY_TEXT);
+  cleanup();
+  showSpeakers(3, [WHISPER, DIARIZER]);
+  expect(loadText()).toBe(HEAVY_TEXT);
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
+});
+
+it("offers only one speaker, and says why, without a Nemotron 3.5 model", async () => {
+  showSpeakers(0, [WHISPER, { ...DIARIZER, id: "other-diarizer" }]);
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker (Light)");
+  expect(loadText()).toBe("Light: Uses Whisper only.");
+  expect(screen.getByText(ONLY_ONE_TEXT).tagName).toBe("P");
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
   });
   expect(
     screen.getAllByRole("option").map(({ textContent }: HTMLElement): string | null => textContent),
-  ).toStrictEqual(["1 speaker"]);
+  ).toStrictEqual(["1 speaker (Light)"]);
 });
 
 it("offers every number again once a Nemotron 3.5 model has been downloaded, with the saved one", async () => {
@@ -391,18 +432,14 @@ it("offers every number again once a Nemotron 3.5 model has been downloaded, wit
       <JobsPane store={storeWith(before, [], false)} snapshot={before} />
     </main>,
   );
-  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker");
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("1 speaker (Light)");
   rerender(
     <main>
       <JobsPane store={storeWith(after, [], false)} snapshot={after} />
     </main>,
   );
-  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers");
-  expect(
-    screen.queryByText(
-      "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “Models” tab to choose more.",
-    ),
-  ).toBe(null);
+  expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
+  expect(screen.queryByText(ONLY_ONE_TEXT)).toBe(null);
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
   });
@@ -459,14 +496,6 @@ it("saves the chosen subtitle format", async () => {
   expect(vi.mocked(store.updateSettings).mock.calls.at(-1)?.[0].subtitle_format).toBe("ttml");
 });
 
-it("offers one speaker in the singular and more in the plural", () => {
-  expect(speakerCountOptions(enMessages).slice(0, 3)).toStrictEqual([
-    { value: "0", label: "Detect automatically", disabled: false },
-    { value: "1", label: "1 speaker", disabled: false },
-    { value: "2", label: "2 speakers", disabled: false },
-  ]);
-});
-
 it("shows the results of a finished job and can write it again", () => {
   showJob({
     ...QUEUED_JOB,
@@ -478,6 +507,7 @@ it("shows the results of a finished job and can write it again", () => {
       cue_count: 9,
       faceless: false,
       font_missing: false,
+      speakers_missing: false,
       requested_speakers: 0,
     },
   });
@@ -513,6 +543,7 @@ it("mentions captions placed without a face", () => {
       cue_count: 1,
       faceless: true,
       font_missing: false,
+      speakers_missing: false,
       requested_speakers: 0,
     },
   });
@@ -533,6 +564,7 @@ it("reports a rewrite that fails", async () => {
       cue_count: 1,
       faceless: false,
       font_missing: false,
+      speakers_missing: false,
       requested_speakers: 0,
     },
   });
@@ -560,18 +592,6 @@ it("says subtitle files follow the selected profile", () => {
             name: "A",
             look: {
               palette: [],
-              unassigned: {
-                fill: "#AAAAAA",
-                fill_width: 0,
-                outline: "#000000",
-                outline_width: 0.1,
-                rim: null,
-                rim_width: 0.034,
-                shadow: null,
-                shadow_x: 0.03,
-                shadow_y: -0.03,
-                shadow_blur: 5,
-              },
               font_family: "Sans",
               font_ratio: 0.05,
               line_height: 1.4,
@@ -669,8 +689,8 @@ it("saves the chosen number of speakers", async () => {
     fireEvent.click(screen.getByRole("combobox", { name: "Number of speakers" }));
   });
   await act(async (): Promise<void> => {
-    fireEvent.pointerDown(screen.getByRole("option", { name: "3 speakers" }));
-    fireEvent.click(screen.getByRole("option", { name: "3 speakers" }));
+    fireEvent.pointerDown(screen.getByRole("option", { name: "3 speakers (Heavy)" }));
+    fireEvent.click(screen.getByRole("option", { name: "3 speakers (Heavy)" }));
   });
   expect(vi.mocked(store.updateSettings).mock.calls[0]?.[0].speaker_count).toBe(3);
 });

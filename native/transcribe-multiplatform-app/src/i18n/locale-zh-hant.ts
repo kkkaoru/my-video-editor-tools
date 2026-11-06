@@ -38,6 +38,11 @@ export const zhHantMessages: Messages = {
   speakerCountHelpLabel: "為什麼要指定說話者人數?",
   speakerCountHelp:
     "說話者顏色取決於能否分辨聲音。指定人數後,相似的聲音不易被合併,同一個人也不易被拆成兩個人。選擇 1 人時會略過說話者分離,因此速度更快,也不需要說話者模型。",
+  speakerLoadLight: "輕量",
+  speakerLoadHeavy: "高負載",
+  speakerOptionLoad: "{label}（{load}）",
+  speakerLoadLightDetail: "只使用 Whisper 處理。",
+  speakerLoadHeavyDetail: "使用 Nemotron 區分說話者。處理時間會大幅增加，也會占用更多記憶體。",
   speakerCountOnlyOne: "沒有 Nemotron 3.5 模型，只能選 1 人。在「{tabModels}」分頁下載後可以選擇更多人數。",
   profilesHeading: "設定檔",
   profilesHint: "為字幕的外觀和位置命名並儲存,之後可以還原。模型和語音語言不包含在設定檔中。",
@@ -90,6 +95,7 @@ export const zhHantMessages: Messages = {
   jobDone: "已完成：{cues} 則字幕，{speakers} 位說話者",
   jobDoneOneSpeaker: "已完成：{cues} 則字幕，1 位說話者",
   jobFaceless: "未偵測到人臉的字幕已放在影片底部。",
+  jobSpeakersMissing: "說話者模型未在此影片中偵測到說話者，因此所有字幕都是同一顏色。",
   jobFontMissing: "所選字型不在這台電腦上，因此字幕寬度是估算的。",
   jobNoPercent: "此模型不回報進度百分比",
   speakerCount: "說話者人數",
@@ -139,7 +145,6 @@ export const zhHantMessages: Messages = {
   fontSize: "文字大小（占短邊的百分比）",
   captionWidth: "最長行（占寬度的百分比）",
   captionLineHeight: "字幕行距（文字大小的倍數）",
-  unknownSpeaker: "未知說話者",
   contrastWarning:
     "{name}：填色與描邊的對比度為 {ratio}:1，低於 WCAG AA 標準 4.5:1。請選擇明暗差更大的顏色。",
   previewHeading: "預覽",
@@ -300,7 +305,7 @@ export const zhHantMessages: Messages = {
             notes: [
               "按人數旁邊的「?」，可以看到為什麼要選人數。",
               "只有一個人說話時，維持 1 人。這樣更快。",
-              "有 Nemotron 3.5 模型時才能選擇其他人數。可以在「{tabModels}」分頁下載。",
+              "1 人是輕量處理，只執行 Whisper。自動判斷和 2 人以上是高負載，還會執行 Nemotron，處理時間大幅增加，也會占用更多記憶體。有 Nemotron 3.5 模型時才能選擇。可以在「{tabModels}」分頁下載。",
               "可以加入的影片：.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts。字幕檔：.drt .fcpxml .srt .ttml .transcript.json。加入其他檔案時，應用程式會提示不能加入。",
               "加入多部影片時，會一部一部依序處理。",
               "第一次做字幕時，應用程式還要把模型轉換成能用的形式。",

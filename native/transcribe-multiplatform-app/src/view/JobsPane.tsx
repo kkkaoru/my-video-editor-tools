@@ -1,5 +1,5 @@
 // Runs with bun: drop target, readiness note and the job list.
-import { CheckIcon, CircleIcon, LoaderIcon, UploadIcon } from "lucide-preact";
+import { CheckIcon, CircleIcon, FeatherIcon, FlameIcon, LoaderIcon, UploadIcon } from "lucide-preact";
 import type { VNode } from "preact";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -14,6 +14,7 @@ import {
   canChooseSpeakerCount,
   effectiveSpeakerCount,
   type FinishedJobRow,
+  isHeavySpeakerCount,
   type JobRow,
   missingModelRoles,
   type RunningJobRow,
@@ -92,20 +93,47 @@ export const slowProcessingNotice = ({ backend, hardware }: Snapshot, messages: 
   return !hardware.is_mac && hardware.gpu === null ? messages.noticeCpuOnly : null;
 };
 
+const isOneSpeaker = ({ value }: SelectOption): boolean => value === "1";
+
+const loadedOption = (messages: Messages, value: string, label: string, heavy: boolean): SelectOption => ({
+  value,
+  label: format(messages.speakerOptionLoad, {
+    label,
+    load: heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight,
+  }),
+  disabled: false,
+});
+
+/** Each choice says its own load, so it can be compared in the open list. */
 export const speakerCountOptions = (messages: Messages): SelectOption[] => [
-  { value: "0", label: messages.speakerCountAuto, disabled: false },
+  loadedOption(messages, "0", messages.speakerCountAuto, true),
+  loadedOption(messages, "1", messages.speakerCountOne, false),
   ...Array.from(
-    { length: MAX_SPEAKER_COUNT },
-    (_, index: number): SelectOption => ({
-      value: String(index + 1),
-      label:
-        index === 0 ? messages.speakerCountOne : format(messages.speakerCountValue, { count: index + 1 }),
-      disabled: false,
-    }),
+    { length: MAX_SPEAKER_COUNT - 1 },
+    (_, index: number): SelectOption =>
+      loadedOption(
+        messages,
+        String(index + 2),
+        format(messages.speakerCountValue, { count: index + 2 }),
+        true,
+      ),
   ),
 ];
 
-const isOneSpeaker = ({ value }: SelectOption): boolean => value === "1";
+const SpeakerLoad = ({ heavy }: { heavy: boolean }): VNode => {
+  const messages: Messages = useMessages();
+  const Icon = heavy ? FlameIcon : FeatherIcon;
+  return (
+    <p data-slot="speaker-load" className="text-muted-foreground">
+      <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
+      <span className="font-medium text-foreground">
+        {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
+      </span>
+      {": "}
+      {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
+    </p>
+  );
+};
 
 export const subtitleFormatOptions = (): SelectOption[] =>
   SUBTITLE_FORMATS.map(
@@ -115,6 +143,9 @@ export const subtitleFormatOptions = (): SelectOption[] =>
       disabled: false,
     }),
   );
+
+const listOf = (snapshot: Snapshot, names: string[]): string =>
+  new Intl.ListFormat(languageFor(uiLocale(snapshot)).tag, { type: "conjunction" }).format(names);
 
 export const missingRoles = (snapshot: Snapshot, messages: Messages): string[] =>
   missingModelRoles(snapshot).map((role: Role): string => roleName(messages, role));
@@ -209,6 +240,9 @@ const FinishedJob = ({ job }: { job: FinishedJobRow }): VNode => {
       ) : null}
       {job.outcome.faceless ? <p className="text-muted-foreground">{messages.jobFaceless}</p> : null}
       {job.outcome.font_missing ? <p className="text-muted-foreground">{messages.jobFontMissing}</p> : null}
+      {job.outcome.speakers_missing ? (
+        <p className="text-muted-foreground">{messages.jobSpeakersMissing}</p>
+      ) : null}
       <div>
         <h3 className="font-medium">{messages.jobOutputs}</h3>
         <ul className="break-all text-muted-foreground">
@@ -304,10 +338,11 @@ function chooseVideos(store: AppStore, messages: Messages): void {
 
 export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
   const messages: Messages = useMessages();
-  const missing: string[] = missingRoles(snapshot, messages);
   const { hovering, jobs } = store.state;
   const notice: string | null = slowProcessingNotice(snapshot, messages);
   const choosable: boolean = canChooseSpeakerCount(snapshot);
+  const shownCount: number = effectiveSpeakerCount(snapshot);
+  const missing: string[] = missingRoles(snapshot, messages);
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
@@ -315,7 +350,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
         <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
             label={messages.speakerCount}
-            value={String(effectiveSpeakerCount(snapshot))}
+            value={String(shownCount)}
             options={
               choosable ? speakerCountOptions(messages) : speakerCountOptions(messages).filter(isOneSpeaker)
             }
@@ -324,6 +359,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
               store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
             }
           />
+          <SpeakerLoad heavy={isHeavySpeakerCount(shownCount)} />
           {choosable ? null : (
             <p className="text-muted-foreground">
               {keepWordsWhole(
@@ -371,13 +407,7 @@ export function JobsPane({ store, snapshot }: JobsPaneProps): VNode {
         </div>
       </section>
       {missing.length === 0 ? null : (
-        <Alert>
-          {format(messages.readinessMissing, {
-            roles: new Intl.ListFormat(languageFor(uiLocale(snapshot)).tag, { type: "conjunction" }).format(
-              missing,
-            ),
-          })}
-        </Alert>
+        <Alert>{format(messages.readinessMissing, { roles: listOf(snapshot, missing) })}</Alert>
       )}
       {jobs.length === 0 ? null : (
         <ul className="grid grid-cols-1 gap-3">

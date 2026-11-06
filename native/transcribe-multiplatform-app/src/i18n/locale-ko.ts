@@ -39,6 +39,11 @@ export const koMessages: Messages = {
   speakerCountHelpLabel: "화자 수를 지정하는 이유",
   speakerCountHelp:
     "화자별 색상은 목소리를 구별하는 데 달려 있습니다. 인원수를 지정하면 비슷한 목소리가 하나로 합쳐지거나 한 사람이 둘로 나뉘는 일이 줄어듭니다. 1명을 선택하면 화자 분리를 건너뛰므로 더 빠르고 화자 모델도 필요 없습니다.",
+  speakerLoadLight: "가벼움",
+  speakerLoadHeavy: "고부하",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Whisper만으로 처리합니다.",
+  speakerLoadHeavyDetail: "Nemotron으로 화자를 구별합니다. 시간이 크게 늘고 메모리도 많이 씁니다.",
   speakerCountOnlyOne:
     "Nemotron 3.5 모델이 없어 1명만 고를 수 있습니다. “{tabModels}” 탭에서 내려받으면 인원수를 고를 수 있습니다.",
   profilesHeading: "프로필",
@@ -95,6 +100,7 @@ export const koMessages: Messages = {
   jobDone: "완료: 자막 {cues}개, 화자 {speakers}명",
   jobDoneOneSpeaker: "완료: 자막 {cues}개, 화자 1명",
   jobFaceless: "얼굴이 없는 구간의 자막은 동영상 아래쪽에 배치했습니다.",
+  jobSpeakersMissing: "화자 모델이 이 동영상에서 화자를 찾지 못해 모든 자막이 같은 색입니다.",
   jobFontMissing: "고른 글꼴이 이 컴퓨터에 없어 자막 폭을 어림으로 계산했습니다.",
   jobNoPercent: "이 모델은 진행률을 알려 주지 않습니다",
   speakerCount: "화자 수",
@@ -145,7 +151,6 @@ export const koMessages: Messages = {
   fontSize: "글자 크기 (짧은 변 대비 퍼센트)",
   captionWidth: "가장 긴 줄 (너비 대비 퍼센트)",
   captionLineHeight: "자막 줄 간격(글자 크기의 배수)",
-  unknownSpeaker: "알 수 없는 화자",
   contrastWarning:
     "{name}: 채우기와 윤곽선의 대비가 {ratio}:1로 WCAG AA 기준 4.5:1보다 낮습니다. 명암 차이가 큰 색을 선택하세요.",
   previewHeading: "미리보기",
@@ -322,7 +327,7 @@ export const koMessages: Messages = {
             notes: [
               "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
               "한 사람만 말하면 1명 그대로 둡니다. 더 빨리 끝납니다.",
-              "Nemotron 3.5 모델이 있어야 다른 인원수를 고를 수 있습니다. “{tabModels}” 탭에서 내려받을 수 있습니다.",
+              "1명은 가벼운 처리로 Whisper만 실행됩니다. 자동과 2명 이상은 고부하로 Nemotron도 실행되어 시간이 크게 늘고 메모리도 많이 씁니다. Nemotron 3.5 모델이 있어야 고를 수 있습니다. “{tabModels}” 탭에서 내려받을 수 있습니다.",
               "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .drt .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
               "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
               "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",

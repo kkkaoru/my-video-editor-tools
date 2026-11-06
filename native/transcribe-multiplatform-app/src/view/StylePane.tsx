@@ -13,7 +13,7 @@ import { FontField } from "./FontField.tsx";
 import { AdjustField, SelectField, type SelectOption } from "./fields.tsx";
 import { LayeredText } from "./LayeredText.tsx";
 import { ProfilesCard } from "./ProfilesCard.tsx";
-import { SpeakerColors } from "./SpeakerColors.tsx";
+import { defaultPalette, SpeakerColors } from "./SpeakerColors.tsx";
 
 export interface StylePaneProps {
   store: AppStore;
@@ -146,7 +146,7 @@ const CaptionPreview = ({ settings, frame, slot }: CaptionPreviewProps): VNode =
   const { width, height } = frame.size;
   const layout: PreviewLayout = previewLayout(messages.previewSample, frame.size, settings);
   // Whoever is being edited, or speaker 1 while no row is open.
-  const color: SpeakerColor = [...settings.palette, settings.unassigned][slot ?? 0] ?? settings.unassigned;
+  const color: SpeakerColor = settings.palette[slot ?? 0] ?? settings.palette[0] ?? defaultPalette()[0];
   const widest: number = width >= height ? PREVIEW_MAX_WIDTH_PX : PREVIEW_VERTICAL_WIDTH_PX;
   return (
     <>
@@ -303,13 +303,11 @@ export function StylePane({ store, settings, profiles, faceOptions }: StylePaneP
           </Card>
           <SpeakerColors
             palette={settings.palette}
-            unassigned={settings.unassigned}
             fontFamily={settings.font_family}
             subtitleFormat={settings.subtitle_format}
             openSlot={openSlot}
             onOpenSlotChange={setOpenSlot}
             onChange={(palette: SpeakerColor[]): void => update({ palette })}
-            onUnassignedChange={(unassigned: SpeakerColor): void => update({ unassigned })}
           />
           <Card>
             <CardHeader>

@@ -10,18 +10,6 @@ import { formatBytes, hasRecommendedSpeakerModel, ModelsPane, missingDownloads }
 
 const SETTINGS: Settings = {
   palette: [],
-  unassigned: {
-    fill: "#AAAAAA",
-    fill_width: 0,
-    outline: "#000000",
-    outline_width: 0.1,
-    rim: null,
-    rim_width: 0.034,
-    shadow: null,
-    shadow_x: 0.03,
-    shadow_y: -0.03,
-    shadow_blur: 5,
-  },
   font_family: "Sans",
   font_ratio: 0.05,
   width_ratio: 0.8,
@@ -318,18 +306,6 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
       {
         settings: {
           palette: [],
-          unassigned: {
-            fill: "#AAAAAA",
-            fill_width: 0,
-            outline: "#000000",
-            outline_width: 0.1,
-            rim: null,
-            rim_width: 0.034,
-            shadow: null,
-            shadow_x: 0.03,
-            shadow_y: -0.03,
-            shadow_blur: 5,
-          },
           font_family: "Sans",
           font_ratio: 0.05,
           width_ratio: 0.8,

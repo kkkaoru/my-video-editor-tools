@@ -18,6 +18,7 @@ export type StateStep =
   | "open-face-select"
   | "open-language-select"
   | "open-subtitle-format"
+  | "open-speaker-count"
   | "hover-drop"
   | "open-speaker-help"
   | "press-update-check"
@@ -152,18 +153,6 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
               shadow_blur: 5,
             },
     ),
-    unassigned: {
-      fill: "#595959",
-      fill_width: 0,
-      outline: "#FFFFFF",
-      outline_width: 0.115,
-      rim: null,
-      rim_width: 3 / 88,
-      shadow: null,
-      shadow_x: 0.03,
-      shadow_y: -0.03,
-      shadow_blur: 5,
-    },
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
     line_height: 1.448,
@@ -193,7 +182,6 @@ const profile = (name: string): Profile => ({
   name,
   look: {
     palette: snapshot({}).settings.palette,
-    unassigned: snapshot({}).settings.unassigned,
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
     line_height: 1.448,
@@ -328,7 +316,7 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
   }),
   state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
-  state("jobs with a nemotron 3.5 model", "jobs", {
+  state("jobs heavy with a nemotron 3.5 model", "jobs", {
     snapshot: snapshot({
       settings: { ...snapshot({}).settings, speaker_count: 3 },
       models: ALL_MODELS.map(
@@ -340,6 +328,7 @@ export const UI_STATES: UiState[] = [
   state("jobs saved as automatic without a nemotron 3.5 model", "jobs", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, speaker_count: 0 } }),
   }),
+  state("jobs speaker count list open", "jobs", { steps: ["open-speaker-count"] }),
   state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
   state("jobs unsupported file dropped", "jobs", { steps: ["drop-other"] }),
   state("jobs video dropped without models", "jobs", {
@@ -371,6 +360,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 120,
           faceless: false,
           font_missing: false,
+          speakers_missing: false,
         },
       },
     ],
@@ -389,6 +379,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 20,
           faceless: false,
           font_missing: false,
+          speakers_missing: false,
         },
       },
     ],
@@ -414,6 +405,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 20,
           faceless: false,
           font_missing: true,
+          speakers_missing: false,
         },
       },
     ],
@@ -432,6 +424,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 2,
           faceless: true,
           font_missing: false,
+          speakers_missing: false,
         },
       },
     ],
@@ -545,18 +538,6 @@ export const UI_STATES: UiState[] = [
           },
           ...snapshot({}).settings.palette.slice(1),
         ],
-        unassigned: {
-          fill: "#C8C8C8",
-          fill_width: 0,
-          outline: "#FFFFFF",
-          outline_width: 0.1,
-          rim: null,
-          rim_width: 0.034,
-          shadow: null,
-          shadow_x: 0.03,
-          shadow_y: -0.03,
-          shadow_blur: 5,
-        },
       },
     }),
   }),

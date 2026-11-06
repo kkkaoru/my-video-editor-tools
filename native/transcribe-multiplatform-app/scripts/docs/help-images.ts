@@ -208,6 +208,7 @@ const SCENES: Scene[] = [
           cue_count: 120,
           faceless: false,
           font_missing: false,
+          speakers_missing: false,
         },
       },
     ],

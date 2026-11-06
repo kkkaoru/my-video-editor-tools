@@ -43,6 +43,11 @@ export const esMessages: Messages = {
   speakerCountHelpLabel: "¿Por qué indicar el número de hablantes?",
   speakerCountHelp:
     "Los colores de los hablantes dependen de distinguir las voces. Indicar cuántas personas hablan evita que voces parecidas se unan y que una voz se divida. Con 1 hablante se omite la separación, así que es más rápido y no necesita un modelo de hablantes.",
+  speakerLoadLight: "Ligero",
+  speakerLoadHeavy: "Carga alta",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Usa solo Whisper.",
+  speakerLoadHeavyDetail: "Distingue las voces con Nemotron. Tarda mucho más y usa mucha más memoria.",
   speakerCountOnlyOne:
     "Sin un modelo Nemotron 3.5 solo se puede elegir 1 hablante. Descarga uno en «{tabModels}» para elegir más.",
   profilesHeading: "Perfiles",
@@ -101,6 +106,8 @@ export const esMessages: Messages = {
   jobDone: "Terminado: {cues} subtítulos, {speakers} hablantes",
   jobDoneOneSpeaker: "Terminado: {cues} subtítulos, 1 hablante",
   jobFaceless: "Los subtítulos sin cara detectada se colocaron en la parte inferior del vídeo.",
+  jobSpeakersMissing:
+    "El modelo de hablantes no detectó a nadie en este vídeo, así que todos los subtítulos tienen el mismo color.",
   jobFontMissing:
     "La fuente elegida no está en este ordenador, así que el ancho de los subtítulos es una estimación.",
   jobNoPercent: "este modelo no indica un porcentaje",
@@ -153,7 +160,6 @@ export const esMessages: Messages = {
   fontSize: "Tamaño del texto (porcentaje del lado corto)",
   captionWidth: "Línea más larga (porcentaje del ancho)",
   captionLineHeight: "Interlineado (múltiplo del tamaño del texto)",
-  unknownSpeaker: "Hablante desconocido",
   contrastWarning:
     "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elige colores más distintos.",
   previewHeading: "Vista previa",
@@ -339,7 +345,7 @@ export const esMessages: Messages = {
             notes: [
               "El «?» junto al número explica para qué sirve.",
               "Si solo habla una persona, deja 1. Es más rápido.",
-              "Puedes elegir otros números cuando haya un modelo Nemotron 3.5 en este ordenador. Se descarga en «{tabModels}».",
+              "1 hablante es ligero: solo se ejecuta Whisper. La detección automática y 2 o más hablantes son carga alta: también se ejecuta Nemotron, por lo que tarda mucho más y usa mucha más memoria. Puedes elegirlos cuando haya un modelo Nemotron 3.5 en este ordenador. Se descarga en «{tabModels}».",
               "Puedes añadir estos vídeos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Archivos de subtítulos: .drt .fcpxml .srt .ttml .transcript.json. Con otro archivo, la aplicación dice que no se puede añadir.",
               "Si añades varios vídeos, se hacen uno por uno.",
               "La primera vez, la aplicación también pasa un modelo a una forma que puede usar.",

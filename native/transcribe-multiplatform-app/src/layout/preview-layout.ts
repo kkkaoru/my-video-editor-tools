@@ -112,11 +112,11 @@ const layerReach = ({
 }: SpeakerColor): number => fill + outline + (rim === null ? 0 : rimWidth);
 
 /**
- * `block_edge` with `widest_edge_ratio`: any speaker may say the line, so the widest edge, the unknown speaker's too.
+ * `block_edge` with `widest_edge_ratio`: any speaker may say the line, so the widest edge.
  * The editor draws half of `strokeWidth` in frame pixels, whatever the font size: percent of the text, as pixels.
  */
-const blockEdge = (fontPx: number, { palette, unassigned }: Settings): number =>
-  (Math.max(1, fontPx * Math.max(...[...palette, unassigned].map(layerReach))) / fontPx) * PERCENT;
+const blockEdge = (fontPx: number, { palette }: Settings): number =>
+  (Math.max(1, fontPx * Math.max(0, ...palette.map(layerReach))) / fontPx) * PERCENT;
 
 export const metricsFor = (frame: FrameSize, settings: Settings): Metrics => {
   const { width, height } = frame;

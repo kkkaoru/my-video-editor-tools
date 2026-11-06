@@ -17,11 +17,9 @@ const SPEAKER_ONE: SpeakerColor = {
   shadow_blur: 5,
 };
 const SPEAKER_TWO: SpeakerColor = { ...SPEAKER_ONE, fill: "#333333", rim: null, shadow: null };
-const UNKNOWN: SpeakerColor = { ...SPEAKER_ONE, fill: "#555555" };
 
 interface Shown {
   onChange: Mock<(palette: SpeakerColor[]) => void>;
-  onUnassignedChange: Mock<(color: SpeakerColor) => void>;
   onOpenSlotChange: Mock<(slot: number | null) => void>;
 }
 
@@ -32,18 +30,16 @@ interface ShowOptions {
 }
 
 function show({ palette, openSlot, subtitleFormat }: ShowOptions): Shown {
-  const shown: Shown = { onChange: vi.fn(), onUnassignedChange: vi.fn(), onOpenSlotChange: vi.fn() };
+  const shown: Shown = { onChange: vi.fn(), onOpenSlotChange: vi.fn() };
   render(
     <main>
       <SpeakerColors
         palette={palette}
-        unassigned={UNKNOWN}
         fontFamily="Test Font"
         subtitleFormat={subtitleFormat}
         openSlot={openSlot}
         onOpenSlotChange={shown.onOpenSlotChange}
         onChange={shown.onChange}
-        onUnassignedChange={shown.onUnassignedChange}
       />
     </main>,
   );
@@ -95,14 +91,14 @@ it("starts speaker 1 white on black and the others in colour on white, all with 
   ]);
 });
 
-it("lists every speaker and the unknown one as short rows, opening only the one asked for", () => {
+it("lists every speaker as a short row, opening only the one asked for, with no grey unknown speaker", () => {
   firstOpen();
   expect(
     Array.from(
       document.querySelectorAll('[data-slot="speaker-name"]'),
       ({ textContent }: Element) => textContent,
     ),
-  ).toStrictEqual(["Speaker 1", "Speaker 2", "Unknown speaker"]);
+  ).toStrictEqual(["Speaker 1", "Speaker 2"]);
   expect(screen.getAllByRole("button", { name: /^Speaker 1: Fill/ }).length).toBe(1);
   expect(screen.queryByRole("button", { name: /^Speaker 2: Fill/ })).toBe(null);
 });
@@ -220,17 +216,6 @@ it("changes the fill colour", () => {
   fireEvent.click(screen.getByRole("button", { name: "Speaker 1: Fill: #111111" }));
   fireEvent.input(screen.getByLabelText("Any colour"), { target: { value: "#abcdef" } });
   expect(onChange.mock.lastCall?.[0][0]?.fill).toBe("#ABCDEF");
-});
-
-it("changes the unknown speaker apart from the palette", () => {
-  const { onChange, onUnassignedChange } = show({
-    palette: [SPEAKER_ONE],
-    openSlot: 1,
-    subtitleFormat: "drt",
-  });
-  typeInto("Unknown speaker: Fill thickness (percent of the text size)", "2");
-  expect(onUnassignedChange.mock.lastCall).toStrictEqual([{ ...UNKNOWN, fill_width: 0.02 }]);
-  expect(onChange.mock.calls).toStrictEqual([]);
 });
 
 it("warns about a pair that is hard to read, even with its row closed", () => {

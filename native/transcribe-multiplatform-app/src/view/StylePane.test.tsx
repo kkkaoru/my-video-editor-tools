@@ -37,18 +37,6 @@ const SETTINGS: Settings = {
       shadow_blur: 5,
     },
   ],
-  unassigned: {
-    fill: "#AAAAAA",
-    fill_width: 0,
-    outline: "#000000",
-    outline_width: 0.1,
-    rim: null,
-    rim_width: 0.034,
-    shadow: null,
-    shadow_x: 0.03,
-    shadow_y: -0.03,
-    shadow_blur: 5,
-  },
   font_family: "Sans",
   font_ratio: 0.05,
   width_ratio: 0.8,
@@ -395,7 +383,7 @@ it("previews the speaker being edited", () => {
   expect(previewFill()).toBe("#111111");
 });
 
-it("saves a speaker's change and the unknown speaker's apart", () => {
+it("saves a speaker's change", () => {
   const store: AppStore = show(SETTINGS);
   fireEvent.input(
     screen.getByRole("spinbutton", { name: "Speaker 1: Fill thickness (percent of the text size)" }),
@@ -404,20 +392,14 @@ it("saves a speaker's change and the unknown speaker's apart", () => {
     },
   );
   expect(lastSaved(store)?.palette[0]?.fill_width).toBe(0.02);
-  fireEvent.click(screen.getByRole("button", { name: "Unknown speaker" }));
-  fireEvent.input(
-    screen.getByRole("spinbutton", { name: "Unknown speaker: Fill thickness (percent of the text size)" }),
-    { target: { value: "3" } },
-  );
-  expect(lastSaved(store)?.unassigned.fill_width).toBe(0.03);
 });
 
-it("previews the unknown speaker when the row open has gone", () => {
+it("previews speaker 1 when the row open has gone", () => {
   const store: AppStore = storeOf();
   const { container, rerender } = render(
     <StylePane store={store} settings={SETTINGS} profiles={[]} faceOptions={[]} />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Unknown speaker" }));
+  fireEvent.click(screen.getByRole("button", { name: "Speaker 2" }));
   rerender(
     <StylePane
       store={store}
@@ -427,6 +409,6 @@ it("previews the unknown speaker when the row open has gone", () => {
     />,
   );
   expect(container.querySelector('[data-slot="caption-preview"] g g:last-child')?.getAttribute("fill")).toBe(
-    SETTINGS.unassigned.fill,
+    SETTINGS.palette[0]?.fill,
   );
 });

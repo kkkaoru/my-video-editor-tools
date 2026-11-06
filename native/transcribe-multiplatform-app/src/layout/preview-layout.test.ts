@@ -18,18 +18,6 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
       shadow_blur: 5,
     },
   ],
-  unassigned: {
-    fill: "#AAAAAA",
-    fill_width: 0,
-    outline: "#000000",
-    outline_width: 0.1,
-    rim: null,
-    rim_width: 0.034,
-    shadow: null,
-    shadow_x: 0.03,
-    shadow_y: -0.03,
-    shadow_blur: 5,
-  },
   font_family: "Sans",
   font_ratio: 0.05,
   width_ratio: 0.8,
@@ -373,8 +361,8 @@ it("does not count a transparent outer edge", () => {
   expect(metricsFor({ width: 1000, height: 1000 }, settings).maxLinePx).toBe(780);
 });
 
-it("takes the widest edge of all speakers off the line width, the unknown speaker's too", () => {
-  const speaker: Settings["unassigned"] = {
+it("takes the widest edge of all speakers off the line width", () => {
+  const speaker: Settings["palette"][number] = {
     fill: "#FFFFFF",
     fill_width: 0,
     outline: "#000000",
@@ -390,16 +378,12 @@ it("takes the widest edge of all speakers off the line width, the unknown speake
   expect(
     metricsFor({ width: 1000, height: 1000 }, { ...base, palette: [...base.palette, speaker] }).maxLinePx,
   ).toBe(750);
-  expect(metricsFor({ width: 1000, height: 1000 }, { ...base, unassigned: speaker }).maxLinePx).toBe(750);
 });
 
 it("keeps at least one pixel of edge on a tiny text", () => {
   const base: Settings = settingsWith("video_top", 0, 0);
   expect(
-    metricsFor(
-      { width: 1000, height: 1000 },
-      { ...base, font_ratio: 0.002, palette: [], unassigned: { ...base.unassigned, outline_width: 0.01 } },
-    ).maxLinePx,
+    metricsFor({ width: 1000, height: 1000 }, { ...base, font_ratio: 0.002, palette: [] }).maxLinePx,
   ).toBe(700);
 });
 

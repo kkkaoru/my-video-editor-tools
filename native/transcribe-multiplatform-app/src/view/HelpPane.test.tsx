@@ -167,7 +167,7 @@ it("shows each annotated picture lazily, sized, in this language, and described"
   expect(picture.getAttribute("src")).toBe("/help/ja/models.webp");
   expect(picture.getAttribute("loading")).toBe("lazy");
   expect(picture.getAttribute("width")).toBe("1100");
-  expect(picture.getAttribute("height")).toBe("920");
+  expect(picture.getAttribute("height")).toBe("980");
 });
 
 it("has a picture for each topic with numbered marks", () => {

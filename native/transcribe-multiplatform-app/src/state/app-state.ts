@@ -14,6 +14,7 @@ import type {
 } from "../backend/types.ts";
 
 const SYSTEM_LANGUAGE: string = "";
+
 const SPEAKER_CHOICE_MODEL_PREFIX: string = "nemotron-3.5-transcribe-";
 
 interface JobBase {
@@ -173,6 +174,9 @@ export const canChooseSpeakerCount = ({ models }: Pick<Snapshot, "models">): boo
 export const effectiveSpeakerCount = (snapshot: Pick<Snapshot, "models" | "settings">): number =>
   canChooseSpeakerCount(snapshot) ? snapshot.settings.speaker_count : 1;
 
+/** One speaker runs Whisper alone; automatic detection and more speakers also run speaker separation. */
+export const isHeavySpeakerCount = (count: number): boolean => count !== 1;
+
 /** Speaker separation is never required: without its model, a job is for one speaker. */
 export const missingModelRoles = ({ models }: Pick<Snapshot, "models">): Role[] =>
   (["transcribe"] satisfies Role[]).filter(
@@ -185,7 +189,6 @@ export const missingModelRoles = ({ models }: Pick<Snapshot, "models">): Role[] 
 
 const lookFields = ({
   palette,
-  unassigned,
   font_family,
   font_ratio,
   line_height,
@@ -195,7 +198,6 @@ const lookFields = ({
   placement,
 }: CaptionLook): CaptionLook => ({
   palette,
-  unassigned,
   font_family,
   font_ratio,
   line_height,

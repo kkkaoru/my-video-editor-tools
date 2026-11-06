@@ -39,6 +39,12 @@ export const enMessages: Messages = {
   speakerCountHelpLabel: "Why set the number of speakers?",
   speakerCountHelp:
     "Speaker colours depend on telling voices apart. Saying how many people speak keeps similar voices from merging and one voice from splitting. With 1 speaker, speaker separation is skipped, so it is faster and needs no speaker model.",
+  speakerLoadLight: "Light",
+  speakerLoadHeavy: "Heavy",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Uses Whisper only.",
+  speakerLoadHeavyDetail:
+    "Tells the voices apart with Nemotron. It takes much longer and uses much more memory.",
   speakerCountOnlyOne:
     "Without a Nemotron 3.5 model, only 1 speaker can be chosen. Download one on the “{tabModels}” tab to choose more.",
   profilesHeading: "Profiles",
@@ -97,6 +103,7 @@ export const enMessages: Messages = {
   jobDone: "Finished: {cues} captions, {speakers} speakers",
   jobDoneOneSpeaker: "Finished: {cues} captions, 1 speaker",
   jobFaceless: "Captions where no face was found were placed at the bottom of the video.",
+  jobSpeakersMissing: "The speaker model heard nobody in this video, so every caption has one colour.",
   jobFontMissing: "The chosen font is not on this computer, so the caption widths are an estimate.",
   jobNoPercent: "this model reports no percentage",
   speakerCount: "Number of speakers",
@@ -148,7 +155,6 @@ export const enMessages: Messages = {
   fontSize: "Text size (percent of the short edge)",
   captionWidth: "Longest line (percent of the width)",
   captionLineHeight: "Line spacing (times the text size)",
-  unknownSpeaker: "Unknown speaker",
   contrastWarning:
     "{name}: the fill and outline contrast is {ratio}:1, below the WCAG AA minimum of 4.5:1. Choose colours further apart.",
   previewHeading: "Preview",
@@ -329,7 +335,7 @@ export const enMessages: Messages = {
             notes: [
               "Press the “?” next to the number to read why it helps.",
               "If only one person speaks, leave it at 1. It finishes faster.",
-              "You can choose other numbers once a Nemotron 3.5 model is on this computer. Get one on the “{tabModels}” tab.",
+              "1 speaker is light: only Whisper runs. Automatic detection and 2 or more speakers are heavy: Nemotron also runs, so it takes much longer and uses much more memory. You can choose them once a Nemotron 3.5 model is on this computer. Get one on the “{tabModels}” tab.",
               "You can add these videos: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Subtitle files can be .drt .fcpxml .srt .ttml .transcript.json. With any other file, the app says it cannot be added.",
               "If you add several videos, they are done one at a time.",
               "The first time, the app also changes a model into a form it can use.",

@@ -44,6 +44,12 @@ export const frMessages: Messages = {
   speakerCountHelpLabel: "Pourquoi indiquer le nombre de locuteurs ?",
   speakerCountHelp:
     "Les couleurs des locuteurs dépendent de la distinction des voix. Indiquer le nombre évite que des voix proches se confondent ou qu'une voix soit scindée. Avec 1 locuteur, la séparation est ignorée : c'est plus rapide et aucun modèle de locuteurs n'est nécessaire.",
+  speakerLoadLight: "Léger",
+  speakerLoadHeavy: "Charge élevée",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Utilise Whisper seulement.",
+  speakerLoadHeavyDetail:
+    "Distingue les voix avec Nemotron. Cela prend beaucoup plus de temps et de mémoire.",
   speakerCountOnlyOne:
     "Sans modèle Nemotron 3.5, seul 1 locuteur est possible. Télécharge-en un dans « {tabModels} » pour en choisir plus.",
   profilesHeading: "Profils",
@@ -102,6 +108,8 @@ export const frMessages: Messages = {
   jobDone: "Terminé : {cues} sous-titres, {speakers} intervenants",
   jobDoneOneSpeaker: "Terminé : {cues} sous-titres, 1 intervenant",
   jobFaceless: "Les sous-titres sans visage détecté ont été placés en bas de la vidéo.",
+  jobSpeakersMissing:
+    "Le modèle de locuteurs n’a détecté personne dans cette vidéo : tous les sous-titres ont donc la même couleur.",
   jobFontMissing:
     "La police choisie n’est pas sur cet ordinateur : la largeur des sous-titres est donc estimée.",
   jobNoPercent: "ce modèle n’indique pas de pourcentage",
@@ -155,7 +163,6 @@ export const frMessages: Messages = {
   fontSize: "Taille du texte (pourcentage du petit côté)",
   captionWidth: "Ligne la plus longue (pourcentage de la largeur)",
   captionLineHeight: "Interligne (multiple de la taille du texte)",
-  unknownSpeaker: "Locuteur inconnu",
   contrastWarning:
     "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisis des couleurs plus éloignées.",
   previewHeading: "Aperçu",
@@ -341,7 +348,7 @@ export const frMessages: Messages = {
             notes: [
               "Le « ? » à côté du nombre explique à quoi il sert.",
               "Si une seule personne parle, laisse 1. C'est plus rapide.",
-              "Tu peux choisir d'autres nombres dès qu'un modèle Nemotron 3.5 est sur cet ordinateur. Tu le télécharges dans « {tabModels} ».",
+              "1 locuteur est léger : seul Whisper tourne. La détection automatique et 2 locuteurs ou plus demandent une charge élevée : Nemotron tourne aussi, ce qui prend beaucoup plus de temps et de mémoire. Tu peux les choisir dès qu'un modèle Nemotron 3.5 est sur cet ordinateur. Tu le télécharges dans « {tabModels} ».",
               "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Fichiers de sous-titres : .drt .fcpxml .srt .ttml .transcript.json. Avec un autre fichier, l'application dit qu'il n'est pas accepté.",
               "Si tu ajoutes plusieurs vidéos, elles sont traitées une par une.",
               "La première fois, l'application met aussi un modèle sous une forme qu'elle peut utiliser.",

@@ -43,6 +43,12 @@ export const deMessages: Messages = {
   speakerCountHelpLabel: "Warum die Anzahl der Sprecher angeben?",
   speakerCountHelp:
     "Die Sprecherfarben hängen davon ab, dass Stimmen unterschieden werden. Mit der Anzahl verschmelzen ähnliche Stimmen seltener, und eine Stimme wird seltener aufgeteilt. Bei 1 Sprecher entfällt die Sprechertrennung; das geht schneller und braucht kein Sprechermodell.",
+  speakerLoadLight: "Leicht",
+  speakerLoadHeavy: "Hohe Last",
+  speakerOptionLoad: "{label} ({load})",
+  speakerLoadLightDetail: "Nutzt nur Whisper.",
+  speakerLoadHeavyDetail:
+    "Unterscheidet die Stimmen mit Nemotron. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
   speakerCountOnlyOne:
     "Ohne ein Nemotron-3.5-Modell geht nur 1 Sprecher. Lade unter „{tabModels}“ eines, dann kannst du mehr wählen.",
   profilesHeading: "Profile",
@@ -101,6 +107,8 @@ export const deMessages: Messages = {
   jobDone: "Fertig: {cues} Untertitel, {speakers} Sprecher",
   jobDoneOneSpeaker: "Fertig: {cues} Untertitel, 1 Sprecher",
   jobFaceless: "Untertitel an Stellen ohne erkanntes Gesicht wurden unten im Video platziert.",
+  jobSpeakersMissing:
+    "Das Sprechermodell hat in diesem Video niemanden erkannt, daher haben alle Untertitel dieselbe Farbe.",
   jobFontMissing:
     "Die gewählte Schrift fehlt auf diesem Computer, darum ist die Breite der Untertitel geschätzt.",
   jobNoPercent: "Dieses Modell meldet keinen Prozentwert",
@@ -154,7 +162,6 @@ export const deMessages: Messages = {
   fontSize: "Schriftgröße (Prozent der kurzen Kante)",
   captionWidth: "Längste Zeile (Prozent der Breite)",
   captionLineHeight: "Zeilenabstand (Vielfaches der Textgröße)",
-  unknownSpeaker: "Unbekannter Sprecher",
   contrastWarning:
     "{name}: Der Kontrast zwischen Füllung und Kontur beträgt {ratio}:1 und liegt unter dem WCAG-AA-Mindestwert von 4,5:1. Wähle Farben mit größerem Helligkeitsunterschied.",
   previewHeading: "Vorschau",
@@ -342,7 +349,7 @@ export const deMessages: Messages = {
             notes: [
               "Das „?“ neben der Anzahl erklärt, warum sie hilft.",
               "Spricht nur eine Person, lass 1 stehen. Das geht schneller.",
-              "Andere Anzahlen kannst du wählen, sobald ein Nemotron-3.5-Modell auf diesem Computer ist. Du holst es unter „{tabModels}“.",
+              "1 Sprecher ist leicht: Nur Whisper läuft. Automatische Erkennung und 2 oder mehr Sprecher sind hohe Last: Auch Nemotron läuft. Das dauert viel länger und braucht viel mehr Arbeitsspeicher. Du kannst sie wählen, sobald ein Nemotron-3.5-Modell auf diesem Computer ist. Du holst es unter „{tabModels}“.",
               "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .drt .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
               "Mehrere Videos werden eines nach dem anderen bearbeitet.",
               "Beim ersten Mal bringt die App außerdem ein Modell in eine Form, die sie nutzen kann.",

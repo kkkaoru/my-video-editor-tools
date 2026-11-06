@@ -30,7 +30,6 @@ export interface Placement {
 /** What a profile saves and restores. */
 export interface CaptionLook {
   palette: SpeakerColor[];
-  unassigned: SpeakerColor;
   font_family: string;
   font_ratio: number;
   line_height: number;
@@ -141,6 +140,8 @@ export interface JobOutcome {
   faceless: boolean;
   /** The chosen font is not installed, so caption widths were estimated. */
   font_missing: boolean;
+  /** Speakers were asked for and the model heard none, so every caption has one colour. */
+  speakers_missing: boolean;
 }
 
 export interface JobQueuedEvent {
