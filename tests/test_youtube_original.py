@@ -107,6 +107,7 @@ def test_post_live_is_kept_provisionally_with_the_audio_that_downloads(
     assert calls[3][calls[3].index("-f") + 1] == "bv*+139"
     assert "--abort-on-unavailable-fragments" in calls[3]
     assert calls[3][calls[3].index("--concurrent-fragments") + 1] == "8"
+    assert calls[3][calls[3].index("--format-sort") + 1] == "res,vbr"
     assert calls[3][-2] == str(tmp_path / f".{STEM}.post_live.partial" / f"{STEM}.%(ext)s")
     assert calls[4][-1] == str(tmp_path / f".{STEM}.post_live.partial" / f"{STEM}.mp4")
     assert sorted(p.name for p in tmp_path.iterdir()) == [

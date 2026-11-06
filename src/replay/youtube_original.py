@@ -36,6 +36,10 @@ FRAGMENT_WORKERS = 8
 STREAM_KINDS = ("video", "audio")
 EVIDENCE = frozenset({"publication.json", "channel.json"})
 REPLACED = ".provisional.replaced"
+# While an archive is processed YouTube's VP9 runs far below its H.264 at the same size, and yt-dlp
+# prefers VP9 by codec: format 247 at 1.18 Mbps smeared on motion where format 136 at 1.88 Mbps did
+# not (4I9Uv3UJiaM, 2026-11-06). The largest picture at the highest bitrate is chosen instead.
+PROVISIONAL_SORT = "res,vbr"
 
 
 def expected_duration(metadata: object) -> tuple[str, float]:
@@ -120,7 +124,15 @@ def is_provisional(directory: Path) -> bool:
     return isinstance(evidence, dict) and evidence.get("provisional") is True
 
 
-def fetch(common: list[str], ffmpeg_directory: Path, target: str, url: str, fmt: str) -> None:
+def fetch(
+    common: list[str],
+    ffmpeg_directory: Path,
+    target: str,
+    url: str,
+    fmt: str,
+    *,
+    sort: str | None = None,
+) -> None:
     subprocess.run(
         [
             *common,
@@ -132,6 +144,7 @@ def fetch(common: list[str], ffmpeg_directory: Path, target: str, url: str, fmt:
             str(FRAGMENT_WORKERS),
             "--match-filter",
             "!is_live",
+            *(() if sort is None else ("--format-sort", sort)),
             "-f",
             fmt,
             "--merge-output-format",
@@ -160,7 +173,9 @@ def fetch_provisional(
         while True:
             before = partial_bytes(staging, format_id)
             try:
-                fetch(common, ffmpeg_directory, target, url, f"bv*+{format_id}")
+                fetch(
+                    common, ffmpeg_directory, target, url, f"bv*+{format_id}", sort=PROVISIONAL_SORT
+                )
             except subprocess.CalledProcessError as error:
                 if not staging.is_dir() or staging.stat().st_dev != device:
                     # A detached volume is not a refused format: keep its fragments for a rerun.
