@@ -327,6 +327,28 @@ def test_changed_code_pin(cleanup_request: Path, observed: Path) -> None:
         plan.verify_profile(cleanup_request, observed)
 
 
+def test_a_stored_request_is_read_after_its_media_left_the_disk(cleanup_request: Path) -> None:
+    data = json.loads(cleanup_request.read_text())
+    (cleanup_request.parent / "source.mov").unlink()
+    (cleanup_request.parent / "native").unlink()
+    (cleanup_request.parent / "model").unlink()
+    with pytest.raises(ValueError, match="Missing cleanup source"):
+        plan.load(cleanup_request)
+    job = plan.load(cleanup_request, stored=True)
+    assert job.source.sha256 == data["source"]["sha256"]
+
+
+def test_a_prepared_stage_knows_when_its_code_is_no_longer_current(
+    cleanup_request: Path, prepared: Path
+) -> None:
+    assert plan.code_current(prepared) is True
+    pins = json.loads((prepared / "code-pins.json").read_text())
+    document(prepared / "code-pins.json", pins[1:])
+    assert plan.code_current(prepared) is False
+    (prepared / "code-pins.json").unlink()
+    assert plan.code_current(prepared) is False
+
+
 def test_missing_code_binding_refused(cleanup_request: Path, observed: Path) -> None:
     pins = json.loads((observed / "code-pins.json").read_text())
     document(observed / "code-pins.json", pins[1:])

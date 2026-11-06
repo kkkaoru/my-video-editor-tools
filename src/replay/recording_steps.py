@@ -27,7 +27,8 @@ Steps and producers:
   bootstrap workflow up to ``profile-settings``;
 - ``cleanup``: ``source_clean_run describe/configs/run/assemble`` (revision ``p1``); a source
   whose profile finds no caption band instead gets a 240-frame ``caption_absence`` survey in
-  ``cleanup-bootstrap`` and is composed unchanged;
+  ``cleanup-bootstrap`` and is composed unchanged (when the survey does find a band, the cleanup
+  runs on the survey's request);
 - ``yolo-track``: ``yolo_track`` over every frame of the video clock;
 - ``separation``: ``separation_plan_refresh`` with the reference template set to the GPU device,
   then ``separation_window_pipeline`` in the separation provider environment;
@@ -54,6 +55,7 @@ from types import FrameType
 
 from replay import caption_absence as absence
 from replay import packet_clock
+from replay import replay_cleanup_plan as cleanup_plan
 from replay import source_comment_clean as comments
 from replay.code_dependency_inventory import capture
 from replay.core import ReplayError
@@ -466,38 +468,65 @@ def cleanup_bootstrap(pipeline: Pipeline, run: Runner) -> dict[str, object]:
             log,
         )  # fmt: skip
     clear_partial(bootstrap, bootstrap / "workflow.json")
-    if not bootstrap.exists():
-        run(module(pipeline, "replay_cleanup_plan", "prepare", str(request), str(bootstrap)), log)
-    try:
+    if stale(bootstrap):
+        remove(bootstrap)
+
+    def settings(using: Path) -> None:
+        """Prepare the bootstrap from ``using`` unless it is, and run it to the profile settings."""
+        if not bootstrap.exists():
+            run(module(pipeline, "replay_cleanup_plan", "prepare", str(using), str(bootstrap)), log)
         run(workflow(pipeline, bootstrap / "workflow.json", bootstrap / "state", BOOTSTRAP_TARGET),
             log)  # fmt: skip
+
+    try:
+        settings(request)
     except ReplayError:
         if not absence.no_band(request, bootstrap):
             raise
-        return {"captionFree": caption_free(pipeline, run, request)}
+        free = caption_free(pipeline, run, request)
+        if free is not None:
+            return {"captionFree": free}
+        # The survey read a band the sparser profile missed (captions on a part of the source):
+        # the cleanup runs on the survey's own request, which saw them.
+        remove(bootstrap)
+        settings(work / CAPTION_ABSENCE / "request.json")
     return {
         "settings": pin(bootstrap / "settings.json"),
         "clock": pin(bootstrap / "physical-clock.json"),
     }
 
 
-def caption_free(pipeline: Pipeline, run: Runner, request: Path) -> dict[str, str]:
-    """Survey a source whose cleanup profile found no caption band; pin its absence summary."""
+def stale(stage: Path) -> bool:
+    """A prepared stage whose pinned producer code changed: its verifier refuses it for good, so
+    only a new one can pass (10/28: a caption-free source waited two hours for someone to remove
+    it). The evidence is the source's own OCR, redone in about a minute."""
+    return (stage / "workflow.json").exists() and not cleanup_plan.code_current(stage)
+
+
+def caption_free(pipeline: Pipeline, run: Runner, request: Path) -> dict[str, str] | None:
+    """Survey a source whose cleanup profile found no caption band; pin its absence summary, or
+    None when the survey, with more frames, does find a band."""
     root, log = pipeline.work / CAPTION_ABSENCE, pipeline.logs / "cleanup-bootstrap.log"
     survey, output = root / "request.json", root / "survey"
     clear_partial(root, survey)
+    if stale(output):
+        remove(root)  # its summary names this survey
     if not survey.exists():
         root.mkdir(mode=0o700)
         absence.survey_request(request, survey)
     clear_partial(output, output / "workflow.json")
     if not output.exists():
         run(module(pipeline, "replay_cleanup_plan", "prepare", str(survey), str(output)), log)
+    failure: ReplayError | None = None
     try:
         run(workflow(pipeline, output / "workflow.json", output / "state", "profile-ocr"), log)
-    except ReplayError:
-        # The stage's own verifier refuses a band-free profile; any other failure stands.
-        if not absence.no_band(survey, output):
-            raise
+    except ReplayError as error:
+        failure = error
+    # The stage's own verifier refuses a band-free profile; any other failure stands.
+    if not absence.no_band(survey, output):
+        if failure is not None:
+            raise failure
+        return None
     summary = root / "summary.json"
     if not summary.exists():
         write_new(summary, absence.summary(survey, output))

@@ -106,13 +106,19 @@ def _physical(clock: FrameClock) -> dict[str, object]:
     }
 
 
-def load(path: Path) -> Request:
-    """Validate actual metadata/clock bindings without hashing model or media."""
+def load(path: Path, *, stored: bool = False) -> Request:
+    """Validate actual metadata/clock bindings without hashing model or media.
+
+    ``stored`` reads a request only for what it measured: the media and tools it names may have
+    left the disk since (disk relief), and nothing here reads their bytes.
+    """
     data = decode(bounded_read(_local(path)))
     if data.get("version") != 1:
         raise ValueError("Unsupported cleanup bootstrap version")
-    source = _existing_role(data.get("source"), "source")
-    for role in ("native", "decoder", "model"):
+    source = (
+        reference(data.get("source")) if stored else _existing_role(data.get("source"), "source")
+    )
+    for role in () if stored else ("native", "decoder", "model"):
         _existing_role(data.get(role), role)
     clock = parse_clock(_metadata(data.get("frameClock"), clock=True))
     if clock.pts[0] != 0:
@@ -282,9 +288,7 @@ def prepare(path: Path, output: Path) -> Path:
     return output / "workflow.json"
 
 
-def verify_profile(path: Path, output: Path) -> dict[str, object]:
-    """Bind every original sampled result to actual PTS, canvas and producer."""
-    job = load(path)
+def _verify_code(output: Path) -> None:
     pins = json.loads(bounded_read(output / "code-pins.json"), object_pairs_hook=unique_pairs)
     if not isinstance(pins, list) or not 1 <= len(pins) <= 512:
         raise ValueError("Invalid code checkpoint")
@@ -294,6 +298,21 @@ def verify_profile(path: Path, output: Path) -> dict[str, object]:
         pin = reference(raw)
         if _pin(pin.path) != pin.document():
             raise ValueError("Cleanup producer code changed")
+
+
+def code_current(output: Path) -> bool:
+    """Whether the prepared ``output`` still pins the cleanup producers as they are on disk."""
+    try:
+        _verify_code(output)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def verify_profile(path: Path, output: Path) -> dict[str, object]:
+    """Bind every original sampled result to actual PTS, canvas and producer."""
+    job = load(path)
+    _verify_code(output)
     if decode(bounded_read(output / "request-pin.json")) != _pin(path):
         raise ValueError("Bootstrap request changed")
     if decode(

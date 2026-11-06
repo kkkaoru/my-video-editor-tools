@@ -28,7 +28,7 @@ def surveyed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, frames: int = 2
     (profile / "inputs.json").write_text("{}", encoding="utf-8")
     (profile / "complete.json").write_text("[]", encoding="utf-8")
     job = SimpleNamespace(times=tuple(range(frames)), source=SimpleNamespace(sha256="f" * 64))
-    monkeypatch.setattr(plan, "load", lambda _path: job)
+    monkeypatch.setattr(plan, "load", lambda _path, **_options: job)
     monkeypatch.setattr(
         plan,
         "verify_profile",
@@ -145,7 +145,7 @@ def observed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: tuple[FrameObservation, ...]
 ) -> None:
     job = SimpleNamespace(times=(0.0, 1.0), data={})
-    monkeypatch.setattr(plan, "load", lambda _path: job)
+    monkeypatch.setattr(plan, "load", lambda _path, **_options: job)
     monkeypatch.setattr(cleanup, "collector_frames", lambda _i, _c, _d: (frames, None))
 
 
@@ -181,6 +181,6 @@ def test_observations_with_a_caption_band_are_not_band_free(
     )
     observed(tmp_path, monkeypatch, frames)
     monkeypatch.setattr(
-        plan, "load", lambda _path: SimpleNamespace(times=tuple(range(10)), data={})
+        plan, "load", lambda _path, **_options: SimpleNamespace(times=tuple(range(10)), data={})
     )
     assert absence.band_free(tmp_path / "r.json", tmp_path) is False

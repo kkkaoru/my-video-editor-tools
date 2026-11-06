@@ -225,7 +225,9 @@ previous bytes kept as `edit-config.<sha>.json`. A single caption word too wide 
 split near its middle (a morpheme end first, then any grapheme) before it is scaled. A source whose cleanup profile finds no caption band (the bootstrap
 refuses a blanket mask) gets a 240-frame profile survey under `caption-absence-v1/` instead; only
 the verifier's own no-band refusal passes it, the source is composed unchanged, and the gate
-re-runs that verification. `--force STEP` redoes a step and everything after it; `--force-all`
+re-runs that verification from the stored OCR (the source file may have left the disk by then). A
+survey that does find a band sends the source to the cleanup on the survey's request, and a stage
+prepared with code that has since changed is prepared again instead of refusing for good. `--force STEP` redoes a step and everything after it; `--force-all`
 redoes the recording. `publish` hardlinks the movie into the recording's bound storage
 (`revisions/pipeline-<sha12>/delivery/`) with its SRT and `metadata/pipeline-evidence.json`, which
 `python -m replay.edit_completion check edits/replay-<id>` assesses in minutes

@@ -524,6 +524,96 @@ def test_a_failed_survey_with_a_band_still_fails(
     assert (tmp_path / "steps/cleanup-bootstrap.json").exists() is False
 
 
+class SurveyFindsBand(Producers):
+    """The sparse profile refuses for want of a band; the denser survey's verifier accepts one."""
+
+    def __call__(self, command: Sequence[str], log: Path) -> None:
+        name = command[command.index("-m") + 1]
+        if name == "replay.replay_cleanup_plan" and "caption-absence-v1" in command[-1]:
+            self.commands.append(list(command))
+            Path(command[-1]).mkdir()
+            plan_file(Path(command[-1]) / "workflow.json", self.work() / "survey-out.txt")
+            return
+        if name == "replay.workflow" and "caption-absence-v1" in command[4]:
+            self.commands.append(list(command))
+            return
+        sparse = any("BOOTSTRAP-REQUEST" in command[-2] for command in self.commands[-1:])
+        if name == "replay.workflow" and "cleanup-bootstrap-v1" in command[4] and sparse:
+            self.commands.append(list(command))
+            raise ReplayError("Producer failed (1)")
+        super().__call__(command, log)
+
+
+def test_a_survey_that_finds_a_band_sends_the_source_to_the_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = configure(tmp_path)
+    clocked(path, tmp_path)
+    verdicts = iter((True, False))
+    monkeypatch.setattr("replay.caption_absence.no_band", lambda _request, _output: next(verdicts))
+    producers = SurveyFindsBand(tmp_path)
+    receipt = steps.execute("cleanup-bootstrap", path, run=producers)
+    work = tmp_path / "replay-123"
+    prepared = [
+        (command[-2], command[-1])
+        for command in producers.commands
+        if command[command.index("-m") + 1] == "replay.replay_cleanup_plan"
+    ]
+    assert prepared == [
+        (
+            str(work / "cleanup-preparation-v1/BOOTSTRAP-REQUEST-v1.json"),
+            str(work / "cleanup-bootstrap-v1"),
+        ),
+        (str(work / "caption-absence-v1/request.json"), str(work / "caption-absence-v1/survey")),
+        (str(work / "caption-absence-v1/request.json"), str(work / "cleanup-bootstrap-v1")),
+    ]
+    assert producers.commands[-1][-2:] == ["--target", "profile-settings"]
+    assert json.loads(receipt.read_text("utf-8"))["outputs"] == {
+        "settings": steps.pin(work / "cleanup-bootstrap-v1/settings.json"),
+        "clock": steps.pin(work / "cleanup-bootstrap-v1/physical-clock.json"),
+    }
+
+
+def test_a_stage_prepared_with_other_code_is_prepared_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = configure(tmp_path)
+    clocked(path, tmp_path)
+    work = tmp_path / "replay-123"
+    (work / "cleanup-bootstrap-v1").mkdir()
+    plan_file(work / "cleanup-bootstrap-v1/workflow.json", work / "old-out.txt")
+    (work / "cleanup-bootstrap-v1/old-evidence").write_text("x", "utf-8")
+    monkeypatch.setattr("replay.replay_cleanup_plan.code_current", lambda _stage: False)
+    producers = Producers(tmp_path)
+    steps.execute("cleanup-bootstrap", path, run=producers)
+    assert modules(producers) == [
+        "replay.cleanup_bootstrap_request",
+        "replay.replay_cleanup_plan",
+        "replay.workflow",
+    ]
+    assert (work / "cleanup-bootstrap-v1/old-evidence").exists() is False
+
+
+def test_a_survey_prepared_with_other_code_is_redone_with_its_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = configure(tmp_path)
+    clocked(path, tmp_path)
+    survey = tmp_path / "replay-123/caption-absence-v1"
+    (survey / "survey").mkdir(parents=True)
+    (survey / "request.json").write_text("{}", "utf-8")
+    (survey / "summary.json").write_text('{"reason": "old"}', "utf-8")
+    plan_file(survey / "survey/workflow.json", tmp_path / "old-out.txt")
+    monkeypatch.setattr("replay.caption_absence.no_band", lambda _request, _output: True)
+    monkeypatch.setattr(
+        "replay.caption_absence.summary", lambda _request, _output: {"reason": "new"}
+    )
+    monkeypatch.setattr("replay.replay_cleanup_plan.code_current", lambda _stage: False)
+    steps.execute("cleanup-bootstrap", path, run=CaptionFreeProducers(tmp_path))
+    assert json.loads((survey / "summary.json").read_text("utf-8")) == {"reason": "new"}
+    assert json.loads((survey / "request.json").read_text("utf-8")) == {"profileSamples": 240}
+
+
 def test_a_bootstrap_failing_for_another_reason_is_not_surveyed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

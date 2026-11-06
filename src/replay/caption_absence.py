@@ -6,7 +6,8 @@ verifier (``replay_cleanup_plan.verify_profile``) run on a copy of the bootstrap
 samples at least ``MINIMUM_FRAMES`` evenly spaced frames; only that verifier's own no-band refusal
 yields a summary. The summary binds the request and the OCR outputs by hash. ``verify`` checks
 those hashes and reads the pinned observations again through the current band learner (not the
-producer code pins, which later unrelated edits change), so the gate never trusts the verdict.
+producer code pins, which later unrelated edits change, nor the source file, which disk relief may
+have taken off the disk: none of this reads its bytes), so the gate never trusts the verdict.
 """
 
 import hashlib
@@ -43,7 +44,7 @@ def no_band(request: Path, output: Path) -> bool:
 
 def band_free(request: Path, output: Path) -> bool:
     """The surveyed observations, read again on their own clock, hold no caption band."""
-    job = plan.load(request)
+    job = plan.load(request, stored=True)
     profile = output / "profile"
     frames, _ = cleanup.collector_frames(
         profile / "inputs.json", profile / "complete.json", job.data
@@ -69,7 +70,7 @@ def summary(
     request: Path, output: Path, *, verified: Callable[[Path, Path], bool] = no_band
 ) -> dict[str, object]:
     """The absence summary of a surveyed profile; refused unless it is thick and band-free."""
-    job = plan.load(request)
+    job = plan.load(request, stored=True)
     frames = len(job.times)
     if frames < MINIMUM_FRAMES:
         raise ReplayError(f"The caption absence survey has {frames} frames, fewer than 120")
