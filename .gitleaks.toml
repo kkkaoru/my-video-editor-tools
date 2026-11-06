@@ -32,9 +32,9 @@ regexes = ['''^(?:a{32}|b{32}|0{32})$''']
 regexTarget = "secret"
 regexes = ['''^2e8e504c5e6b886af70f8c03cbfc31ac$''']
 
-# The update signature's public key, shipped in the app on purpose; the private key is never in the repository.
+# The key id in the comment of the update signature's public key, which the scanner decodes from the shipped base64.
 [[allowlists]]
 condition = "AND"
 paths = ['''native/transcribe-multiplatform-app/src-tauri/tauri\.conf\.json$''']
-regexTarget = "line"
-regexes = ['''"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBM0Q0MUQzNUY5RkNCODAKUldTQXk1OWYwMEU5ZWptWWluajl1am5BaXBBNGlWcWZOOVJSdXZodGxSTW9KVW1GUmxpMHFMRkQK"''']
+regexTarget = "secret"
+regexes = ['''^7A3D41D35F9FCB80$''']
