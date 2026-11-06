@@ -104,6 +104,83 @@ def test_a_completed_recording_retires_its_manifest_and_keeps_receipts_and_evide
     assert len(retirement.recorded(pipeline)) == 5
 
 
+def test_a_remuxed_movie_still_the_delivery_stays_and_the_finished_one_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    media = tmp_path / "media/replay-123"
+    finished = write(media / "final/candidate.mp4", "finished")
+    write(media / "final/audio/voice.wav", "voice")
+    remuxed = media / "final-remux/candidate.mp4"
+    remuxed.parent.mkdir()
+    os.link(viewer.delivery(pipeline), remuxed)
+    write(
+        tmp_path / "steps/finish.json",
+        json.dumps({"outputs": {"movie": {"path": str(finished), "sha256": "f"}}}),
+    )
+    write(
+        tmp_path / "steps/voice-remux.json",
+        json.dumps({"outputs": {"movie": {"path": str(remuxed), "sha256": "r"}}}),
+    )
+    write(tmp_path / "captions.json", json.dumps({"mediaRoot": str(tmp_path / "media")}))
+    removed = retirement.retire(pipeline, retirement.Settings())["removed"]
+    assert isinstance(removed, list)
+    assert removed[-1] == {"path": str(finished), "bytes": 8, "reason": "finished-movie"}
+    assert not finished.exists()
+    assert (media / "final/audio/voice.wav").is_file()
+    assert remuxed.is_file()
+    assert {"kept": str(remuxed), "category": "remuxed-movie", "why": "holds the delivery"} in (
+        logged(pipeline)
+    )
+
+
+def test_both_finished_movies_go_once_the_master_is_the_delivery_and_a_redo_remakes_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    media = tmp_path / "media/replay-123"
+    finished = write(media / "final/candidate.mp4", "finished")
+    remuxed = write(media / "final-remux/candidate.mp4", "remuxed")
+    write(
+        tmp_path / "steps/finish.json",
+        json.dumps({"outputs": {"movie": {"path": str(finished), "sha256": "f"}}}),
+    )
+    write(
+        tmp_path / "steps/voice-remux.json",
+        json.dumps({"outputs": {"movie": {"path": str(remuxed), "sha256": "r"}}}),
+    )
+    write(tmp_path / "captions.json", json.dumps({"mediaRoot": str(tmp_path / "media")}))
+    removed = retirement.retire(pipeline, retirement.Settings())["removed"]
+    assert isinstance(removed, list)
+    assert removed[-2:] == [
+        {"path": str(finished), "bytes": 8, "reason": "finished-movie"},
+        {"path": str(remuxed), "bytes": 7, "reason": "remuxed-movie"},
+    ]
+    assert retirement.forced_producers(pipeline, {"publish"}) == [
+        ("finish", "publish", finished),
+        ("voice-remux", "publish", remuxed),
+    ]
+
+
+def test_a_finished_movie_outside_the_recording_s_media_root_stays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = completed(tmp_path, monkeypatch)
+    foreign = write(tmp_path / "elsewhere/final/candidate.mp4", "foreign")
+    write(
+        tmp_path / "steps/finish.json",
+        json.dumps({"outputs": {"movie": {"path": str(foreign), "sha256": "f"}}}),
+    )
+    write(tmp_path / "captions.json", json.dumps({"mediaRoot": str(tmp_path / "media")}))
+    retirement.retire(pipeline, retirement.Settings())
+    assert foreign.is_file()
+    assert {
+        "kept": str(foreign),
+        "category": "finished-movie",
+        "why": "outside the recording's work and media roots",
+    } in logged(pipeline)
+
+
 def test_evidence_the_delivery_inode_links_and_foreign_paths_are_kept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

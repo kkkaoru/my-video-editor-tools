@@ -25,8 +25,8 @@ stale). Each runs the existing producers and keeps their checks:
   (``replay.recording_viewer_steps``); ``summarize`` runs beside the upload, first passing the
   completion gate and superseding incomplete older revisions;
 - ``retire-renders``: after the gate passed, deletes the render intermediates (``compose/``, and
-  ``alpha/`` and ``badge/`` left by an earlier burned run, under the media root); ``final/``
-  is the delivery's hardlink;
+  ``alpha/`` and ``badge/`` left by an earlier burned run, under the media root); the finished
+  movies go with the run's retirement (``recording_retirement``);
 - ``upload``: the web viewer's ``sync`` (``web-viewer/src/bin/sync.ts``) uploads what changed,
   including the published delivery, to Cloudflare; one sync runs at a time on this checkout.
 

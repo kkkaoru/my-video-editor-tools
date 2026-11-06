@@ -9,7 +9,9 @@ manifest built from the step receipts, never a glob over a work tree:
 - ``band-tiles``: the cleanup chunks' audit movies (their receipts and configs stay);
 - ``vocals``: the separated voice ``vocals.wav``;
 - ``tempo``: the paging's tempo audio;
-- ``moti``: the caption parts' Motion projects (``parts.json`` and ``jobs.json`` stay).
+- ``moti``: the caption parts' Motion projects (``parts.json`` and ``jobs.json`` stay);
+- ``finished-movie`` and ``remuxed-movie``: the finish and voice-remux steps' movies (the delivery
+  is the master or a hard link of one of them, and a hard link stays by the guard below).
 
 Receipts, configurations, hashes, the delivery and its SRT, summaries, clips and every evidence
 file stay. An entry is refused, never removed, when the evidence a completion gate reads names it
@@ -30,7 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from replay.core import ReplayError
-from replay.recording_steps import Pipeline, read_receipt, remove
+from replay.recording_caption_steps import captions_path
+from replay.recording_steps import Pipeline, read_receipt, recording_name, remove
 from replay.recording_viewer_steps import delivery, require_uploaded
 from replay.recordings import record
 
@@ -105,7 +108,22 @@ def manifest(pipeline: Pipeline) -> list[Entry]:
     entries.append(Entry("tempo", tempo, "paging", ("onsets", "compose", "finish")))
     moti = pipeline.work / "caption-parts-v1" / "moti"
     entries.append(Entry("moti", moti, "caption-parts", ("caption-plan",)))
+    finished = pinned(outputs(pipeline, "finish").get("movie"))
+    if finished is not None:
+        entries.append(Entry("finished-movie", finished, "finish", ("voice-remux", "publish")))
+    remuxed = pinned(outputs(pipeline, "voice-remux").get("movie"))
+    if remuxed is not None and remuxed != finished:
+        entries.append(Entry("remuxed-movie", remuxed, "voice-remux", ("publish",)))
     return entries
+
+
+def movie_roots(pipeline: Pipeline) -> list[Path]:
+    """Where the recording's finished movies lie, from its caption settings."""
+    settings = captions_path(pipeline)
+    if not settings.is_file():
+        return []
+    root = record(json.loads(settings.read_text(encoding="utf-8"))).get("mediaRoot")
+    return [Path(str(root)) / recording_name(pipeline.text("recording"))]
 
 
 def paths_in(value: object) -> Iterator[Path]:
@@ -251,7 +269,7 @@ def retire(pipeline: Pipeline, settings: Settings) -> dict[str, object]:
     evidence = named(evidence_files(pipeline, storage))
     work = cleanup_work(pipeline)
     roots = [
-        pipeline.work, *([work] if work is not None else []),
+        pipeline.work, *([work] if work is not None else []), *movie_roots(pipeline),
         storage.parent / CLEANUP_MEDIA, storage.parent / COMMENT_CLEAN,
     ]  # fmt: skip
     retired = recorded(pipeline)
