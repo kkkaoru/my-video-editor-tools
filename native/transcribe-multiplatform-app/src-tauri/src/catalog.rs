@@ -77,7 +77,6 @@ pub const YUNET_ID: &str = "yunet";
 pub const AVATAR_YOLO_ID: &str = "avatar-face-yolo";
 const AVATAR_YOLO_NAME: &str = "avatar-face-caption-v2.onnx";
 pub const GEFORCE_RUNTIME_ID: &str = "geforce-runtime";
-const SPEECH_LLM_ID_PREFIX: &str = "nemotron-3.5-transcribe-";
 const IQ4_ID: &str = "nemotron-3.5-transcribe-iq4";
 const NVFP4_ID: &str = "nemotron-3.5-transcribe-nvfp4";
 const Q2M_ID: &str = "nemotron-3.5-transcribe-q2m";
@@ -110,6 +109,7 @@ type ToolQuery = (&'static str, &'static [&'static str]);
 pub enum Role {
     Transcribe,
     Diarize,
+    Separate,
     Face,
     Runtime,
 }
@@ -171,6 +171,21 @@ pub struct ModelEntry {
     /// The longest recording the model takes, if it has a limit.
     pub max_audio_seconds: Option<u64>,
 }
+
+// Everything about where MossFormer2 comes from: a new build replaces these and nothing else.
+pub const MOSSFORMER2_ID: &str = "mossformer2-ss-16k";
+const MOSSFORMER2_SOURCE: &str = "https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx";
+/// Measured with ONNX Runtime on the CPU: 2.35 GB for an 8 s clip, 7.25 GB for the longest range, 30 s.
+const MOSSFORMER2_MEMORY_GIB: u64 = 8;
+const MOSSFORMER2_FILES: [FileSpec; 1] = [FileSpec {
+    url_kind: UrlKind::HuggingFace {
+        repo: "kkk4oru/mossformer2-ss-16k-onnx",
+        revision: "fb27e5ff961cff11372473f9808ca00d83144f69",
+    },
+    path: "model.onnx",
+    size: 230_156_008,
+    sha256: "d658037076e27c76b347f98b0b18eb0f51ef5df9da09a359dbb058fec52db2de",
+}];
 
 const fn nemotron_file(path: &'static str, size: u64, sha256: &'static str) -> FileSpec {
     FileSpec {
@@ -260,7 +275,7 @@ const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
 }];
 
 /// Every model and runtime the app knows.
-pub const CATALOG: [ModelEntry; 9] = [
+pub const CATALOG: [ModelEntry; 10] = [
     ModelEntry {
         id: WHISPER_ID,
         role: Role::Transcribe,
@@ -310,6 +325,17 @@ pub const CATALOG: [ModelEntry; 9] = [
         &NEMOTRON_Q8_FILES,
         48,
     ),
+    ModelEntry {
+        id: MOSSFORMER2_ID,
+        role: Role::Separate,
+        label: "MossFormer2 SS 16K",
+        source_url: MOSSFORMER2_SOURCE,
+        files: &MOSSFORMER2_FILES,
+        min_memory_gib: MOSSFORMER2_MEMORY_GIB,
+        needs_cuda: false,
+        extra_args: &[],
+        max_audio_seconds: None,
+    },
     ModelEntry {
         id: YUNET_ID,
         role: Role::Face,
@@ -739,23 +765,26 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
             recommended: recommended == Some(entry.id)
                 || entry.id == WHISPER_ID
                 || entry.id == YUNET_ID
+                || entry.id == MOSSFORMER2_ID
                 || entry.id == GEFORCE_RUNTIME_ID,
         })
         .collect()
 }
 
-/// How many speakers a job separates. Speaker separation needs a Nemotron 3.5 this machine can run;
-/// without one every job has one speaker, whatever is saved, and the saved value returns with the model.
+/// The roles a job of `speaker_count` people lacks a usable model for; one person needs neither.
 #[must_use]
-pub fn effective_speaker_count(saved: u32, rows: &[ModelStatus]) -> u32 {
-    let usable = rows.iter().any(|row| {
-        row.id.starts_with(SPEECH_LLM_ID_PREFIX) && row.found_at.is_some() && row.blocked.is_none()
-    });
-    if usable {
-        saved
-    } else {
-        1
+pub fn missing_speaker_models(speaker_count: u32, rows: &[ModelStatus]) -> Vec<Role> {
+    if speaker_count == 1 {
+        return Vec::new();
     }
+    [Role::Diarize, Role::Separate]
+        .into_iter()
+        .filter(|role| {
+            !rows
+                .iter()
+                .any(|row| row.role == *role && row.found_at.is_some() && row.blocked.is_none())
+        })
+        .collect()
 }
 
 /// The diarization model to use when none is chosen: an installed one, the recommended build first, so
@@ -1173,7 +1202,36 @@ mod tests {
             .collect();
         assert_eq!(
             recommended,
-            vec!["whisper-large-v3-turbo", "yunet", "geforce-runtime"]
+            vec![
+                "whisper-large-v3-turbo",
+                "mossformer2-ss-16k",
+                "yunet",
+                "geforce-runtime"
+            ]
+        );
+    }
+
+    #[test]
+    fn mossformer2_is_downloaded_from_its_pinned_revision_and_never_chosen_for_speakers() {
+        let entry = find_entry("mossformer2-ss-16k").unwrap();
+        assert_eq!(entry.role, Role::Separate);
+        assert_eq!(
+            entry.files[0].url(),
+            "https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx/resolve/fb27e5ff961cff11372473f9808ca00d83144f69/model.onnx"
+        );
+        let rows = [ModelStatus {
+            id: entry.id,
+            role: entry.role,
+            label: entry.label,
+            source_url: entry.source_url,
+            download_bytes: 1,
+            found_at: Some("/models/moss".into()),
+            blocked: None,
+            recommended: true,
+        }];
+        assert_eq!(
+            default_diarize_model(&geforce("NVIDIA GeForce RTX 3060", 12), &rows),
+            None
         );
     }
 
@@ -1191,26 +1249,66 @@ mod tests {
     }
 
     #[test]
-    fn a_usable_nemotron_3_5_keeps_the_saved_speaker_count() {
-        let rows = [row("nemotron-3.5-transcribe-q2l", true, false)];
-        assert_eq!(effective_speaker_count(0, &rows), 0);
-        assert_eq!(effective_speaker_count(3, &rows), 3);
+    fn one_person_needs_no_speaker_models() {
+        assert_eq!(missing_speaker_models(1, &[]), Vec::<Role>::new());
+    }
+
+    fn separator(found: bool, blocked: bool) -> ModelStatus {
+        ModelStatus {
+            role: Role::Separate,
+            ..row("mossformer2-ss-16k", found, blocked)
+        }
     }
 
     #[test]
-    fn anything_else_means_one_speaker() {
-        assert_eq!(effective_speaker_count(3, &[]), 1);
+    fn several_people_or_automatic_need_both_models() {
+        let nemotron = || row("nemotron-3.5-transcribe-q2l", true, false);
         assert_eq!(
-            effective_speaker_count(3, &[row("nemotron-3.5-transcribe-q2l", false, false)]),
-            1
+            missing_speaker_models(0, &[nemotron(), separator(true, false)]),
+            Vec::<Role>::new()
         );
         assert_eq!(
-            effective_speaker_count(0, &[row("nemotron-3.5-transcribe-q8", true, true)]),
-            1
+            missing_speaker_models(2, &[nemotron(), separator(true, false)]),
+            Vec::<Role>::new()
         );
         assert_eq!(
-            effective_speaker_count(2, &[row("whisper-large-v3-turbo", true, false)]),
-            1
+            missing_speaker_models(3, &[]),
+            vec![Role::Diarize, Role::Separate]
+        );
+        assert_eq!(
+            missing_speaker_models(0, &[nemotron()]),
+            vec![Role::Separate]
+        );
+        assert_eq!(
+            missing_speaker_models(2, &[separator(true, false)]),
+            vec![Role::Diarize]
+        );
+    }
+
+    #[test]
+    fn a_model_not_downloaded_or_too_big_for_this_machine_counts_as_missing() {
+        assert_eq!(
+            missing_speaker_models(
+                2,
+                &[
+                    row("nemotron-3.5-transcribe-q2l", false, false),
+                    separator(true, true)
+                ]
+            ),
+            vec![Role::Diarize, Role::Separate]
+        );
+        assert_eq!(
+            missing_speaker_models(
+                2,
+                &[
+                    ModelStatus {
+                        role: Role::Transcribe,
+                        ..row("whisper-large-v3-turbo", true, false)
+                    },
+                    separator(false, false)
+                ]
+            ),
+            vec![Role::Diarize, Role::Separate]
         );
     }
 }

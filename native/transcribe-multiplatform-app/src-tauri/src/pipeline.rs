@@ -1,6 +1,6 @@
 //! One dropped video to finished subtitle files, with staged progress.
 
-use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn};
+use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn, Word};
 use crate::catalog::{self, Backend, Hardware, ModelEntry};
 use crate::engines::{self, DiarizeModel, Tools, VideoInfo};
 use crate::error::{io_context, AppError, AppResult, UserError};
@@ -10,13 +10,16 @@ use crate::eta::{
 use crate::export::{unused_base, write_outputs, Transcript};
 use crate::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use crate::fonts::bold_widths;
+use crate::lanes::{self, LaneEngine, LaneStats};
 use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
+use crate::separation::{self, SeparationClip};
 use crate::settings::{Anchor, Settings, SubtitleFormat};
 use crate::speakers::limit_speakers;
 use crate::whisper_ggml;
 use serde::Serialize;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +42,8 @@ pub struct JobOutcome {
     pub font_missing: bool,
     /// Speakers were asked for and the model heard none, so every caption has one colour.
     pub speakers_missing: bool,
+    /// What running MossFormer2 where people talk at once did; all zero when it did not run.
+    pub lanes: LaneStats,
 }
 
 /// Removes the job's working folder (its large WAV) however the job ends.
@@ -193,9 +198,85 @@ struct SpeakerRun<'a> {
     cancel: &'a CancelToken,
 }
 
-fn speakers_for(paths: &AppPaths, settings: &Settings, hardware: &Hardware) -> u32 {
+struct RowRun<'a> {
+    tools: &'a Tools,
+    paths: &'a AppPaths,
+    settings: &'a Settings,
+    whisper: &'a Path,
+    wav: &'a Path,
+    work: &'a Path,
+    duration: f64,
+    segmenter: &'a Segmenter,
+    cancel: &'a CancelToken,
+}
+
+/// MossFormer2 in a child process of this app, and Whisper again on each of its tracks.
+fn rows_for_overlaps(
+    words: Vec<Word>,
+    turns: &[SpeakerTurn],
+    run: &RowRun<'_>,
+    tick: &dyn Fn(),
+) -> AppResult<(Vec<Word>, LaneStats)> {
+    // Looked up only when someone does talk at once.
+    let mut separate = |clips: &[SeparationClip]| {
+        let exe = std::env::current_exe().map_err(io_context("find the app"))?;
+        let library = separation::runtime_library(run.paths)?;
+        let entry = catalog::find_entry(catalog::MOSSFORMER2_ID)
+            .ok_or_else(|| AppError::Invalid("MossFormer2 is not in the catalog".to_owned()))?;
+        let model =
+            catalog::locate(entry, run.paths, &run.settings.model_dirs).ok_or_else(|| {
+                UserError::ModelMissing {
+                    model: entry.id.to_owned(),
+                }
+            })?;
+        separation::separate_clips(
+            &exe,
+            &library,
+            &model,
+            clips,
+            run.work,
+            run.cancel,
+            &mut || tick(),
+        )
+    };
+    let mut transcribe = |file: &Path, folder: &Path| {
+        tick();
+        engines::transcribe(
+            run.tools,
+            run.whisper,
+            file,
+            &run.settings.language,
+            folder,
+            run.cancel,
+            &mut |_| tick(),
+        )
+    };
+    lanes::with_rows(
+        words,
+        turns,
+        run.wav,
+        run.duration,
+        run.work,
+        run.segmenter,
+        &mut LaneEngine {
+            separate: &mut separate,
+            transcribe: &mut transcribe,
+        },
+    )
+}
+
+/// Refuses a job of several people before it starts, rather than quietly giving it one speaker.
+fn require_speaker_models(
+    paths: &AppPaths,
+    settings: &Settings,
+    hardware: &Hardware,
+) -> AppResult<()> {
     let rows = catalog::statuses(hardware, paths, &settings.model_dirs);
-    catalog::effective_speaker_count(settings.speaker_count, &rows)
+    let missing = catalog::missing_speaker_models(settings.speaker_count, &rows);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(UserError::SpeakerModelsMissing { missing }.into())
 }
 
 fn prepare_speaker_model(
@@ -259,7 +340,8 @@ pub fn run_job(
     sink: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     settings.validate()?;
-    let speakers = speakers_for(paths, settings, hardware);
+    require_speaker_models(paths, settings, hardware)?;
+    let speakers = settings.speaker_count;
     // One speaker needs no separation at all: no model, no memory, no time.
     let speaker_model = if speakers == 1 {
         None
@@ -351,6 +433,28 @@ pub fn run_job(
     } else {
         words.iter_mut().for_each(|word| word.speaker = Some(1));
     }
+    let segmenter = Segmenter::for_app(paths);
+    let mut lanes = LaneStats::default();
+    if speaker_model.is_some() {
+        let ticks = RefCell::new(&mut report);
+        let tick = || ticks.borrow_mut()(Stage::Diarize, None);
+        (words, lanes) = rows_for_overlaps(
+            words,
+            &turns,
+            &RowRun {
+                tools: &tools,
+                paths,
+                settings,
+                whisper: &whisper,
+                wav: &wav,
+                work: &work.0,
+                duration: info.duration,
+                segmenter: &segmenter,
+                cancel,
+            },
+            &tick,
+        )?;
+    }
     let faces = match &faces_from {
         Some(model) => {
             report(Stage::Faces, Some(0.0));
@@ -370,7 +474,7 @@ pub fn run_job(
             ..metrics_for(&info, settings)
         },
         settings,
-        &Segmenter::for_app(paths),
+        &segmenter,
     )?;
     let mut transcript = Transcript::new(
         video.to_path_buf(),
@@ -394,6 +498,7 @@ pub fn run_job(
         faceless,
         font_missing: glyphs.is_none(),
         speakers_missing,
+        lanes,
     })
 }
 
@@ -404,7 +509,6 @@ pub fn relayout_to(
     base: &Path,
     paths: &AppPaths,
     settings: &Settings,
-    hardware: &Hardware,
     cancel: &CancelToken,
     sink: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
@@ -473,11 +577,12 @@ pub fn relayout_to(
         outputs,
         base: base.to_path_buf(),
         speaker_count: transcript.speaker_count,
-        requested_speakers: speakers_for(paths, settings, hardware),
+        requested_speakers: settings.speaker_count,
         cue_count: transcript.cues.len(),
         faceless,
         font_missing: glyphs.is_none(),
         speakers_missing: false,
+        lanes: LaneStats::default(),
     })
 }
 

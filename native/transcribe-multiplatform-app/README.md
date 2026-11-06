@@ -44,13 +44,14 @@ folder, the Hugging Face cache, and any folder you add. Downloads are pinned to 
 | --- | --- | --- |
 | Transcription | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Same weights everywhere. Converted once to whisper.cpp's ggml format. A local MLX copy converts too. |
 | Speakers | [Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) | NVIDIA publishes safetensors only; GGUF builds come from AtomicChat. Chosen per machine: GeForce ≥ 24 GB IQ4_NL (Blackwell NVFP4), 16 GB GeForce Q2_0_M, Radeon ≥ 48 GB Q8_0, Radeon ≥ 24 GB IQ4_NL, Macs and CPU-only PCs by system memory: 64 GB Q8_0, 32 GB IQ4_NL, 24 GB Q2_0_L. |
+| Voice separation | [MossFormer2_SS_16K, ONNX](https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx) | Apache-2.0, a conversion of [the upstream weights](https://huggingface.co/alibabasglab/MossFormer2_SS_16K). Runs on ONNX Runtime on the CPU, in a process of its own, only where the speaker turns overlap. |
 | Faces | YuNet (bundled), `avatar-face-caption-v2.onnx` | The same model and engine (`tract`) on both systems. Put the avatar ONNX in a model folder to use it. |
 
 In the GeForce build, on a PC with a GeForce, the model manager offers the CUDA runtime download (509 MB) for speaker
 separation; no other build or machine lists it. NVFP4 and Q2_0_M run only on CUDA. Nemotron speaker models reach eight
 speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened. One speaker is light: only Whisper
-runs. Automatic detection and two or more speakers are heavy: Nemotron also runs. Without a usable Nemotron 3.5 every job
-is for one speaker; the saved number comes back once one is downloaded.
+runs. Automatic detection and two or more speakers are heavy: a Nemotron 3.5 model and MossFormer2 are required, and the
+app refuses to start without them rather than quietly running for one speaker.
 
 Models can be downloaded together, each with its own progress bar. Resetting deletes only what the app itself downloaded,
 after a confirmation; folders you added, anything overlapping them and the Hugging Face cache are never touched, and it
@@ -74,6 +75,11 @@ before, and with no voice over it to the nearest in time; with no speaker separa
 earlier versions still open: a saved colour for unknown speakers is ignored, and words without a speaker read as speaker 1.
 A speaker talking for under a second right beside other speech joins that speech, and a change of speaker never falls
 inside a word, so colours do not flicker; voices really at once and turns set apart by pauses keep their speaker.
+
+With two or more speakers, or automatic detection, the audio around each overlap of speaker turns goes through
+MossFormer2 (twice where three people talk at once, for up to four tracks) and each track through Whisper again, and the
+tracks replace the first pass's text there, one row per voice. A track the first pass heard nothing of is dropped, and two
+tracks with the same words stay one row with the first pass's text. One speaker, or no overlap, never runs it.
 
 Speakers whose words coincide for 0.25 s or more are shown together, one row each in speaker order, growing away from
 the anchor; rows that cannot fit between the margins shrink together. `.drt` and FCPXML put them on separate tracks or

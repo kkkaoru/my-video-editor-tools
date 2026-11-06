@@ -19,6 +19,9 @@ FFMPEG_MAC_SHA256=05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a
 FFMPEG_WIN_TAG=autobuild-2026-10-31-12-59
 FFMPEG_WIN_ZIP=ffmpeg-n8.1.3-27-g8dca1586f4-win64-lgpl-8.1.zip
 FFMPEG_WIN_SHA256=d4c2a42673917b4a97104a3e9f082729a9730796b98664e37c0b7eba6c6c613d
+ONNXRUNTIME_VERSION=1.31.1
+ONNXRUNTIME_MAC_SHA256=2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f
+ONNXRUNTIME_WIN_SHA256=5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c
 VULKAN_LOADER_DEF_TAG=vulkan-sdk-1.4.335.0
 VULKAN_LOADER_DEF_SHA256=9ba339b7f5ee2df28487698a6840ecf095fac58b415c2c89ad9f161e9d316378
 mkdir -p "$runtime" "$work"
@@ -182,6 +185,29 @@ vc_runtime_into() { # folder
   find "$runtime/nemo" \( -name 'vcruntime140*.dll' -o -name 'msvcp140*.dll' -o -name 'vcomp140.dll' \) -exec cp {} "$1/" \;
 }
 
+onnxruntime_url() { # asset
+  echo "https://github.com/microsoft/onnxruntime/releases/download/v$ONNXRUNTIME_VERSION/$1"
+}
+
+# ONNX Runtime for MossFormer2, on the CPU; the app loads the library at run time.
+mac_onnxruntime() {
+  local name="onnxruntime-osx-arm64-$ONNXRUNTIME_VERSION"
+  fetch "$(onnxruntime_url "$name.tgz")" "$ONNXRUNTIME_MAC_SHA256" "$work/onnxruntime.tgz"
+  rm -rf "$runtime/onnxruntime" "$work/onnxruntime" && mkdir -p "$runtime/onnxruntime" "$work/onnxruntime"
+  tar -xzf "$work/onnxruntime.tgz" -C "$work/onnxruntime"
+  cp "$work/onnxruntime/$name/lib/libonnxruntime.$ONNXRUNTIME_VERSION.dylib" "$runtime/onnxruntime/libonnxruntime.dylib"
+  cp "$work/onnxruntime/$name/LICENSE" "$work/onnxruntime/$name/ThirdPartyNotices.txt" "$runtime/onnxruntime/"
+}
+
+windows_onnxruntime() {
+  local name="onnxruntime-win-x64-$ONNXRUNTIME_VERSION"
+  fetch "$(onnxruntime_url "$name.zip")" "$ONNXRUNTIME_WIN_SHA256" "$work/onnxruntime.zip"
+  rm -rf "$runtime/onnxruntime" "$work/onnxruntime" && mkdir -p "$runtime/onnxruntime" "$work/onnxruntime"
+  unzip -q -o "$work/onnxruntime.zip" -d "$work/onnxruntime"
+  cp "$work/onnxruntime/$name/lib/onnxruntime.dll" "$work/onnxruntime/$name/LICENSE" "$work/onnxruntime/$name/ThirdPartyNotices.txt" "$runtime/onnxruntime/"
+  vc_runtime_into "$runtime/onnxruntime"
+}
+
 # Both Windows distributions: whisper on Vulkan, and CPU builds for machines without a usable GPU.
 windows_common() {
   if [ "$(uname -s)" = Darwin ]; then
@@ -195,13 +221,14 @@ windows_common() {
   vc_runtime_into "$runtime/whisper/Release"
   voice_model_into "$runtime/whisper/Release"
   vc_runtime_into "$runtime/whisper-vulkan"
+  windows_onnxruntime
   fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
   rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg" && unzip -q -o "$work/ffmpeg.zip" -d "$work/ffmpeg"
   find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} "$runtime/ffmpeg/" \;
 }
 
 case "$distribution" in
-  macos) mac_nemo; mac_whisper; mac_ffmpeg ;;
+  macos) mac_nemo; mac_whisper; mac_ffmpeg; mac_onnxruntime ;;
   # A GeForce runs nemo-speech on the CUDA runtime the app downloads, so no Vulkan nemo-speech ships.
   windows-geforce) windows_common; rm -rf "$runtime/nemo-vulkan" ;;
   windows-radeon) windows_common; nemo_zip 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce windows-x86_64-vulkan.zip nemo-vulkan ;;

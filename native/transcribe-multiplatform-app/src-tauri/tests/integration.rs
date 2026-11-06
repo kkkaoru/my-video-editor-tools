@@ -18,6 +18,8 @@ use transcribe_app::process::CancelToken;
 use transcribe_app::settings::{Anchor, Placement, Settings, SubtitleFormat};
 
 const SPEAKER_MODEL: &str = "nemotron-3.5-transcribe-q2l";
+const MOSSFORMER2_FILE: &str = "models/mossformer2-ss-16k/model.onnx";
+const MOSSFORMER2_BYTES: u64 = 230_156_008;
 const Q2L_FILE: &str =
     "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf";
 const Q2L_BYTES: u64 = 15_547_824_288;
@@ -165,6 +167,7 @@ fn ready(root: &Path) -> AppPaths {
 fn install_speech_llm(paths: &AppPaths) {
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
 }
 
 fn install_yunet(paths: &AppPaths) {
@@ -333,6 +336,7 @@ fn a_job_with_a_speech_llm_takes_its_speaker_turns() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         &counting_nemo(
@@ -461,41 +465,80 @@ fn a_job_refuses_invalid_settings_before_anything_else() {
     );
 }
 
-#[test]
-fn without_a_nemotron_3_5_a_job_has_one_speaker_whatever_is_saved() {
-    let root = scratch("job-no-model");
-    let paths = with_tools(&root);
-    sparse(&paths.data.join(GGML_FILE), 0);
+/// `run_job` for `speaker_count` people on `hardware`, with a Nemotron that must not start.
+fn refusal(paths: &AppPaths, root: &Path, speaker_count: u32, hardware: &Hardware) -> String {
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         "echo 'nemo must not run' >&2; exit 9",
     );
-    let settings = Settings {
-        speaker_count: 3,
-        ..bottom_anchored()
-    };
     let mut plan: Vec<Stage> = Vec::new();
-    let outcome = pipeline::run_job(
+    let refused = pipeline::run_job(
         &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &mac(),
+        paths,
+        &Settings {
+            speaker_count,
+            ..bottom_anchored()
+        },
+        hardware,
         &CancelToken::default(),
         &mut |progress: Progress| plan.clone_from(&progress.plan),
     )
-    .unwrap();
-    assert_eq!(
-        plan,
-        vec![Stage::ExtractAudio, Stage::Transcribe, Stage::Export]
-    );
-    assert_eq!(outcome.speaker_count, 1);
-    assert_eq!(outcome.requested_speakers, 1);
+    .unwrap_err();
+    assert_eq!(plan, Vec::<Stage>::new());
+    refused.to_string()
 }
 
 #[test]
-fn a_nemotron_3_5_too_large_for_the_machine_counts_as_none() {
+fn several_people_without_either_model_are_refused_before_any_work() {
+    let root = scratch("job-no-model");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    assert_eq!(
+        refusal(&paths, &root, 3, &mac()),
+        "separating speakers needs models that are missing: [Diarize, Separate]"
+    );
+    assert_eq!(
+        refusal(&paths, &root, 0, &mac()),
+        "separating speakers needs models that are missing: [Diarize, Separate]"
+    );
+}
+
+#[test]
+fn several_people_without_mossformer2_are_refused() {
+    let root = scratch("job-no-mossformer2");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    assert_eq!(
+        refusal(&paths, &root, 2, &mac()),
+        "separating speakers needs models that are missing: [Separate]"
+    );
+}
+
+#[test]
+fn a_nemotron_3_5_too_large_for_the_machine_counts_as_missing() {
     let root = scratch("job-blocked-llm");
     let paths = ready(&root);
+    assert_eq!(
+        refusal(
+            &paths,
+            &root,
+            2,
+            &Hardware {
+                memory_gib: 12,
+                ..mac()
+            }
+        ),
+        "separating speakers needs models that are missing: [Diarize]"
+    );
+}
+
+#[test]
+fn one_person_needs_neither_model() {
+    let root = scratch("job-one-person");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         "echo 'nemo must not run' >&2; exit 9",
@@ -504,22 +547,20 @@ fn a_nemotron_3_5_too_large_for_the_machine_counts_as_none() {
         &root.join("clip.mp4"),
         &paths,
         &Settings {
-            speaker_count: 2,
+            speaker_count: 1,
             ..bottom_anchored()
         },
-        &Hardware {
-            memory_gib: 12,
-            ..mac()
-        },
+        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
     .unwrap();
+    assert_eq!(outcome.speaker_count, 1);
     assert_eq!(outcome.requested_speakers, 1);
 }
 
 #[test]
-fn writing_captions_again_reports_one_speaker_without_a_nemotron_3_5() {
+fn writing_captions_again_needs_no_speaker_models() {
     let root = scratch("relayout-no-llm");
     let paths = ready(&root);
     pipeline::run_job(
@@ -531,6 +572,7 @@ fn writing_captions_again_reports_one_speaker_without_a_nemotron_3_5() {
         &mut |_| {},
     )
     .unwrap();
+    fs::remove_file(paths.data.join(MOSSFORMER2_FILE)).unwrap();
     let outcome = pipeline::relayout_to(
         &root.join("clip.transcript.json"),
         &root.join("clip-2"),
@@ -539,15 +581,11 @@ fn writing_captions_again_reports_one_speaker_without_a_nemotron_3_5() {
             speaker_count: 3,
             ..bottom_anchored()
         },
-        &Hardware {
-            memory_gib: 12,
-            ..mac()
-        },
         &CancelToken::default(),
         &mut |_| {},
     )
     .unwrap();
-    assert_eq!(outcome.requested_speakers, 1);
+    assert_eq!(outcome.requested_speakers, 3);
 }
 
 #[test]
@@ -859,7 +897,6 @@ fn relayout_writes_to_the_base_it_is_given() {
             font_ratio: 0.1,
             ..bottom_anchored()
         },
-        &mac(),
         &CancelToken::default(),
         &mut |progress: Progress| stages.push(progress.stage),
     )
@@ -898,7 +935,6 @@ fn relayout_scans_faces_the_transcript_does_not_have_yet() {
         &root.join("renamed"),
         &paths,
         &face_anchored(),
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -920,7 +956,6 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
         &root.join("a"),
         &paths,
         &invalid,
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -932,7 +967,6 @@ fn relayout_refuses_invalid_settings_and_missing_files() {
         &root.join("a"),
         &paths,
         &bottom_anchored(),
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -1222,6 +1256,7 @@ fn a_model_that_hears_nobody_is_reported_on_the_job() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         &fake_server(200, r#"{"segments":[]}"#),
@@ -1441,6 +1476,7 @@ fn a_speech_llm_needs_both_of_its_files() {
     assert_eq!(catalog::locate(entry, &paths, &[]), None);
     assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     assert!(catalog::locate(entry, &paths, &[])
         .unwrap()
         .ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf"));
@@ -1537,6 +1573,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
             "nemotron-3.5-transcribe-q2m",
             "nemotron-3.5-transcribe-q2l",
             "nemotron-3.5-transcribe-q8",
+            "mossformer2-ss-16k",
             "yunet",
             "avatar-face-yolo"
         ]
@@ -1549,6 +1586,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
         vec![
             "whisper-large-v3-turbo",
             "nemotron-3.5-transcribe-q8",
+            "mossformer2-ss-16k",
             "yunet"
         ]
     );
@@ -1557,7 +1595,11 @@ fn statuses_describe_every_entry_for_this_hardware() {
             .filter(|row| row.found_at.is_some())
             .map(|row| row.id)
             .collect::<Vec<_>>(),
-        vec!["whisper-large-v3-turbo", "nemotron-3.5-transcribe-q2l",]
+        vec![
+            "whisper-large-v3-turbo",
+            "nemotron-3.5-transcribe-q2l",
+            "mossformer2-ss-16k"
+        ]
     );
     assert_eq!(
         rows.iter()
@@ -1587,6 +1629,7 @@ fn the_default_speaker_model_prefers_the_recommended_build() {
     );
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     let installed_both = catalog::statuses(&hardware, &paths, &[]);
     assert_eq!(
         catalog::default_diarize_model(&hardware, &installed_both),
@@ -1688,10 +1731,246 @@ fn the_cli_runs_a_whole_job_and_prints_the_outcome() {
 fn the_cli_reports_failure_on_stderr_with_a_failing_status() {
     let root = scratch("cli-no-model");
     fs::create_dir_all(root.join("data")).unwrap();
-    fs::write(root.join("data/settings.json"), br#"{"speaker_count":0}"#).unwrap();
+    fs::write(root.join("data/settings.json"), br#"{"speaker_count":1}"#).unwrap();
     let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
     assert_eq!(stderr(&output), "model yunet is not installed");
     assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn the_cli_refuses_several_people_without_the_models() {
+    let root = scratch("cli-no-speaker-models");
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data/settings.json"), br#"{"speaker_count":0}"#).unwrap();
+    let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
+    assert_eq!(
+        stderr(&output),
+        "separating speakers needs models that are missing: [Diarize, Separate]"
+    );
+    assert_eq!(output.status.code(), Some(1));
+}
+
+/// `tracks` = the wave, and the wave at half level, as `[2, 1, samples]`.
+const TWO_TRACKS_MODEL: &str = "08083ab5010a1a0a04776176650a04617865731201612209556e73717565657a650a110a01610a0468616c6612016222034d756c0a230a01610a01621206747261636b732206436f6e6361742a0b0a04617869731800a001021201672a14080110074204617865734a0800000000000000002a0e1001420468616c664a040000003f5a170a0477617665120f0a0d080112090a0208010a0312016e621d0a06747261636b7312130a110801120d0a0208020a0208010a0312016e42040a001011";
+
+fn pcm_wav(samples: &[i16]) -> Vec<u8> {
+    let bytes = samples.len() as u32 * 2;
+    let mut wav = b"RIFF".to_vec();
+    wav.extend_from_slice(&(36 + bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&bytes.to_le_bytes());
+    samples
+        .iter()
+        .for_each(|sample| wav.extend_from_slice(&sample.to_le_bytes()));
+    wav
+}
+
+/// ONNX Runtime from the development runtime, in the app's own child process.
+fn separated(root: &Path, library: &Path) -> Result<Vec<f32>, String> {
+    let model = root.join("model.onnx");
+    let bytes: Vec<u8> = (0..TWO_TRACKS_MODEL.len() / 2)
+        .map(|at| u8::from_str_radix(&TWO_TRACKS_MODEL[at * 2..at * 2 + 2], 16).unwrap())
+        .collect();
+    fs::write(&model, bytes).unwrap();
+    fs::write(root.join("in.wav"), pcm_wav(&[8192, -8192, 16384, -16384])).unwrap();
+    let clips = [transcribe_app::separation::SeparationClip {
+        input: root.join("in.wav"),
+        outputs: [root.join("a.wav"), root.join("b.wav")],
+    }];
+    transcribe_app::separation::separate_clips(
+        Path::new(env!("CARGO_BIN_EXE_transcribe-app")),
+        library,
+        &model,
+        &clips,
+        root,
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .map_err(|error| error.to_string())?;
+    let track = fs::read(root.join("b.wav")).unwrap();
+    Ok(track[44..]
+        .chunks_exact(4)
+        .map(|four| f32::from_le_bytes([four[0], four[1], four[2], four[3]]))
+        .collect())
+}
+
+/// The fake ffmpeg's audio is no WAV, so reaching the cutting of clips shows the overlap was acted on.
+#[test]
+fn people_talking_at_once_go_through_voice_separation() {
+    let root = scratch("job-overlap");
+    let paths = ready(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(
+            200,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
+        ),
+    );
+    let failure = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 2,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(failure.ends_with("not a WAV file"), "{failure}");
+}
+
+/// `TWO_TRACKS_MODEL` at the size the catalog wants: an unknown field of zeros pads it, which ONNX skips.
+fn padded_model(file: &Path, size: u64) {
+    let mut bytes: Vec<u8> = (0..TWO_TRACKS_MODEL.len() / 2)
+        .map(|at| u8::from_str_radix(&TWO_TRACKS_MODEL[at * 2..at * 2 + 2], 16).unwrap())
+        .collect();
+    // Field 1000, length-delimited, with a varint length the header's own size is counted out of.
+    let header = [0xc2, 0x3e];
+    let length_bytes = 4;
+    let mut padding = size - bytes.len() as u64 - header.len() as u64 - length_bytes;
+    bytes.extend_from_slice(&header);
+    let mut left = length_bytes;
+    while left > 0 {
+        let more = if left > 1 { 0x80 } else { 0 };
+        bytes.push((padding & 0x7f) as u8 | more);
+        padding >>= 7;
+        left -= 1;
+    }
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, bytes).unwrap();
+    File::options()
+        .write(true)
+        .open(file)
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+}
+
+/// The whole way from a job to its rows, with the real app, ONNX Runtime and a stand-in model.
+#[test]
+fn people_talking_at_once_come_out_with_the_rows_decided_from_their_tracks() {
+    let root = scratch("cli-overlap");
+    let paths = ready(&root);
+    fs::create_dir_all(root.join("audio")).unwrap();
+    let audio = root.join("audio/audio.wav");
+    fs::write(&audio, pcm_wav(&vec![8192; 32_000])).unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        &format!(
+            "echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2\nfor last; do :; done\ncp '{}' \"$last\"\n",
+            audio.display()
+        ),
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(
+            200,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
+        ),
+    );
+    padded_model(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
+    let library = paths
+        .bundled_runtime_dir()
+        .join("onnxruntime/libonnxruntime.dylib");
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::hard_link(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/onnxruntime/libonnxruntime.dylib"),
+        &library,
+    )
+    .unwrap();
+    fs::write(
+        root.join("data/settings.json"),
+        serde_json::to_vec(&Settings {
+            speaker_count: 2,
+            subtitle_format: SubtitleFormat::Srt,
+            ..bottom_anchored()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
+    assert_eq!(stderr(&output), "");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let outcome: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    // Every run of the fake Whisper says the same words: one row, in the first pass's text.
+    assert_eq!(outcome["lanes"]["ranges"], 1);
+    assert_eq!(outcome["lanes"]["same_text"], 1);
+    assert_eq!(outcome["lanes"]["first_pass_kept"], 1);
+    assert_eq!(outcome["lanes"]["rows"]["1"], 1);
+}
+
+/// With the runtime missing the job stops there, rather than giving wrong rows.
+#[test]
+fn a_job_without_onnx_runtime_says_so_when_someone_talks_at_once() {
+    let root = scratch("job-no-runtime");
+    let paths = ready(&root);
+    fs::create_dir_all(root.join("audio")).unwrap();
+    let audio = root.join("audio/audio.wav");
+    fs::write(&audio, pcm_wav(&vec![8192; 32_000])).unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        &format!("for last; do :; done\ncp '{}' \"$last\"\n", audio.display()),
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(
+            200,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
+        ),
+    );
+    let failure = pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 2,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        failure.ends_with("libonnxruntime.dylib is missing"),
+        "{failure}"
+    );
+}
+
+#[test]
+fn the_app_separates_voices_in_a_process_of_its_own() {
+    let root = scratch("separate-child");
+    let paths = AppPaths {
+        data: root.join("data"),
+        resources: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        hf_hub: None,
+    };
+    let library = transcribe_app::separation::runtime_library(&paths).unwrap();
+    // The half-level track, back at the input's level.
+    let rounded: Vec<i32> = separated(&root, &library)
+        .unwrap()
+        .iter()
+        .map(|sample| (sample * 1000.0).round() as i32)
+        .collect();
+    assert_eq!(rounded, vec![250, -250, 500, -500]);
+}
+
+#[test]
+fn a_missing_onnx_runtime_fails_only_the_child_process() {
+    let root = scratch("separate-no-runtime");
+    let failure = separated(&root, &root.join("no-library.dylib")).unwrap_err();
+    assert!(failure.contains("load ONNX Runtime"), "{failure}");
 }
 
 #[test]
@@ -1806,7 +2085,6 @@ fn relayout_reports_a_face_scan_that_cannot_start() {
         &root.join("clip"),
         &paths,
         &face_anchored(),
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -1953,6 +2231,7 @@ fn a_cuda_only_model_asks_for_the_runtime_on_vulkan() {
         13_572_208_800,
     );
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     let settings = Settings {
         diarize_model: "nemotron-3.5-transcribe-q2m".to_owned(),
         ..bottom_anchored()
@@ -1987,6 +2266,7 @@ fn a_video_too_long_for_the_model_fails_before_any_long_work() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     write_tool(
         &paths.bundled_runtime_dir().join("ffmpeg/ffprobe"),
         r#"echo '{"format":{"duration":"3601"},"streams":[{"codec_type":"video","width":2,"height":2},{"codec_type":"audio"}]}'"#,
@@ -2065,6 +2345,7 @@ fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
     sparse(&paths.data.join(GGML_FILE), 0);
     sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     let one_word = r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#;
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
@@ -2111,7 +2392,6 @@ fn relayout_reports_the_requested_speaker_count() {
             speaker_count: 2,
             ..bottom_anchored()
         },
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -2312,7 +2592,6 @@ fn writing_captions_again_follows_the_chosen_format() {
             subtitle_format: SubtitleFormat::Ttml,
             ..bottom_anchored()
         },
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )
@@ -2402,7 +2681,6 @@ fn writing_a_timeline_from_an_old_transcript_reads_the_audio_from_the_video() {
         &root.join("clip-2"),
         &paths,
         &bottom_anchored(),
-        &mac(),
         &CancelToken::default(),
         &mut |_| {},
     )

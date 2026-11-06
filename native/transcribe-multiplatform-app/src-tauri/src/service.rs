@@ -127,21 +127,12 @@ fn run_reformat(
     dropped: &Path,
     settings: &Settings,
     paths: &AppPaths,
-    hardware: &Hardware,
     cancel: &CancelToken,
     report: &mut dyn FnMut(Progress),
 ) -> AppResult<JobOutcome> {
     let transcript = transcript_beside(dropped)?;
     let base = unused_stem(&transcript_base(&transcript));
-    pipeline::relayout_to(
-        &transcript,
-        &base,
-        paths,
-        settings,
-        hardware,
-        cancel,
-        report,
-    )
+    pipeline::relayout_to(&transcript, &base, paths, settings, cancel, report)
 }
 
 fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
@@ -164,7 +155,6 @@ fn run_queued(shared: &Shared, job: &QueuedJob) -> AppResult<()> {
                 .clone()
                 .map_or_else(|| settings.clone(), |look| look.applied_to(&settings)),
             &shared.paths,
-            &shared.hardware,
             &job.cancel,
             &mut report,
         ),
@@ -633,11 +623,35 @@ mod tests {
     }
 
     #[test]
+    fn a_job_refused_for_missing_speaker_models_says_which_roles() {
+        let (service, events) = started(&scratch("speaker-models"));
+        service
+            .save_settings(Settings {
+                speaker_count: 2,
+                ..Settings::default()
+            })
+            .unwrap();
+        service.add_videos(&[PathBuf::from("/nope.mp4")]).unwrap();
+        assert!(matches!(
+            next_job_event(&events),
+            JobEvent::Queued { id: 1, .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(next_job_event(&events)).unwrap(),
+            serde_json::json!({
+                "state": "failed",
+                "id": 1,
+                "error": { "code": "speaker_models_missing", "missing": ["diarize", "separate"] }
+            })
+        );
+    }
+
+    #[test]
     fn a_failing_job_reports_a_translatable_code_and_leaves_the_queue_working() {
         let (service, events) = started(&scratch("job"));
         service
             .save_settings(Settings {
-                speaker_count: 0,
+                speaker_count: 1,
                 ..Settings::default()
             })
             .unwrap();
@@ -704,6 +718,7 @@ mod tests {
             faceless: false,
             font_missing: false,
             speakers_missing: false,
+            lanes: crate::lanes::LaneStats::default(),
         };
         assert!(matches!(
             job_result_event(5, Ok(outcome)),

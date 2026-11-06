@@ -100,7 +100,7 @@ const DEGENERATE_UNIT_MAXIMUM: usize = 3;
 const DEGENERATE_MINIMUM_REPEATS: usize = 8;
 const LOOP_UNITS_PER_SECOND: f64 = 15.0;
 /// `asr_hallucination`: longest first, so a longer phrase claims its tokens.
-const STOCK_PHRASES: [&str; 6] = [
+pub(crate) const STOCK_PHRASES: [&str; 6] = [
     "最後までご視聴いただきありがとうございました",
     "ご覧いただきありがとうございました",
     "チャンネル登録よろしくお願いします",

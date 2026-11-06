@@ -41,6 +41,8 @@ pub enum UserError {
     ModelsBusy,
     #[error("an update cannot be applied while a job, a download or another update is running")]
     UpdateBusy,
+    #[error("separating speakers needs models that are missing: {missing:?}")]
+    SpeakerModelsMissing { missing: Vec<crate::catalog::Role> },
 }
 
 /// Every failure the app reports; messages reach the UI, so they name the failed step.

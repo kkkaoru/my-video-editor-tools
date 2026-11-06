@@ -73,11 +73,24 @@ pub(crate) struct Boundaries {
     pub(crate) overflow: Vec<usize>,
 }
 
+/// One character of a text's reading, and where in the text the word it came from starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReadingChar {
+    pub(crate) reading: char,
+    pub(crate) offset: usize,
+}
+
 /// Loads the dictionary at most once per value: one value lives for one job.
 pub struct Segmenter {
     dictionary: PathBuf,
     tokenizer: OnceLock<Tokenizer>,
 }
+
+/// IPADIC's reading, after part of speech, conjugation and base form.
+const READING_FEATURE: usize = 7;
+/// From hiragana to the katakana of the same sound.
+const KANA_SHIFT: u32 = 0x60;
+const UNSPOKEN_MARKS: &str = "、。!?！？,.・「」『』…ー~〜-";
 
 struct Morpheme {
     start: usize,
@@ -98,6 +111,14 @@ impl Morpheme {
 
 pub(crate) fn is_kana(c: char) -> bool {
     is_hiragana(c) || is_katakana(c)
+}
+
+fn katakana_of(c: char) -> char {
+    if is_hiragana(c) {
+        char::from_u32(u32::from(c) + KANA_SHIFT).unwrap_or(c)
+    } else {
+        c
+    }
 }
 
 fn is_hiragana(c: char) -> bool {
@@ -509,6 +530,33 @@ impl Segmenter {
             .collect())
     }
 
+    /// The text as it sounds: IPADIC's reading in katakana, the surface for what it does not know, and no
+    /// punctuation, so two spellings of the same words compare equal.
+    pub(crate) fn readings(&self, text: &str) -> AppResult<Vec<ReadingChar>> {
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for item in self.morphemes(text)? {
+            let known = item.part(READING_FEATURE);
+            let spoken = if known.is_empty() || known == "*" {
+                item.surface.as_str()
+            } else {
+                known
+            };
+            out.extend(
+                spoken
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !UNSPOKEN_MARKS.contains(*c))
+                    .map(|c| ReadingChar {
+                        reading: katakana_of(c.to_ascii_lowercase()),
+                        offset: item.start,
+                    }),
+            );
+        }
+        Ok(out)
+    }
+
     /// Whether `text` opens with something that cannot stand alone; text without Japanese never does.
     pub(crate) fn leans_on_previous(&self, text: &str) -> AppResult<bool> {
         if !is_japanese(text) {
@@ -603,6 +651,29 @@ mod tests {
             "形容詞,自立,*,*,形容詞・アウオ段,基本形,青い,アオイ,アオイ"
         );
         assert_eq!((items[4].start, items[4].end), (6, 7));
+    }
+
+    #[test]
+    fn readings_compare_spellings_by_sound() {
+        let segmenter = test_segmenter();
+        let sound = |text: &str| -> String {
+            segmenter
+                .readings(text)
+                .unwrap()
+                .iter()
+                .map(|item| item.reading)
+                .collect()
+        };
+        assert_eq!(sound("今日、はい。"), sound("きょうはい"));
+        assert_eq!(sound(""), "");
+        assert_eq!(sound("iPhone!"), "iphone");
+        let offsets: Vec<usize> = segmenter
+            .readings("今日は")
+            .unwrap()
+            .iter()
+            .map(|item| item.offset)
+            .collect();
+        assert_eq!(offsets, vec![0, 0, 0, 2]);
     }
 
     #[test]

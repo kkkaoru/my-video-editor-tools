@@ -10,11 +10,13 @@ pub mod eta;
 pub mod export;
 pub mod face;
 pub mod fonts;
+pub mod lanes;
 pub mod morphology;
 pub mod paths;
 pub mod pipeline;
 pub mod process;
 pub mod profiles;
+pub mod separation;
 pub mod service;
 pub mod settings;
 pub mod shell;
@@ -64,6 +66,9 @@ fn print_outcome(outcome: &JobOutcome) -> AppResult<()> {
 pub fn entry(args: &[OsString], window: impl FnOnce() -> AppResult<()>) -> AppResult<()> {
     match args {
         [flag, video] if flag == HEADLESS_FLAG => print_outcome(&run_headless(Path::new(video))?),
+        [flag, request] if flag == separation::SEPARATE_FLAG => {
+            separation::run_request(Path::new(request))
+        }
         _ => window(),
     }
 }
