@@ -981,6 +981,64 @@ def test_an_unread_english_line_counts_when_pink_filled_and_left_in_the_candidat
     assert tools.styled_caption(lines) == [True, False, False]
 
 
+def test_before_any_render_an_unread_english_line_is_judged_in_the_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert tools.styled_caption is not None
+    monkeypatch.setattr(colour_audit, "source_pink_counts", lambda **_kwargs: [240])
+    wide = [Residual(0, "Thank you very much", 0.3, (10.0, 10.0, 200.0, 20.0))]
+    assert tools.styled_caption(wide) == [True]
+    monkeypatch.setattr(colour_audit, "source_pink_counts", lambda **_kwargs: [39])
+    small = [Residual(0, "Thanks", 0.3, (10.0, 10.0, 40.0, 10.0))]
+    assert tools.styled_caption(small) == [False]  # filled, but under the gate
+
+
+def test_only_a_gated_yolo_plan_on_the_band_audit_reads_the_source_ahead(tmp_path: Path) -> None:
+    config = _configuration(tmp_path, residual=0.3)
+    config["auditTile"] = 2
+    config["colourGate"] = True
+    tools, _ = job.real_collaborators(
+        config, network=_bar, caption_detector=_caption_detector, caption_masks=True,
+        yolo_admission=True,
+    )  # fmt: skip
+    assert tools.source_read is not None
+    directory = tmp_path / "attempt"
+    directory.mkdir()
+    observed = tools.source_read(directory, [0, 5, 10])
+    assert sorted(observed) == [0, 5, 10]
+    assert json.loads((directory / "source-read" / "band.json").read_text(encoding="utf-8"))[
+        "indices"
+    ] == [0, 5, 10]
+    assert not (directory / "source-read" / "band-tiles.mov").exists()
+    unplanned, _ = job.real_collaborators(config, network=_bar, render=_fake_render)
+    assert unplanned.source_read is None
+    untiled = {**config, "auditTile": None}
+    assert (
+        job.real_collaborators(
+            untiled,
+            network=_bar,
+            caption_detector=_caption_detector,
+            caption_masks=True,
+            yolo_admission=True,
+        )[0].source_read  # fmt: skip
+        is None
+    )
+    ungated = {**config, "colourGate": False}
+    assert (
+        job.real_collaborators(
+            ungated,
+            network=_bar,
+            caption_detector=_caption_detector,
+            caption_masks=True,
+            yolo_admission=True,
+        )[0].source_read  # fmt: skip
+        is None
+    )
+
+
 def test_a_residual_heals_over_every_frame_its_caption_persists() -> None:
     present = [False, False, True, True, True, False, False]  # frames 0, 5, ... 30
     assert job.persistence(12, 35, 5, present) == (5, 25)

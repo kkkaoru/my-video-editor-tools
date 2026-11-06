@@ -9,6 +9,10 @@ is audited by OCR of every Nth frame and by the caption-colour gate. Order of at
 3. ``attempt-full`` (only when 2 failed or could not run): every frame recognised by OCR.
 4. ``attempt-residual`` (only when 3 failed): what 3 left, repaired with 3's plan.
 
+Before attempt 1 renders, a plan with an unknown frame on the audit grid reads the grid in the
+source (``_read_ahead``): a frame without a caption box is left unmodified, so a caption the
+detector missed there would fail the audit only after a whole render.
+
 "What an attempt left" is its OCR residual lines or, when the OCR audit found none, the
 caption-colour components of its colour-flagged frames (``Collaborators.colour_regions``,
 which decodes only those frames). Every attempt is audited at the same gates; the first passing
@@ -65,6 +69,9 @@ class Collaborators:
     styled_caption: Callable[[Sequence[Residual]], Sequence[bool]] | None = None
     # Decisions the collaborators measured (the caption style), recorded in the receipt.
     notes: Callable[[], Mapping[str, object]] | None = None
+    # The audit's OCR of the given frames in the source, before anything renders (the attempt's
+    # directory holds its evidence).
+    source_read: Callable[[Path, Sequence[int]], Mapping[int, FrameObservation]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,34 +107,26 @@ def _stacked(region: Region) -> Region:
     return left, top - (bottom - top), right, bottom + (bottom - top)
 
 
-def _attempt(
-    stride: int,
-    directory: Path,
+def _timed[T](checks: dict[str, float], name: str, work: Callable[[], T]) -> T:
+    """``work``'s result; its wall time adds to ``checks[name]``."""
+    started = time.monotonic()
+    try:
+        return work()
+    finally:
+        checks[name] = round(checks.get(name, 0.0) + time.monotonic() - started, 3)
+
+
+def _judged(
+    observed: Mapping[int, FrameObservation],
+    regions: Sequence[Region | None],
     tools: Collaborators,
-    audit_stride: int,
-    planned: dict[str, object] | None = None,
-) -> Attempt:
-    """Plan (or reuse ``planned``), render and audit one attempt."""
-    directory.mkdir(mode=0o700)
-    marks = [time.monotonic()]
-    plan = tools.plan(stride, directory) if planned is None else copy.deepcopy(planned)
-    kept = copy.deepcopy(plan)  # rendering may widen the plan's regions in place
-    marks.append(time.monotonic())
-    video = tools.render(plan, directory)
-    marks.append(time.monotonic())
-    regions = _regions(plan)
-    indices = audit_indices(len(regions), audit_stride)
-    # Wall time of each audit check (the OCR, then the rules over its reads): what the audit costs.
-    checks: dict[str, float] = {}
+    checks: dict[str, float],
+) -> tuple[tuple[Residual, ...], list[Residual]]:
+    """The audit's rules over its reads: the residual lines and what they left out as interface."""
 
     def timed[T](name: str, work: Callable[[], T]) -> T:
-        started = time.monotonic()
-        try:
-            return work()
-        finally:
-            checks[name] = round(checks.get(name, 0.0) + time.monotonic() - started, 3)
+        return _timed(checks, name, work)
 
-    observed = timed("ocr", lambda: tools.audit(video, indices))
     stacked = [None if box is None else _stacked(box) for box in regions]
     residuals = residual_lines(observed, stacked)
     if tools.styled_caption is not None:
@@ -162,9 +161,76 @@ def _attempt(
         flags = timed("captionColoured", lambda: rule_coloured(kept_lines))
         interface += [item for item, coloured in zip(residuals, flags, strict=True) if not coloured]
         residuals = tuple(item for item, coloured in zip(residuals, flags, strict=True) if coloured)
+    return residuals, interface
+
+
+def _read_ahead(
+    plan: Mapping[str, object], directory: Path, tools: Collaborators, audit_stride: int
+) -> dict[str, object] | None:
+    """Repair boxes, before the first render, for what the plan's unknown frames show in the source.
+
+    The detector missing a caption leaves its frames unknown, hence unmodified, and only the audit
+    of a whole render finds the lines; the next attempt then renders the chunk again with them
+    (2026-11-06: 266 of 287 chunks with an unknown frame failed so, against 57 of 561 without). A
+    chunk without an unknown frame on the audit grid reads nothing. The audit's own rules judge the
+    reads, and the boxes of the lines on unknown frames join the plan as a failed attempt's would;
+    the attempt is still audited. The frames the plan does repair are left to that audit.
+    """
+    read, residual = tools.source_read, tools.residual
+    if read is None or residual is None:
+        return None
+    regions = _regions(plan)
+    indices = audit_indices(len(regions), audit_stride)
+    frames = plan["frames"]
+    unknown = {
+        index
+        for index in indices
+        if isinstance(frames, list)
+        and isinstance(frames[index], dict)
+        and frames[index].get("classification") == "unknown"
+    }
+    if not unknown:
+        return None
+    checks: dict[str, float] = {}
+    observed = _timed(checks, "ocr", lambda: read(directory, indices))
+    lines = [item for item in _judged(observed, regions, tools, checks)[0] if item.frame in unknown]
+    if lines:
+        _timed(checks, "persistence", lambda: residual(lines, audit_stride))
+    return {
+        "unknownFrames": len(unknown),
+        "seconds": checks,
+        "lines": [_residual(item) for item in lines],
+    }
+
+
+def _attempt(
+    stride: int,
+    directory: Path,
+    tools: Collaborators,
+    audit_stride: int,
+    planned: dict[str, object] | None = None,
+) -> Attempt:
+    """Plan (or reuse ``planned``), render and audit one attempt."""
+    directory.mkdir(mode=0o700)
+    marks = [time.monotonic()]
+    plan = tools.plan(stride, directory) if planned is None else copy.deepcopy(planned)
+    kept = copy.deepcopy(plan)  # rendering may widen the plan's regions in place
+    # Only the first plan: full OCR read every frame, and a healing attempt knows what was left.
+    read = None if planned is not None or stride == FULL_STRIDE else _read_ahead(
+        plan, directory, tools, audit_stride
+    )  # fmt: skip
+    marks.append(time.monotonic())
+    video = tools.render(plan, directory)
+    marks.append(time.monotonic())
+    regions = _regions(plan)
+    indices = audit_indices(len(regions), audit_stride)
+    # Wall time of each audit check (the OCR, then the rules over its reads): what the audit costs.
+    checks: dict[str, float] = {}
+    observed = _timed(checks, "ocr", lambda: tools.audit(video, indices))
+    residuals, interface = _judged(observed, regions, tools, checks)
     gate = tools.colour
     counts: Sequence[int] = (
-        () if gate is None else timed("colourGate", lambda: gate(plan, video, indices))
+        () if gate is None else _timed(checks, "colourGate", lambda: gate(plan, video, indices))
     )
     marks.append(time.monotonic())
     over = flagged(counts, gate=GATE)
@@ -197,6 +263,8 @@ def _attempt(
         "passed": not residuals and not over,
         "replanned": planned is None,
     }
+    if read is not None:
+        row["planRead"] = read
     return Attempt(row, kept, video)
 
 

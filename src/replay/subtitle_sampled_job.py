@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
+from functools import partial
 from math import ceil, floor
 from pathlib import Path
 from typing import Protocol
@@ -764,8 +765,9 @@ def real_collaborators(
     def english_left(lines: Sequence[Residual]) -> list[bool]:
         """Horizontal Latin lines (``colour_audit.ENGLISH_MIN_LETTERS`` letters or more) whose
         source box is caption-pink filled (``ENGLISH_FILL_SHARE``) and whose box in the audited
-        candidate still holds ``GATE`` unchanged caption-colour pixels: a translation line the
-        plan left (its fill is pink, not outlined, so the Japanese style rule cannot see it)."""
+        candidate (before any render: in the source) still holds ``GATE`` unchanged caption-colour
+        pixels: a translation line the plan left (its fill is pink, not outlined, so the Japanese
+        style rule cannot see it)."""
         latin = [
             item.box is not None
             and not japanese_letters(item.text)
@@ -774,9 +776,9 @@ def real_collaborators(
             and item.box[2] >= 2 * item.box[3]
             for item in lines
         ]
-        video = next(iter(rendered), None)
-        if video is None or not any(latin):
+        if not any(latin):
             return [False] * len(lines)
+        video = next(iter(rendered), None)
         start = float(clock.pts[0] * clock.time_base)
         ffmpeg = str(config.get("ffmpeg", "ffmpeg"))
         chosen = [item for item, wide in zip(lines, latin, strict=True) if wide and item.box]
@@ -794,6 +796,9 @@ def real_collaborators(
         ]
         if not filled:
             return [False] * len(lines)
+        if video is None:
+            pink = dict(zip(chosen, counts, strict=True))
+            return [item in filled and pink[item] >= GATE for item in lines]
         boxes: list[list[colour.Box]] = [[] for _ in clock.pts]
         for item in filled:
             if item.box is not None:
@@ -859,6 +864,24 @@ def real_collaborators(
         source_cache[indices] = rows
         return rows
 
+    def read_tiles(movie: Path, tiles: VideoFrameClock, height: int) -> dict[int, FrameObservation]:
+        return chunk.session_ocr(
+            native, movie, tiles, range(len(tiles.pts)), canvas=(canvas[0], height),
+            work=movie.parent / "ocr", root=root, workers=workers,
+        )  # fmt: skip
+
+    def source_read(
+        tile: int, directory: Path, indices: Sequence[int]
+    ) -> Mapping[int, FrameObservation]:
+        """The audit's read of these source frames; their rows stay for the attempt's own audit."""
+        frames = tuple(indices)
+        source_masks.expect(frames)
+        return band_audit.band_audit(
+            source, frames, clock=relative, canvas=canvas, envelope=envelope, tile=tile,
+            work=directory / "source-read", recognise=read_tiles,
+            ffmpeg=str(config.get("ffmpeg", "ffmpeg")), held=source_bands(frames),
+        )  # fmt: skip
+
     def audit(video: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
         # A repaired candidate's timeline starts at zero, not at the chunk's source time.
         work = state_root / video.parent.name / "audit"
@@ -877,10 +900,7 @@ def real_collaborators(
                 early[key] = counter.submit(
                     count, rendered[video], video, indices, list(decoded), ahead.pop(key, None)
                 )
-            return chunk.session_ocr(
-                native, movie, tiles, range(len(tiles.pts)), canvas=(canvas[0], height),
-                work=movie.parent / "ocr", root=root, workers=workers,
-            )  # fmt: skip
+            return read_tiles(movie, tiles, height)
 
         decoded: list[Image] = []
         ahead.clear()
@@ -1148,6 +1168,11 @@ def real_collaborators(
         residual_interface,
         styled_caption=styled_caption if gated else None,
         notes=notes,
+        source_read=(
+            partial(source_read, audit_tile)
+            if yolo_admission and gated and audit_tile is not None
+            else None
+        ),
     ), pins
 
 

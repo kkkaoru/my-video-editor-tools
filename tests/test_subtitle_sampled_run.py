@@ -1,5 +1,6 @@
 """The chunk runner audits each attempt, escalates once, and never accepts a failed audit."""
 
+import dataclasses
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -390,3 +391,128 @@ def test_a_caption_the_plan_never_saw_counts_when_caption_styled(tmp_path: Path)
         (2, "<< 俺今日何回連れてかれるの >>"),
     ]
     assert receipt["accepted"] == "attempt-full"  # an unplanned interface label alone never fails
+
+
+def _reading(
+    calls: list[str],
+    frames: list[object],
+    *,
+    reads: tuple[TextDetection, ...] = (CAPTION,),
+    audited: tuple[TextDetection, ...] = (),
+) -> runner.Collaborators:
+    """Tools that log their order: the source shows ``reads``, the candidate ``audited``."""
+
+    def plan(_stride: int, _directory: Path) -> dict[str, object]:
+        calls.append("plan")
+        return {"frames": frames}
+
+    def read(directory: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
+        calls.append(f"read {directory.name} {list(indices)}")
+        return {index: FrameObservation(0.0, 0.0, 1080, 1920, reads) for index in indices}
+
+    def residual(lines: Sequence[Residual], stride: int) -> None:
+        calls.append(f"residual {[item.frame for item in lines]} {stride}")
+
+    def render(_plan: dict[str, object], directory: Path) -> Path:
+        calls.append(f"render {directory.name}")
+        video = directory / "candidate.mp4"
+        video.write_bytes(b"video")
+        return video
+
+    def audit(_video: Path, indices: Sequence[int]) -> Mapping[int, FrameObservation]:
+        return {index: FrameObservation(0.0, 0.0, 1080, 1920, audited) for index in indices}
+
+    return runner.Collaborators(plan, render, audit, residual=residual, source_read=read)
+
+
+def test_a_plan_with_an_unknown_frame_reads_the_source_before_its_first_render(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    frames: list[object] = [{"region": BOX}, {"classification": "unknown", "region": BOX}]
+    receipt = runner.run(tmp_path / "chunk", _reading(calls, frames), audit_stride=1)
+    assert calls == [
+        "plan",
+        "read attempt-sampled [0, 1]",
+        "residual [1] 1",
+        "render attempt-sampled",
+    ]
+    assert receipt["accepted"] == "attempt-sampled"
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    read = attempts[0]["planRead"]
+    assert read["unknownFrames"] == 1
+    assert read["lines"] == [
+        {"frame": 1, "text": "決着", "confidence": 1.0, "box": [100.0, 150.0, 60.0, 30.0]}
+    ]
+    assert sorted(read["seconds"]) == ["ocr", "persistence"]
+
+
+def test_a_read_that_finds_nothing_on_the_unknown_frame_adds_nothing(tmp_path: Path) -> None:
+    calls: list[str] = []
+    frames: list[object] = [{"region": BOX}, {"classification": "unknown", "region": BOX}]
+    receipt = runner.run(tmp_path / "chunk", _reading(calls, frames, reads=()), audit_stride=1)
+    assert calls == ["plan", "read attempt-sampled [0, 1]", "render attempt-sampled"]
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert attempts[0]["planRead"]["lines"] == []
+    assert sorted(attempts[0]["planRead"]["seconds"]) == ["ocr"]
+
+
+def test_a_plan_without_an_unknown_frame_on_the_audit_grid_reads_nothing(tmp_path: Path) -> None:
+    calls: list[str] = []
+    known: list[object] = [{"region": BOX}, {"region": BOX}]
+    receipt = runner.run(tmp_path / "a", _reading(calls, known), audit_stride=1)
+    assert calls == ["plan", "render attempt-sampled"]
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert "planRead" not in attempts[0]
+    calls.clear()
+    off_grid: list[object] = [
+        {"region": BOX},
+        {"classification": "unknown", "region": BOX},
+        {"region": BOX},
+    ]
+    runner.run(tmp_path / "b", _reading(calls, off_grid), audit_stride=2)
+    assert calls == ["plan", "render attempt-sampled"]
+
+
+def test_only_the_first_plan_reads_ahead(tmp_path: Path) -> None:
+    calls: list[str] = []
+    frames: list[object] = [{"classification": "unknown", "region": BOX}]
+    with pytest.raises(ValueError, match="nothing accepted"):
+        runner.run(tmp_path / "chunk", _reading(calls, frames, audited=(CAPTION,)), audit_stride=1)
+    assert calls == [
+        "plan",
+        "read attempt-sampled [0]",
+        "residual [0] 1",
+        "render attempt-sampled",
+        "residual [0] 1",
+        "render attempt-sampled-residual",
+        "plan",
+        "render attempt-full",
+        "residual [0] 1",
+        "render attempt-residual",
+    ]
+
+
+def test_reading_ahead_needs_the_residual_collaborator(tmp_path: Path) -> None:
+    calls: list[str] = []
+    frames: list[object] = [{"classification": "unknown", "region": BOX}]
+    tools = dataclasses.replace(_reading(calls, frames), residual=None)
+    runner.run(tmp_path / "chunk", tools, audit_stride=1)
+    assert calls == ["plan", "render attempt-sampled"]
+
+
+def test_the_read_is_judged_by_the_rules_of_the_audit(tmp_path: Path) -> None:
+    calls: list[str] = []
+    frames: list[object] = [{"classification": "unknown", "region": BOX}]
+    tools = dataclasses.replace(
+        _reading(calls, frames), caption_coloured=lambda lines: [False] * len(lines)
+    )
+    receipt = runner.run(tmp_path / "chunk", tools, audit_stride=1)
+    assert calls == ["plan", "read attempt-sampled [0]", "render attempt-sampled"]
+    attempts = receipt["attempts"]
+    assert isinstance(attempts, list)
+    assert attempts[0]["planRead"]["lines"] == []
+    assert sorted(attempts[0]["planRead"]["seconds"]) == ["captionColoured", "ocr"]

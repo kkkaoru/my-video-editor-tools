@@ -25,6 +25,23 @@ def test_only_residuals_before_the_accepted_attempt_are_confirmed() -> None:
     assert learning.confirmed({"accepted": "a", "attempts": "x"}) == []
 
 
+def test_lines_the_first_plan_read_ahead_are_confirmed_once_the_chunk_is_accepted() -> None:
+    receipt: dict[str, object] = {
+        "accepted": "attempt-sampled",
+        "attempts": [
+            {
+                "directory": "attempt-sampled",
+                "residualLines": [],
+                "planRead": {"lines": [{"frame": 7, "box": [465.2, 1296.0, 48.0, 23.0]}]},
+            }
+        ],
+    }
+    assert learning.confirmed_frames(receipt) == [(7, (465, 1296, 514, 1319))]
+    assert learning.confirmed_frames({**receipt, "accepted": None}) == []
+    assert learning.confirmed_frames({"accepted": "a", "attempts": []}) == []
+    assert learning.confirmed_frames({"accepted": "a", "attempts": ["x"]}) == []
+
+
 def test_bands_need_two_chunks_and_exclude_the_running_one(tmp_path: Path) -> None:
     assert learning.record(tmp_path, "chunk-00001", _receipt("attempt-full")) == 1
     assert learning.record(tmp_path, "chunk-00002", {"accepted": None, "attempts": "x"}) == 0

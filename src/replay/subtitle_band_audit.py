@@ -233,6 +233,14 @@ def _evidence_later(movie: Path, *, ffmpeg: str) -> None:
     threading.Thread(target=compress_evidence, args=(movie,), kwargs={"ffmpeg": ffmpeg}).start()
 
 
+def _settle(movie: Path, evidence: bool, ffmpeg: str) -> None:
+    """A read tile movie: its review copy when it is the audit's evidence, else gone."""
+    if evidence:
+        _evidence_later(movie, ffmpeg=ffmpeg)
+    else:
+        movie.unlink()
+
+
 def band_audit(
     video: Path,
     indices: Sequence[int],
@@ -246,22 +254,27 @@ def band_audit(
     ffmpeg: str = "ffmpeg",
     ffprobe: str = "ffprobe",
     decoded: list[Image] | None = None,
+    held: Sequence[Image] | None = None,
 ) -> dict[int, FrameObservation]:
     """Audit observations of the repaired chunk, read from tiled caption bands.
 
     ``decoded`` receives the decoded ``held_band`` rows, so a later check can reuse them; the
     OCR reads the audit band's rows of them. The tile movie is encoded while the bands decode.
+    ``held`` is those rows decoded already (the source's, read before any render): ``video`` is
+    not decoded, and the tile movie is removed once read, since the source can show these frames.
     """
     band = audit_band(envelope, canvas)
-    held = held_band(envelope, canvas)
-    offset = crop_origin(band[0]) - held[0]
+    rows_of = held_band(envelope, canvas)
+    offset = crop_origin(band[0]) - rows_of[0]
     work.mkdir(parents=True, mode=0o700)
     bands: list[Image] = []
     movie = work / "band-tiles.mov"
     rows = (
         image[offset : offset + band[1]]
-        for image in band_stream(
-            video, indices, canvas=canvas, band=held, ffmpeg=ffmpeg, kept=bands
+        for image in (
+            held
+            if held is not None
+            else band_stream(video, indices, canvas=canvas, band=rows_of, ffmpeg=ffmpeg, kept=bands)
         )
     )
     images = write_tiles(rows, tile, movie, ffmpeg=ffmpeg)
@@ -281,9 +294,9 @@ def band_audit(
             raise
         observed = band_audit(
             video, indices, clock=clock, canvas=canvas, envelope=envelope, tile=1,
-            work=work / "untiled", recognise=recognise, ffmpeg=ffmpeg, ffprobe=ffprobe,
+            work=work / "untiled", recognise=recognise, ffmpeg=ffmpeg, ffprobe=ffprobe, held=held,
         )  # fmt: skip
-        _evidence_later(movie, ffmpeg=ffmpeg)
+        _settle(movie, held is None, ffmpeg)
         return observed
-    _evidence_later(movie, ffmpeg=ffmpeg)
+    _settle(movie, held is None, ffmpeg)
     return untile(observed, indices, tile=tile, band=band, canvas=canvas, clock=clock)

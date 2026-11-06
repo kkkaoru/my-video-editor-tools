@@ -184,3 +184,38 @@ def test_an_untiled_image_over_the_capture_bound_still_fails(tmp_path: Path) -> 
             video(tmp_path), [0, 5], clock=CLOCK, canvas=(320, 240), envelope=(0, 100, 320, 20),
             tile=1, work=tmp_path / "audit", recognise=recognise,
         )  # fmt: skip
+
+
+def test_rows_already_decoded_are_read_without_a_decode_and_leave_no_movie(tmp_path: Path) -> None:
+    seen: list[tuple[bool, int, int]] = []
+
+    def recognise(movie: Path, tiles: VideoFrameClock, height: int) -> dict[int, FrameObservation]:
+        seen.append((movie.is_file(), len(tiles.pts), height))
+        return {0: FrameObservation(0.0, 0.0, 320, height, (line(10.0, "x"),))}
+
+    result = audit.band_audit(
+        tmp_path / "never-decoded.mp4", [0, 5, 10], clock=CLOCK, canvas=(320, 240),
+        envelope=(0, 100, 320, 20), tile=2, work=tmp_path / "audit", recognise=recognise,
+        held=[np.zeros((240, 320, 3), np.uint8)] * 3,
+    )  # fmt: skip
+    assert seen == [(True, 2, 400)]
+    assert [d.text for d in result[0].detections] == ["x"]
+    assert not (tmp_path / "audit" / "band-tiles.mov").exists()
+
+
+def test_rows_already_decoded_are_read_again_untiled_over_the_capture_bound(
+    tmp_path: Path,
+) -> None:
+    def recognise(movie: Path, tiles: VideoFrameClock, height: int) -> dict[int, FrameObservation]:
+        if height > 200:
+            raise OutputLimitError("Native OCR session failed; evidence retained")
+        return {2: FrameObservation(0.0, 0.0, 320, height, (line(10.0, "x"),))}
+
+    result = audit.band_audit(
+        tmp_path / "never-decoded.mp4", [0, 5, 10], clock=CLOCK, canvas=(320, 240),
+        envelope=(0, 100, 320, 20), tile=2, work=tmp_path / "audit", recognise=recognise,
+        held=[np.zeros((240, 320, 3), np.uint8)] * 3,
+    )  # fmt: skip
+    assert [d.text for d in result[10].detections] == ["x"]
+    assert not (tmp_path / "audit" / "band-tiles.mov").exists()
+    assert not (tmp_path / "audit" / "untiled" / "band-tiles.mov").exists()

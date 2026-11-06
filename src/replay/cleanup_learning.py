@@ -3,7 +3,8 @@
 Learned store (``<cleanup work>/learned/residuals.jsonl``, one JSON row per confirmed residual):
 a residual line of a failed attempt is a confirmed caption residual only when its chunk was then
 accepted by a later attempt (the repair removed it) and the audit had kept it as caption-coloured
-(``residualLines`` hold only such lines when the colour gate runs).
+(``residualLines`` hold only such lines when the colour gate runs). The first plan's read-ahead
+lines (``planRead``) count alike: they would have been such residuals.
 
 Candidates (rows with a ``status``): what the confirmation above cannot see is stored too, so the
 hardest chunks are not lost. A chunk that failed every attempt contributes its residual lines as
@@ -90,12 +91,22 @@ def _failed(receipt: Mapping[str, object]) -> list[Mapping[str, object]]:
     return failed
 
 
+def _read_ahead(receipt: Mapping[str, object]) -> list[tuple[int, Box]]:
+    """(chunk frame, box) of the lines the first plan read in the source before rendering."""
+    attempts = receipt.get("attempts")
+    first = attempts[0] if isinstance(attempts, list) and attempts else None
+    read = first.get("planRead") if isinstance(first, dict) else None
+    return _lines(read, "lines") if isinstance(read, dict) else []
+
+
 def confirmed_frames(receipt: Mapping[str, object]) -> list[tuple[int, Box]]:
-    """(chunk frame, residual box) of the failed attempts before the accepted one; none when
-    nothing passed."""
+    """(chunk frame, residual box) of the failed attempts before the accepted one and of what the
+    first plan read ahead (the audit's rules kept those lines and the repair removed them too);
+    none when nothing passed."""
     if not isinstance(receipt.get("accepted"), str):
         return []
-    return [item for attempt in _failed(receipt) for item in _lines(attempt, "residualLines")]
+    failed = [item for attempt in _failed(receipt) for item in _lines(attempt, "residualLines")]
+    return [*_read_ahead(receipt), *failed]
 
 
 def candidate_frames(receipt: Mapping[str, object]) -> list[tuple[int, Box, str]]:
