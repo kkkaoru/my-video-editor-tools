@@ -3,7 +3,9 @@
 // segments the playlists address by byte range, so R2 holds a few objects per movie and the
 // Worker serves them with its ranged media path and chunk cache. Uploaded files are checked by
 // size against the bucket listing, hls/index.json then names every movie with a ladder, and the
-// local encode is always removed: the bucket is the only copy (the MP4 stays the source).
+// local encode is removed: the bucket is the only copy (the MP4 stays the source). The encode can
+// run ahead of the publication (encodeHls): the source's master is published later by a hard link,
+// so its size and modification time say the encode still holds.
 import { basename, join } from "node:path";
 import { listPrefix, putJson } from "./sync/cf.ts";
 import { LOCK_FILE, type LockServices, withSyncLock } from "./sync/lock.ts";
@@ -57,6 +59,7 @@ const BUFFER_RATIO = 2;
 export const HLS_PREFIX = "hls/";
 export const INDEX_KEY = "hls/index.json";
 export const MASTER = "master.m3u8";
+const ENCODED = "encoded.json";
 const PLAYLIST = /\.(m3u8|m4s)$/;
 const MP4 = /\.mp4$/i;
 
@@ -140,17 +143,8 @@ export const mismatched = (
   remote: Record<string, number>,
 ): string[] => Object.keys(local).filter((key) => remote[key] !== local[key]);
 
-async function encode(request: HlsRequest): Promise<Record<string, number>> {
-  const { fs, runner, projectDirectory } = request.services;
-  await fs.mkdir(request.directory);
-  const result = await runner.run({
-    command: "ffmpeg",
-    args: hlsArgs({ source: request.source, directory: request.directory }),
-    cwd: projectDirectory,
-  });
-  if (result.code !== 0) {
-    throw new Error(`ffmpeg hls failed: ${result.stderr.slice(-400)}`);
-  }
+async function listed(request: HlsRequest): Promise<Record<string, number>> {
+  const { fs } = request.services;
   const names = (await fs.readdir(request.directory)).filter((name) => PLAYLIST.test(name));
   if (!names.includes(MASTER)) {
     throw new Error(`ffmpeg wrote no ${MASTER} in ${request.directory}`);
@@ -162,6 +156,50 @@ async function encode(request: HlsRequest): Promise<Record<string, number>> {
         Number((await fs.stat(join(request.directory, name)))?.size),
       ]),
     ),
+  );
+}
+
+async function encode(request: HlsRequest): Promise<Record<string, number>> {
+  const { fs, runner, projectDirectory } = request.services;
+  await fs.removeTree(request.directory);
+  await fs.mkdir(request.directory);
+  const result = await runner.run({
+    command: "ffmpeg",
+    args: hlsArgs({ source: request.source, directory: request.directory }),
+    cwd: projectDirectory,
+  });
+  if (result.code !== 0) {
+    throw new Error(`ffmpeg hls failed: ${result.stderr.slice(-400)}`);
+  }
+  return listed(request);
+}
+
+const identityOf = async ({ services, source }: HlsRequest): Promise<string> => {
+  const found = await services.fs.stat(source);
+  return JSON.stringify({ size: found?.size, mtimeNs: String(found?.mtimeNs) });
+};
+
+// The ladder of a source already encoded by encodeHls, or null when there is none for its bytes.
+async function keptEncode(request: HlsRequest): Promise<Record<string, number> | null> {
+  const { fs } = request.services;
+  const marker = join(request.directory, ENCODED);
+  const kept =
+    (await fs.stat(marker)) !== null && (await fs.readText(marker)) === (await identityOf(request));
+  return kept ? listed(request) : null;
+}
+
+// Encodes ahead of the publication, which then only uploads this ladder. The bytes are named as
+// they are at the start: the master, a hard link of them, removes this name while x264 reads it.
+export async function encodeHls(request: HlsRequest): Promise<void> {
+  const identity = await identityOf(request);
+  const local = await encode(request);
+  await request.services.fs.writeText({
+    path: join(request.directory, ENCODED),
+    text: identity,
+    mode: 0o644,
+  });
+  request.services.logger.info(
+    `encoded ${Object.keys(local).length} HLS files for ${request.movie}`,
   );
 }
 
@@ -210,13 +248,15 @@ async function publish(request: HlsRequest, local: Record<string, number>): Prom
 }
 
 // The encode runs outside the sync lock (it takes minutes per hour of movie); the upload and the
-// index update hold it, since the uploader Worker name and the bucket are shared with sync.
+// index update hold it, since the uploader Worker name and the bucket are shared with sync. An
+// encode made earlier survives a failed publication, since the retry would take most of an hour.
 export async function publishHls(request: HlsRequest): Promise<HlsIndex> {
   const { services } = request;
+  const kept = await keptEncode(request);
   try {
-    const local = await encode(request);
+    const local = kept ?? (await encode(request));
     services.logger.info(`encoded ${Object.keys(local).length} HLS files for ${request.movie}`);
-    return await withSyncLock(
+    const index = await withSyncLock(
       {
         services,
         path: join(services.projectDirectory, LOCK_FILE),
@@ -224,7 +264,12 @@ export async function publishHls(request: HlsRequest): Promise<HlsIndex> {
       },
       () => publish(request, local),
     );
-  } finally {
     await services.fs.removeTree(request.directory);
+    return index;
+  } catch (error) {
+    if (kept === null) {
+      await services.fs.removeTree(request.directory);
+    }
+    throw error;
   }
 }

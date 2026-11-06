@@ -1,6 +1,6 @@
 // Runs with bun (vitest). Tests the HLS ladder publisher (src/hls.ts) with in-memory fakes.
 import { expect, it } from "vitest";
-import { hlsArgs, indexOf, mismatched, publishHls, stemOf } from "./hls.ts";
+import { encodeHls, hlsArgs, indexOf, mismatched, publishHls, stemOf } from "./hls.ts";
 import {
   createFakeFs,
   createFakeHttp,
@@ -17,11 +17,18 @@ function setup(options: {
   listed?: Record<string, number>;
   ffmpegCode?: number;
   master?: boolean;
+  stagedGoneDuringEncode?: string;
 }) {
-  const fsHandle = createFakeFs({});
+  const fsHandle = createFakeFs({ "/deliveries/a-review.mp4": fakeFile({ size: 99 }) });
+  if (options.stagedGoneDuringEncode !== undefined) {
+    fsHandle.files.set(options.stagedGoneDuringEncode, fakeFile({ size: 99 }));
+  }
   const logs: string[] = [];
   const { runner, calls } = createFakeRunner((call: RunnerCall) => {
     if (call.command === "ffmpeg") {
+      if (options.stagedGoneDuringEncode !== undefined) {
+        fsHandle.files.delete(options.stagedGoneDuringEncode);
+      }
       const names = options.master === false ? FILES.slice(1) : FILES;
       for (const name of names) {
         fsHandle.files.set(`${DIRECTORY}/${name}`, fakeFile({ size: 7 }));
@@ -223,4 +230,55 @@ it("stops before uploading when ffmpeg fails or writes no master playlist", asyn
     headless.calls.some((call) => call.args[0] === "deploy"),
     failed.fsHandle.calls.includes(`remove ${DIRECTORY}`),
   ]).toStrictEqual([false, false, true]);
+});
+
+it("publishes an encode made ahead without encoding again, then removes it", async () => {
+  const { request, fsHandle, calls, logs } = setup({});
+  await encodeHls(request);
+  const encoded = calls.filter((call) => call.command === "ffmpeg").length;
+  const index = await publishHls(request);
+  expect([
+    encoded,
+    calls.filter((call) => call.command === "ffmpeg").length,
+    index,
+    fsHandle.files.has(`${DIRECTORY}/master.m3u8`),
+    logs.slice(0, 2),
+  ]).toStrictEqual([
+    1,
+    1,
+    { version: 1, movies: ["a-review", "b-review"] },
+    false,
+    ["encoded 4 HLS files for a-review.mp4", "encoded 4 HLS files for a-review.mp4"],
+  ]);
+});
+
+it("reuses an encode whose staged source was published under another name and removed", async () => {
+  const { request, calls } = setup({ stagedGoneDuringEncode: "/deliveries/staged/a-review.mp4" });
+  await encodeHls({ ...request, source: "/deliveries/staged/a-review.mp4" });
+  await publishHls(request);
+  expect(calls.filter((call) => call.command === "ffmpeg").length).toBe(1);
+});
+
+it("keeps an encode made ahead when its publication fails, for the retry", async () => {
+  const { request, fsHandle, calls } = setup({ listed: { "hls/a-review/master.m3u8": 7 } });
+  await encodeHls(request);
+  await expect(publishHls(request)).rejects.toThrow("HLS upload incomplete");
+  expect([
+    calls.filter((call) => call.command === "ffmpeg").length,
+    fsHandle.files.has(`${DIRECTORY}/master.m3u8`),
+  ]).toStrictEqual([1, true]);
+});
+
+it("encodes again when the source changed after the encode made ahead", async () => {
+  const { request, fsHandle, calls } = setup({});
+  await encodeHls(request);
+  fsHandle.files.set("/deliveries/a-review.mp4", fakeFile({ size: 100 }));
+  await publishHls(request);
+  expect(calls.filter((call) => call.command === "ffmpeg").length).toBe(2);
+});
+
+it("stops an encode made ahead when ffmpeg fails, recording nothing to publish", async () => {
+  const { request, fsHandle } = setup({ ffmpegCode: 1 });
+  await expect(encodeHls(request)).rejects.toThrow("ffmpeg hls failed: ffmpeg broke");
+  expect(fsHandle.files.has(`${DIRECTORY}/encoded.json`)).toBe(false);
 });
