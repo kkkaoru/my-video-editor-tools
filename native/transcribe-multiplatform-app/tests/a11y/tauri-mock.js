@@ -9,6 +9,18 @@
     "Hiragino Sans",
     ...Array.from({ length: 3000 }, (_, index) => `Family ${String(index).padStart(4, "0")}`),
   ];
+  const answerUpdate = (command) => {
+    const { available, checkError, installError } = window.__FIXTURE_UPDATER__ ?? {};
+    if (command === "check_update") {
+      return checkError ? Promise.reject(checkError) : Promise.resolve(available ?? null);
+    }
+    if (installError) {
+      return Promise.reject(installError);
+    }
+    window.__emitTauri("update-progress", 0.4);
+    // A real install restarts the app, so it never answers.
+    return new Promise(() => {});
+  };
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main", windowLabel: "main" } },
     transformCallback(callback) {
@@ -26,6 +38,9 @@
       }
       if (command === "snapshot") {
         return Promise.resolve(window.__FIXTURE_SNAPSHOT__);
+      }
+      if (command === "check_update" || command === "install_update") {
+        return answerUpdate(command);
       }
       if (command === "font_families") {
         return Promise.resolve(window.__FIXTURE_FONTS__);

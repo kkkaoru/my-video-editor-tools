@@ -12,6 +12,17 @@ export const zhHansMessages: Messages = {
   uiThemeSystem: "跟随系统",
   uiThemeLight: "浅色",
   uiThemeDark: "深色",
+  updateCheck: "检查更新",
+  updateChecking: "正在检查更新",
+  updateUpToDate: "这已是最新版本。",
+  updateCheckFailed: "无法检查更新：{detail}",
+  updateAvailable: "有新版本 {version}",
+  updateInstall: "更新并重新启动",
+  updateRetry: "重新更新",
+  updateBusy: "当前视频和模型下载完成后就可以更新。",
+  updateInstalling: "正在下载更新。准备好后应用程序会重新启动。",
+  updateProgressLabel: "更新下载",
+  updateInstallFailed: "更新未完成：{detail}",
   tabHelp: "使用方法",
   tabModels: "模型",
   noticeSpeakersOnCpu: "区分说话人的工作在 CPU 上运行,所以比较慢。在模型页下载 GeForce 运行组件后会变快。",
@@ -213,6 +224,7 @@ export const zhHansMessages: Messages = {
     profile_missing: "配置 {name} 已不存在。",
     models_busy: "有任务或下载正在进行时无法重置模型。请等待完成或取消后再试。",
     models_missing: "由于缺少以下模型,视频未添加:{roles}。请在模型页下载,或添加已有模型的文件夹。",
+    update_busy: "正在处理视频或下载模型，无法更新。请等完成后再试。",
     no_supported_files:
       "不能加入这个文件。请选择视频（.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts）或字幕文件（.drt .fcpxml .srt .ttml .transcript.json）。",
     profile_invalid: "{file} 无法作为配置读取。请选择这个应用导出的文件。",
@@ -437,7 +449,7 @@ export const zhHansMessages: Messages = {
         ],
       },
       settings: {
-        heading: "更改语言和显示模式",
+        heading: "设置和更新",
         parts: [
           {
             heading: "设置",
@@ -448,6 +460,16 @@ export const zhHansMessages: Messages = {
               "在“{uiThemeLabel}”中选择“{uiThemeLight}”或“{uiThemeDark}”。“{uiThemeSystem}”会跟随电脑的设置。",
             ],
             notes: [],
+          },
+          {
+            heading: "更新应用程序",
+            intro: "有新版本时，窗口上方会显示。按下按钮之前不会有任何改变。",
+            steps: [
+              "想自己查找时，在“{tabSettings}”标签页按“{updateCheck}”。",
+              "阅读更新内容，然后按“{updateInstall}”。",
+              "应用程序会下载更新并重新启动。",
+            ],
+            notes: ["处理视频或下载模型时不能更新。请等到完成。", "检查和下载都需要连接互联网。"],
           },
         ],
       },

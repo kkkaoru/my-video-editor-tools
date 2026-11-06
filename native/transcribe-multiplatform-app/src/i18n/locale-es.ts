@@ -12,6 +12,17 @@ export const esMessages: Messages = {
   uiThemeSystem: "Igual que el sistema",
   uiThemeLight: "Claro",
   uiThemeDark: "Oscuro",
+  updateCheck: "Buscar actualizaciones",
+  updateChecking: "Buscando actualizaciones",
+  updateUpToDate: "Es la última versión.",
+  updateCheckFailed: "No se pudieron buscar actualizaciones: {detail}",
+  updateAvailable: "Está disponible la versión {version}",
+  updateInstall: "Actualizar y reiniciar",
+  updateRetry: "Volver a intentar la actualización",
+  updateBusy: "Podrás actualizar cuando terminen los vídeos y las descargas de modelos en curso.",
+  updateInstalling: "Descargando la actualización. La aplicación se reinicia al terminar.",
+  updateProgressLabel: "Descarga de la actualización",
+  updateInstallFailed: "La actualización no terminó: {detail}",
   tabHelp: "Cómo se usa",
   tabModels: "Modelos",
   noticeSpeakersOnCpu:
@@ -234,6 +245,8 @@ export const esMessages: Messages = {
       "No se pueden restablecer los modelos mientras hay una tarea o una descarga en curso. Espera a que termine o cancela e inténtalo de nuevo.",
     models_missing:
       "Los vídeos no se añadieron porque no hay modelo disponible para: {roles}. Descárgalos en Modelos o añade una carpeta que ya los tenga.",
+    update_busy:
+      "No se puede actualizar mientras se procesan vídeos o se descargan modelos. Espera a que terminen y vuelve a intentarlo.",
     no_supported_files:
       "Este archivo no se puede añadir. Elige un vídeo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) o un archivo de subtítulos (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
@@ -495,7 +508,7 @@ export const esMessages: Messages = {
         ],
       },
       settings: {
-        heading: "Cambiar el idioma y la apariencia",
+        heading: "Ajustes y actualizaciones",
         parts: [
           {
             heading: "Los ajustes",
@@ -507,6 +520,20 @@ export const esMessages: Messages = {
               "En «{uiThemeLabel}», elige «{uiThemeLight}» o «{uiThemeDark}». «{uiThemeSystem}» sigue a tu ordenador.",
             ],
             notes: [],
+          },
+          {
+            heading: "Actualizar la aplicación",
+            intro:
+              "Cuando sale una versión nueva, la aplicación la muestra arriba de la ventana. Nada cambia hasta que pulses el botón.",
+            steps: [
+              "Para buscarla tú, pulsa «{updateCheck}» en la pestaña «{tabSettings}».",
+              "Lee las novedades y pulsa «{updateInstall}».",
+              "La aplicación descarga la actualización y se reinicia.",
+            ],
+            notes: [
+              "No puedes actualizar mientras se procesan vídeos o se descargan modelos. Espera a que terminen.",
+              "Buscar y descargar requieren conexión a Internet.",
+            ],
           },
         ],
       },

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { DownloadEvent, JobEvent, Settings, Snapshot } from "./types.ts";
+import type { DownloadEvent, JobEvent, Settings, Snapshot, UpdateInfo } from "./types.ts";
 
 export interface DropHandlers {
   onHover: (hovering: boolean) => void;
@@ -12,6 +12,7 @@ export interface DropHandlers {
 
 const JOB_EVENT: string = "job";
 const DOWNLOAD_EVENT: string = "download";
+const UPDATE_PROGRESS_EVENT: string = "update-progress";
 const PROFILE_EXTENSION: string = "json";
 const HOVER_EVENTS: ReadonlySet<string> = new Set(["enter", "over"]);
 
@@ -58,6 +59,14 @@ export const startDownload = (id: string): Promise<void> => invoke<void>("start_
 export const cancelDownload = (id: string): Promise<void> => invoke<void>("cancel_download", { id });
 
 export const deleteModel = (id: string): Promise<Snapshot> => invoke<Snapshot>("delete_model", { id });
+
+export const checkUpdate = (): Promise<UpdateInfo | null> => invoke<UpdateInfo | null>("check_update");
+
+export const installUpdate = (): Promise<void> => invoke<void>("install_update");
+
+/** Reports the share of the download, 0 to 1; nothing while the size is unknown. */
+export const onUpdateProgress = (handler: (share: number) => void): Promise<UnlistenFn> =>
+  listen<number>(UPDATE_PROGRESS_EVENT, ({ payload }) => handler(payload));
 
 export const onJobEvent = (handler: (event: JobEvent) => void): Promise<UnlistenFn> =>
   listen<JobEvent>(JOB_EVENT, ({ payload }) => handler(payload));

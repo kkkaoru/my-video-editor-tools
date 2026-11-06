@@ -102,6 +102,12 @@ export interface ModelStatus {
   recommended: boolean;
 }
 
+/** A newer version on offer. */
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+}
+
 export interface Snapshot {
   /** The app's version, from Cargo. */
   version: string;

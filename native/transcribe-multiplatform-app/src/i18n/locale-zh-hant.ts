@@ -12,6 +12,17 @@ export const zhHantMessages: Messages = {
   uiThemeSystem: "跟隨系統",
   uiThemeLight: "淺色",
   uiThemeDark: "深色",
+  updateCheck: "檢查更新",
+  updateChecking: "正在檢查更新",
+  updateUpToDate: "這已是最新版本。",
+  updateCheckFailed: "無法檢查更新：{detail}",
+  updateAvailable: "有新版本 {version}",
+  updateInstall: "更新並重新啟動",
+  updateRetry: "重新更新",
+  updateBusy: "目前的影片和模型下載完成後就可以更新。",
+  updateInstalling: "正在下載更新。準備好後應用程式會重新啟動。",
+  updateProgressLabel: "更新下載",
+  updateInstallFailed: "更新未完成：{detail}",
   tabHelp: "使用方法",
   tabModels: "模型",
   noticeSpeakersOnCpu: "區分說話者的工作在 CPU 上執行,所以比較慢。在模型頁下載 GeForce 執行元件後會變快。",
@@ -213,6 +224,7 @@ export const zhHantMessages: Messages = {
     profile_missing: "設定檔 {name} 已不存在。",
     models_busy: "有工作或下載正在進行時無法重設模型。請等待完成或取消後再試。",
     models_missing: "由於缺少以下模型,影片未新增:{roles}。請在模型頁下載,或新增已有模型的資料夾。",
+    update_busy: "正在處理影片或下載模型，無法更新。請等完成後再試。",
     no_supported_files:
       "不能加入這個檔案。請選擇影片（.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts）或字幕檔（.drt .fcpxml .srt .ttml .transcript.json）。",
     profile_invalid: "{file} 無法作為設定檔讀取。請選擇這個應用程式匯出的檔案。",
@@ -437,7 +449,7 @@ export const zhHantMessages: Messages = {
         ],
       },
       settings: {
-        heading: "變更語言和顯示模式",
+        heading: "設定和更新",
         parts: [
           {
             heading: "設定",
@@ -448,6 +460,16 @@ export const zhHantMessages: Messages = {
               "在「{uiThemeLabel}」中選擇「{uiThemeLight}」或「{uiThemeDark}」。「{uiThemeSystem}」會跟隨電腦的設定。",
             ],
             notes: [],
+          },
+          {
+            heading: "更新應用程式",
+            intro: "有新版本時，視窗上方會顯示。按下按鈕之前不會有任何改變。",
+            steps: [
+              "想自己查找時，在「{tabSettings}」分頁按「{updateCheck}」。",
+              "閱讀更新內容，然後按「{updateInstall}」。",
+              "應用程式會下載更新並重新啟動。",
+            ],
+            notes: ["處理影片或下載模型時不能更新。請等到完成。", "檢查和下載都需要連線到網際網路。"],
           },
         ],
       },

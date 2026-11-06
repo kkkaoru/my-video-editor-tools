@@ -151,6 +151,13 @@ export const withSaveAnswer = (state: AppState, { models, locale }: Snapshot): A
   return { ...updated, snapshot: { ...updated.snapshot, locale } };
 };
 
+const isJobActive = ({ state }: JobRow): boolean => state === "queued" || state === "running";
+
+/** What the backend refuses to restart under. */
+export const isWorking = ({ jobs, downloads }: Pick<AppState, "jobs" | "downloads">): boolean =>
+  jobs.some(isJobActive) ||
+  Array.from(downloads.values()).some(({ running }: DownloadRow): boolean => running);
+
 /** The language to show: the one chosen in the settings, or the system's. */
 export const uiLocale = ({ locale, settings }: Pick<Snapshot, "locale" | "settings">): string =>
   settings.ui_language === SYSTEM_LANGUAGE ? locale : settings.ui_language;

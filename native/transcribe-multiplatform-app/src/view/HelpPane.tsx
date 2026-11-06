@@ -62,6 +62,8 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
+  updateCheck,
+  updateInstall,
 }: Messages): Params => ({
   tabJobs,
   tabStyle,
@@ -92,6 +94,8 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
+  updateCheck,
+  updateInstall,
 });
 
 /** Lazy, and sized up front: a picture in a closed tab costs nothing, and arriving moves nothing. */

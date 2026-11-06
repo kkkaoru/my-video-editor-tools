@@ -12,6 +12,17 @@ export const enMessages: Messages = {
   uiThemeSystem: "Same as the system",
   uiThemeLight: "Light",
   uiThemeDark: "Dark",
+  updateCheck: "Check for updates",
+  updateChecking: "Checking for updates",
+  updateUpToDate: "This is the latest version.",
+  updateCheckFailed: "Could not check for updates: {detail}",
+  updateAvailable: "Version {version} is available",
+  updateInstall: "Update and restart",
+  updateRetry: "Try the update again",
+  updateBusy: "You can update when the current videos and model downloads are finished.",
+  updateInstalling: "Downloading the update. The app restarts when it is ready.",
+  updateProgressLabel: "Update download",
+  updateInstallFailed: "The update did not finish: {detail}",
   tabHelp: "How to use",
   tabModels: "Models",
   noticeSpeakersOnCpu:
@@ -229,6 +240,8 @@ export const enMessages: Messages = {
       "Models cannot be reset while a job or a download is running. Wait for it to finish or cancel it, then try again.",
     models_missing:
       "The videos were not added because no model is available for: {roles}. Download them in Models, or add a folder that already has them.",
+    update_busy:
+      "An update cannot start while videos or model downloads are running. Wait until they are finished, then try again.",
     no_supported_files:
       "This file cannot be added. Choose a video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) or a subtitle file (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid: "{file} cannot be read as a profile. Choose a file this app exported.",
@@ -485,7 +498,7 @@ export const enMessages: Messages = {
         ],
       },
       settings: {
-        heading: "Change the language and the appearance",
+        heading: "Settings and updates",
         parts: [
           {
             heading: "The settings",
@@ -496,6 +509,20 @@ export const enMessages: Messages = {
               "Under “{uiThemeLabel}”, choose “{uiThemeLight}” or “{uiThemeDark}”. “{uiThemeSystem}” follows your computer.",
             ],
             notes: [],
+          },
+          {
+            heading: "Update the app",
+            intro:
+              "When a new version is out, the app shows it at the top of the window. Nothing changes until you press the button.",
+            steps: [
+              "To look for one yourself, press “{updateCheck}” on the “{tabSettings}” tab.",
+              "Read what is new, then press “{updateInstall}”.",
+              "The app downloads the update and restarts.",
+            ],
+            notes: [
+              "You cannot update while videos are being made or models are downloading. Wait until they are finished.",
+              "Checking and downloading need an internet connection.",
+            ],
           },
         ],
       },

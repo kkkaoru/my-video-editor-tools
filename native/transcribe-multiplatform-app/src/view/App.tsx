@@ -6,14 +6,16 @@ import type { ModelStatus, Snapshot, UiTheme } from "../backend/types.ts";
 import { type Language, languageFor } from "../i18n/language.ts";
 import { errorText, format } from "../i18n/messages.ts";
 import { MessagesContext } from "../i18n/use-messages.ts";
-import { uiLocale } from "../state/app-state.ts";
+import { isWorking, uiLocale } from "../state/app-state.ts";
 import { useAppStore } from "../state/use-app-store.ts";
+import { type Updater, useUpdater } from "../state/use-updater.ts";
 import type { SelectOption } from "./fields.tsx";
 import { HelpPane } from "./HelpPane.tsx";
 import { JobsPane } from "./JobsPane.tsx";
 import { ModelsPane } from "./ModelsPane.tsx";
 import { SettingsPane } from "./SettingsPane.tsx";
 import { StylePane } from "./StylePane.tsx";
+import { UpdateOffer } from "./UpdatePanels.tsx";
 
 const faceOptions = (models: ModelStatus[]): SelectOption[] =>
   models
@@ -39,6 +41,7 @@ function applyToDocument({ tag, messages }: Language, theme: UiTheme): void {
 
 function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
   const store = useAppStore(snapshot);
+  const updater: Updater = useUpdater();
   const live: Snapshot = store.state.snapshot;
   const language: Language = languageFor(uiLocale(live));
   const { messages } = language;
@@ -56,7 +59,8 @@ function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
             <TabsTrigger value="settings">{messages.tabSettings}</TabsTrigger>
           </TabsList>
         </header>
-        <main className="grid flex-1 gap-4">
+        <main className="grid flex-1 content-start gap-4">
+          <UpdateOffer updater={updater} busy={isWorking(store.state)} />
           {store.state.loadError === null ? null : (
             <Alert>
               {format(messages.loadFailed, { detail: errorText(messages, store.state.loadError, "") })}
@@ -80,7 +84,12 @@ function Loaded({ snapshot }: { snapshot: Snapshot }): VNode {
             <HelpPane />
           </TabsContent>
           <TabsContent value="settings" keepMounted>
-            <SettingsPane version={live.version} settings={live.settings} onChange={store.updateSettings} />
+            <SettingsPane
+              version={live.version}
+              settings={live.settings}
+              onChange={store.updateSettings}
+              updater={updater}
+            />
           </TabsContent>
         </main>
       </Tabs>

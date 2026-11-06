@@ -34,6 +34,7 @@ export interface ErrorMessages {
   profile_missing: string;
   models_busy: string;
   models_missing: string;
+  update_busy: string;
   no_supported_files: string;
   profile_invalid: string;
   too_long_for_model: string;
@@ -107,6 +108,17 @@ export interface Messages {
   uiThemeSystem: string;
   uiThemeLight: string;
   uiThemeDark: string;
+  updateCheck: string;
+  updateChecking: string;
+  updateUpToDate: string;
+  updateCheckFailed: string;
+  updateAvailable: string;
+  updateInstall: string;
+  updateRetry: string;
+  updateBusy: string;
+  updateInstalling: string;
+  updateProgressLabel: string;
+  updateInstallFailed: string;
   tabHelp: string;
   tabModels: string;
   noticeSpeakersOnCpu: string;

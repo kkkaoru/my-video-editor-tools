@@ -4,12 +4,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.t
 import type { Settings, UiTheme } from "../backend/types.ts";
 import { format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
+import type { Updater } from "../state/use-updater.ts";
 import { SelectField, type SelectOption } from "./fields.tsx";
+import { UpdateCheck } from "./UpdatePanels.tsx";
 
 export interface SettingsPaneProps {
   version: string;
   settings: Settings;
   onChange: (settings: Settings) => void;
+  updater: Updater;
 }
 
 /** The backend keeps "follow the system" as an empty language; a select needs a real value for it. */
@@ -30,11 +33,14 @@ const NATIVE_LANGUAGES: { value: string; label: string; lang: string }[] = [
 const themeName = (theme: UiTheme, messages: Messages): string =>
   ({ system: messages.uiThemeSystem, light: messages.uiThemeLight, dark: messages.uiThemeDark })[theme];
 
-export function SettingsPane({ version, settings, onChange }: SettingsPaneProps): VNode {
+export function SettingsPane({ version, settings, onChange, updater }: SettingsPaneProps): VNode {
   const messages: Messages = useMessages();
   return (
     <div className="grid grid-cols-1 gap-6">
-      <p className="text-muted-foreground">{format(messages.help.version, { version })}</p>
+      <div className="grid grid-cols-1 gap-2">
+        <p className="text-muted-foreground">{format(messages.help.version, { version })}</p>
+        <UpdateCheck updater={updater} />
+      </div>
       <Card>
         <CardHeader>
           <CardTitle>{messages.tabSettings}</CardTitle>

@@ -7,16 +7,19 @@ import {
   addVideos,
   cancelDownload,
   cancelJob,
+  checkUpdate,
   deleteModel,
   deleteProfile,
   exportProfile,
   fetchSnapshot,
   fontFamilies,
   importProfile,
+  installUpdate,
   loadProfile,
   onDownloadEvent,
   onFileDrop,
   onJobEvent,
+  onUpdateProgress,
   overwriteProfile,
   pickFiles,
   pickFolder,
@@ -283,4 +286,25 @@ it("asks where to save a profile, named after it", async () => {
   expect(vi.mocked(save).mock.calls).toStrictEqual([
     [{ defaultPath: "A.json", filters: [{ name: "Profiles", extensions: ["json"] }] }],
   ]);
+});
+
+it("asks for an update and installs it by name", async () => {
+  vi.mocked(invoke).mockResolvedValue(null);
+  await expect(checkUpdate()).resolves.toBe(null);
+  expect(vi.mocked(invoke).mock.lastCall).toStrictEqual(["check_update"]);
+  await installUpdate();
+  expect(vi.mocked(invoke).mock.lastCall).toStrictEqual(["install_update"]);
+});
+
+it("passes on the update's progress", async () => {
+  vi.mocked(listen).mockResolvedValue(vi.fn());
+  const handler: Mock<(share: number) => void> = vi.fn();
+  await onUpdateProgress(handler);
+  expect(vi.mocked(listen).mock.lastCall?.[0]).toBe("update-progress");
+  vi.mocked(listen).mock.lastCall?.[1]({
+    event: "update-progress",
+    id: 1,
+    payload: 0.5,
+  });
+  expect(handler.mock.calls).toStrictEqual([[0.5]]);
 });

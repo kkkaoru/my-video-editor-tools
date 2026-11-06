@@ -68,6 +68,9 @@ async function showState(page: Page, state: UiState, locale: string): Promise<vo
     },
     { ...state.snapshot, locale },
   );
+  await page.addInitScript((updater: UiState["updater"]): void => {
+    Object.assign(window, { __FIXTURE_UPDATER__: updater });
+  }, state.updater);
   await page.goto("/");
   await page.getByRole("tablist").waitFor();
   await page.evaluate(
@@ -149,6 +152,18 @@ async function applyStep(page: Page, step: string): Promise<void> {
   if (step === "open-color-picker") {
     await panel.locator('[data-slot="color-swatch"]').nth(2).click();
     await page.getByRole("dialog").waitFor();
+    return;
+  }
+  if (step === "press-update-check") {
+    await panel.locator('[data-slot="update-check"] button').click();
+    await panel.locator('[data-slot="update-check"] button:enabled').waitFor();
+    return;
+  }
+  if (step === "press-update-install") {
+    await page.locator('[data-slot="update-offer"] button').click();
+    await page
+      .locator('[data-slot="update-offer"] [role="status"], [data-slot="update-offer"] [role="alert"]')
+      .waitFor();
     return;
   }
   if (step === "open-settings-language") {
@@ -261,7 +276,8 @@ async function hoverViolations(page: Page): Promise<string[]> {
   const dialog = page.locator('[role="alertdialog"], [data-slot="color-picker"]');
   const scope = (await dialog.count()) > 0 ? dialog : page.locator("body");
   const buttons = await scope
-    .locator('button:visible, [role="tab"]:visible, [role="combobox"]:visible')
+    // A disabled button takes no pointer, so it has no hover state to check.
+    .locator('button:enabled:visible, [role="tab"]:visible, [role="combobox"]:visible')
     .all();
   const found: string[][] = [];
   await buttons.reduce(async (previous: Promise<void>, button): Promise<void> => {

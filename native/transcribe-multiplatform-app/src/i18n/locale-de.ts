@@ -12,6 +12,17 @@ export const deMessages: Messages = {
   uiThemeSystem: "Wie das System",
   uiThemeLight: "Hell",
   uiThemeDark: "Dunkel",
+  updateCheck: "Nach Updates suchen",
+  updateChecking: "Es wird nach Updates gesucht",
+  updateUpToDate: "Das ist die neueste Version.",
+  updateCheckFailed: "Die Suche nach Updates hat nicht geklappt: {detail}",
+  updateAvailable: "Version {version} ist verfügbar",
+  updateInstall: "Aktualisieren und neu starten",
+  updateRetry: "Update noch einmal versuchen",
+  updateBusy: "Du kannst aktualisieren, wenn die aktuellen Videos und Modell-Downloads fertig sind.",
+  updateInstalling: "Das Update wird geladen. Danach startet die App neu.",
+  updateProgressLabel: "Update wird geladen",
+  updateInstallFailed: "Das Update wurde nicht fertig: {detail}",
   tabHelp: "Anleitung",
   tabModels: "Modelle",
   noticeSpeakersOnCpu:
@@ -237,6 +248,8 @@ export const deMessages: Messages = {
       "Während eine Aufgabe oder ein Download läuft, können Modelle nicht zurückgesetzt werden. Warte das Ende ab oder brich ab und versuche es erneut.",
     models_missing:
       "Die Videos wurden nicht hinzugefügt, weil für Folgendes kein Modell verfügbar ist: {roles}. Lade sie unter Modelle herunter oder füge einen Ordner hinzu, der sie enthält.",
+    update_busy:
+      "Während Videos bearbeitet oder Modelle geladen werden, geht kein Update. Warte, bis sie fertig sind, und versuche es noch einmal.",
     no_supported_files:
       "Diese Datei geht nicht. Wähle ein Video (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) oder eine Untertiteldatei (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
@@ -502,7 +515,7 @@ export const deMessages: Messages = {
         ],
       },
       settings: {
-        heading: "Sprache und Darstellung ändern",
+        heading: "Einstellungen und Updates",
         parts: [
           {
             heading: "Die Einstellungen",
@@ -514,6 +527,20 @@ export const deMessages: Messages = {
               "Wähle bei „{uiThemeLabel}“ „{uiThemeLight}“ oder „{uiThemeDark}“. „{uiThemeSystem}“ folgt deinem Computer.",
             ],
             notes: [],
+          },
+          {
+            heading: "Die App aktualisieren",
+            intro:
+              "Gibt es eine neue Version, zeigt die App sie oben im Fenster. Bis du den Knopf drückst, ändert sich nichts.",
+            steps: [
+              "Willst du selbst nachsehen, drücke im Tab „{tabSettings}“ auf „{updateCheck}“.",
+              "Lies, was neu ist, und drücke „{updateInstall}“.",
+              "Die App lädt das Update und startet neu.",
+            ],
+            notes: [
+              "Während Videos bearbeitet oder Modelle geladen werden, kannst du nicht aktualisieren. Warte, bis sie fertig sind.",
+              "Für die Suche und das Laden brauchst du eine Internetverbindung.",
+            ],
           },
         ],
       },

@@ -8,6 +8,7 @@ import {
   canChooseSpeakerCount,
   effectiveSpeakerCount,
   initialState,
+  isWorking,
   lookChanged,
   missingModelRoles,
   startedDownload,
@@ -334,4 +335,13 @@ it("takes the models and the language from a save's answer, and keeps newer sett
   const updated = withSaveAnswer(state, answer);
   expect(updated.snapshot.locale).toBe("fr");
   expect(updated.snapshot.settings).toStrictEqual(SETTINGS);
+});
+
+it("counts waiting and running videos and running downloads as work", () => {
+  const job = { id: 1, path: "/a.mp4", startedAt: 0 };
+  const download = { running: true, doneBytes: 0, totalBytes: 1, error: null };
+  expect(isWorking({ jobs: [], downloads: new Map() })).toBe(false);
+  expect(isWorking({ jobs: [{ ...job, state: "queued" }], downloads: new Map() })).toBe(true);
+  expect(isWorking({ jobs: [], downloads: new Map([["m", download]]) })).toBe(true);
+  expect(isWorking({ jobs: [], downloads: new Map([["m", { ...download, running: false }]]) })).toBe(false);
 });

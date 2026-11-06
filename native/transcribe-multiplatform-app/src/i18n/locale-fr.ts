@@ -12,6 +12,18 @@ export const frMessages: Messages = {
   uiThemeSystem: "Comme le système",
   uiThemeLight: "Clair",
   uiThemeDark: "Sombre",
+  updateCheck: "Rechercher une mise à jour",
+  updateChecking: "Recherche d'une mise à jour",
+  updateUpToDate: "C'est la dernière version.",
+  updateCheckFailed: "Impossible de rechercher une mise à jour : {detail}",
+  updateAvailable: "La version {version} est disponible",
+  updateInstall: "Mettre à jour et redémarrer",
+  updateRetry: "Réessayer la mise à jour",
+  updateBusy:
+    "Tu pourras mettre à jour quand les vidéos et les téléchargements de modèles en cours seront terminés.",
+  updateInstalling: "Téléchargement de la mise à jour. L'application redémarre ensuite.",
+  updateProgressLabel: "Téléchargement de la mise à jour",
+  updateInstallFailed: "La mise à jour n'a pas abouti : {detail}",
   tabHelp: "Mode d'emploi",
   tabModels: "Modèles",
   noticeSpeakersOnCpu:
@@ -235,6 +247,8 @@ export const frMessages: Messages = {
       "Les modèles ne peuvent pas être réinitialisés pendant une tâche ou un téléchargement. Attends la fin ou annule, puis réessaie.",
     models_missing:
       "Les vidéos n'ont pas été ajoutées, car aucun modèle n'est disponible pour : {roles}. Télécharge-les dans Modèles ou ajoute un dossier qui les contient.",
+    update_busy:
+      "La mise à jour ne peut pas démarrer pendant le traitement de vidéos ou le téléchargement de modèles. Attends la fin, puis réessaie.",
     no_supported_files:
       "Ce fichier n'est pas accepté. Choisis une vidéo (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) ou un fichier de sous-titres (.drt .fcpxml .srt .ttml .transcript.json).",
     profile_invalid:
@@ -500,7 +514,7 @@ export const frMessages: Messages = {
         ],
       },
       settings: {
-        heading: "Changer la langue et l'apparence",
+        heading: "Réglages et mises à jour",
         parts: [
           {
             heading: "Les réglages",
@@ -512,6 +526,20 @@ export const frMessages: Messages = {
               "Dans « {uiThemeLabel} », choisis « {uiThemeLight} » ou « {uiThemeDark} ». « {uiThemeSystem} » suit ton ordinateur.",
             ],
             notes: [],
+          },
+          {
+            heading: "Mettre à jour l'application",
+            intro:
+              "Quand une nouvelle version sort, l'application l'indique en haut de la fenêtre. Rien ne change tant que tu n'appuies pas sur le bouton.",
+            steps: [
+              "Pour chercher toi-même, appuie sur « {updateCheck} » dans l'onglet « {tabSettings} ».",
+              "Lis les nouveautés, puis appuie sur « {updateInstall} ».",
+              "L'application télécharge la mise à jour et redémarre.",
+            ],
+            notes: [
+              "Tu ne peux pas mettre à jour pendant le traitement de vidéos ou le téléchargement de modèles. Attends la fin.",
+              "La recherche et le téléchargement demandent une connexion à Internet.",
+            ],
           },
         ],
       },

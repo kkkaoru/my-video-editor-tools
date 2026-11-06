@@ -66,7 +66,7 @@ it("has the seven topics as second-level headings", () => {
     "Open the subtitles in your video editor",
     "Change how subtitles look and where they sit",
     "Give finished subtitles a new look",
-    "Change the language and the appearance",
+    "Settings and updates",
     "If something goes wrong",
   ]);
   expect(screen.getByRole("heading", { level: 3, name: "Bring in an FCPXML file" }).tagName).toBe("H3");
@@ -124,7 +124,7 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/0 0/2 3/2 3/3 2/0"]),
+    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/2 3/0 0/2 3/2 3/3 2/0"]),
   );
 });
 

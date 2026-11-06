@@ -2,9 +2,13 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { Settings } from "../backend/types.ts";
+import { INITIAL_UPDATE } from "../state/update-state.ts";
+import type { Updater } from "../state/use-updater.ts";
 import { SettingsPane } from "./SettingsPane.tsx";
 
 const SETTINGS = { ui_language: "", ui_theme: "system" } satisfies Partial<Settings>;
+
+const UPDATER: Updater = { state: INITIAL_UPDATE, check: vi.fn(), install: vi.fn() };
 
 afterEach(cleanup);
 
@@ -12,7 +16,12 @@ function show(settings: Partial<Settings>): Mock<(next: Settings) => void> {
   const onChange: Mock<(next: Settings) => void> = vi.fn();
   render(
     <main>
-      <SettingsPane version="1.2.3" settings={{ ...SETTINGS, ...settings } as Settings} onChange={onChange} />
+      <SettingsPane
+        version="1.2.3"
+        settings={{ ...SETTINGS, ...settings } as Settings}
+        onChange={onChange}
+        updater={UPDATER}
+      />
     </main>,
   );
   return onChange;
@@ -31,7 +40,7 @@ async function choose(combobox: string, option: string): Promise<void> {
 it("shows the version first", () => {
   const { container } = render(
     <main>
-      <SettingsPane version="1.2.3" settings={SETTINGS as Settings} onChange={vi.fn()} />
+      <SettingsPane version="1.2.3" settings={SETTINGS as Settings} onChange={vi.fn()} updater={UPDATER} />
     </main>,
   );
   expect(container.querySelector("p")?.textContent).toBe("Version 1.2.3");
@@ -81,4 +90,11 @@ it("goes back to the system's language by saving none", async () => {
   expect(screen.getByRole("combobox", { name: "Display language" }).textContent).toBe("Deutsch");
   await choose("Display language", "Same as the system");
   expect(onChange.mock.lastCall?.[0].ui_language).toBe("");
+});
+
+it("offers the update check right under the version", () => {
+  show({});
+  expect(screen.getByText("Version 1.2.3").nextElementSibling?.querySelector("button")?.textContent).toBe(
+    "Check for updates",
+  );
 });

@@ -8,6 +8,7 @@ import type {
   Snapshot,
   SpeakerColor,
   Stage,
+  UpdateInfo,
 } from "../../src/backend/types.ts";
 import { enMessages } from "../../src/i18n/locale-en.ts";
 import type { ErrorMessages } from "../../src/i18n/messages.ts";
@@ -19,6 +20,8 @@ export type StateStep =
   | "open-subtitle-format"
   | "hover-drop"
   | "open-speaker-help"
+  | "press-update-check"
+  | "press-update-install"
   | "open-settings-language"
   | "open-second-speaker"
   | "open-color-picker"
@@ -32,6 +35,13 @@ export type StateStep =
   | "drop-subtitles"
   | "drop-other";
 
+/** What the mocked backend answers about updates. */
+export interface UpdaterFixture {
+  available: UpdateInfo | null;
+  checkError: BackendError | null;
+  installError: BackendError | null;
+}
+
 export interface UiState {
   name: string;
   tab: Tab;
@@ -41,6 +51,7 @@ export interface UiState {
   anchor: string | null;
   frame: string | null;
   steps: StateStep[];
+  updater: UpdaterFixture;
 }
 
 const STAGES: Record<Stage, true> = {
@@ -205,6 +216,15 @@ export const WITH_PROFILES: Snapshot = snapshot({
   settings: { ...snapshot({}).settings, active_profile: "配信用 16:9 白フチ" },
 });
 
+const NO_UPDATE: UpdaterFixture = { available: null, checkError: null, installError: null };
+const NEW_VERSION: UpdateInfo = {
+  version: "9.9.9",
+  notes:
+    "Faster captions.\nA long line of notes from the release, to see that it wraps the way the rest of the window does and stays readable.",
+};
+const OFFERED: UpdaterFixture = { ...NO_UPDATE, available: NEW_VERSION };
+const UPDATE_FAILURE: BackendError = { code: "internal", detail: "The server did not answer" };
+
 const state = (name: string, tab: Tab, changes: Partial<UiState>): UiState => ({
   name,
   tab,
@@ -214,6 +234,7 @@ const state = (name: string, tab: Tab, changes: Partial<UiState>): UiState => ({
   anchor: null,
   frame: null,
   steps: [],
+  updater: NO_UPDATE,
   ...changes,
 });
 
@@ -577,6 +598,22 @@ export const UI_STATES: UiState[] = [
   }),
   state("style in the dark setting", "style", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, ui_theme: "dark" } }),
+  }),
+  state("jobs update offered", "jobs", { updater: OFFERED }),
+  state("jobs update offered without notes", "jobs", {
+    updater: { ...OFFERED, available: { version: "9.9.9", notes: null } },
+  }),
+  state("jobs update offered while a video runs", "jobs", { updater: OFFERED, jobEvents: [queued(1)] }),
+  state("jobs update installing", "jobs", { updater: OFFERED, steps: ["press-update-install"] }),
+  state("jobs update failed", "jobs", {
+    updater: { ...OFFERED, installError: UPDATE_FAILURE },
+    steps: ["press-update-install"],
+  }),
+  state("settings up to date", "settings", { steps: ["press-update-check"] }),
+  state("settings update found", "settings", { updater: OFFERED, steps: ["press-update-check"] }),
+  state("settings update check failed", "settings", {
+    updater: { ...NO_UPDATE, checkError: UPDATE_FAILURE },
+    steps: ["press-update-check"],
   }),
   state("models idle", "models", {}),
   state("models on geforce without its runtime", "models", {

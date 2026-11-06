@@ -12,6 +12,17 @@ export const jaMessages: Messages = {
   uiThemeSystem: "システムに合わせる",
   uiThemeLight: "通常",
   uiThemeDark: "ダーク",
+  updateCheck: "更新を確認",
+  updateChecking: "更新を確認しています",
+  updateUpToDate: "これが最新のバージョンです。",
+  updateCheckFailed: "更新を確認できませんでした: {detail}",
+  updateAvailable: "新しいバージョン {version} があります",
+  updateInstall: "更新して再起動",
+  updateRetry: "もう一度更新する",
+  updateBusy: "動画の処理とモデルのダウンロードが終わると、更新できます。",
+  updateInstalling: "更新をダウンロードしています。終わるとアプリが再起動します。",
+  updateProgressLabel: "更新のダウンロード",
+  updateInstallFailed: "更新できませんでした: {detail}",
   tabHelp: "使い方",
   tabModels: "モデル",
   noticeSpeakersOnCpu:
@@ -229,6 +240,8 @@ export const jaMessages: Messages = {
       "字幕を作っている間とダウンロードの間は、モデルを消せません。終わるのを待つか、やめてから、もう一度試してください。",
     models_missing:
       "動画を入れられませんでした。{roles}のモデルがありません。「モデル」のタブでダウンロードするか、モデルが入っているフォルダを追加してください。",
+    update_busy:
+      "動画の処理かモデルのダウンロードの途中なので、更新できません。終わってから、もう一度試してください。",
     no_supported_files:
       "このファイルは入れられません。動画 (.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts) か、字幕ファイル (.drt .fcpxml .srt .ttml .transcript.json) を入れてください。",
     profile_invalid:
@@ -491,7 +504,7 @@ export const jaMessages: Messages = {
         ],
       },
       settings: {
-        heading: "言語と表示モードを変える",
+        heading: "設定と更新",
         parts: [
           {
             heading: "設定のタブ",
@@ -503,6 +516,19 @@ export const jaMessages: Messages = {
               "「{uiThemeLabel}」で「{uiThemeLight}」か「{uiThemeDark}」を選びます。「{uiThemeSystem}」にすると、パソコンの設定に合わせます。",
             ],
             notes: [],
+          },
+          {
+            heading: "アプリを更新する",
+            intro: "新しいバージョンが出ると、画面の上に出ます。ボタンを押すまで、何も変わりません。",
+            steps: [
+              "自分で調べるときは、「{tabSettings}」のタブで「{updateCheck}」を押します。",
+              "新しい内容を読んで、「{updateInstall}」を押します。",
+              "更新をダウンロードして、アプリが再起動します。",
+            ],
+            notes: [
+              "動画の処理とモデルのダウンロードの間は更新できません。終わるまで待ちます。",
+              "確認とダウンロードには、インターネットが要ります。",
+            ],
           },
         ],
       },

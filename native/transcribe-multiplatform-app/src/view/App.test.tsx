@@ -100,6 +100,10 @@ const SNAPSHOT: Snapshot = {
   profiles: [],
 };
 
+/** Nothing newer, unless a test says so. */
+const answerCommand = (command: string): Promise<unknown> =>
+  Promise.resolve(command === "check_update" ? null : SNAPSHOT);
+
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent }) }));
@@ -113,7 +117,7 @@ const emitJob = (payload: unknown): void =>
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listen).mockResolvedValue(vi.fn());
-  vi.mocked(invoke).mockResolvedValue(SNAPSHOT);
+  vi.mocked(invoke).mockImplementation(answerCommand);
   onDragDropEvent.mockResolvedValue(vi.fn());
 });
 
@@ -175,7 +179,7 @@ it("refuses a dropped video without its models, saying what to do", () => {
       )
       .getAttribute("role"),
   ).toBe("alert");
-  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["check_update"]]);
 });
 
 it("shows a background failure in the banner", async () => {
@@ -254,14 +258,19 @@ it("shows the system's language, with that chosen, when no language is saved", (
 it("changes language at once, and back to the system's", async () => {
   // As the backend does: the snapshot's locale is the chosen language, or the system's.
   vi.mocked(invoke).mockImplementation(
-    (_command: string, args?: unknown): Promise<unknown> =>
-      Promise.resolve({
-        ...SNAPSHOT,
-        locale:
-          args !== undefined && Reflect.get(Reflect.get(Object(args), "settings"), "ui_language") === "de"
-            ? "de"
-            : "ja-JP",
-      }),
+    (command: string, args?: unknown): Promise<unknown> =>
+      Promise.resolve(
+        command === "check_update"
+          ? null
+          : {
+              ...SNAPSHOT,
+              locale:
+                args !== undefined &&
+                Reflect.get(Reflect.get(Object(args), "settings"), "ui_language") === "de"
+                  ? "de"
+                  : "ja-JP",
+            },
+      ),
   );
   render(<App initial={{ ...SNAPSHOT, locale: "ja-JP" }} />);
   await act(async (): Promise<void> => {
@@ -276,4 +285,31 @@ it("changes language at once, and back to the system's", async () => {
   await waitFor((): void => {
     expect(document.documentElement.lang).toBe("ja");
   });
+});
+
+it("offers a new version found at startup, and installs only when pressed", async () => {
+  vi.mocked(invoke).mockImplementation(
+    (command: string): Promise<unknown> =>
+      Promise.resolve(command === "check_update" ? { version: "9.9.9", notes: "Faster." } : SNAPSHOT),
+  );
+  render(<App initial={SNAPSHOT} />);
+  await waitFor((): void => {
+    expect(screen.getByRole("heading", { name: "Version 9.9.9 is available" }).tagName).toBe("H2");
+  });
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Update and restart" }).disabled).toBe(false);
+  expect(vi.mocked(invoke).mock.calls.some(([command]): boolean => command === "install_update")).toBe(false);
+});
+
+it("says nothing when the check at startup fails", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(vi.fn());
+  vi.mocked(invoke).mockImplementation(
+    (command: string): Promise<unknown> =>
+      command === "check_update" ? Promise.reject(new Error("offline")) : Promise.resolve(SNAPSHOT),
+  );
+  render(<App initial={SNAPSHOT} />);
+  await waitFor((): void => {
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+  expect(screen.queryByRole("alert")).toBe(null);
+  warn.mockRestore();
 });

@@ -12,6 +12,17 @@ export const koMessages: Messages = {
   uiThemeSystem: "시스템에 맞춤",
   uiThemeLight: "밝게",
   uiThemeDark: "어둡게",
+  updateCheck: "업데이트 확인",
+  updateChecking: "업데이트를 확인하고 있습니다",
+  updateUpToDate: "최신 버전입니다.",
+  updateCheckFailed: "업데이트를 확인할 수 없습니다: {detail}",
+  updateAvailable: "새 버전 {version}이(가) 있습니다",
+  updateInstall: "업데이트 후 다시 시작",
+  updateRetry: "업데이트 다시 시도",
+  updateBusy: "처리 중인 동영상과 모델 내려받기가 끝나면 업데이트할 수 있습니다.",
+  updateInstalling: "업데이트를 내려받고 있습니다. 준비되면 앱이 다시 시작됩니다.",
+  updateProgressLabel: "업데이트 내려받기",
+  updateInstallFailed: "업데이트를 마치지 못했습니다: {detail}",
   tabHelp: "사용 방법",
   tabModels: "모델",
   noticeSpeakersOnCpu:
@@ -225,6 +236,8 @@ export const koMessages: Messages = {
       "작업이나 다운로드가 진행 중일 때는 모델을 초기화할 수 없습니다. 끝나기를 기다리거나 취소한 뒤 다시 시도하세요.",
     models_missing:
       "다음 모델이 없어 동영상을 추가하지 않았습니다: {roles}. 모델 탭에서 다운로드하거나 모델이 있는 폴더를 추가하세요.",
+    update_busy:
+      "동영상을 처리하거나 모델을 내려받는 중이라 업데이트할 수 없습니다. 끝난 뒤 다시 시도하세요.",
     no_supported_files:
       "이 파일은 넣을 수 없습니다. 동영상(.mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts)이나 자막 파일(.drt .fcpxml .srt .ttml .transcript.json)을 고르세요.",
     profile_invalid: "{file} 파일을 프로필로 읽을 수 없습니다. 이 앱에서 내보낸 파일을 고르세요.",
@@ -473,7 +486,7 @@ export const koMessages: Messages = {
         ],
       },
       settings: {
-        heading: "언어와 표시 모드 바꾸기",
+        heading: "설정과 업데이트",
         parts: [
           {
             heading: "설정",
@@ -484,6 +497,19 @@ export const koMessages: Messages = {
               "“{uiThemeLabel}” 항목에서 “{uiThemeLight}” 또는 “{uiThemeDark}” 항목을 고릅니다. “{uiThemeSystem}” 항목은 컴퓨터 설정을 따릅니다.",
             ],
             notes: [],
+          },
+          {
+            heading: "앱 업데이트하기",
+            intro: "새 버전이 나오면 창 위쪽에 표시됩니다. 버튼을 누르기 전에는 아무것도 바뀌지 않습니다.",
+            steps: [
+              "직접 찾으려면 “{tabSettings}” 탭에서 “{updateCheck}” 버튼을 누릅니다.",
+              "새로운 내용을 읽고 “{updateInstall}” 버튼을 누릅니다.",
+              "앱이 업데이트를 내려받고 다시 시작됩니다.",
+            ],
+            notes: [
+              "동영상을 처리하거나 모델을 내려받는 동안에는 업데이트할 수 없습니다. 끝날 때까지 기다리세요.",
+              "확인과 내려받기에는 인터넷 연결이 필요합니다.",
+            ],
           },
         ],
       },
