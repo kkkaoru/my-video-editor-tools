@@ -507,6 +507,10 @@ class SupportStore:
             return None
         return min(row[0] for row in marked), max(row[1] for row in marked)
 
+    def widened(self, span: tuple[int, int], rows: int) -> tuple[int, int]:
+        """``span`` with ``rows`` more above and below, as far as the kept rows reach."""
+        return max(self._kept[0], span[0] - rows), min(self._kept[1], span[1] + rows)
+
     def bands(self, top: int, bottom: int) -> NDArray[np.bool_]:
         """Every frame's support inside rows ``top..bottom``, unpacked into one array."""
         result = np.zeros((len(self._rows), bottom - top, self._width), dtype=bool)
@@ -532,13 +536,16 @@ def render_refilled_video(
     job: VideoRepairJob,
     supports: SupportStore,
     refill: Callable[[Iterator[Image], tuple[int, int]], Iterable[Image]],
+    *,
+    surroundings: int = 0,
 ) -> int:
     """Encode the source with each frame's repaired pixels replaced by ``refill``.
 
     ``refill`` receives the stored source rows covering every support (one band per frame, in
     order) and returns those rows refilled, as an array or as bands handed over in order (each
-    band is read once its frame is due). Pixels outside the supports stay the source; the
-    encoder and presentation clock are the repair renderer's own.
+    band is read once its frame is due). ``refill`` also receives ``surroundings`` more source
+    rows above and below them, as far as the store kept. Pixels outside the supports stay the
+    source; the encoder and presentation clock are the repair renderer's own.
     """
     if job.output.exists():
         raise FileExistsError(job.output)
@@ -568,7 +575,7 @@ def render_refilled_video(
         top = bottom = 0
         bands: Iterable[Image] = (frame[0:0] for _ in range(job.frames))
     else:
-        top, bottom = span
+        top, bottom = supports.widened(span, surroundings)
         bands = refill(supports.sources(top, bottom), (top, bottom))
     encode = _encode_command(job)
     with (

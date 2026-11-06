@@ -534,3 +534,33 @@ def test_a_chunk_without_repaired_pixels_is_encoded_unchanged(tmp_path: Path) ->
     job = VideoRepairJob(source, output, SIZE, SIZE, 3, ())
     assert render_refilled_video(job, empty, refill) == 3
     assert output.stat().st_size > 0
+
+
+def test_a_refill_receives_the_surrounding_rows_it_asks_for(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    make_source(source, 2)
+    store = SupportStore(SIZE, (10, 40))
+    mask = np.zeros((SIZE, SIZE), dtype=bool)
+    mask[20:30, 10:50] = True
+    frame = np.full((SIZE, SIZE, 3), 7, dtype=np.uint8)
+    store(mask, frame)
+    store(mask, frame)
+    seen: list[tuple[int, int]] = []
+    shapes: list[tuple[int, ...]] = []
+
+    def refill(bands: Iterator[Image], rows: tuple[int, int]) -> NDArray[np.uint8]:
+        seen.append(rows)
+        listed = list(bands)
+        shapes.append(listed[0].shape)
+        return np.stack(listed)
+
+    output = tmp_path / "surrounded.mp4"
+    job = VideoRepairJob(source, output, SIZE, SIZE, 2, ())
+    assert render_refilled_video(job, store, refill, surroundings=6) == 2
+    assert (seen, shapes) == ([(14, 36)], [(22, SIZE, 3)])
+
+
+def test_surrounding_rows_stop_at_the_kept_rows() -> None:
+    store = SupportStore(SIZE, (10, 40))
+    assert store.widened((20, 30), 6) == (14, 36)
+    assert store.widened((12, 38), 6) == (10, 40)

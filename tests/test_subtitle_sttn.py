@@ -962,3 +962,210 @@ def test_float16_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(sttn, "DTYPE", "float16")
     with pytest.raises(ValueError, match="bfloat16 only: float16 overflows"):
         _encoder_painter(tmp_path)
+
+
+class Heights(Flat):
+    """A fake inpainter noting each tile's height and the rows it reads back."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[tuple[int, slice]] = []
+
+    def tile(
+        self,
+        frames: NDArray[np.uint8],
+        masks: NDArray[np.uint8],
+        rows: slice,
+        needed: NDArray[np.bool_] | None = None,
+    ) -> NDArray[np.float32]:
+        self.seen.append((frames.shape[1], rows))
+        return np.full((*frames.shape[:3], 3), 200, dtype=np.float32)[:, rows]
+
+
+def _tall_band() -> tuple[NDArray[np.uint8], NDArray[np.bool_]]:
+    bands = np.full((6, 228, 1080, 3), 10, np.uint8)
+    masks = np.zeros((6, 228, 1080), dtype=bool)
+    masks[:, 100:120, 100:1000] = True
+    return bands, masks
+
+
+def test_a_caption_takes_the_shortest_tile_holding_it_and_real_rows_around_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sttn, "FLAT", 0.0)
+    bands, masks = _tall_band()
+    painter = Heights()
+    result = sttn.fill_band(painter, bands, masks, heights=sttn.REFILL_HEIGHTS)
+    assert painter.seen == [(80, slice(0, 80)), (80, slice(0, 80))]
+    assert (result[:, 110, 500] == 200).all()
+    assert (result[:, 10, 500] == 10).all()
+    assert (result[:, 60, 500] == 10).all()  # read for the model, not masked: the source
+
+
+def test_a_caption_on_one_tile_reads_more_rows_at_its_coarser_scale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sttn, "FLAT", 1.0)
+    bands, masks = _tall_band()
+    painter = Heights()
+    sttn.fill_band(painter, bands, masks, heights=sttn.REFILL_HEIGHTS)
+    assert painter.seen == [(80, slice(0, 80))]
+
+
+def test_a_fill_keeps_the_models_own_rows_unless_told_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sttn, "FLAT", 0.0)
+    bands, masks = _tall_band()
+    painter = Heights()
+    sttn.fill_band(painter, bands, masks)
+    assert painter.seen == [(240, slice(40, 200)), (240, slice(40, 200))]
+
+
+def test_a_streamed_refill_passes_the_tile_heights_on() -> None:
+    bands, masks = _streamed_case()
+    painter = Heights()
+    filled = list(sttn.refill_stream(iter(list(bands)), masks, painter, heights=(160, 240)))
+    assert len(filled) == len(bands)
+    assert {height for height, _ in painter.seen} == {160}
+
+
+def test_a_streamed_refill_over_several_heights_equals_the_plain_fill() -> None:
+    bands, masks = _streamed_case()
+    expected = sttn.fill_band(Varying(), bands, masks, heights=sttn.REFILL_HEIGHTS)
+    streamed = [
+        band.copy()
+        for band in sttn.refill_stream(
+            iter(list(bands)), masks.copy(), Varying(), heights=sttn.REFILL_HEIGHTS
+        )
+    ]
+    assert np.array_equal(np.stack(streamed), expected)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [(1, 80), (80, 80), (81, 96), (97, 120), (121, 160), (161, 200), (201, 240), (500, 240)],
+)
+def test_the_tile_height_is_the_shortest_that_holds_the_rows(rows: int, expected: int) -> None:
+    assert sttn.tile_height(rows, sttn.REFILL_HEIGHTS) == expected
+
+
+@pytest.mark.parametrize("height", [80, 96, 120, 160, 200, 240])
+def test_every_tile_height_divides_into_whole_attention_patches(height: int) -> None:
+    assert height in sttn.REFILL_HEIGHTS
+    assert all(
+        (sttn.TILE_WIDTH // 4) % width == 0 and (height // 4) % tall == 0
+        for width, tall in sttn.PATCHES[height]
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "band_rows", "width", "tiles", "expected"),
+    [
+        ((100, 160), 400, 1080, 2, ((73, 187), 80)),  # 60 rows and 8 on each side fit 80
+        ((100, 198), 400, 1080, 2, ((92, 206), 80)),  # the most 80 rows hold at 0.7
+        ((100, 199), 400, 1080, 2, ((81, 218), 96)),  # one more takes the next height
+        ((100, 370), 400, 1080, 2, ((58, 400), 240)),  # the model's own rows
+        ((0, 90), 154, 1080, 2, ((0, 114), 80)),  # kept inside the band at its top
+        ((64, 154), 154, 1080, 2, ((40, 154), 80)),  # and at its bottom
+        ((50, 140), 300, 500, 1, ((39, 150), 96)),  # a crop at a finer scale needs more rows
+        ((50, 140), 300, 1080, 1, ((0, 200), 80)),  # one tile across at a coarser one fewer
+    ],
+)
+def test_a_row_window_is_centred_on_its_caption_and_fills_its_tile(
+    rows: tuple[int, int],
+    band_rows: int,
+    width: int,
+    tiles: int,
+    expected: tuple[tuple[int, int], int],
+) -> None:
+    window = sttn.row_window(
+        rows, band_rows=band_rows, width=width, tiles=tiles, heights=sttn.REFILL_HEIGHTS
+    )
+    assert window == expected
+
+
+def _lines(count: int, rows: slice, columns: slice) -> NDArray[np.uint8]:
+    grown = np.zeros((count, 300, 1080), np.uint8)
+    grown[:, rows, columns] = 1
+    return grown
+
+
+def test_one_height_fills_the_whole_band_as_one_part() -> None:
+    grown = _lines(30, slice(100, 190), slice(100, 900))
+    parts = sttn.row_windows(grown, list(range(30)), (0, 30, 0, 1080, 2), (240,))
+    assert parts == [(0, 30, (0, 300), 240)]
+
+
+def test_captions_on_one_line_share_a_part_and_another_line_starts_one() -> None:
+    grown = np.concatenate(
+        [
+            _lines(30, slice(100, 190), slice(100, 400)),
+            _lines(30, slice(100, 190), slice(500, 900)),
+            _lines(30, slice(200, 290), slice(100, 900)),
+        ]
+    )
+    parts = sttn.row_windows(grown, list(range(90)), (0, 90, 0, 1080, 2), sttn.REFILL_HEIGHTS)
+    assert parts == [(0, 60, (88, 202), 80), (60, 90, (186, 300), 80)]
+
+
+def test_a_taller_caption_starts_a_part_and_parts_cover_the_empty_frames() -> None:
+    grown = np.concatenate(
+        [
+            np.zeros((5, 300, 1080), np.uint8),
+            _lines(30, slice(100, 160), slice(100, 400)),
+            np.zeros((5, 300, 1080), np.uint8),
+            _lines(30, slice(100, 260), slice(100, 400)),
+        ]
+    )
+    source: list[int | None] = list(range(70))
+    source[:5] = [None] * 5
+    source[35:40] = [None] * 5
+    parts = sttn.row_windows(grown, source, (0, 70, 0, 1080, 2), sttn.REFILL_HEIGHTS)
+    assert parts == [(0, 40, (73, 187), 80), (40, 70, (66, 294), 160)]
+
+
+def test_a_tile_plan_by_caption_compares_scales_at_the_captions_own_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sttn, "FLAT", 0.0)
+    bands = np.zeros((5, 400, 1080, 3), np.uint8)
+    grown = np.zeros((5, 400, 1080), np.uint8)
+    grown[:, 100:120, 200:800] = 1
+    source: list[int | None] = list(range(5))
+    assert sttn.tile_plan(bands, grown, source) == [(0, 5, 140, 860, 1)]
+    assert sttn.tile_plan(bands, grown, source, by_caption=True) == [(0, 5, 0, 1080, 2)]
+
+
+def test_a_shorter_tile_decodes_rows_of_its_own_height(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sttn, "ROW_MARGIN", 2)
+    assert sttn._decoded_rows(slice(20, 140), 160) == (12, 148)
+    assert sttn._decoded_rows(slice(None), 160) == (0, 160)
+    monkeypatch.setattr(sttn, "ROW_MARGIN", None)
+    assert sttn._decoded_rows(slice(20, 140), 160) == (0, 160)
+
+
+def test_the_model_runs_on_a_shorter_tile_and_reads_its_rows_back(tmp_path: Path) -> None:
+    checkpoint, architecture = write_model(tmp_path)
+    painter = sttn.Inpainter(tmp_path, checkpoint_sha=checkpoint, architecture_sha=architecture)
+    frames = np.zeros((25, 160, sttn.TILE_WIDTH, 3), np.uint8)
+    masks = np.ones((25, 160, sttn.TILE_WIDTH), np.uint8)
+    assert painter.tile(frames, masks, slice(20, 140)).shape == (25, 120, sttn.TILE_WIDTH, 3)
+    assert painter._blank.shape == (1, 1, 160, sttn.TILE_WIDTH)
+
+
+def test_a_tile_height_sets_every_attentions_patches() -> None:
+    class Attention:
+        patchsize = sttn.PATCHES[240]
+
+    attention = Attention()
+    host = sttn.Inpainter.__new__(sttn.Inpainter)  # the height switch only, without the files
+    host._torch, host._device, host._dtype = torch, torch.device("cpu"), torch.float32
+    host._attentions = [attention]
+    host._blank = torch.zeros((1, 1, 240, sttn.TILE_WIDTH))
+    host._use_height(160)
+    assert attention.patchsize == ((108, 40), (36, 20), (18, 10), (9, 5))
+    assert host._blank.shape == (1, 1, 160, sttn.TILE_WIDTH)
+    host._use_height(sttn.TILE_HEIGHT)
+    assert attention.patchsize == ((108, 60), (36, 20), (18, 10), (9, 5))
+    assert host._blank.shape == (1, 1, 240, sttn.TILE_WIDTH)

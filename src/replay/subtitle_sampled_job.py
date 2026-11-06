@@ -597,8 +597,11 @@ def real_collaborators(
         elif sttn is not None:
             # Find the exact repair pixels with the usual renderer, then refill them with STTN.
             kept = (
-                min((s.y for s in spans), default=0),
-                max((s.y + s.height for s in spans), default=0),
+                max(0, min((s.y for s in spans), default=0) - subtitle_sttn.MAX_SURROUNDING),
+                min(
+                    canvas[1],
+                    max((s.y + s.height for s in spans), default=0) + subtitle_sttn.MAX_SURROUNDING,
+                ),
             )
             store = SupportStore(canvas[0], kept)
             started = time.monotonic()
@@ -612,10 +615,12 @@ def real_collaborators(
             painter = sttn
 
             def refill(bands: Iterator[Image], rows: tuple[int, int]) -> Iterator[Image]:
-                return refill_stream(bands, store.bands(*rows), painter)
+                return refill_stream(
+                    bands, store.bands(*rows), painter, heights=subtitle_sttn.REFILL_HEIGHTS
+                )
 
             repaired = time.monotonic()
-            render_refilled_video(job, store, refill)
+            render_refilled_video(job, store, refill, surroundings=subtitle_sttn.MAX_SURROUNDING)
             # Split of the render between the mask repair pass and the STTN refill pass.
             (directory / "render-seconds.json").write_text(
                 json.dumps({"repair": round(repaired - started, 3),

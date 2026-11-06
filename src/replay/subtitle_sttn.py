@@ -7,8 +7,9 @@ frames of the same chunk, so the fill follows the scene over time.
 
 The masks are the exact pixels the caption repair changed (before encoding, unchanged pixels
 equal the source byte for byte). Only those pixels are replaced; every other pixel is the source.
-The band of rows holding all masks is processed as overlapping 432x240 tiles (the model's
-geometry) with linear blending across tile overlaps, in temporal windows with references.
+The band of rows holding all masks, with real rows around it, is processed as overlapping tiles
+432 wide and up to 240 rows tall (the model's geometry) with linear blending across tile overlaps,
+in temporal windows with references.
 """
 
 from __future__ import annotations
@@ -84,8 +85,29 @@ MAX_TILES = 2
 # filled with one tile instead of MAX_TILES where that costs nothing visible: (a) its masks fit
 # one tile cropped around them at a scale no coarser than the whole band's (ground truth: equal
 # PSNR on average, half the time), or (b) their surroundings are plain (see FLAT).
-TILES = "adaptive-v1"
+TILES = "adaptive-v2-real-rows"
 CONTEXT = 48  # band pixels kept beside a cropped run's masks for the model to read
+# Tile heights of a caption refill, each with its attention patches in feature cells (width,
+# height); the weights do not depend on them. A band used to reach 240 rows by reflection, which
+# showed the model the band's own caption pixels as valid surroundings and spent 40% of every tile
+# on copies. Ground truth (edits/work/cleanup-speed-20261106/tile_height/calib-s20.jsonl, 140
+# blocks under the real masks of an 11/05 chunk, 93 rows): against the reflected 240 rows, real
+# rows around the band with 160 rows took 0.72 of the fill time at +0.99 dB (median), 120 rows
+# 0.56 at +0.78 dB, 96 rows 0.49 at +0.63 dB, 80 rows 0.38 at +0.27 dB.
+PATCHES: dict[int, tuple[tuple[int, int], ...]] = {
+    80: ((108, 20), (36, 20), (18, 10), (9, 5)),
+    96: ((108, 24), (36, 8), (18, 4), (9, 2)),
+    120: ((108, 30), (36, 10), (18, 10), (9, 5)),
+    160: ((108, 40), (36, 20), (18, 10), (9, 5)),
+    200: ((108, 50), (36, 25), (18, 10), (9, 5)),
+    TILE_HEIGHT: ((108, 60), (36, 20), (18, 10), (9, 5)),
+}
+REFILL_HEIGHTS = tuple(sorted(PATCHES))
+# Real source rows around a caption (source pixels, per side): its tile holds at least
+# MIN_SURROUNDING (calibrated with 10 at 80 rows); the band keeps MAX_SURROUNDING for them, which
+# costs memory in every chunk, beyond what any tile height has room for at the usual scale.
+MIN_SURROUNDING = 8
+MAX_SURROUNDING = 32
 # texture() below which one tile across the band is used. Ground truth (real backgrounds of 7
 # recordings at 4 heights under the real 10/21 caption masks, 140 blocks of 60 frames): one tile
 # was as good or better only where the score was 0 (a plain screen); from about 1 it lost 0-1.6 dB
@@ -483,13 +505,13 @@ def load_architecture(directory: Path, sha: str) -> ModuleType:
     return loaded
 
 
-def _decoded_rows(rows: slice) -> tuple[int, int]:
+def _decoded_rows(rows: slice, height: int = TILE_HEIGHT) -> tuple[int, int]:
     """Tile rows the decoder computes for ``rows``: whole feature rows, ``ROW_MARGIN`` beyond."""
-    start, stop = rows.indices(TILE_HEIGHT)[:2]
+    start, stop = rows.indices(height)[:2]
     if ROW_MARGIN is None:
-        return 0, TILE_HEIGHT
+        return 0, height
     top = max(0, start // 4 - ROW_MARGIN) * 4
-    bottom = min(TILE_HEIGHT // 4, -(-stop // 4) + ROW_MARGIN) * 4
+    bottom = min(height // 4, -(-stop // 4) + ROW_MARGIN) * 4
     return top, bottom
 
 
@@ -511,6 +533,7 @@ class Inpainter:
             raise ValueError("STTN runs in bfloat16 only: float16 overflows on real content")
         self._dtype = torch.bfloat16
         self._network = network.to(self._device, dtype=self._dtype).eval()
+        self._attentions = [m for m in self._network.modules() if hasattr(m, "patchsize")]
         freeze_projections(self._network)
         self._table = input_table(self._device, self._dtype).view(torch.int16)
         self._unit = output_table(self._device, self._dtype)
@@ -526,10 +549,11 @@ class Inpainter:
         rows: slice,
         needed: NDArray[np.bool_] | None = None,
     ) -> NDArray[np.float32]:
-        """Inpaint one 432x240 tile sequence; returns the predicted pixels (0..255) of ``rows``.
+        """Inpaint one tile sequence 432 wide; returns the predicted pixels (0..255) of ``rows``.
 
         Frames not ``needed`` (all are by default) are left 0 when ``SKIP_UNNEEDED`` is set.
         """
+        self._use_height(frames.shape[1])
         result = self._predict(frames, masks, rows, needed)
         # torch keeps freed MPS buffers cached: 5.05 GiB were held after a chunk's fill, 2.04 GiB
         # with this, at the same speed and with identical output (measured 2026-10-20). Emptied
@@ -537,6 +561,15 @@ class Inpainter:
         # through the audit and encode (measured 2026-10-22).
         self._torch.mps.empty_cache()
         return result
+
+    def _use_height(self, height: int) -> None:
+        """Set the blank masks and every attention's patches for tiles of ``height`` rows."""
+        if height == self._blank.shape[2]:
+            return
+        for attention in self._attentions:
+            attention.patchsize = PATCHES[height]
+        self._blank = self._torch.zeros((1, 1, height, TILE_WIDTH), device=self._device,
+                                        dtype=self._dtype)  # fmt: skip
 
     def _predict(
         self,
@@ -546,20 +579,18 @@ class Inpainter:
         needed: NDArray[np.bool_] | None,
     ) -> NDArray[np.float32]:
         torch = self._torch
-        count = len(frames)
+        count, height = frames.shape[:2]
         # Frames travel as uint8 and are converted on the GPU; predictions are summed there and
         # copied back once, so each window costs one transfer each way.
         pixels = torch.from_numpy(frames).to(self._device)
         marks = torch.from_numpy(masks).to(self._device)
         # Only the rows the caller reads are summed and copied back.
-        out = torch.zeros(
-            (count, 3, len(range(TILE_HEIGHT)[rows]), TILE_WIDTH), device=self._device
-        )
+        out = torch.zeros((count, 3, len(range(height)[rows]), TILE_WIDTH), device=self._device)
         weight = torch.zeros((count, 1, 1, 1), device=self._device)
         library = _library()
         wanted = np.ones(count, bool) if needed is None or not SKIP_UNNEEDED else needed
-        top, bottom = _decoded_rows(rows)
-        start, stop = rows.indices(TILE_HEIGHT)[:2]
+        top, bottom = _decoded_rows(rows, height)
+        start, stop = rows.indices(height)[:2]
         step = REFERENCE_STEP
         with torch.no_grad():
             # Without references a run reads only its own frames, so each run is encoded alone:
@@ -584,7 +615,7 @@ class Inpainter:
                     if features is None
                     else features[chosen]
                 )
-                predicted = self._infer(x, (top // 4, bottom // 4))
+                predicted = self._infer(x, (top // 4, bottom // 4), height)
                 every = len(decode) == near.stop - near.start
                 part = predicted[: near.stop - near.start]
                 if not every:
@@ -607,7 +638,7 @@ class Inpainter:
             result = (out / weight.clamp(min=1)).permute(0, 2, 3, 1).cpu().numpy()
         return np.asarray(result, dtype=np.float32)
 
-    def _infer(self, features: Any, rows: tuple[int, int]) -> Any:
+    def _infer(self, features: Any, rows: tuple[int, int], height: int = TILE_HEIGHT) -> Any:
         """The transformer's output on the feature ``rows`` the decoder reads.
 
         The last block computes only those rows (``_block_rows``, the same bits); every earlier
@@ -615,7 +646,7 @@ class Inpainter:
         """
         network, blank = self._network, self._blank.expand(len(features), -1, -1, -1)
         transformer = getattr(network, "transformer", None)
-        if rows == (0, TILE_HEIGHT // 4):
+        if rows == (0, height // 4):
             return network.infer(features, blank)
         if transformer is None:  # a network without the pinned blocks: every row, then the rows
             return network.infer(features, blank)[:, :, rows[0] : rows[1]]
@@ -736,6 +767,11 @@ def _scale(height: int, width: int, tiles: int) -> float:
     return min(TILE_HEIGHT / height, widest / width)
 
 
+def tile_height(rows: int, heights: Sequence[int]) -> int:
+    """The shortest of the ascending ``heights`` that holds ``rows``, else the model's own."""
+    return next((height for height in heights if height >= rows), TILE_HEIGHT)
+
+
 def texture(bands: NDArray[np.uint8], grown: NDArray[np.uint8], frames: Sequence[int]) -> float:
     """Detail one tile across the band would lose around the masks, over ``SAMPLES`` frames.
 
@@ -784,20 +820,28 @@ def captions(grown: NDArray[np.uint8], source: Sequence[int | None]) -> list[lis
 
 
 def tile_plan(
-    bands: NDArray[np.uint8], grown: NDArray[np.uint8], source: Sequence[int | None]
+    bands: NDArray[np.uint8],
+    grown: NDArray[np.uint8],
+    source: Sequence[int | None],
+    *,
+    by_caption: bool = False,
 ) -> list[tuple[int, int, int, int, int]]:
     """Fill groups ``(first, last, left, right, tiles)``: frames, band columns and tile count.
 
     Each caption is planned apart; consecutive captions with the same geometry form one group, so
     a chunk planned entirely at ``MAX_TILES`` across the band is filled exactly as one call. A
     geometry changes only where the caption does, where its fill changes shape anyway.
+    ``by_caption`` compares scales at a caption's own rows instead of the whole band's.
     """
     height, width = grown.shape[1:]
-    whole = _scale(height, width, MAX_TILES)
-    # The narrowest crop one tile covers without scaling the band up or past the tile's height.
-    narrowest = min(width, max(TILE_WIDTH, math.ceil(TILE_WIDTH * height / TILE_HEIGHT)))
     groups: list[tuple[int, int, int, int, int]] = []
     for first, last in captions(grown, source):
+        if by_caption:
+            marked = np.flatnonzero(grown[first:last].any(axis=(0, 2)))
+            height = int(marked[-1] - marked[0]) + 1 + 2 * MIN_SURROUNDING
+        whole = _scale(height, width, MAX_TILES)
+        # The narrowest crop one tile covers without scaling the band up or past the tile's height.
+        narrowest = min(width, max(TILE_WIDTH, math.ceil(TILE_WIDTH * height / TILE_HEIGHT)))
         columns = np.flatnonzero(grown[first:last].any(axis=(0, 1)))
         left = max(0, int(columns[0]) - CONTEXT)
         right = min(width, int(columns[-1]) + 1 + CONTEXT)
@@ -817,6 +861,58 @@ def tile_plan(
     return groups
 
 
+def row_window(
+    rows: tuple[int, int], *, band_rows: int, width: int, tiles: int, heights: Sequence[int]
+) -> tuple[tuple[int, int], int]:
+    """The band rows a caption on ``rows`` is filled from, and the tile height holding them.
+
+    The shortest of ``heights`` with room for ``MIN_SURROUNDING`` around the caption at the scale
+    the width allows; the tile is then filled with as many real rows as fit, centred on the
+    caption and kept inside the band.
+    """
+    first, last = rows
+    needed = last - first + 2 * MIN_SURROUNDING
+    scale = min(TILE_HEIGHT / needed, (TILE_WIDTH + (tiles - 1) * TILE_WIDTH * 3 // 4) / width)
+    tall = tile_height(math.ceil(needed * scale), heights)
+    count = min(band_rows, int(tall / scale + 1e-9))
+    top = min(max(0, (first + last - count) // 2), band_rows - count)
+    return (top, top + count), tall
+
+
+def row_windows(
+    grown: NDArray[np.uint8],
+    source: Sequence[int | None],
+    group: tuple[int, int, int, int, int],
+    heights: Sequence[int],
+) -> list[tuple[int, int, tuple[int, int], int]]:
+    """A group's consecutive parts ``(first, last, rows, tile height)``, one height for each.
+
+    With one height the whole group fills the whole band. Otherwise each caption gets its own
+    rows, and joins the part before it while its rows stay inside that part's and the height is
+    the same, so captions on one line are filled as one call and a part changes only where the
+    caption does, where its fill changes shape anyway.
+    """
+    begin, end, left, right, tiles = group
+    band_rows = grown.shape[1]
+    if len(heights) == 1:
+        return [(begin, end, (0, band_rows), heights[0])]
+    parts: list[tuple[int, tuple[int, int], int]] = []
+    for first, last in captions(grown[begin:end], source[begin:end]):
+        caption = grown[begin + first : begin + last, :, left:right]
+        marked = np.flatnonzero(caption.any(axis=(0, 2)))
+        rows = (int(marked[0]), int(marked[-1]) + 1)
+        window, tall = row_window(
+            rows, band_rows=band_rows, width=right - left, tiles=tiles, heights=heights
+        )
+        joins = parts and parts[-1][2] == tall and parts[-1][1][0] <= rows[0]
+        if not (joins and rows[1] <= parts[-1][1][1]):
+            parts.append((begin + first if parts else begin, window, tall))
+    ends = [part[0] for part in parts[1:]] + [end]
+    return [
+        (start, stop, window, tall) for (start, window, tall), stop in zip(parts, ends, strict=True)
+    ]
+
+
 def fill_band(
     inpaint: Tiler,
     bands: NDArray[np.uint8],
@@ -824,12 +920,14 @@ def fill_band(
     *,
     in_place: bool = False,
     progress: Callable[[int], None] | None = None,
+    heights: Sequence[int] = (TILE_HEIGHT,),
 ) -> NDArray[np.uint8]:
     """The bands with every masked pixel replaced by the model's temporally coherent fill.
 
     ``in_place`` writes the fill into ``bands`` and grows ``masks`` in place (for a caller that
     owns both), so neither is copied. ``progress`` receives, as the fill advances, how many
-    leading frames of the result are final (never written again).
+    leading frames of the result are final (never written again). ``heights``, ascending, are the
+    tile heights a caption may use (``row_windows``).
     """
     kernel = np.ones((2 * MASK_GROWTH + 1,) * 2, np.uint8)
     if in_place:
@@ -841,9 +939,11 @@ def fill_band(
     source = plan_reuse(bands, grown)
     result = bands if in_place else bands.copy()
     report = progress if progress is not None else _ignore
-    for group in tile_plan(bands, grown, source):
-        report(group[0])  # groups follow each other: every earlier frame is final
-        _fill(inpaint, bands, grown, source, result, group, report)
+    for group in tile_plan(bands, grown, source, by_caption=len(heights) > 1):
+        for first, last, window, tall in row_windows(grown, source, group, heights):
+            report(first)  # parts follow each other: every earlier frame is final
+            part = (first, last, *group[2:])
+            _fill(inpaint, bands, grown, source, result, part, report, band_rows=window, tall=tall)
     report(len(result))
     return result
 
@@ -860,22 +960,27 @@ def _fill(
     result: NDArray[np.uint8],
     group: tuple[int, int, int, int, int],
     progress: Callable[[int], None],
+    *,
+    band_rows: tuple[int, int],
+    tall: int,
 ) -> None:
-    """Fill one group's frames within its columns into ``result`` (see ``tile_plan``)."""
+    """Fill one group's frames within its columns into ``result`` (see ``tile_plan``), from
+    ``band_rows`` in tiles ``tall`` rows high (see ``row_windows``)."""
     begin, end, left, right, tiles = group
-    height, width = grown.shape[1], right - left
+    height, width = band_rows[1] - band_rows[0], right - left
     scale = _scale(height, width, tiles)
     scaled_width = max(TILE_WIDTH, round(width * scale))
     scaled_height = min(TILE_HEIGHT, round(height * scale))
-    top = (TILE_HEIGHT - scaled_height) // 2
-    bottom = TILE_HEIGHT - scaled_height - top
+    top = (tall - scaled_height) // 2
+    bottom = tall - scaled_height - top
+    within = slice(*band_rows)
     cut = slice(left, right)
 
     def fit(
         image: NDArray[np.uint8], interpolation: int, border: int, out: NDArray[np.uint8]
     ) -> None:
         small = cv2.resize(
-            np.ascontiguousarray(image[:, cut]), (scaled_width, scaled_height),
+            np.ascontiguousarray(image[within, cut]), (scaled_width, scaled_height),
             interpolation=interpolation,
         )  # fmt: skip
         cv2.copyMakeBorder(small, top, bottom, 0, 0, border, dst=out)  # straight into the stack
@@ -883,8 +988,8 @@ def _fill(
     computed = sorted({frame for frame in source[begin:end] if frame is not None})
     position = {frame: index for index, frame in enumerate(computed)}
     count = len(computed)  # the model runs only on these frames, in order
-    small = np.empty((count, TILE_HEIGHT, scaled_width, 3), np.uint8)
-    small_masks = np.empty((count, TILE_HEIGHT, scaled_width), np.uint8)
+    small = np.empty((count, tall, scaled_width, 3), np.uint8)
+    small_masks = np.empty((count, tall, scaled_width), np.uint8)
 
     def fit_frame(k: int, i: int) -> None:
         fit(bands[i], cv2.INTER_AREA, cv2.BORDER_REFLECT_101, small[k])
@@ -919,10 +1024,10 @@ def _fill(
         frame = source[index]
         if frame is None:
             return
-        keep = grown[index][:, cut, None].view(bool)
         if frame != index:
             # The computed frame's fill where it was repaired, its source pixels elsewhere: the
             # surroundings of both are still (plan_reuse), so either is this frame's background.
+            keep = grown[index][:, cut, None].view(bool)
             np.copyto(result[index][:, cut], result[frame][:, cut], where=keep)
             return
         at = position[frame] - base
@@ -931,7 +1036,8 @@ def _fill(
         np.clip(up, 0, 255, out=up)
         # A masked copy instead of gathering and scattering the masked pixels: 1.3 against
         # 2.4 ms per 1080-wide frame, the same bytes (2026-10-23).
-        np.copyto(result[index][:, cut], up.astype(np.uint8), where=keep)
+        keep = grown[index][within, cut, None].view(bool)
+        np.copyto(result[index][within, cut], up.astype(np.uint8), where=keep)
 
     def composite(final: int) -> None:
         """Write every frame whose fill (a computed position below ``final``) is complete."""
@@ -1015,7 +1121,11 @@ def refill_bands(
 
 
 def refill_stream(
-    bands: Iterator[Image], masks: Sequence[Mask] | NDArray[np.bool_], inpaint: Tiler
+    bands: Iterator[Image],
+    masks: Sequence[Mask] | NDArray[np.bool_],
+    inpaint: Tiler,
+    *,
+    heights: Sequence[int] = (TILE_HEIGHT,),
 ) -> Iterator[Image]:
     """``refill_bands`` handing each frame's band over as soon as its fill is final.
 
@@ -1041,8 +1151,9 @@ def refill_stream(
     # an aborted encode must fail faster.
     with ThreadPoolExecutor(max_workers=1) as worker:
         filled = worker.submit(
-            fill_band, inpaint, collected, stacked, in_place=True, progress=progress
-        )
+            fill_band, inpaint, collected, stacked, in_place=True, progress=progress,
+            heights=heights,
+        )  # fmt: skip
         filled.add_done_callback(wake)
         for index in range(len(collected)):
             with ready:
