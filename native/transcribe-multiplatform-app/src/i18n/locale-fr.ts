@@ -146,6 +146,8 @@ export const frMessages: Messages = {
     extract_audio: "Extraction de l’audio",
     transcribe: "Transcription",
     diarize: "Séparation des voix",
+    separate: "Séparation des voix superposées",
+    retranscribe: "Transcription des voix séparées",
     faces: "Détection des visages",
     export: "Écriture des fichiers de sous-titres",
   },

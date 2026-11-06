@@ -138,6 +138,8 @@ export const enMessages: Messages = {
     extract_audio: "Extracting audio",
     transcribe: "Transcribing",
     diarize: "Separating speakers",
+    separate: "Separating overlapping voices",
+    retranscribe: "Transcribing the separated voices",
     faces: "Detecting faces",
     export: "Writing subtitle files",
   },

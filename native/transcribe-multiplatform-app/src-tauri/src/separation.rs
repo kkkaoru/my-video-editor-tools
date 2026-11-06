@@ -3,7 +3,7 @@
 
 use crate::error::{io_context, AppError, AppResult};
 use crate::paths::{write_atomic, AppPaths};
-use crate::process::{background_command, run_with_ticks, CancelToken};
+use crate::process::{background_command, run_with_progress, CancelToken};
 use ort::environment::Environment;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -34,6 +34,8 @@ const RIFF_HEADER_BYTES: usize = 12;
 const CHUNK_HEADER_BYTES: usize = 8;
 const FORMAT_CHUNK_BYTES: usize = 16;
 const REQUEST_FILE: &str = "separation-request.json";
+/// How the child process reports clips done on its standard error.
+const PROGRESS_PREFIX: &str = "separated ";
 
 /// Cuts `[start, end)` seconds of a 16 kHz mono WAV into files of their own, in the same form of samples.
 pub fn cut_clips(wav: &Path, clips: &[(f64, f64, PathBuf)]) -> AppResult<()> {
@@ -88,7 +90,7 @@ pub fn separate_clips(
     clips: &[SeparationClip],
     work: &Path,
     cancel: &CancelToken,
-    on_tick: &mut dyn FnMut(),
+    progress: &mut dyn FnMut(f64),
 ) -> AppResult<()> {
     let request = SeparationRequest {
         library: library.to_path_buf(),
@@ -108,7 +110,16 @@ pub fn separate_clips(
         let path = std::env::join_paths(searched).map_err(|error| invalid(TOOL_NAME, error))?;
         command.env("PATH", path);
     }
-    run_with_ticks(command, TOOL_NAME, cancel, on_tick)
+    run_with_progress(command, TOOL_NAME, cancel, |line| {
+        if let Some(done) = line.strip_prefix(PROGRESS_PREFIX).and_then(parse_share) {
+            progress(done);
+        }
+    })
+}
+
+fn parse_share(text: &str) -> Option<f64> {
+    let (done, total) = text.split_once('/')?;
+    Some(done.parse::<f64>().ok()? / total.parse::<f64>().ok()?)
 }
 
 /// ONNX Runtime allows one environment per process, loaded from the first library asked for.
@@ -137,10 +148,17 @@ pub fn run_request(file: &Path) -> AppResult<()> {
     let mut session = builder
         .commit_from_file(&request.model)
         .map_err(|error| invalid("load MossFormer2", error))?;
+    // In order: a clip may be a track an earlier one wrote.
+    let total = request.clips.len();
     request
         .clips
         .iter()
-        .try_for_each(|clip| separate_clip(&mut session, clip))
+        .enumerate()
+        .try_for_each(|(done, clip)| {
+            separate_clip(&mut session, clip)?;
+            eprintln!("{PROGRESS_PREFIX}{}/{total}", done + 1);
+            Ok(())
+        })
 }
 
 fn separate_clip(session: &mut Session, clip: &SeparationClip) -> AppResult<()> {
@@ -542,7 +560,7 @@ mod tests {
         let exe = root.join("child.sh");
         std::fs::write(
             &exe,
-            "#!/bin/sh\necho \"$1\" > \"$2.flag\"\necho \"$PATH\" > \"$2.path\"\n",
+            "#!/bin/sh\necho \"$1\" > \"$2.flag\"\necho \"$PATH\" > \"$2.path\"\necho 'separated 1/2' >&2\n",
         )
         .unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -554,7 +572,7 @@ mod tests {
             &clips,
             &root,
             &CancelToken::default(),
-            &mut || {},
+            &mut |_| {},
         )
         .unwrap();
         let request = root.join(REQUEST_FILE);
@@ -567,6 +585,14 @@ mod tests {
         };
         assert_eq!(told("flag").trim(), SEPARATE_FLAG);
         assert!(told("path").starts_with(root.join("lib").to_str().unwrap()));
+    }
+
+    #[test]
+    fn progress_lines_from_the_child_become_shares() {
+        assert_eq!(parse_share("1/4"), Some(0.25));
+        assert_eq!(parse_share("4"), None);
+        assert_eq!(parse_share("a/4"), None);
+        assert_eq!(parse_share("1/b"), None);
     }
 
     #[test]

@@ -2,7 +2,15 @@
 
 export type Anchor = "face_above" | "face_below" | "video_top" | "video_bottom";
 export type Role = "transcribe" | "diarize" | "separate" | "face" | "runtime";
-export type Stage = "convert_model" | "extract_audio" | "transcribe" | "diarize" | "faces" | "export";
+export type Stage =
+  | "convert_model"
+  | "extract_audio"
+  | "transcribe"
+  | "diarize"
+  | "separate"
+  | "retranscribe"
+  | "faces"
+  | "export";
 
 /** Widths are layer thicknesses, as ratios of the text size; they stack from the glyph outwards. */
 export interface SpeakerColor {

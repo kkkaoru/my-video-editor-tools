@@ -76,10 +76,11 @@ earlier versions still open: a saved colour for unknown speakers is ignored, and
 A speaker talking for under a second right beside other speech joins that speech, and a change of speaker never falls
 inside a word, so colours do not flicker; voices really at once and turns set apart by pauses keep their speaker.
 
-With two or more speakers, or automatic detection, the audio around each overlap of speaker turns goes through
-MossFormer2 (twice where three people talk at once, for up to four tracks) and each track through Whisper again, and the
-tracks replace the first pass's text there, one row per voice. A track the first pass heard nothing of is dropped, and two
-tracks with the same words stay one row with the first pass's text. One speaker, or no overlap, never runs it.
+With two or more speakers, or automatic detection, the audio around each overlap of speaker turns of at least 0.5 s goes
+through MossFormer2 (twice where three people talk at once, for up to four tracks) and each track through Whisper again,
+and the tracks replace the first pass's text there, one row per voice. A range stays in the first pass's text when only
+one voice is left, when two tracks say the same, or when a row shares under half of its reading with the first pass; only
+a first pass stuck in a loop gives way to the tracks regardless. One speaker, or no such overlap, never runs it.
 
 Speakers whose words coincide for 0.25 s or more are shown together, one row each in speaker order, growing away from
 the anchor; rows that cannot fit between the margins shrink together. `.drt` and FCPXML put them on separate tracks or

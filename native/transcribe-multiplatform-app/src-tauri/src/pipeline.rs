@@ -2,7 +2,7 @@
 
 use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn, Word};
 use crate::catalog::{self, Backend, Hardware, ModelEntry};
-use crate::engines::{self, DiarizeModel, Tools, VideoInfo};
+use crate::engines::{self, DiarizeModel, Tools, VideoInfo, WhisperClip};
 use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::eta::{
     convert_step, export_step, PlannedStage, Progress, RateInputs, Stage, StageRates, Tracker,
@@ -171,6 +171,17 @@ fn plan_job(
     });
     let diarize = diarize_id
         .map(|id| rates.scaled(Stage::Diarize, &format!("diarize/{id}"), inputs, duration));
+    let rows = diarize_id.iter().flat_map(|_| {
+        [
+            rates.scaled(Stage::Separate, Stage::SEPARATE_KEY, inputs, duration),
+            rates.scaled(
+                Stage::Retranscribe,
+                Stage::RETRANSCRIBE_KEY,
+                inputs,
+                duration,
+            ),
+        ]
+    });
     convert
         .into_iter()
         .chain([
@@ -178,6 +189,7 @@ fn plan_job(
             rates.scaled(Stage::Transcribe, "transcribe", inputs, duration),
         ])
         .chain(diarize)
+        .chain(rows)
         .chain(faces)
         .chain([export_step()])
         .collect()
@@ -215,7 +227,7 @@ fn rows_for_overlaps(
     words: Vec<Word>,
     turns: &[SpeakerTurn],
     run: &RowRun<'_>,
-    tick: &dyn Fn(),
+    tick: &dyn Fn(Stage, f64),
 ) -> AppResult<(Vec<Word>, LaneStats)> {
     // Looked up only when someone does talk at once.
     let mut separate = |clips: &[SeparationClip]| {
@@ -236,19 +248,17 @@ fn rows_for_overlaps(
             clips,
             run.work,
             run.cancel,
-            &mut || tick(),
+            &mut |fraction| tick(Stage::Separate, fraction),
         )
     };
-    let mut transcribe = |file: &Path, folder: &Path| {
-        tick();
-        engines::transcribe(
+    let mut transcribe = |clips: &[WhisperClip]| {
+        engines::transcribe_many(
             run.tools,
             run.whisper,
-            file,
+            clips,
             &run.settings.language,
-            folder,
             run.cancel,
-            &mut |_| tick(),
+            &mut |fraction| tick(Stage::Retranscribe, fraction),
         )
     };
     lanes::with_rows(
@@ -437,7 +447,7 @@ pub fn run_job(
     let mut lanes = LaneStats::default();
     if speaker_model.is_some() {
         let ticks = RefCell::new(&mut report);
-        let tick = || ticks.borrow_mut()(Stage::Diarize, None);
+        let tick = |stage: Stage, fraction: f64| ticks.borrow_mut()(stage, Some(fraction));
         (words, lanes) = rows_for_overlaps(
             words,
             &turns,

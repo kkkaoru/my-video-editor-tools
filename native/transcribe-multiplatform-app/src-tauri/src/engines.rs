@@ -35,6 +35,8 @@ const MILLIS_PER_SECOND: f64 = 1000.0;
 /// Nemotron's 0.82 against 0.87); the bundled build is patched to warp with flash attention on
 /// (`scripts/release/whisper-cpp.patch`), so one pass gives both.
 const TOKEN_TIMING_ARGS: [&str; 2] = ["-dtw", "large.v3.turbo"];
+/// Files per whisper-cli run, as two long paths each must stay under Windows's 32 KB command line.
+const WHISPER_BATCH_FILES: usize = 64;
 /// Speech stays above about five syllables a second: a word after a pause started at most this
 /// long per beat before its end.
 const LONGEST_ONSET_SECONDS_PER_CHARACTER: f64 = 0.2;
@@ -298,7 +300,6 @@ fn latin1_bytes(text: &str) -> Vec<u8> {
 /// One whisper.cpp invocation's fixed inputs.
 struct WhisperRun<'a> {
     model: &'a Path,
-    wav: &'a Path,
     language: &'a str,
     cancel: &'a CancelToken,
 }
@@ -495,31 +496,48 @@ fn close_warped_words(words: &mut [Word]) {
     }
 }
 
+/// One input of a whisper-cli run and where its output goes, without the extension.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhisperClip {
+    pub wav: PathBuf,
+    pub base: PathBuf,
+}
+
+/// All `clips` in one process, so the model is loaded once. Each file's percentage starts over, so a
+/// drop means the next file has begun.
 fn run_whisper(
     program: &Path,
     run: &WhisperRun<'_>,
     extra_args: &[&str],
-    base: &Path,
+    clips: &[WhisperClip],
     progress: &mut dyn FnMut(f64),
-) -> AppResult<Vec<Word>> {
+) -> AppResult<Vec<Vec<Word>>> {
     let mut command = background_command(program);
+    command.arg("-m").arg(run.model);
+    clips.iter().for_each(|clip| {
+        command.arg("-f").arg(&clip.wav).arg("-of").arg(&clip.base);
+    });
     command
-        .arg("-m")
-        .arg(run.model)
-        .arg("-f")
-        .arg(run.wav)
         .args(["-l", run.language, "-ojf", "-pp"])
-        .args(extra_args)
-        .arg("-of")
-        .arg(base);
+        .args(extra_args);
+    let (mut finished, mut last) = (0.0, 0.0);
     run_with_progress(command, "whisper-cli", run.cancel, |line| {
         if let Some(fraction) = parse_whisper_progress(line) {
-            progress(fraction);
+            if fraction < last {
+                finished += 1.0;
+            }
+            last = fraction;
+            progress((finished + fraction) / clips.len() as f64);
         }
     })?;
-    let json =
-        std::fs::read(base.with_extension("json")).map_err(io_context("read whisper output"))?;
-    parse_whisper_json(&json)
+    clips
+        .iter()
+        .map(|clip| {
+            let json = std::fs::read(clip.base.with_extension("json"))
+                .map_err(io_context("read whisper output"))?;
+            parse_whisper_json(&json)
+        })
+        .collect()
 }
 
 fn parse_voice_spans(output: &str) -> Vec<VoiceSpan> {
@@ -578,32 +596,52 @@ pub fn transcribe(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<Word>> {
+    let clip = WhisperClip {
+        wav: wav.to_path_buf(),
+        base: work.join("asr"),
+    };
+    let heard = transcribe_many(tools, model, &[clip], language, cancel, progress)?;
+    Ok(heard.into_iter().flatten().collect())
+}
+
+/// `transcribe` for many clips, each with the words it heard, reloading the model only per batch.
+pub fn transcribe_many(
+    tools: &Tools,
+    model: &Path,
+    clips: &[WhisperClip],
+    language: &str,
+    cancel: &CancelToken,
+    progress: &mut dyn FnMut(f64),
+) -> AppResult<Vec<Vec<Word>>> {
     let run = WhisperRun {
         model,
-        wav,
         language,
         cancel,
     };
-    let base = work.join("asr");
-    let warped = with_cpu_fallback(tools, |program| {
-        run_whisper(program, &run, &TOKEN_TIMING_ARGS, &base, &mut *progress)
-    })
-    .map(|mut words| {
-        close_warped_words(&mut words);
-        words
-    });
-    or_plain_times(warped, || {
-        with_cpu_fallback(tools, |program| {
-            run_whisper(program, &run, &[], &base, &mut *progress)
+    let mut heard = Vec::with_capacity(clips.len());
+    for batch in clips.chunks(WHISPER_BATCH_FILES) {
+        let before = heard.len() as f64;
+        let mut report = |fraction: f64| {
+            progress((before + fraction * batch.len() as f64) / clips.len() as f64);
+        };
+        let warped = with_cpu_fallback(tools, |program| {
+            run_whisper(program, &run, &TOKEN_TIMING_ARGS, batch, &mut report)
         })
-    })
+        .map(|mut files| {
+            files.iter_mut().for_each(|words| close_warped_words(words));
+            files
+        });
+        heard.extend(or_plain_times(warped, || {
+            with_cpu_fallback(tools, |program| {
+                run_whisper(program, &run, &[], batch, &mut report)
+            })
+        })?);
+    }
+    Ok(heard)
 }
 
 /// Warping that failed leaves plain token times, which are coarse but usable; only cancelling stops the job.
-fn or_plain_times(
-    warped: AppResult<Vec<Word>>,
-    plain: impl FnOnce() -> AppResult<Vec<Word>>,
-) -> AppResult<Vec<Word>> {
+fn or_plain_times<T>(warped: AppResult<T>, plain: impl FnOnce() -> AppResult<T>) -> AppResult<T> {
     match warped {
         Err(AppError::Cancelled) => Err(AppError::Cancelled),
         Err(_) => plain(),
@@ -1377,7 +1415,7 @@ mod tests {
     #[test]
     fn a_cancel_during_warping_starts_no_plain_run() {
         let mut starts = 0;
-        let result = or_plain_times(Err(AppError::Cancelled), || {
+        let result: AppResult<Vec<Word>> = or_plain_times(Err(AppError::Cancelled), || {
             starts += 1;
             Ok(Vec::new())
         });

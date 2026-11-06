@@ -60,6 +60,8 @@ const STAGES: Record<Stage, true> = {
   extract_audio: true,
   transcribe: true,
   diarize: true,
+  separate: true,
+  retranscribe: true,
   faces: true,
   export: true,
 };

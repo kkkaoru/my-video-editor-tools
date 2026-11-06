@@ -136,6 +136,8 @@ export const koMessages: Messages = {
     extract_audio: "오디오 추출 중",
     transcribe: "받아쓰기 중",
     diarize: "화자 분리 중",
+    separate: "겹친 목소리를 분리하고 있습니다",
+    retranscribe: "분리한 목소리를 받아쓰고 있습니다",
     faces: "얼굴 감지 중",
     export: "자막 파일 저장 중",
   },

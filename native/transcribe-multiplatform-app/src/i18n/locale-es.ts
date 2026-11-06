@@ -145,6 +145,8 @@ export const esMessages: Messages = {
     extract_audio: "Extrayendo el audio",
     transcribe: "Transcribiendo",
     diarize: "Separando hablantes",
+    separate: "Separando las voces superpuestas",
+    retranscribe: "Transcribiendo las voces separadas",
     faces: "Detectando caras",
     export: "Escribiendo los archivos de subtítulos",
   },

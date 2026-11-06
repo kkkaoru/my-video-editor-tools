@@ -2,7 +2,8 @@
 //! through Whisper again, and the tracks replace the first pass's text there, one row per voice.
 
 use crate::captions::{SpeakerTurn, Word, STOCK_PHRASES};
-use crate::error::{io_context, AppResult};
+use crate::engines::WhisperClip;
+use crate::error::AppResult;
 use crate::morphology::{is_japanese, ReadingChar, Segmenter};
 use crate::separation::{cut_clips, SeparationClip};
 use serde::Serialize;
@@ -11,6 +12,17 @@ use std::path::{Path, PathBuf};
 
 /// Speakers' overlaps this close are one exchange. Measured at 2 s; not yet derived per video.
 const JOIN_SECONDS: f64 = 2.0;
+/// Less overlap than this in a range rarely gives two rows. Two hours of three people: under it 26% of the
+/// ranges' audio gave 10% of the ranges with rows.
+const SHORTEST_OVERLAP_SECONDS: f64 = 0.5;
+/// Every row must share this much with the first pass, or the range stays in the first pass's text. Of the
+/// same hours' rows, those above it hold 74% of the good ones and 41% of the bad ones.
+const ROW_SUPPORT: f64 = 0.5;
+/// A text this much taken by one repeated unit is Whisper stuck in a loop, not speech.
+const LOOP_SHARE: f64 = 0.5;
+const LOOP_MINIMUM_REPEATS: usize = 3;
+const LONG_UNIT_READINGS: usize = 4;
+const LONGEST_UNIT_READINGS: usize = 20;
 /// Longer ranges are divided at a phrase boundary.
 const LONGEST_RANGE_SECONDS: f64 = 30.0;
 /// More than this with three people at once sends both tracks through the model again.
@@ -42,14 +54,21 @@ pub struct LaneStats {
     pub same_text: usize,
     pub dropped_tracks: usize,
     pub first_pass_kept: usize,
+    /// Ranges with too little overlap to send to the model.
+    pub skipped_ranges: usize,
+    /// Ranges kept in the first pass's text because a row could not be trusted.
+    pub unsure_ranges: usize,
     pub separation_seconds: f64,
     pub transcription_seconds: f64,
 }
 
+/// Whisper over many clips, with the words each one held.
+pub type TranscribeStep<'a> = dyn FnMut(&[WhisperClip]) -> AppResult<Vec<Vec<Word>>> + 'a;
+
 /// The two long-running steps, passed in so the logic around them can be tested without the models.
 pub struct LaneEngine<'a> {
     pub separate: &'a mut dyn FnMut(&[SeparationClip]) -> AppResult<()>,
-    pub transcribe: &'a mut dyn FnMut(&Path, &Path) -> AppResult<Vec<Word>>,
+    pub transcribe: &'a mut TranscribeStep<'a>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -250,6 +269,33 @@ fn is_only_stock_phrase(track: &[char], segmenter: &Segmenter) -> AppResult<bool
     Ok(false)
 }
 
+/// How much of `text` is one unit said again and again: three times, or twice when the unit is long.
+fn loop_share(text: &[char]) -> f64 {
+    let mut longest = 0;
+    for unit in 1..=LONGEST_UNIT_READINGS {
+        let mut at = 0;
+        while at + unit * 2 <= text.len() {
+            let mut count = 1;
+            while text[at..at + unit]
+                == *text
+                    .get(at + count * unit..at + (count + 1) * unit)
+                    .unwrap_or_default()
+            {
+                count += 1;
+            }
+            if count >= LOOP_MINIMUM_REPEATS || (count >= 2 && unit >= LONG_UNIT_READINGS) {
+                longest = longest.max(count * unit);
+            }
+            at += if count == 1 { 1 } else { count * unit };
+        }
+    }
+    longest as f64 / text.len().max(1) as f64
+}
+
+fn loops(text: &[char]) -> bool {
+    loop_share(text) >= LOOP_SHARE
+}
+
 /// One track of one range, as Whisper heard it.
 #[derive(Clone)]
 struct Track {
@@ -262,6 +308,7 @@ struct Choice {
     rows: Vec<Track>,
     dropped: usize,
     same: usize,
+    unsure: bool,
 }
 
 fn choose_rows(
@@ -270,15 +317,19 @@ fn choose_rows(
     deep: bool,
     segmenter: &Segmenter,
 ) -> AppResult<Choice> {
+    // A first pass stuck in a loop says nothing about the tracks, and is no text to fall back on.
+    let first_is_sound = !loops(first_sound);
+    let by_support = first_is_sound && !deep;
     let count = tracks.len();
     let mut kept = Vec::with_capacity(count);
     for track in tracks {
-        let keep = if deep {
-            track.sound.len() >= SHORTEST_DEEP_TRACK
-                && !is_only_stock_phrase(&track.sound, segmenter)?
-        } else {
-            support(&track.sound, first_sound) >= FIRST_PASS_SUPPORT
-        };
+        let keep = !loops(&track.sound)
+            && if by_support {
+                support(&track.sound, first_sound) >= FIRST_PASS_SUPPORT
+            } else {
+                track.sound.len() >= SHORTEST_DEEP_TRACK
+                    && !is_only_stock_phrase(&track.sound, segmenter)?
+            };
         if keep {
             kept.push(track);
         }
@@ -297,14 +348,21 @@ fn choose_rows(
             rows.push(track);
         }
     }
-    // Only one voice was left after finding the same words twice: the first pass read the mix best.
-    if same > 0 && rows.len() == 1 {
+    // One voice left, or a row that shares little with what was heard: the first pass reads better.
+    let unsure = by_support
+        && !rows.is_empty()
+        && (rows.len() == 1
+            || rows
+                .iter()
+                .any(|row| support(&row.sound, first_sound) < ROW_SUPPORT));
+    if unsure || (first_is_sound && same > 0 && rows.len() == 1) {
         rows.clear();
     }
     Ok(Choice {
         rows,
         dropped,
         same,
+        unsure,
     })
 }
 
@@ -502,13 +560,23 @@ pub fn with_rows(
     segmenter: &Segmenter,
     engine: &mut LaneEngine<'_>,
 ) -> AppResult<(Vec<Word>, LaneStats)> {
-    let overlaps = joined(spans_with(turns, 2), JOIN_SECONDS);
+    let together = spans_with(turns, 2);
+    let overlaps = joined(together.clone(), JOIN_SECONDS);
     let mut stats = LaneStats::default();
     if overlaps.is_empty() {
         return Ok((words, stats));
     }
     let boundaries = boundary_times(&words, segmenter)?;
-    let ranges = ranges_around(&overlaps, &boundaries, duration);
+    let all_ranges = ranges_around(&overlaps, &boundaries, duration);
+    let ranges: Vec<Span> = all_ranges
+        .iter()
+        .copied()
+        .filter(|range| seconds_inside(*range, &together) >= SHORTEST_OVERLAP_SECONDS)
+        .collect();
+    stats.skipped_ranges = all_ranges.len() - ranges.len();
+    if ranges.is_empty() {
+        return Ok((words, stats));
+    }
     let crowded = spans_with(turns, 3);
     let deep: Vec<bool> = ranges
         .iter()
@@ -525,45 +593,55 @@ pub fn with_rows(
         .collect();
     cut_clips(wav, &cuts)?;
     let began = std::time::Instant::now();
-    let first_clips: Vec<SeparationClip> = (0..ranges.len())
+    let clips: Vec<SeparationClip> = (0..ranges.len())
         .map(|at| SeparationClip {
             input: clip_name(work, at, "mix"),
             outputs: [clip_name(work, at, "0"), clip_name(work, at, "1")],
         })
+        .chain(
+            (0..ranges.len())
+                .filter(|at| deep[*at])
+                .flat_map(|at| second_pass(work, at)),
+        )
         .collect();
-    (engine.separate)(&first_clips)?;
-    let second_clips: Vec<SeparationClip> = (0..ranges.len())
-        .filter(|at| deep[*at])
-        .flat_map(|at| second_pass(work, at))
-        .collect();
-    if !second_clips.is_empty() {
-        (engine.separate)(&second_clips)?;
-    }
+    (engine.separate)(&clips)?;
     stats.separation_seconds = began.elapsed().as_secs_f64();
 
     let began = std::time::Instant::now();
-    let mut result: Vec<Word> = Vec::with_capacity(words.len());
-    let mut rest = words.as_slice();
+    let track_files: Vec<Vec<PathBuf>> = (0..ranges.len())
+        .map(|at| tracks_of(work, at, deep[at]))
+        .collect();
+    let whisper_clips: Vec<WhisperClip> = track_files
+        .iter()
+        .flatten()
+        .map(|file| WhisperClip {
+            wav: file.clone(),
+            base: file.with_extension(""),
+        })
+        .collect();
+    let mut heard = (engine.transcribe)(&whisper_clips)?.into_iter();
     let mut prepared = Vec::with_capacity(ranges.len());
-    for (at, range) in ranges.iter().enumerate() {
-        let track_work = work.join(format!("lane-{at}"));
-        std::fs::create_dir_all(&track_work).map_err(io_context("create lane folder"))?;
-        let mut tracks = Vec::new();
-        for file in tracks_of(work, at, deep[at]) {
-            let mut heard = (engine.transcribe)(&file, &track_work)?;
-            heard.iter_mut().for_each(|word| {
-                word.start += range.start;
-                word.end += range.start;
-            });
-            tracks.push(Track {
-                sound: sounds(&text_of(&heard), segmenter)?,
-                words: heard,
-            });
-        }
+    for (range, files) in ranges.iter().zip(&track_files) {
+        let tracks = heard
+            .by_ref()
+            .take(files.len())
+            .map(|mut said| {
+                said.iter_mut().for_each(|word| {
+                    word.start += range.start;
+                    word.end += range.start;
+                });
+                Ok(Track {
+                    sound: sounds(&text_of(&said), segmenter)?,
+                    words: said,
+                })
+            })
+            .collect::<AppResult<Vec<Track>>>()?;
         prepared.push(tracks);
     }
     stats.transcription_seconds = began.elapsed().as_secs_f64();
 
+    let mut result: Vec<Word> = Vec::with_capacity(words.len());
+    let mut rest = words.as_slice();
     for (at, (range, tracks)) in ranges.iter().zip(prepared).enumerate() {
         let inside_from = rest.partition_point(|word| middle(word) < range.start);
         result.extend_from_slice(&rest[..inside_from]);
@@ -574,6 +652,7 @@ pub fn with_rows(
         let choice = choose_rows(tracks, &first_sound, deep[at], segmenter)?;
         stats.dropped_tracks += choice.dropped;
         stats.same_text += choice.same;
+        stats.unsure_ranges += usize::from(choice.unsure);
         let mut rows = choice.rows;
         if rows.is_empty() {
             stats.first_pass_kept += 1;
@@ -686,22 +765,27 @@ mod tests {
             batches.push(clips.to_vec());
             Ok(())
         };
-        let mut transcribe = |file: &Path, _: &Path| {
-            let stem = file.file_stem().unwrap().to_str().unwrap().to_owned();
-            let text = heard
+        let mut transcribe = |clips: &[WhisperClip]| {
+            Ok(clips
                 .iter()
-                .find(|(name, _)| *name == stem)
-                .map_or("", |pair| pair.1);
-            Ok(if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![Word {
-                    start: 0.5,
-                    end: 1.5,
-                    text: text.to_owned(),
-                    speaker: None,
-                }]
-            })
+                .map(|clip| {
+                    let stem = clip.wav.file_stem().unwrap().to_str().unwrap().to_owned();
+                    let text = heard
+                        .iter()
+                        .find(|(name, _)| *name == stem)
+                        .map_or("", |pair| pair.1);
+                    if text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Word {
+                            start: 0.5,
+                            end: 1.5,
+                            text: text.to_owned(),
+                            speaker: None,
+                        }]
+                    }
+                })
+                .collect())
         };
         let (out, stats) = with_rows(
             words,
@@ -824,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_nothing_like_the_first_pass_is_dropped_and_the_rest_stay() {
+    fn a_track_nothing_like_the_first_pass_is_dropped_and_the_one_left_is_not_trusted() {
         let first = sound("今日はいい天気ですね本当に");
         let choice = choose_rows(
             vec![track("今日はいい天気ですね"), track("全然違う言葉ばかり")],
@@ -833,7 +917,119 @@ mod tests {
             test_segmenter(),
         )
         .unwrap();
-        assert_eq!((choice.rows.len(), choice.dropped, choice.same), (1, 1, 0));
+        assert_eq!(
+            (
+                choice.rows.len(),
+                choice.dropped,
+                choice.same,
+                choice.unsure
+            ),
+            (0, 1, 0, true)
+        );
+    }
+
+    #[test]
+    fn two_rows_both_heard_in_the_first_pass_stay() {
+        let first = sound("今日はいい天気ですね明日は雨が降るそうです");
+        let choice = choose_rows(
+            vec![
+                track("今日はいい天気ですね"),
+                track("明日は雨が降るそうです"),
+            ],
+            &first,
+            false,
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!((choice.rows.len(), choice.unsure), (2, false));
+    }
+
+    #[test]
+    fn a_row_little_of_it_heard_in_the_first_pass_leaves_the_range_to_the_first_pass() {
+        let first = sound("今日はいい天気ですね明日は雨");
+        let choice = choose_rows(
+            vec![
+                track("今日はいい天気ですね"),
+                track("明日は雨が降るそうですが傘は持っていきません"),
+            ],
+            &first,
+            false,
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!((choice.rows.len(), choice.unsure), (0, true));
+    }
+
+    #[test]
+    fn a_first_pass_stuck_in_a_loop_gives_way_to_the_tracks() {
+        let first = sound("説得力無い説得力無い説得力無い説得力無い");
+        let choice = choose_rows(
+            vec![
+                track("今日はいい天気ですね"),
+                track("ご視聴ありがとうございました"),
+            ],
+            &first,
+            false,
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            (choice.rows.len(), choice.dropped, choice.unsure),
+            (1, 1, false)
+        );
+        let same = choose_rows(
+            vec![track("今日はいい天気ですね"), track("今日はいい天気です")],
+            &first,
+            false,
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!((same.rows.len(), same.same), (1, 1));
+    }
+
+    #[test]
+    fn a_track_stuck_in_a_loop_is_no_row() {
+        let first = sound("今日はいい天気ですね明日は雨が降るそうです");
+        let choice = choose_rows(
+            vec![
+                track("今日はいい天気ですね"),
+                track("うんうんうんうんうんうんうんうんうんうん"),
+            ],
+            &first,
+            false,
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(choice.dropped, 1);
+    }
+
+    #[test]
+    fn a_loop_is_a_unit_said_again_and_again() {
+        let share = |text: &str| -> f64 { loop_share(&text.chars().collect::<Vec<char>>()) };
+        assert_eq!(share("ああああ"), 1.0);
+        assert_eq!(share("abcabcabc"), 1.0);
+        assert_eq!(share("abab"), 0.0);
+        assert_eq!(share("abcdabcd"), 1.0);
+        assert_eq!(share("xyzabcdefg"), 0.0);
+        assert_eq!(share("xxxabcdef"), 3.0 / 9.0);
+        assert_eq!(share(""), 0.0);
+    }
+
+    #[test]
+    fn too_little_overlap_in_a_range_runs_no_model_and_leaves_the_words() {
+        let words = vec![
+            said(0.0, 1.0, "最初の言葉です", 1),
+            said(2.0, 3.0, "最後の言葉です", 2),
+        ];
+        let (out, stats, batches) = run_rows(
+            "short",
+            words.clone(),
+            &[turn(0.0, 2.2, 1), turn(2.0, 3.0, 2)],
+            &[],
+        );
+        assert_eq!(out, words);
+        assert_eq!((stats.ranges, stats.skipped_ranges), (0, 1));
+        assert_eq!(batches, Vec::<Vec<SeparationClip>>::new());
     }
 
     #[test]
@@ -971,6 +1167,7 @@ mod tests {
             ],
         );
         assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 1);
         assert_eq!(stats.ranges, 1);
         assert_eq!(stats.deep_ranges, 0);
         assert_eq!(stats.rows, BTreeMap::from([(2, 1)]));
@@ -1015,9 +1212,10 @@ mod tests {
                 ("lane-0-1-1", "ご視聴ありがとうございました"),
             ],
         );
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].len(), 1);
-        assert_eq!(batches[1].len(), 2);
+        // One run of the model: the mix, then each of its tracks, in that order.
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 3);
+        assert_eq!(batches[0][1].input, batches[0][0].outputs[0]);
         assert_eq!(stats.deep_ranges, 1);
         assert_eq!(stats.dropped_tracks, 1);
         assert_eq!(stats.rows, BTreeMap::from([(3, 1)]));
@@ -1054,7 +1252,7 @@ mod tests {
         let turns = [turn(1.0, 3.0, 1), turn(1.0, 3.0, 2)];
         let words = vec![said(1.0, 2.0, "はい", 1)];
         let mut fail_separate = |_: &[SeparationClip]| Err(AppError::Cancelled);
-        let mut unused = |_: &Path, _: &Path| Ok(Vec::new());
+        let mut unused = |_: &[WhisperClip]| Ok(Vec::new());
         assert!(matches!(
             with_rows(
                 words.clone(),
@@ -1071,7 +1269,7 @@ mod tests {
             Err(AppError::Cancelled)
         ));
         let mut fine = |_: &[SeparationClip]| Ok(());
-        let mut fail_transcribe = |_: &Path, _: &Path| Err(AppError::Cancelled);
+        let mut fail_transcribe = |_: &[WhisperClip]| Err(AppError::Cancelled);
         assert!(matches!(
             with_rows(
                 words,
@@ -1094,7 +1292,7 @@ mod tests {
         let root = scratch("no-audio");
         let turns = [turn(1.0, 3.0, 1), turn(1.0, 3.0, 2)];
         let mut unused_separate = |_: &[SeparationClip]| Ok(());
-        let mut unused = |_: &Path, _: &Path| Ok(Vec::new());
+        let mut unused = |_: &[WhisperClip]| Ok(Vec::new());
         assert!(with_rows(
             vec![said(1.0, 2.0, "はい", 1)],
             &turns,

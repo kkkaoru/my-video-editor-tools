@@ -53,18 +53,19 @@ cat <<'EOF'
 EOF
 "#;
 const WHISPER: &str = r#"
-while [ $# -gt 0 ]; do
-  if [ "$1" = "-of" ]; then out="$2"; fi
-  shift
-done
 echo 'whisper_print_progress_callback: progress =  50%' >&2
 echo 'some other line' >&2
-cat > "$out.json" <<'EOF'
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-of" ]; then
+    cat > "$2.json" <<'EOF'
 {"transcription":[{"tokens":[
   {"text":"[_BEG_]","offsets":{"from":0,"to":0}},
   {"text":"はい","offsets":{"from":100,"to":900}},
   {"text":"どうも","offsets":{"from":1000,"to":1800}}]}]}
 EOF
+  fi
+  shift
+done
 "#;
 /// `nemo-speech serve` for one fixed answer; a job ends it by killing it, as the app does.
 const NEMO_SERVER: &str = r#"
@@ -1792,7 +1793,7 @@ fn separated(root: &Path, library: &Path) -> Result<Vec<f32>, String> {
         &clips,
         root,
         &CancelToken::default(),
-        &mut || {},
+        &mut |_| {},
     )
     .map_err(|error| error.to_string())?;
     let track = fs::read(root.join("b.wav")).unwrap();
@@ -1946,6 +1947,46 @@ fn a_job_without_onnx_runtime_says_so_when_someone_talks_at_once() {
         failure.ends_with("libonnxruntime.dylib is missing"),
         "{failure}"
     );
+}
+
+#[test]
+fn many_clips_share_one_whisper_process_per_batch_and_report_their_progress() {
+    let root = scratch("whisper-batch");
+    let paths = ready(&root);
+    let starts = root.join("starts");
+    let script = WHISPER.replacen(
+        "echo 'whisper_print_progress_callback: progress =  50%' >&2",
+        &format!(
+            "echo started >> '{}'\necho 'progress =  90%' >&2\necho 'progress =  10%' >&2",
+            starts.display()
+        ),
+        1,
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("whisper/whisper-cli"),
+        &script,
+    );
+    let clips: Vec<transcribe_app::engines::WhisperClip> = (0..70)
+        .map(|at| transcribe_app::engines::WhisperClip {
+            wav: root.join(format!("{at}.wav")),
+            base: root.join(format!("{at}")),
+        })
+        .collect();
+    let mut seen = Vec::new();
+    let heard = engines::transcribe_many(
+        &tools_in(&paths),
+        Path::new("model"),
+        &clips,
+        "ja",
+        &CancelToken::default(),
+        &mut |fraction| seen.push(fraction),
+    )
+    .unwrap();
+    assert_eq!(heard.len(), 70);
+    assert!(heard.iter().all(|words| words.len() == 2));
+    assert_eq!(fs::read_to_string(&starts).unwrap().lines().count(), 2);
+    assert!(seen.iter().all(|fraction| (0.0..=1.0).contains(fraction)));
+    assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
 }
 
 #[test]
@@ -2125,6 +2166,8 @@ fn progress_carries_the_plan_and_reaches_the_end() {
             Stage::ExtractAudio,
             Stage::Transcribe,
             Stage::Diarize,
+            Stage::Separate,
+            Stage::Retranscribe,
             Stage::Export
         ]
     );

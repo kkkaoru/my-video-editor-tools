@@ -18,6 +18,11 @@ const FAST_SPEECH_LLM_RATE: f64 = 0.01;
 const CPU_TRANSCRIBE_RATE: f64 = 3.0;
 const CPU_DIARIZE_RATE: f64 = 0.5;
 const CPU_SPEECH_LLM_RATE: f64 = 0.1;
+/// Measured on an M5 Pro, two hours of three people: 23% of it goes through the model, on the CPU.
+const SEPARATE_RATE: f64 = 0.22;
+const FAST_RETRANSCRIBE_RATE: f64 = 0.035;
+/// Two tracks of that 23%, at the CPU's speed of transcribing.
+const CPU_RETRANSCRIBE_RATE: f64 = 1.4;
 const EXTRACT_RATE: f64 = 0.01;
 const FACES_RATE: f64 = 0.1;
 const CONVERT_SECONDS: f64 = 60.0;
@@ -37,8 +42,16 @@ pub enum Stage {
     ExtractAudio,
     Transcribe,
     Diarize,
+    Separate,
+    Retranscribe,
     Faces,
     Export,
+}
+
+impl Stage {
+    /// The learned speeds of the steps for voices talking at once, per second of the whole video.
+    pub const SEPARATE_KEY: &'static str = "separate";
+    pub const RETRANSCRIBE_KEY: &'static str = "retranscribe";
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -96,6 +109,9 @@ fn default_rate(stage: Stage, inputs: RateInputs) -> f64 {
         (Stage::Diarize, false, false) => CPU_DIARIZE_RATE,
         (Stage::Diarize, true, true) => FAST_SPEECH_LLM_RATE,
         (Stage::Diarize, false, true) => CPU_SPEECH_LLM_RATE,
+        (Stage::Separate, _, _) => SEPARATE_RATE,
+        (Stage::Retranscribe, true, _) => FAST_RETRANSCRIBE_RATE,
+        (Stage::Retranscribe, false, _) => CPU_RETRANSCRIBE_RATE,
         (Stage::Faces, _, _) => FACES_RATE,
         _ => EXTRACT_RATE,
     }
@@ -421,6 +437,22 @@ mod tests {
         tracker.update(Stage::Export, Some(1.0), start + Duration::from_secs(70));
         tracker.finish(start + Duration::from_secs(71)).unwrap();
         assert_eq!(tracker.rates, StageRates::default());
+    }
+
+    #[test]
+    fn the_steps_for_voices_at_once_have_their_measured_speeds() {
+        let fast = RateInputs {
+            accelerated: true,
+            speech_llm: true,
+        };
+        let slow = RateInputs {
+            accelerated: false,
+            speech_llm: true,
+        };
+        assert_eq!(default_rate(Stage::Separate, fast), 0.22);
+        assert_eq!(default_rate(Stage::Separate, slow), 0.22);
+        assert_eq!(default_rate(Stage::Retranscribe, fast), 0.035);
+        assert_eq!(default_rate(Stage::Retranscribe, slow), 1.4);
     }
 
     #[test]

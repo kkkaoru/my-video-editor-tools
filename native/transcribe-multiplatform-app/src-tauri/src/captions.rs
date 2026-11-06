@@ -1840,12 +1840,13 @@ pub fn build_cues(
     let mut placer = FacePlacer::new(faces, info, metrics, settings);
     let rate = f64::from(info.fps_num) / f64::from(info.fps_den);
     let mut shown = display_words(words, info.duration);
-    smooth_speakers(&mut shown, segmenter)?;
+    // Voices at once first: their words, one after the other, must not read as flickering labels.
     let apart = speakers_apart(&shown);
     let talk_at_once = apart.is_some();
     if let Some(words) = apart {
         shown = words;
     }
+    smooth_speakers(&mut shown, segmenter)?;
     close_split_morphemes(&mut shown, segmenter)?;
     let groups = rejoin_split_words(merge_strays(group_words(&shown)), segmenter)?;
     let mut pages: Vec<Page> = Vec::new();
@@ -3870,6 +3871,44 @@ mod tests {
         assert_eq!(
             speakers_after_smoothing(vec![spoken(0.0, 0.2, "あ", 1), spoken(5.0, 5.2, "い", 1)]),
             vec![Some(1), Some(1)]
+        );
+    }
+
+    /// Whisper's tokens of two rows interleave in time with next to no overlap per pair of tokens.
+    #[test]
+    fn two_rows_of_short_tokens_stay_apart_whole() {
+        let words: Vec<Word> = ["今日", "は", "いい", "天気", "です", "ね"]
+            .iter()
+            .enumerate()
+            .flat_map(|(at, text)| {
+                let start = at as f64 * 0.4;
+                [
+                    spoken(start, start + 0.38, text, 1),
+                    spoken(
+                        start + 0.1,
+                        start + 0.48,
+                        ["明日", "の", "朝", "は", "雨", "だ"][at],
+                        2,
+                    ),
+                ]
+            })
+            .collect();
+        let (cues, _) = build_cues(
+            &words,
+            &[],
+            &FULL_HD,
+            &anchored(Anchor::VideoBottom),
+            test_segmenter(),
+        )
+        .unwrap();
+        assert_eq!(
+            cues.iter()
+                .map(|cue| (cue.speaker, cue.lines.join("")))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(1), "今日はいい天気ですね".to_owned()),
+                (Some(2), "明日の朝は雨だ".to_owned())
+            ]
         );
     }
 

@@ -131,6 +131,8 @@ export const zhHantMessages: Messages = {
     extract_audio: "正在擷取音訊",
     transcribe: "正在轉寫",
     diarize: "正在分離說話者",
+    separate: "正在分離重疊的聲音",
+    retranscribe: "正在轉寫分離後的聲音",
     faces: "正在偵測人臉",
     export: "正在輸出字幕檔",
   },

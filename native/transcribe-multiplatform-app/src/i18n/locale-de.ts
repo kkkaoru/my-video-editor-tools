@@ -144,6 +144,8 @@ export const deMessages: Messages = {
     extract_audio: "Audio wird extrahiert",
     transcribe: "Transkription läuft",
     diarize: "Sprecher werden getrennt",
+    separate: "Überlagerte Stimmen werden getrennt",
+    retranscribe: "Getrennte Stimmen werden transkribiert",
     faces: "Gesichter werden erkannt",
     export: "Untertiteldateien werden geschrieben",
   },

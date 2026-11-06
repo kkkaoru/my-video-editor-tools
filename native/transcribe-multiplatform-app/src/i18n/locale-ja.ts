@@ -138,6 +138,8 @@ export const jaMessages: Messages = {
     extract_audio: "音声を取り出しています",
     transcribe: "文字起こしをしています",
     diarize: "話す人を聞き分けています",
+    separate: "重なった声を分けています",
+    retranscribe: "分けた声を文字起こししています",
     faces: "顔をさがしています",
     export: "字幕ファイルを作っています",
   },

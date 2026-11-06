@@ -130,6 +130,8 @@ export const zhHansMessages: Messages = {
     extract_audio: "正在提取音频",
     transcribe: "正在转写",
     diarize: "正在分离说话人",
+    separate: "正在分离重叠的声音",
+    retranscribe: "正在转写分离后的声音",
     faces: "正在检测人脸",
     export: "正在输出字幕文件",
   },
