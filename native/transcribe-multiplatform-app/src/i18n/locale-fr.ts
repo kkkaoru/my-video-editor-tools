@@ -316,6 +316,10 @@ export const frMessages: Messages = {
     "geforce-runtime":
       "Facultatif. Accélère la séparation des voix sur le GPU. Sans lui, elle tourne sur le CPU, et elle y revient si le GPU échoue.",
   },
+  helpContents: "Sommaire",
+  helpSearch: "Chercher dans ce guide",
+  helpSearchNone: "Rien trouvé pour « {query} ».",
+  helpSearchFound: "{count} trouvés.",
   help: {
     version: "Version {version}",
     intro:
@@ -470,13 +474,14 @@ export const frMessages: Messages = {
               "Choisir CapCut crée un projet CapCut avec la vidéo et les sous-titres, la couleur de chaque locuteur et la position.",
             steps: [
               "Choisis CapCut dans « {subtitleFormat} » et crée les sous-titres.",
-              "Ouvre la page d'accueil de CapCut. Un projet au nom de la vidéo y figure.",
+              "Ouvre la page d'accueil de CapCut. Un projet au nom de la vidéo y figure. Si CapCut était déjà ouvert, reviens à sa page d'accueil.",
               "Ouvre le projet. La vidéo et les sous-titres sont sur la timeline.",
             ],
             notes: [
               "Il utilise la police standard de CapCut, sans ombre.",
               "La vidéo est lue à son emplacement. Si tu la déplaces, CapCut ne la trouve plus.",
               "Le format n'est pas officiel : une mise à jour de CapCut peut empêcher son ouverture (vérifié avec CapCut 9.7 pour Mac).",
+              "Cela n'a pas encore été vérifié dans CapCut pour Windows.",
             ],
           },
           {
@@ -505,6 +510,7 @@ export const frMessages: Messages = {
               "Choisis un locuteur, puis règle le remplissage, le contour, le contour extérieur et l'ombre. Appuie sur un carré de couleur pour choisir une couleur. « Transparent » retire le contour extérieur ou l'ombre.",
             ],
             notes: [
+              "Avec 2 locuteurs ou plus, tu peux aussi choisir « {captionRowsLeft} » et « {captionRowSpacing} ». L'aperçu montre 3 rangées.",
               "L'aperçu est à droite sur un grand écran et en haut sur un petit. Il reste visible quand tu fais défiler.",
               "Pour éloigner les sous-titres des bords gauche et droit, règle les zones de sécurité dans « {positionHeading} ». Les bandes sombres de l'aperçu les montrent.",
             ],

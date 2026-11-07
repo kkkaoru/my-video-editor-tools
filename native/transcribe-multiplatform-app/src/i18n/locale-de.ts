@@ -317,6 +317,10 @@ export const deMessages: Messages = {
     "geforce-runtime":
       "Optional. Beschleunigt die Sprechertrennung auf der GPU. Ohne läuft sie auf der CPU, und wenn die GPU versagt, wechselt sie zur CPU zurück.",
   },
+  helpContents: "Inhalt",
+  helpSearch: "Anleitung durchsuchen",
+  helpSearchNone: "Nichts gefunden für „{query}“.",
+  helpSearchFound: "{count} gefunden.",
   help: {
     version: "Version {version}",
     intro:
@@ -471,13 +475,14 @@ export const deMessages: Messages = {
               "Mit CapCut entsteht ein CapCut-Projekt mit Video und Untertiteln, samt Farbe jedes Sprechers und Position.",
             steps: [
               "Wähle unter „{subtitleFormat}“ CapCut und erstelle die Untertitel.",
-              "Öffne die Startseite von CapCut. Dort steht ein Projekt mit dem Namen des Videos.",
+              "Öffne die Startseite von CapCut. Dort steht ein Projekt mit dem Namen des Videos. War CapCut schon offen, gehe zurück zur Startseite.",
               "Öffne das Projekt. Video und Untertitel liegen auf der Timeline.",
             ],
             notes: [
               "Es nutzt die Standardschrift von CapCut und keinen Schatten.",
               "Das Video wird von seinem Speicherort gelesen. Wenn du es verschiebst, findet CapCut es nicht mehr.",
               "Das Format ist inoffiziell, daher kann ein CapCut-Update das Öffnen verhindern (geprüft mit CapCut 9.7 für Mac).",
+              "In CapCut für Windows ist das noch nicht geprüft.",
             ],
           },
           {
@@ -506,6 +511,7 @@ export const deMessages: Messages = {
               "Wähle einen Sprecher und stelle Füllung, Kontur, äußeren Rand und Schatten ein. Drücke ein Farbquadrat, um eine Farbe zu wählen. „Transparent“ entfernt den äußeren Rand oder den Schatten.",
             ],
             notes: [
+              "Bei 2 oder mehr Sprechern kannst du auch „{captionRowsLeft}“ und „{captionRowSpacing}“ wählen. Die Vorschau zeigt 3 Zeilen.",
               "Die Vorschau steht auf einem breiten Bildschirm rechts und auf einem schmalen oben. Sie bleibt beim Scrollen sichtbar.",
               "Sollen Untertitel nicht an den Rändern links und rechts stehen, stelle unter „{positionHeading}“ die Sicherheitszonen ein. Die dunklen Streifen in der Vorschau zeigen sie.",
             ],

@@ -304,6 +304,10 @@ export const jaMessages: Messages = {
     "geforce-runtime":
       "任意です。話す人の聞き分けを GPU で速くします。なくても CPU で動きます。GPU で失敗すると CPU に戻ります。",
   },
+  helpContents: "目次",
+  helpSearch: "使い方を検索",
+  helpSearchNone: "「{query}」は見つかりませんでした。",
+  helpSearchFound: "{count} 件見つかりました。",
   help: {
     version: "バージョン {version}",
     intro:
@@ -456,13 +460,14 @@ export const jaMessages: Messages = {
               "CapCut を選ぶと、動画と字幕が入った CapCut のプロジェクトを作ります。話す人ごとの色と位置も入ります。",
             steps: [
               "「{subtitleFormat}」で CapCut を選んで字幕を作ります。",
-              "CapCut のホームを開きます。動画の名前のプロジェクトが並びます。",
+              "CapCut のホームを開きます。動画の名前のプロジェクトが並びます。開いたままなら、ホームに戻ると出ます。",
               "プロジェクトを開きます。動画と字幕がタイムラインに入っています。",
             ],
             notes: [
               "フォントは CapCut の標準で、影はありません。",
               "動画は元の場所から読みます。動画を動かすと CapCut が見つけられなくなります。",
               "CapCut の非公式の形式です。CapCut の更新で開けなくなることがあります(Mac 版 CapCut 9.7 で確認)。",
+              "Windows 版の CapCut では、まだ確かめていません。",
             ],
           },
           {
@@ -491,6 +496,7 @@ export const jaMessages: Messages = {
               "話す人を選んで、塗り、縁、外側の縁、シャドウを決めます。色の四角を押すと色を選べます。外側の縁とシャドウは「透明」で消せます。",
             ],
             notes: [
+              "2 人以上のときは「{captionRowsLeft}」と「{captionRowSpacing}」も決められます。プレビューに 3 段で出ます。",
               "プレビューは、広い画面では右に、せまい画面では上に出ます。下に動かしても見えたままです。",
               "字幕を動画の左右の端に置きたくないときは、「{positionHeading}」のセーフゾーンで幅を決めます。プレビューの暗い帯がその幅です。",
             ],

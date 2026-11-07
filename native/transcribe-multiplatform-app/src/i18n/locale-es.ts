@@ -314,6 +314,10 @@ export const esMessages: Messages = {
     "geforce-runtime":
       "Opcional. Acelera la separación de hablantes en la GPU. Sin ella se ejecuta en la CPU, y vuelve a la CPU si la GPU falla.",
   },
+  helpContents: "Índice",
+  helpSearch: "Buscar en esta guía",
+  helpSearchNone: "No se encontró «{query}».",
+  helpSearchFound: "{count} encontrados.",
   help: {
     version: "Versión {version}",
     intro:
@@ -468,13 +472,14 @@ export const esMessages: Messages = {
               "Al elegir CapCut se crea un proyecto de CapCut con el vídeo y los subtítulos, con el color de cada hablante y la posición.",
             steps: [
               "Elige CapCut en «{subtitleFormat}» y crea los subtítulos.",
-              "Abre la página de inicio de CapCut. Aparece un proyecto con el nombre del vídeo.",
+              "Abre la página de inicio de CapCut. Aparece un proyecto con el nombre del vídeo. Si CapCut ya estaba abierto, vuelve a su página de inicio.",
               "Abre el proyecto. El vídeo y los subtítulos están en la línea de tiempo.",
             ],
             notes: [
               "Usa la fuente estándar de CapCut y no tiene sombra.",
               "El vídeo se lee desde donde está. Si lo mueves, CapCut no lo encuentra.",
               "El formato no es oficial, así que una actualización de CapCut puede impedir abrirlo (comprobado con CapCut 9.7 para Mac).",
+              "Aún no se ha comprobado en CapCut para Windows.",
             ],
           },
           {
@@ -503,6 +508,7 @@ export const esMessages: Messages = {
               "Elige un hablante y ajusta el relleno, el borde, el borde exterior y la sombra. Pulsa un cuadrado de color para elegir un color. «Transparente» quita el borde exterior o la sombra.",
             ],
             notes: [
+              "Con 2 o más hablantes también puedes elegir «{captionRowsLeft}» y «{captionRowSpacing}». La vista previa muestra 3 filas.",
               "La vista previa está a la derecha en una pantalla ancha y arriba en una estrecha. Sigue visible al desplazarte.",
               "Para alejar los subtítulos de los bordes izquierdo y derecho, ajusta las zonas seguras en «{positionHeading}». Las bandas oscuras de la vista previa las muestran.",
             ],

@@ -251,6 +251,10 @@ export interface Messages {
   fontSize: string;
   captionWidth: string;
   captionLineHeight: string;
+  helpContents: string;
+  helpSearch: string;
+  helpSearchNone: string;
+  helpSearchFound: string;
   captionRowSpacing: string;
   captionRowsLeft: string;
   captionRowsLeftOn: string;

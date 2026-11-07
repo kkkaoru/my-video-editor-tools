@@ -1,5 +1,5 @@
 // Runs with bun: the help page quotes real button names, in every language, with a correct outline.
-import { cleanup, render, screen } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, expect, it } from "vitest";
 import { ALL_LANGUAGE_MESSAGES } from "../i18n/language.ts";
 import { enMessages } from "../i18n/locale-en.ts";
@@ -125,7 +125,7 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
     new Set([
-      "3/6 3/4 3/1 4/7 0/4 0/6 0/4 5/3 4/1 3/3 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/1 3/2 3/0 0/2 3/2 3/3 2/0",
+      "3/6 3/4 3/1 4/7 0/4 0/6 0/4 5/3 4/1 3/4 0/3 4/3 3/0 3/2 3/2 3/2 4/5 3/1 3/2 3/0 0/2 3/2 3/3 2/0",
     ]),
   );
 });
@@ -259,4 +259,42 @@ it("says Nemotron only tells speakers apart, and Whisper does the transcribing",
       "With automatic detection or 2 or more speakers, Whisper turbo, the Nemotron 3.5 encoder and MossFormer2 run. Whisper turbo always does the transcribing; Nemotron only tells speakers apart.",
     ).tagName,
   ).toBe("P");
+});
+
+const showHelp = (): void => {
+  render(
+    <MessagesContext.Provider value={enMessages}>
+      <HelpPane />
+    </MessagesContext.Provider>,
+  );
+};
+
+const search = (query: string): void => {
+  fireEvent.input(screen.getByRole("searchbox", { name: "Search this guide" }), { target: { value: query } });
+};
+
+it("lists every section in the contents and moves there when pressed", () => {
+  showHelp();
+  const contents = screen.getByRole("navigation", { name: "Contents" });
+  const link = contents.querySelector('a[href="#help-editor"]') as HTMLAnchorElement;
+  expect(link.textContent).toBe(enMessages.help.sections.editor.heading);
+  const target = document.getElementById("help-editor") as HTMLElement;
+  target.scrollIntoView = (): void => undefined;
+  fireEvent.click(link);
+  expect(document.activeElement).toBe(target);
+});
+
+it("narrows the page and the contents to what a search finds, and says how many", () => {
+  showHelp();
+  search("capcut");
+  expect(screen.getByRole("heading", { name: "Open in CapCut" })).toBeTruthy();
+  expect(document.getElementById("help-start")).toBe(null);
+  expect(screen.getByRole("status").textContent).toMatch(/^\d+ found\.$/);
+});
+
+it("says when nothing is found and shows no contents", () => {
+  showHelp();
+  search("zzzz");
+  expect(screen.getByRole("status").textContent).toBe("Nothing found for “zzzz”.");
+  expect(screen.queryByRole("navigation", { name: "Contents" })).toBe(null);
 });

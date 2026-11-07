@@ -1,6 +1,8 @@
 // Runs with bun: how to use the app, in plain words; button names come from the labels the app really shows.
 import type { VNode } from "preact";
+import { useState } from "preact/hooks";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
+import { Input } from "@/components/ui/input.tsx";
 import { format, type HelpPart, type HelpSections, type Messages, type Params } from "../i18n/messages.ts";
 import { SPEAKER_FIGURES } from "../i18n/speaker-figures.ts";
 import { useMessages } from "../i18n/use-messages.ts";
@@ -12,8 +14,10 @@ import {
   RESOLVE_FIGURE_SIZES,
   type ResolveFigureName,
 } from "./help-images.ts";
+import { type FoundSection, findHelp, foundPartCount } from "./help-search.ts";
 
 interface HelpPartViewProps {
+  id: string;
   part: HelpPart;
   labels: Params;
   image: HelpImageName | undefined;
@@ -70,6 +74,8 @@ export const helpLabels = ({
   updateCheck,
   runWithOneSpeaker,
   updateInstall,
+  captionRowSpacing,
+  captionRowsLeft,
 }: Messages): Params => ({
   ...SPEAKER_FIGURES,
   tabJobs,
@@ -108,6 +114,8 @@ export const helpLabels = ({
   updateCheck,
   runWithOneSpeaker,
   updateInstall,
+  captionRowSpacing,
+  captionRowsLeft,
 });
 
 /** Lazy, and sized up front: a picture in a closed tab costs nothing, and arriving moves nothing. */
@@ -150,13 +158,16 @@ export const ResolveFigureList = ({ names }: { names: ResolveFigureName[] }): VN
   names.map((name: ResolveFigureName): VNode => <ResolveFigure key={name} name={name} />);
 
 const HelpPartView = ({
+  id,
   part: { heading, intro, steps, notes },
   labels,
   image,
   figuresOf,
 }: HelpPartViewProps): VNode => (
   <div className="grid grid-cols-1 gap-2">
-    <h3 className="font-medium">{heading}</h3>
+    <h3 id={id} tabIndex={-1} className="scroll-mt-20 font-medium">
+      {heading}
+    </h3>
     <p>{format(intro, labels)}</p>
     {image === undefined ? null : <HelpImage name={image} />}
     {steps.length === 0 ? null : (
@@ -183,25 +194,103 @@ const HelpPartView = ({
   </div>
 );
 
+const sectionId = (key: keyof HelpSections): string => `help-${key}`;
+
+const partId = (key: keyof HelpSections, index: number): string => `help-${key}-${index}`;
+
+/** Moves there and the keyboard with it; no hash, which would mean nothing to the app. */
+const goTo = (id: string, event: Event): void => {
+  event.preventDefault();
+  const target: HTMLElement | null = document.getElementById(id);
+  target?.scrollIntoView();
+  target?.focus();
+};
+
+const ContentsLink = ({ id, text }: { id: string; text: string }): VNode => (
+  <a
+    href={`#${id}`}
+    onClick={(event: Event): void => goTo(id, event)}
+    className="inline-block py-1 underline underline-offset-2"
+  >
+    {text}
+  </a>
+);
+
+const HelpContents = ({
+  found,
+  sections,
+  label,
+}: {
+  found: FoundSection[];
+  sections: HelpSections;
+  label: string;
+}): VNode => (
+  <nav aria-label={label}>
+    <p className="font-medium">{label}</p>
+    <ul className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+      {found.map(
+        ({ key, partIndexes }: FoundSection): VNode => (
+          <li key={key}>
+            <ContentsLink id={sectionId(key)} text={sections[key].heading} />
+            <ul className="pl-4">
+              {partIndexes.map(
+                (index: number): VNode => (
+                  <li key={index}>
+                    <ContentsLink id={partId(key, index)} text={sections[key].parts[index]?.heading ?? ""} />
+                  </li>
+                ),
+              )}
+            </ul>
+          </li>
+        ),
+      )}
+    </ul>
+  </nav>
+);
+
 export function HelpPane(): VNode {
   const messages: Messages = useMessages();
   const labels: Params = helpLabels(messages);
   const { sections } = messages.help;
+  const [query, setQuery] = useState("");
+  const found: FoundSection[] = findHelp(query, SECTION_ORDER, sections, labels);
+  const searching: boolean = query.trim().length > 0;
   return (
     <div className="grid grid-cols-1 gap-4 text-base break-words">
       <p className={LINE_LIMIT}>{messages.help.intro}</p>
-      {SECTION_ORDER.map(
-        (key: keyof HelpSections): VNode => (
+      <div data-slot="help-search" className="sticky top-0 z-10 bg-(--page) py-1">
+        <Input
+          type="search"
+          aria-label={messages.helpSearch}
+          placeholder={messages.helpSearch}
+          value={query}
+          onInput={(event: Event): void => setQuery((event.currentTarget as HTMLInputElement).value)}
+        />
+      </div>
+      <p role="status" className="text-muted-foreground">
+        {searching && found.length > 0
+          ? format(messages.helpSearchFound, { count: foundPartCount(found) })
+          : ""}
+        {searching && found.length === 0 ? format(messages.helpSearchNone, { query }) : ""}
+      </p>
+      {found.length === 0 ? null : (
+        <HelpContents found={found} sections={sections} label={messages.helpContents} />
+      )}
+      {found.map(
+        ({ key, partIndexes }: FoundSection): VNode => (
           <Card key={key}>
             <CardHeader>
-              <CardTitle>{sections[key].heading}</CardTitle>
+              <CardTitle id={sectionId(key)} tabIndex={-1} className="scroll-mt-20">
+                {sections[key].heading}
+              </CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-4 text-base">
-              {sections[key].parts.map(
-                (part: HelpPart, index: number): VNode => (
+              {partIndexes.map(
+                (index: number): VNode => (
                   <HelpPartView
-                    key={part.heading}
-                    part={part}
+                    key={index}
+                    id={partId(key, index)}
+                    part={sections[key].parts[index] as HelpPart}
                     labels={labels}
                     image={imageOfPart(key, index)}
                     figuresOf={(step: number): ResolveFigureName[] => figuresOfStep(key, index, step)}

@@ -298,6 +298,10 @@ export const koMessages: Messages = {
     "geforce-runtime":
       "선택 사항입니다. 화자 구별을 GPU로 빠르게 합니다. 없어도 CPU로 실행됩니다. GPU에서 실패하면 CPU로 돌아갑니다.",
   },
+  helpContents: "목차",
+  helpSearch: "사용법 검색",
+  helpSearchNone: "“{query}”을(를) 찾지 못했습니다.",
+  helpSearchFound: "{count}건을 찾았습니다.",
   help: {
     version: "버전 {version}",
     intro:
@@ -449,13 +453,14 @@ export const koMessages: Messages = {
               "CapCut을 고르면 동영상과 자막이 들어 있고 화자별 색과 위치가 담긴 CapCut 프로젝트를 만듭니다.",
             steps: [
               "“{subtitleFormat}”에서 CapCut을 고르고 자막을 만듭니다.",
-              "CapCut 홈을 엽니다. 동영상 이름의 프로젝트가 보입니다.",
+              "CapCut 홈을 엽니다. 동영상 이름의 프로젝트가 보입니다. CapCut이 열려 있었다면 홈으로 돌아갑니다.",
               "프로젝트를 엽니다. 동영상과 자막이 타임라인에 들어 있습니다.",
             ],
             notes: [
               "CapCut 기본 글꼴을 쓰고 그림자는 없습니다.",
               "동영상은 원래 위치에서 읽습니다. 옮기면 CapCut이 찾지 못합니다.",
               "비공식 형식이라 CapCut 업데이트 후 열리지 않을 수 있습니다(Mac용 CapCut 9.7에서 확인).",
+              "Windows용 CapCut에서는 아직 확인하지 않았습니다.",
             ],
           },
           {
@@ -484,6 +489,7 @@ export const koMessages: Messages = {
               "화자를 고른 뒤 채우기, 외곽선, 바깥 외곽선, 그림자를 정합니다. 색 네모를 누르면 색을 고를 수 있습니다. “투명”을 고르면 바깥 외곽선이나 그림자가 사라집니다.",
             ],
             notes: [
+              "화자가 2명 이상이면 “{captionRowsLeft}”와 “{captionRowSpacing}”도 정할 수 있습니다. 미리보기에 3줄로 나옵니다.",
               "미리보기는 넓은 화면에서는 오른쪽에, 좁은 화면에서는 위에 나옵니다. 아래로 내려도 계속 보입니다.",
               "자막을 동영상 좌우 끝에 두고 싶지 않으면 “{positionHeading}” 항목의 안전 영역에서 폭을 정합니다. 미리 보기의 어두운 띠가 그 폭입니다.",
             ],

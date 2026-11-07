@@ -286,6 +286,10 @@ export const zhHansMessages: Messages = {
     "avatar-face-yolo": "虚拟形象的脸。将导出的 ONNX 文件放入模型文件夹后即可使用。",
     "geforce-runtime": "可选。用 GPU 加快说话人分离。没有它也能在 CPU 上运行。GPU 失败时会回到 CPU。",
   },
+  helpContents: "目录",
+  helpSearch: "搜索使用说明",
+  helpSearchNone: "没有找到“{query}”。",
+  helpSearchFound: "找到 {count} 项。",
   help: {
     version: "版本 {version}",
     intro: "这个应用会把视频里说的话变成字幕，并为每个人使用不同的颜色。字幕可以在视频剪辑软件中使用。",
@@ -425,13 +429,14 @@ export const zhHansMessages: Messages = {
             intro: "选择 CapCut 后,会创建包含视频和字幕的 CapCut 项目,并带有每位说话人的颜色和位置。",
             steps: [
               "在“{subtitleFormat}”中选择 CapCut,然后制作字幕。",
-              "打开 CapCut 主页,会看到以视频命名的项目。",
+              "打开 CapCut 主页,会看到以视频命名的项目。如果 CapCut 已经打开,请回到主页。",
               "打开项目,视频和字幕已在时间线上。",
             ],
             notes: [
               "使用 CapCut 的标准字体,没有阴影。",
               "视频从原位置读取。移动视频后 CapCut 将找不到它。",
               "这是非官方格式,CapCut 更新后可能无法打开(已在 Mac 版 CapCut 9.7 上确认)。",
+              "尚未在 Windows 版 CapCut 上确认。",
             ],
           },
           {
@@ -459,6 +464,7 @@ export const zhHansMessages: Messages = {
               "选择说话人，再设置填充、描边、外描边和阴影。按颜色方块可以选择颜色。选“透明”可以去掉外描边或阴影。",
             ],
             notes: [
+              "有 2 位以上说话人时,还可以设置“{captionRowsLeft}”和“{captionRowSpacing}”。预览会显示 3 行。",
               "预览在宽屏幕上显示在右边，在窄屏幕上显示在上面。向下滚动时也能一直看到。",
               "不想让字幕靠近视频左右两端时，在“{positionHeading}”的安全区中设置宽度。预览中的深色带就是这个宽度。",
             ],

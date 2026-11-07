@@ -305,6 +305,10 @@ export const enMessages: Messages = {
     "geforce-runtime":
       "Optional. Makes telling speakers apart faster on the GPU. Without it, this runs on the CPU, and it returns to the CPU if the GPU fails.",
   },
+  helpContents: "Contents",
+  helpSearch: "Search this guide",
+  helpSearchNone: "Nothing found for “{query}”.",
+  helpSearchFound: "{count} found.",
   help: {
     version: "Version {version}",
     intro:
@@ -459,13 +463,14 @@ export const enMessages: Messages = {
               "Choosing CapCut makes a CapCut project holding the video and the captions, with each speaker's colour and every position.",
             steps: [
               "Choose CapCut in “{subtitleFormat}” and make the subtitles.",
-              "Open CapCut's home page. A project named after the video is listed.",
+              "Open CapCut's home page. A project named after the video is listed. If CapCut was already open, go back to its home page.",
               "Open the project. The video and captions are on the timeline.",
             ],
             notes: [
               "It uses CapCut's standard font and no shadow.",
               "The video is read from where it is. If you move it, CapCut cannot find it.",
               "This format is unofficial, so a CapCut update may stop it opening (checked with CapCut 9.7 for Mac).",
+              "This has not been checked in CapCut for Windows yet.",
             ],
           },
           {
@@ -494,6 +499,7 @@ export const enMessages: Messages = {
               "Choose a speaker, then set the fill, outline, outer edge and shadow. Press a colour square to choose a colour. “Transparent” removes the outer edge or the shadow.",
             ],
             notes: [
+              "With 2 or more speakers, you can also set “{captionRowsLeft}” and “{captionRowSpacing}”. The preview shows 3 rows.",
               "The preview is on the right on a wide screen and at the top on a narrow one. It stays in view as you scroll.",
               "To keep subtitles off the left and right edges, set the safe zones under “{positionHeading}”. The dark bands in the preview show them.",
             ],
