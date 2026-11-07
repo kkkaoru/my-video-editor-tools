@@ -11,10 +11,12 @@ const USES: Map<string, string[]> = new Map([
 ]);
 
 const namesFor = (files: string[], everything: boolean): string[] =>
-  planChecks({ files, moduleUses: USES, everything }).map(({ name }: Check): string => name);
+  planChecks({ files, moduleUses: USES, everything, featureModules: ["catalog"] }).map(
+    ({ name }: Check): string => name,
+  );
 
 const commandOf = (files: string[], name: string): string[] | undefined =>
-  planChecks({ files, moduleUses: USES, everything: false }).find(
+  planChecks({ files, moduleUses: USES, everything: false, featureModules: ["catalog"] }).find(
     (check: Check): boolean => check.name === name,
   )?.command;
 
@@ -84,11 +86,9 @@ it("lints everything when the lint rules change", () => {
 
 it("tests a Rust module with its dependents and measures only the module", () => {
   expect(namesFor(["src-tauri/src/captions.rs"], false)).toStrictEqual([
-    "frontend for the Rust build",
     "rust format",
+    "frontend for the Rust build",
     "clippy",
-    "clippy --features windows-geforce",
-    "clippy --features windows-radeon",
     "rust tests and coverage",
   ]);
   expect(commandOf(["src-tauri/src/captions.rs"], "rust format")).toStrictEqual([
@@ -103,6 +103,43 @@ it("tests a Rust module with its dependents and measures only the module", () =>
     "../scripts/verify/check-rust-coverage.sh",
     "captions,pipeline,service",
     "captions",
+  ]);
+});
+
+it("lints a distribution's build only when a module that reads its features changes", () => {
+  expect(namesFor(["src-tauri/src/catalog.rs"], false)).toStrictEqual([
+    "rust format",
+    "frontend for the Rust build",
+    "clippy",
+    "clippy --features windows-geforce",
+    "clippy --features windows-radeon",
+    "rust tests and coverage",
+  ]);
+});
+
+it("runs the quick checks before anything slow", () => {
+  const phases: string[] = planChecks({
+    files: ["src/view/JobsPane.tsx", "src-tauri/src/captions.rs"],
+    moduleUses: USES,
+    everything: false,
+    featureModules: [],
+  }).map(({ phase }: Check): string => phase);
+  expect(phases.slice(0, 3)).toStrictEqual(["quick", "quick", "quick"]);
+  expect(phases.slice(3).every((phase: string): boolean => phase === "slow")).toBe(true);
+});
+
+it("reruns the Rust checks when the coverage rule changes and the frontend's build when it is gone", () => {
+  const checks: Check[] = planChecks({
+    files: ["src-tauri/src/captions.rs"],
+    moduleUses: USES,
+    everything: false,
+    featureModules: [],
+  });
+  expect(checks.find(({ name }: Check): boolean => name === "clippy")?.inputs).toContain(
+    "scripts/verify/check-rust-coverage.sh",
+  );
+  expect(checks.find(({ name }: Check): boolean => name.startsWith("frontend"))?.outputs).toStrictEqual([
+    "dist",
   ]);
 });
 
@@ -161,9 +198,9 @@ it("runs every check when a file was deleted", () => {
   expect(namesFor([], true)).toStrictEqual([
     "types",
     "lint",
+    "rust format",
     "unit tests",
     "frontend for the Rust build",
-    "rust format",
     "clippy",
     "clippy --features windows-geforce",
     "clippy --features windows-radeon",

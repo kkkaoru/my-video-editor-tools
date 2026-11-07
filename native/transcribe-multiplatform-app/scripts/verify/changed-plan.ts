@@ -1,10 +1,18 @@
 // Runs with bun: decides which checks a list of changed app files needs, as plain data.
 import { SHARED_SCOPE, type SweepScope, sweepScope } from "./a11y-scope.ts";
 
+/** Quick checks run first and together, so a typo stops the commit in seconds. */
+export type CheckPhase = "quick" | "slow";
+
 export interface Check {
   name: string;
   directory: "app" | "rust";
   command: string[];
+  phase: CheckPhase;
+  /** Paths relative to the app: a check that passed is not run again until one of them changes. */
+  inputs: string[];
+  /** What a later check needs on disk, so its absence means running this one again. */
+  outputs: string[];
 }
 
 export interface PlanInput {
@@ -14,6 +22,8 @@ export interface PlanInput {
   moduleUses: Map<string, string[]>;
   /** A file was deleted: what depended on it cannot be told from the rest of the list. */
   everything: boolean;
+  /** Rust modules that read the distribution's features: only they differ between the builds. */
+  featureModules: string[];
 }
 
 const WHOLE_UI: RegExp = /^(package\.json|bun\.lock|tsconfig[^/]*\.json|vite\.config\.ts)$/;
@@ -34,9 +44,47 @@ const SWEEP_CONFIG: string[] = ["--config", "tests/a11y/playwright.config.ts"];
 const SWEEP_PROJECTS: string[] = ["--project=chromium", "--workers=1"];
 const CLIPPY_FEATURES: string[][] = [[], ["--features", "windows-geforce"], ["--features", "windows-radeon"]];
 
-const inApp = (name: string, command: string[]): Check => ({ name, directory: "app", command });
+const UI_INPUTS: string[] = [
+  "src",
+  "public",
+  "scripts",
+  "tests",
+  "index.html",
+  "package.json",
+  "bun.lock",
+  "tsconfig.json",
+  "vite.config.ts",
+  "biome.json",
+];
+const RUST_INPUTS: string[] = [
+  "src-tauri/src",
+  "src-tauri/tests",
+  "src-tauri/resources",
+  "src-tauri/capabilities",
+  "src-tauri/build.rs",
+  "src-tauri/Cargo.toml",
+  "src-tauri/Cargo.lock",
+  "src-tauri/tauri.conf.json",
+  "scripts/verify/check-rust-coverage.sh",
+];
 
-const inRust = (name: string, command: string[]): Check => ({ name, directory: "rust", command });
+const inApp = (name: string, phase: CheckPhase, command: string[], outputs: string[] = []): Check => ({
+  name,
+  directory: "app",
+  command,
+  phase,
+  inputs: UI_INPUTS,
+  outputs,
+});
+
+const inRust = (name: string, phase: CheckPhase, command: string[]): Check => ({
+  name,
+  directory: "rust",
+  command,
+  phase,
+  inputs: RUST_INPUTS,
+  outputs: [],
+});
 
 const matching = (files: string[], pattern: RegExp): string[] =>
   files.filter((file: string): boolean => pattern.test(file));
@@ -57,20 +105,20 @@ export function withDependents(modules: string[], moduleUses: Map<string, string
 }
 
 const typeChecks = (files: string[], whole: boolean): Check[] =>
-  whole || matching(files, TYPED).length > 0 ? [inApp("types", ["bun", "run", "tsc"])] : [];
+  whole || matching(files, TYPED).length > 0 ? [inApp("types", "quick", ["bun", "run", "tsc"])] : [];
 
 function lintChecks(files: string[], whole: boolean): Check[] {
   const linted: string[] = matching(files, LINTED);
   if (whole || files.includes("biome.json")) {
-    return [inApp("lint", ["bun", "run", "lint"])];
+    return [inApp("lint", "quick", ["bun", "run", "lint"])];
   }
-  return linted.length > 0 ? [inApp("lint", ["bunx", "biome", "check", ...linted])] : [];
+  return linted.length > 0 ? [inApp("lint", "quick", ["bunx", "biome", "check", ...linted])] : [];
 }
 
 function vitestChecks(files: string[], whole: boolean): Check[] {
   const inputs: string[] = matching(files, VITEST_INPUT);
   if (whole) {
-    return [inApp("unit tests", ["bun", "run", "test"])];
+    return [inApp("unit tests", "slow", ["bun", "run", "test"])];
   }
   const covered: string[] = matching(inputs, COVERED_SOURCE).filter(
     (file: string): boolean => !NOT_COVERED.test(file),
@@ -80,13 +128,13 @@ function vitestChecks(files: string[], whole: boolean): Check[] {
       ? ["--coverage", ...covered.map((file: string): string => `--coverage.include=${file}`)]
       : [];
   return inputs.length > 0
-    ? [inApp("unit tests", ["bunx", "vitest", "related", "--run", ...coverage, ...inputs])]
+    ? [inApp("unit tests", "slow", ["bunx", "vitest", "related", "--run", ...coverage, ...inputs])]
     : [];
 }
 
 const shellChecks = (files: string[]): Check[] => {
   const scripts: string[] = matching(files, SHELL);
-  return scripts.length > 0 ? [inApp("shell", ["shellcheck", ...scripts])] : [];
+  return scripts.length > 0 ? [inApp("shell", "quick", ["shellcheck", ...scripts])] : [];
 };
 
 const moduleOf = (file: string): string[] => {
@@ -101,9 +149,11 @@ function rustChecks(input: PlanInput): Check[] {
     return [];
   }
   const modules: string[] = sources.flatMap(moduleOf);
-  const clippy: Check[] = CLIPPY_FEATURES.map(
+  const everyBuild: boolean =
+    whole || modules.some((module: string): boolean => input.featureModules.includes(module));
+  const clippy: Check[] = (everyBuild ? CLIPPY_FEATURES : CLIPPY_FEATURES.slice(0, 1)).map(
     (features: string[]): Check =>
-      inRust(`clippy ${features.join(" ")}`.trim(), [
+      inRust(`clippy ${features.join(" ")}`.trim(), "slow", [
         "cargo",
         "clippy",
         "--all-targets",
@@ -121,18 +171,18 @@ function rustChecks(input: PlanInput): Check[] {
     ? ["bash", COVERAGE_SCRIPT]
     : ["bash", COVERAGE_SCRIPT, tested, modules.join(",")];
   return [
-    inApp("frontend for the Rust build", ["bun", "run", "build"]),
-    inRust("rust format", format),
+    inRust("rust format", "quick", format),
+    inApp("frontend for the Rust build", "slow", ["bun", "run", "build"], ["dist"]),
     ...clippy,
-    inRust("rust tests and coverage", coverage),
+    inRust("rust tests and coverage", "slow", coverage),
   ];
 }
 
 function sweepChecks(scope: SweepScope): Check[] {
   const sweep = (grep: string[]): Check =>
-    inApp("WCAG sweep", ["bunx", "playwright", "test", ...SWEEP_CONFIG, ...SWEEP_PROJECTS, ...grep]);
+    inApp("WCAG sweep", "slow", ["bunx", "playwright", "test", ...SWEEP_CONFIG, ...SWEEP_PROJECTS, ...grep]);
   const vitals = (grep: string[]): Check =>
-    inApp("Web Vitals", [
+    inApp("Web Vitals", "slow", [
       "bunx",
       "playwright",
       "test",
@@ -150,10 +200,15 @@ function sweepChecks(scope: SweepScope): Check[] {
   ];
 }
 
-/** Every check the change needs, cheapest first. File-level tools get the files; whole-project ones are incremental. */
+const inPhase =
+  (phase: CheckPhase) =>
+  (check: Check): boolean =>
+    check.phase === phase;
+
+/** Every check the change needs, the quick ones first. File-level tools get the files; whole-project ones are incremental. */
 export function planChecks(input: PlanInput): Check[] {
   const whole: boolean = input.everything || matching(input.files, WHOLE_UI).length > 0;
-  return [
+  const checks: Check[] = [
     ...typeChecks(input.files, whole),
     ...lintChecks(input.files, whole),
     ...shellChecks(input.files),
@@ -161,4 +216,5 @@ export function planChecks(input: PlanInput): Check[] {
     ...rustChecks(input),
     ...sweepChecks(input.everything ? SHARED_SCOPE : sweepScope(input.files)),
   ];
+  return [...checks.filter(inPhase("quick")), ...checks.filter(inPhase("slow"))];
 }
