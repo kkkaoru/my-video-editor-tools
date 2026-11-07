@@ -176,6 +176,8 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
     line_height: 1.448,
+    row_spacing: 1.45,
+    rows_share_left: true,
     width_ratio: 0.9,
     safe_left_percent: 5,
     safe_right_percent: 5,
@@ -205,6 +207,8 @@ const profile = (name: string): Profile => ({
     font_family: "Noto Sans JP",
     font_ratio: 0.048,
     line_height: 1.448,
+    row_spacing: 1.45,
+    rows_share_left: true,
     width_ratio: 0.9,
     safe_left_percent: 5,
     safe_right_percent: 5,
@@ -544,6 +548,9 @@ export const UI_STATES: UiState[] = [
         ),
       },
     }),
+  }),
+  state("style with several speakers on rows", "style", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, speaker_count: 3 } }),
   }),
   state("style for the srt format", "style", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),

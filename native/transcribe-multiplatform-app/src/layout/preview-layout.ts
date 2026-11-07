@@ -286,6 +286,34 @@ const anchorY = (anchor: Settings["placement"]["anchor"], block: BlockSize, fram
   }[anchor]();
 };
 
+/** One voice's row when several speak at once. */
+export interface PreviewRow {
+  line: string;
+  x: number;
+  y: number;
+}
+
+const ROW_LENGTH_SHARES: number[] = [1, 0.7, 0.45];
+
+/** Rows as `stack_rows` and `share_left_edge` in captions.rs place them: outwards from the anchor. */
+export function previewRows(layout: PreviewLayout, frame: FrameSize, settings: Settings): PreviewRow[] {
+  const metrics: Metrics = metricsFor(frame, settings);
+  const sample: string[] = Array.from(layout.lines[0] ?? "");
+  const lines: string[] = ROW_LENGTH_SHARES.map((share: number): string =>
+    sample.slice(0, Math.ceil(sample.length * share)).join(""),
+  );
+  const widths: number[] = lines.map((line: string): number => measureLine(line, metrics));
+  const left: number = layout.x - Math.max(...widths) / 2;
+  const away: number = layout.y < frame.height / 2 ? 1 : -1;
+  return lines.map(
+    (line: string, index: number): PreviewRow => ({
+      line,
+      x: settings.rows_share_left ? left + (widths[index] ?? 0) / 2 : layout.x,
+      y: layout.y + away * index * settings.row_spacing * layout.renderedFontPx,
+    }),
+  );
+}
+
 export function previewLayout(text: string, frame: FrameSize, settings: Settings): PreviewLayout {
   const metrics: Metrics = metricsFor(frame, settings);
   const { fontPx, scale } = metrics;

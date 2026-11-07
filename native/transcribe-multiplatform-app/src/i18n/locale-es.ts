@@ -198,6 +198,10 @@ export const esMessages: Messages = {
   fontSize: "Tamaño del texto (porcentaje del lado corto)",
   captionWidth: "Línea más larga (porcentaje del ancho)",
   captionLineHeight: "Interlineado (múltiplo del tamaño del texto)",
+  captionRowSpacing: "Espacio entre filas de hablantes (múltiplo del tamaño del texto)",
+  captionRowsLeft: "Inicio izquierdo con varios hablantes",
+  captionRowsLeftOn: "Alinear",
+  captionRowsLeftOff: "Centrar",
   contrastWarning:
     "{name}: el contraste entre relleno y contorno es de {ratio}:1, inferior al mínimo WCAG AA de 4,5:1. Elige colores más distintos.",
   previewHeading: "Vista previa",

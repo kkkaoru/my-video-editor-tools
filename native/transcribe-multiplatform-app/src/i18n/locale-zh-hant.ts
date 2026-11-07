@@ -181,6 +181,10 @@ export const zhHantMessages: Messages = {
   fontSize: "文字大小（占短邊的百分比）",
   captionWidth: "最長行（占寬度的百分比）",
   captionLineHeight: "字幕行距（文字大小的倍數）",
+  captionRowSpacing: "說話者各行的間距（文字大小的倍數）",
+  captionRowsLeft: "多位說話者的左側起始位置",
+  captionRowsLeftOn: "對齊",
+  captionRowsLeftOff: "置中",
   contrastWarning:
     "{name}：填色與描邊的對比度為 {ratio}:1，低於 WCAG AA 標準 4.5:1。請選擇明暗差更大的顏色。",
   previewHeading: "預覽",

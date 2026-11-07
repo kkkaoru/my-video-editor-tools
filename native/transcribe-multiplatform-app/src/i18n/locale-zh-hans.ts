@@ -181,6 +181,10 @@ export const zhHansMessages: Messages = {
   fontSize: "文字大小（占短边的百分比）",
   captionWidth: "最长行（占宽度的百分比）",
   captionLineHeight: "字幕行距（文字大小的倍数）",
+  captionRowSpacing: "说话人各行的间距（文字大小的倍数）",
+  captionRowsLeft: "多位说话人的左侧起始位置",
+  captionRowsLeftOn: "对齐",
+  captionRowsLeftOff: "居中",
   contrastWarning:
     "{name}：填充与描边的对比度为 {ratio}:1，低于 WCAG AA 标准 4.5:1。请选择明暗差更大的颜色。",
   previewHeading: "预览",

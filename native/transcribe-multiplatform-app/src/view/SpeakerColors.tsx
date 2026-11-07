@@ -68,18 +68,18 @@ const NO_SHADOW: Pick<SpeakerColor, "shadow" | "shadow_x" | "shadow_y" | "shadow
 };
 const FIRST_SPEAKER: SpeakerColor = {
   fill: "#FFFFFF",
-  fill_width: 0,
+  fill_width: 0.025,
   outline: "#000000",
-  outline_width: 0.115,
+  outline_width: 0.16,
   rim: null,
   rim_width: 3 / 88,
   ...NO_SHADOW,
 };
 /** What a speaker after the first starts from: a white outline, and the outer edge transparent. */
 const LATER_SPEAKER: Omit<SpeakerColor, "fill"> = {
-  fill_width: 0,
+  fill_width: 0.025,
   outline: "#FFFFFF",
-  outline_width: 0.115,
+  outline_width: 0.16,
   rim: null,
   rim_width: 3 / 88,
   ...NO_SHADOW,

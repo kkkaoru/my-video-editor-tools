@@ -58,9 +58,9 @@ afterEach(cleanup);
 it("starts speaker 1 white on black and the others in colour on white, all with a transparent outer edge", () => {
   const later = (fill: string): SpeakerColor => ({
     fill,
-    fill_width: 0,
+    fill_width: 0.025,
     outline: "#FFFFFF",
-    outline_width: 0.115,
+    outline_width: 0.16,
     rim: null,
     rim_width: 3 / 88,
     shadow: null,
@@ -71,9 +71,9 @@ it("starts speaker 1 white on black and the others in colour on white, all with 
   expect(defaultPalette()).toStrictEqual([
     {
       fill: "#FFFFFF",
-      fill_width: 0,
+      fill_width: 0.025,
       outline: "#000000",
-      outline_width: 0.115,
+      outline_width: 0.16,
       rim: null,
       rim_width: 3 / 88,
       shadow: null,
@@ -237,9 +237,9 @@ it("adds a speaker with a transparent outer edge", () => {
   fireEvent.click(screen.getByRole("button", { name: "Add a speaker" }));
   expect(onChange.mock.lastCall?.[0][2]).toStrictEqual({
     fill: "#FFFFFF",
-    fill_width: 0,
+    fill_width: 0.025,
     outline: "#FFFFFF",
-    outline_width: 0.115,
+    outline_width: 0.16,
     rim: null,
     rim_width: 3 / 88,
     shadow: null,

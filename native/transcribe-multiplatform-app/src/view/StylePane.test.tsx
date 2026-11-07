@@ -39,6 +39,8 @@ const SETTINGS: Settings = {
   ],
   font_family: "Sans",
   font_ratio: 0.05,
+  row_spacing: 1.45,
+  rows_share_left: true,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -186,6 +188,34 @@ it("reports the line spacing as it is", () => {
     key: "ArrowRight",
   });
   expect(lastSaved(store)?.line_height).toBeCloseTo(1.449);
+});
+
+it("reports the distance between speakers' rows", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.keyDown(
+    screen.getByLabelText("Space between speakers' rows (times the text size)", SLIDER_INPUT),
+    { key: "ArrowRight" },
+  );
+  expect(lastSaved(store)?.row_spacing).toBeCloseTo(1.5);
+});
+
+it("turns the shared left edge off and on", () => {
+  const store: AppStore = show(SETTINGS);
+  fireEvent.click(screen.getByRole("button", { name: "Centre" }));
+  expect(lastSaved(store)?.rows_share_left).toBe(false);
+  cleanup();
+  const again: AppStore = show({ ...SETTINGS, rows_share_left: false });
+  fireEvent.click(screen.getByRole("button", { name: "Align" }));
+  expect(lastSaved(again)?.rows_share_left).toBe(true);
+});
+
+it("previews three rows for several speakers and one for a single speaker", () => {
+  show({ ...SETTINGS, speaker_count: 3 });
+  const rows = (): number => document.querySelectorAll('[data-slot="caption-preview"] svg text').length;
+  const several: number = rows();
+  cleanup();
+  show({ ...SETTINGS, speaker_count: 1 });
+  expect(rows()).toBeLessThan(several);
 });
 
 it("describes the preview in the landscape frame by default", () => {

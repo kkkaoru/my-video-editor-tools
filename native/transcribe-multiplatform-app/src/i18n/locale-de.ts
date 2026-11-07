@@ -198,6 +198,10 @@ export const deMessages: Messages = {
   fontSize: "Schriftgröße (Prozent der kurzen Kante)",
   captionWidth: "Längste Zeile (Prozent der Breite)",
   captionLineHeight: "Zeilenabstand (Vielfaches der Textgröße)",
+  captionRowSpacing: "Abstand der Sprecherzeilen (Vielfaches der Textgröße)",
+  captionRowsLeft: "Linker Beginn bei mehreren Sprechern",
+  captionRowsLeftOn: "Ausrichten",
+  captionRowsLeftOff: "Zentrieren",
   contrastWarning:
     "{name}: Der Kontrast zwischen Füllung und Kontur beträgt {ratio}:1 und liegt unter dem WCAG-AA-Mindestwert von 4,5:1. Wähle Farben mit größerem Helligkeitsunterschied.",
   previewHeading: "Vorschau",

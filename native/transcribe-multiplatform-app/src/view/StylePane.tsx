@@ -6,7 +6,13 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group.tsx";
 import type { Anchor, Profile, Settings, SpeakerColor } from "../backend/types.ts";
 import { format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
-import { type FrameSize, type PreviewLayout, previewLayout } from "../layout/preview-layout.ts";
+import {
+  type FrameSize,
+  type PreviewLayout,
+  type PreviewRow,
+  previewLayout,
+  previewRows,
+} from "../layout/preview-layout.ts";
 import { type AppStore, reportFailure } from "../state/use-app-store.ts";
 import { FaceSilhouette } from "./FaceSilhouette.tsx";
 import { FontField } from "./FontField.tsx";
@@ -69,6 +75,9 @@ const PREVIEW_VERTICAL_WIDTH_PX: number = 200;
 const LINE_HEIGHT_MIN: number = 1;
 const LINE_HEIGHT_MAX: number = 3;
 const LINE_HEIGHT_STEP: number = 0.001;
+const ROW_SPACING_STEP: number = 0.05;
+const ROWS_LEFT: string = "left";
+const ROWS_CENTRED: string = "centred";
 const SPEECH_LANGUAGES: ToggleChoice<string>[] = [
   { value: "ja", label: "日本語" },
   { value: "en", label: "English" },
@@ -173,17 +182,37 @@ const CaptionPreview = ({ settings, frame, slot }: CaptionPreviewProps): VNode =
             edge={width - layout.safeRightPx}
             size={frame.size}
           />
-          <LayeredText
-            lines={layout.lines}
-            x={layout.x}
-            y={layout.y}
-            fontFamily={settings.font_family}
-            fontPx={layout.renderedFontPx}
-            lineHeightPx={layout.lineHeightPx}
-            color={color}
-            strokeUnitPx={layout.strokeUnitPx}
-            frame={frame.size}
-          />
+          {settings.speaker_count === 1 ? (
+            <LayeredText
+              lines={layout.lines}
+              x={layout.x}
+              y={layout.y}
+              fontFamily={settings.font_family}
+              fontPx={layout.renderedFontPx}
+              lineHeightPx={layout.lineHeightPx}
+              color={color}
+              strokeUnitPx={layout.strokeUnitPx}
+              frame={frame.size}
+            />
+          ) : (
+            previewRows(layout, frame.size, settings).map(
+              ({ line, x, y }: PreviewRow, index: number): VNode => (
+                <LayeredText
+                  key={line}
+                  lines={[line]}
+                  x={x}
+                  y={y}
+                  fontFamily={settings.font_family}
+                  fontPx={layout.renderedFontPx}
+                  lineHeightPx={layout.lineHeightPx}
+                  // The first row is whoever is being edited.
+                  color={index === 0 ? color : (settings.palette[index] ?? color)}
+                  strokeUnitPx={layout.strokeUnitPx}
+                  frame={frame.size}
+                />
+              ),
+            )
+          )}
         </svg>
       </div>
       <p className="text-muted-foreground">
@@ -345,6 +374,23 @@ export function StylePane({ store, settings, profiles, faceOptions }: StylePaneP
                 max={LINE_HEIGHT_MAX}
                 step={LINE_HEIGHT_STEP}
                 onChange={(line_height: number): void => update({ line_height })}
+              />
+              <AdjustField
+                label={messages.captionRowSpacing}
+                value={settings.row_spacing}
+                min={LINE_HEIGHT_MIN}
+                max={LINE_HEIGHT_MAX}
+                step={ROW_SPACING_STEP}
+                onChange={(row_spacing: number): void => update({ row_spacing })}
+              />
+              <ChoiceGroup
+                label={messages.captionRowsLeft}
+                value={settings.rows_share_left ? ROWS_LEFT : ROWS_CENTRED}
+                choices={[
+                  { value: ROWS_LEFT, label: messages.captionRowsLeftOn },
+                  { value: ROWS_CENTRED, label: messages.captionRowsLeftOff },
+                ]}
+                onChange={(choice: string): void => update({ rows_share_left: choice === ROWS_LEFT })}
               />
             </CardContent>
           </Card>

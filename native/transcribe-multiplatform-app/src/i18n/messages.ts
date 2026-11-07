@@ -251,6 +251,10 @@ export interface Messages {
   fontSize: string;
   captionWidth: string;
   captionLineHeight: string;
+  captionRowSpacing: string;
+  captionRowsLeft: string;
+  captionRowsLeftOn: string;
+  captionRowsLeftOff: string;
   contrastWarning: string;
   previewHeading: string;
   previewFrameLabel: string;

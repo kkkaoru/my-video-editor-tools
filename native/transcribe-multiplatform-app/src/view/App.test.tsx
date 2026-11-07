@@ -27,6 +27,8 @@ const SETTINGS: Settings = {
   ],
   font_family: "Sans",
   font_ratio: 0.05,
+  row_spacing: 1.45,
+  rows_share_left: true,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,

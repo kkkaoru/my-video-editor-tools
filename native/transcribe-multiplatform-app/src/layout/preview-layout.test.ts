@@ -1,7 +1,14 @@
 // Runs with bun: the preview geometry matches what the caption files will contain.
 import { expect, it } from "vitest";
 import type { Anchor, Settings } from "../backend/types.ts";
-import { metricsFor, type PreviewLayout, previewLayout, wrapText } from "./preview-layout.ts";
+import {
+  metricsFor,
+  type PreviewLayout,
+  type PreviewRow,
+  previewLayout,
+  previewRows,
+  wrapText,
+} from "./preview-layout.ts";
 
 const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Settings => ({
   palette: [
@@ -33,6 +40,8 @@ const settingsWith = (anchor: Anchor, offsetX: number, offsetY: number): Setting
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  row_spacing: 1.45,
+  rows_share_left: true,
   separation_backend: "onnx",
   speaker_count: 0,
   subtitle_format: "fcpxml",
@@ -170,6 +179,35 @@ it("gives nothing for only spaces", () => {
 
 it("wraps empty text to no lines", () => {
   expect(wrapText("", { fontPx: 10, scale: 1, maxLinePx: 30 })).toStrictEqual([]);
+});
+
+it("starts every row at one left edge and spaces them by the setting", () => {
+  const frame = { width: 1920, height: 1080 };
+  const settings: Settings = settingsWith("video_bottom", 0, 0);
+  const layout: PreviewLayout = previewLayout("abcdefghij", frame, settings);
+  const rows: PreviewRow[] = previewRows(layout, frame, settings);
+  expect(rows.map(({ line }: PreviewRow): string => line)).toStrictEqual(["abcdefghij", "abcdefg", "abcde"]);
+  expect(rows[0]?.x).toBe(960);
+  expect(rows[1]?.x).toBeLessThan(960);
+  expect(rows[2]?.x).toBeLessThan(rows[1]?.x ?? 0);
+  expect((rows[0]?.y ?? 0) - (rows[1]?.y ?? 0)).toBeCloseTo(1.45 * layout.renderedFontPx, 6);
+});
+
+it("centres the rows when they need not share an edge", () => {
+  const frame = { width: 1920, height: 1080 };
+  const settings: Settings = { ...settingsWith("video_bottom", 0, 0), rows_share_left: false };
+  const layout: PreviewLayout = previewLayout("abcdefghij", frame, settings);
+  expect(previewRows(layout, frame, settings).map(({ x }: PreviewRow): number => x)).toStrictEqual([
+    960, 960, 960,
+  ]);
+});
+
+it("grows the rows downwards from the top of the video", () => {
+  const frame = { width: 1920, height: 1080 };
+  const settings: Settings = settingsWith("video_top", 0, 0);
+  const layout: PreviewLayout = previewLayout("abcdefghij", frame, settings);
+  const rows: PreviewRow[] = previewRows(layout, frame, settings);
+  expect(rows[1]?.y).toBeGreaterThan(rows[0]?.y ?? 0);
 });
 
 it("places the block at the bottom of the video", () => {

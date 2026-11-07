@@ -186,6 +186,10 @@ export const koMessages: Messages = {
   fontSize: "글자 크기 (짧은 변 대비 퍼센트)",
   captionWidth: "가장 긴 줄 (너비 대비 퍼센트)",
   captionLineHeight: "자막 줄 간격(글자 크기의 배수)",
+  captionRowSpacing: "화자 줄 사이 간격(글자 크기의 배수)",
+  captionRowsLeft: "여러 화자의 왼쪽 시작 위치",
+  captionRowsLeftOn: "맞추기",
+  captionRowsLeftOff: "가운데",
   contrastWarning:
     "{name}: 채우기와 윤곽선의 대비가 {ratio}:1로 WCAG AA 기준 4.5:1보다 낮습니다. 명암 차이가 큰 색을 선택하세요.",
   previewHeading: "미리보기",

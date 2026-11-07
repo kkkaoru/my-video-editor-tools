@@ -188,6 +188,10 @@ export const jaMessages: Messages = {
   fontSize: "文字の大きさ (動画の短い辺に対する %)",
   captionWidth: "1 行の長さの上限 (動画の横はばに対する %)",
   captionLineHeight: "行と行の間 (文字の大きさの何倍か)",
+  captionRowSpacing: "複数話者の段と段の間 (文字の大きさの何倍か)",
+  captionRowsLeft: "複数話者の左の開始位置",
+  captionRowsLeftOn: "そろえる",
+  captionRowsLeftOff: "中央に置く",
   contrastWarning:
     "{name}: 文字と縁の色が近くて、読みにくいです (色の差は {ratio}:1、目安は 4.5:1 以上)。明るさのちがう色を選んでください。",
   previewHeading: "プレビュー",

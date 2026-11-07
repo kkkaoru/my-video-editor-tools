@@ -200,6 +200,10 @@ export const frMessages: Messages = {
   fontSize: "Taille du texte (pourcentage du petit côté)",
   captionWidth: "Ligne la plus longue (pourcentage de la largeur)",
   captionLineHeight: "Interligne (multiple de la taille du texte)",
+  captionRowSpacing: "Espace entre les rangées de locuteurs (multiple de la taille du texte)",
+  captionRowsLeft: "Début à gauche avec plusieurs locuteurs",
+  captionRowsLeftOn: "Aligner",
+  captionRowsLeftOff: "Centrer",
   contrastWarning:
     "{name} : le contraste entre le remplissage et le contour est de {ratio}:1, sous le minimum WCAG AA de 4,5:1. Choisis des couleurs plus éloignées.",
   previewHeading: "Aperçu",

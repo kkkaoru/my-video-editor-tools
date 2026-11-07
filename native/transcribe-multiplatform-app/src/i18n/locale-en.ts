@@ -191,6 +191,10 @@ export const enMessages: Messages = {
   fontSize: "Text size (percent of the short edge)",
   captionWidth: "Longest line (percent of the width)",
   captionLineHeight: "Line spacing (times the text size)",
+  captionRowSpacing: "Space between speakers' rows (times the text size)",
+  captionRowsLeft: "Left start of several speakers' captions",
+  captionRowsLeftOn: "Align",
+  captionRowsLeftOff: "Centre",
   contrastWarning:
     "{name}: the fill and outline contrast is {ratio}:1, below the WCAG AA minimum of 4.5:1. Choose colours further apart.",
   previewHeading: "Preview",

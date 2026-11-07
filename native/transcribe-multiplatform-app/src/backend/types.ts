@@ -41,6 +41,8 @@ export interface CaptionLook {
   font_family: string;
   font_ratio: number;
   line_height: number;
+  row_spacing: number;
+  rows_share_left: boolean;
   width_ratio: number;
   /** Strips at the sides of the width that captions keep out of. */
   safe_left_percent: number;
