@@ -57,7 +57,9 @@ nemo_url() { echo "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v
 
 # Built from source: scripts/release/nemo-speech.patch keeps who is who between the requests of one video.
 clone_nemo() { # folder
-  git clone --quiet --depth 1 --branch "v$NEMO_VERSION" https://github.com/NVIDIA/NeMo-Speech.cpp "$1"
+  # A Windows runner's default line endings would stop the patch from applying.
+  git -c core.autocrlf=false clone --quiet --depth 1 --branch "v$NEMO_VERSION" https://github.com/NVIDIA/NeMo-Speech.cpp "$1"
+  git -C "$1" config core.autocrlf false
   [ "$(git -C "$1" rev-parse HEAD)" = "$NEMO_COMMIT" ] || { echo "NeMo-Speech.cpp v$NEMO_VERSION is not the pinned commit" >&2; return 1; }
   git -C "$1" submodule update --quiet --init --depth 1 llama.cpp third_party/cpp-httplib
   git -C "$1" apply "$app_dir/scripts/release/nemo-speech.patch"

@@ -1,0 +1,70 @@
+name: nemo-speech-cuda
+
+# Run by hand when scripts/release/nemo-speech.patch changes. It publishes the runtime a GeForce build of
+# Transcribe Captions downloads: NVIDIA's own zip with the patched binaries over it, so its cuBLAS and
+# licenses stay NVIDIA's. Not the latest release: the app's updater reads releases/latest.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NEMO_VERSION: "0.3.0"
+  NEMO_COMMIT: 20999cc921d2b14aa58708f61756a8b2e787ba20
+  OFFICIAL_ZIP_SHA256: d0d32ae1bf6ee0534767a47b2aa0e9e2ff6fe39643465c0baae9301d04f6ed42
+  RELEASE_TAG: nemo-speech-cuda-v0.3.0-1
+  ASSET: nemo-speech-0.3.0-session-1-windows-x86_64-cuda.zip
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Clone and patch nemo-speech
+        shell: bash
+        run: |
+          git -c core.autocrlf=false clone --quiet --depth 1 --branch "v$NEMO_VERSION" https://github.com/NVIDIA/NeMo-Speech.cpp /c/n
+          test "$(git -C /c/n rev-parse HEAD)" = "$NEMO_COMMIT"
+          git -C /c/n config core.autocrlf false
+          git -C /c/n submodule update --quiet --init --depth 1 llama.cpp third_party/cpp-httplib
+          git -C /c/n apply "$GITHUB_WORKSPACE/native/transcribe-multiplatform-app/scripts/release/nemo-speech.patch"
+      - name: Install build prerequisites
+        timeout-minutes: 45
+        shell: pwsh
+        working-directory: C:\n
+        run: scripts\windows\install-build-prerequisites.ps1 -Architecture x64
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: "13.0.0"
+          method: network
+      - name: Build
+        shell: pwsh
+        working-directory: C:\n
+        # The same architectures as NVIDIA's release of this version.
+        run: |
+          scripts\windows\build.ps1 -Backend cuda -Profile server -Architecture x64 -BuildDir C:\n\b `
+            -CudaArch '75-real;80-virtual;86-real;89-real;120a-real' -CMakeArgs @('-DGGML_NATIVE=OFF')
+      - name: Package over the official zip
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 -o /c/official.zip "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v$NEMO_VERSION/nemo-speech-$NEMO_VERSION-windows-x86_64-cuda.zip"
+          echo "$OFFICIAL_ZIP_SHA256 */c/official.zip" | sha256sum -c -
+          mkdir /c/p && unzip -q /c/official.zip -d /c/p
+          into="$(dirname "$(find /c/p -name nemo-speech.exe)")"
+          from="$(dirname "$(find /c/n/b/bin -name nemo-speech.exe)")"
+          cp "$from"/*.exe "$from"/*.dll "$into/"
+          (cd /c/p && 7z a -tzip -bd "/c/$ASSET" . >/dev/null)
+          ls -l "/c/$ASSET" && sha256sum "/c/$ASSET"
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" "/c/$ASSET" --latest=false --target "$GITHUB_SHA" \
+            --title "nemo-speech $NEMO_VERSION CUDA with speakers kept between requests" \
+            --notes "NVIDIA NeMo-Speech.cpp $NEMO_VERSION with scripts/release/nemo-speech.patch, over NVIDIA's own Windows CUDA zip. Downloaded by the GeForce build of Transcribe Captions."

@@ -27,6 +27,8 @@ const YOLO_SCORE_THRESHOLD: f32 = 0.25;
 const NMS_IOU: f32 = 0.3;
 /// One sample per second is plenty: captions change slower than faces move across a shot.
 const SAMPLES_PER_SECOND: u32 = 1;
+/// Fewer frames than this share of the samples means the video has too few keyframes to read alone.
+const FEWEST_KEYFRAME_SAMPLES_SHARE: f64 = 0.5;
 const RGB_CHANNELS: usize = 3;
 const YUNET_OUTPUTS: usize = 12;
 const YOLO_AVATAR_CLASS: usize = 0;
@@ -252,8 +254,12 @@ impl FaceDetector {
 
 fn frame_filter() -> String {
     format!(
-        "fps={SAMPLES_PER_SECOND},scale={INPUT_SIZE}:{INPUT_SIZE}:force_original_aspect_ratio=decrease,pad={INPUT_SIZE}:{INPUT_SIZE}:(ow-iw)/2:(oh-ih)/2"
+        "fps={SAMPLES_PER_SECOND}:eof_action=pass,scale={INPUT_SIZE}:{INPUT_SIZE}:force_original_aspect_ratio=decrease,pad={INPUT_SIZE}:{INPUT_SIZE}:(ow-iw)/2:(oh-ih)/2"
     )
+}
+
+fn too_few_samples(frames: usize, duration: f64) -> bool {
+    (frames as f64) < duration * f64::from(SAMPLES_PER_SECOND) * FEWEST_KEYFRAME_SAMPLES_SHARE
 }
 
 /// Samples the video once per second and records its main face.
@@ -265,12 +271,42 @@ pub fn scan_faces(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<FaceSample>> {
-    let mut command = background_command(&tools.ffmpeg);
+    // The second pass starts over; the bar does not go back with it.
+    let mut furthest = 0.0_f64;
+    let mut forward = |fraction: f64| {
+        furthest = furthest.max(fraction);
+        progress(furthest);
+    };
     // Keyframes alone keep long videos fast; the fps filter still gives true timestamps.
+    let (samples, frames) = scan_pass(tools, detector, video, info, cancel, &mut forward, true)?;
+    if !too_few_samples(frames, info.duration) {
+        return Ok(samples);
+    }
+    let (samples, _) = scan_pass(tools, detector, video, info, cancel, &mut forward, false)?;
+    Ok(samples)
+}
+
+/// The face samples of one read of the video, and how many frames that read gave.
+fn scan_pass(
+    tools: &Tools,
+    detector: &FaceDetector,
+    video: &Path,
+    info: &VideoInfo,
+    cancel: &CancelToken,
+    progress: &mut dyn FnMut(f64),
+    keyframes_only: bool,
+) -> AppResult<(Vec<FaceSample>, usize)> {
+    let mut command = background_command(&tools.ffmpeg);
     command
         .args(["-hide_banner", "-loglevel", "error"])
         .args(HARDWARE_DECODE)
-        .args(["-skip_frame", "nokey", "-i"])
+        // AVI has no presentation times, and without them the fps filter drops every frame.
+        .args(["-fflags", "+genpts"]);
+    if keyframes_only {
+        command.args(["-skip_frame", "nokey"]);
+    }
+    command
+        .arg("-i")
         .arg(video)
         .args([
             "-an",
@@ -298,6 +334,7 @@ pub fn scan_faces(
         .ok_or_else(|| AppError::Invalid("stdout was not captured".into()))?;
     let mut frame = vec![0u8; INPUT_SIZE * INPUT_SIZE * RGB_CHANNELS];
     let mut samples = Vec::new();
+    let mut frames = 0;
     let mut time = 0.0;
     let step = 1.0 / f64::from(SAMPLES_PER_SECOND);
     let outcome = loop {
@@ -311,6 +348,7 @@ pub fn scan_faces(
             Ok(detections) => samples.extend(main_face(&detections, time, info)),
             Err(error) => break Err(error),
         }
+        frames += 1;
         time += step;
         progress((time / info.duration).clamp(0.0, 1.0));
     };
@@ -323,7 +361,7 @@ pub fn scan_faces(
     outcome?;
     let status = status?;
     if status.success() {
-        return Ok(samples);
+        return Ok((samples, frames));
     }
     // Without this a video ffmpeg cannot decode looks like one with no faces in it.
     Err(AppError::Tool {
@@ -451,8 +489,19 @@ mod tests {
     }
 
     #[test]
+    fn half_the_samples_is_enough_to_stay_on_keyframes() {
+        assert!(!too_few_samples(5, 10.0));
+        assert!(too_few_samples(4, 10.0));
+    }
+
+    #[test]
+    fn a_video_with_no_length_never_reads_twice() {
+        assert!(!too_few_samples(0, 0.0));
+    }
+
+    #[test]
     fn frame_filter_letterboxes_to_the_model_input() {
-        assert_eq!(frame_filter(), "fps=1,scale=640:640:force_original_aspect_ratio=decrease,pad=640:640:(ow-iw)/2:(oh-ih)/2");
+        assert_eq!(frame_filter(), "fps=1:eof_action=pass,scale=640:640:force_original_aspect_ratio=decrease,pad=640:640:(ow-iw)/2:(oh-ih)/2");
     }
 
     #[test]
