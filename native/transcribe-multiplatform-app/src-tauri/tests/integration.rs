@@ -1499,6 +1499,34 @@ fn a_blank_frame_gives_no_face_and_reports_progress() {
 }
 
 #[test]
+fn a_video_with_too_few_keyframes_is_read_whole_and_the_bar_does_not_go_back() {
+    let root = scratch("scan-whole");
+    let paths = with_tools(&root);
+    install_yunet(&paths);
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        "case \"$*\" in *skip_frame*) count=1 ;; *) count=6 ;; esac\nhead -c $((640 * 640 * 3 * count)) /dev/zero\n",
+    );
+    let detector = FaceDetector::load(&paths.yunet_model(), FaceModelKind::Yunet).unwrap();
+    let video = VideoInfo {
+        duration: 10.0,
+        ..VIDEO
+    };
+    let mut seen = Vec::new();
+    let samples = scan_faces(
+        &tools_in(&paths),
+        &detector,
+        &root.join("clip.mp4"),
+        &video,
+        &CancelToken::default(),
+        &mut |fraction| seen.push((fraction * 10.0_f64).round()),
+    )
+    .unwrap();
+    assert_eq!(samples, Vec::<FaceSample>::new());
+    assert_eq!(seen, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+}
+
+#[test]
 fn a_cancelled_scan_stops_before_the_first_frame() {
     let root = scratch("scan-cancelled");
     let paths = with_tools(&root);
