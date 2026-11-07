@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use transcribe_app::catalog::{self, Backend, Gpu, GpuVendor, Hardware};
 use transcribe_app::engines::{self, DiarizeModel, Tools, VideoInfo};
 use transcribe_app::error::AppError;
@@ -15,17 +15,13 @@ use transcribe_app::face::{scan_faces, FaceDetector, FaceModelKind, FaceSample};
 use transcribe_app::paths::AppPaths;
 use transcribe_app::pipeline;
 use transcribe_app::process::CancelToken;
-use transcribe_app::settings::{Anchor, Placement, Settings, SubtitleFormat};
+use transcribe_app::settings::{Anchor, Placement, SeparationBackend, Settings, SubtitleFormat};
 
-const SPEAKER_MODEL: &str = "nemotron-3.5-transcribe-q2l";
 const MOSSFORMER2_FILE: &str = "models/mossformer2-ss-16k/model.onnx";
 const MOSSFORMER2_BYTES: u64 = 230_156_008;
-const Q2L_FILE: &str =
-    "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf";
-const Q2L_BYTES: u64 = 15_547_824_288;
 const ENCODER_FILE: &str =
-    "models/nemotron-3.5-transcribe-q2l/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf";
-const ENCODER_BYTES: u64 = 1_670_410_080;
+    "models/nemotron-3.5-speaker/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf";
+const ENCODER_BYTES: u64 = 200_779_392;
 const GGML_FILE: &str = "models/whisper-large-v3-turbo/ggml-large-v3-turbo.bin";
 const WHISPER_SOURCE_BYTES: u64 = 1_617_824_864;
 const WHISPER_MLX_BYTES: u64 = 1_613_977_612;
@@ -42,7 +38,7 @@ case "$*" in
   *rawvideo*) head -c 1228800 /dev/zero ;;
   *) echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2; echo 'no status here' >&2
      for last; do :; done
-     printf RIFF > "$last" ;;
+     printf 'RIFF\044\0\0\0WAVEfmt \020\0\0\0\001\0\001\0\200>\0\0\0}\0\0\002\0\020\0data\0\0\0\0' > "$last" ;;
 esac
 "#;
 const FFPROBE: &str = r#"
@@ -142,14 +138,26 @@ fn with_tools(root: &Path) -> AppPaths {
         &fake_server(200, TWO_VOICES),
     );
     install_ipadic(&paths);
+    install_speaker_decoder_head(&paths);
     paths
 }
 
-/// A hard link: the 8 MB dictionary is shared by every job test instead of copied per test.
+fn install_speaker_decoder_head(paths: &AppPaths) {
+    let head = paths.resources.join("resources/speaker-decoder-head.gguf");
+    fs::create_dir_all(head.parent().unwrap()).unwrap();
+    // A copy, not a hard link: tests that write this path must never reach the real file.
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/speaker-decoder-head.gguf"),
+        head,
+    )
+    .unwrap();
+}
+
+/// A clone on APFS: the 8 MB dictionary takes no new space per test, and writing to it cannot reach the real file.
 fn install_ipadic(paths: &AppPaths) {
     let installed = paths.resources.join("resources/ipadic-mecab-2_7_0.dic.zst");
     fs::create_dir_all(installed.parent().unwrap()).unwrap();
-    fs::hard_link(
+    fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/ipadic-mecab-2_7_0.dic.zst"),
         installed,
     )
@@ -166,7 +174,6 @@ fn ready(root: &Path) -> AppPaths {
 
 /// Speaker separation only runs with a usable Nemotron 3.5 present.
 fn install_speech_llm(paths: &AppPaths) {
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
     sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
 }
@@ -201,7 +208,6 @@ fn bottom_anchored() -> Settings {
             offset_y_percent: 0.0,
         },
         speaker_count: 0,
-        diarize_model: SPEAKER_MODEL.to_owned(),
         ..Settings::default()
     }
 }
@@ -214,7 +220,6 @@ fn face_anchored() -> Settings {
             offset_y_percent: 0.0,
         },
         speaker_count: 0,
-        diarize_model: SPEAKER_MODEL.to_owned(),
         ..Settings::default()
     }
 }
@@ -335,7 +340,6 @@ fn a_job_with_a_speech_llm_takes_its_speaker_turns() {
     let root = scratch("job-speech-llm");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
     sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     write_tool(
@@ -346,7 +350,6 @@ fn a_job_with_a_speech_llm_takes_its_speaker_turns() {
         ),
     );
     let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         language: "ja".to_owned(),
         ..bottom_anchored()
     };
@@ -429,17 +432,17 @@ fn a_face_job_scans_frames_and_reports_a_missing_face() {
     let root = scratch("job-faces");
     let paths = ready(&root);
     install_yunet(&paths);
-    let mut stages: Vec<Stage> = Vec::new();
+    let mut plan: Vec<Stage> = Vec::new();
     let outcome = pipeline::run_job(
         &root.join("clip.mp4"),
         &paths,
         &face_anchored(),
         &mac(),
         &CancelToken::default(),
-        &mut |progress: Progress| stages.push(progress.stage),
+        &mut |progress: Progress| plan = progress.plan,
     )
     .unwrap();
-    assert!(stages.contains(&Stage::Faces));
+    assert!(plan.contains(&Stage::Faces));
     assert!(outcome.faceless);
 }
 
@@ -505,11 +508,10 @@ fn several_people_without_either_model_are_refused_before_any_work() {
 }
 
 #[test]
-fn several_people_without_mossformer2_are_refused() {
+fn several_people_without_mossformer2_stop_and_name_it() {
     let root = scratch("job-no-mossformer2");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
     assert_eq!(
         refusal(&paths, &root, 2, &mac()),
@@ -518,21 +520,55 @@ fn several_people_without_mossformer2_are_refused() {
 }
 
 #[test]
-fn a_nemotron_3_5_too_large_for_the_machine_counts_as_missing() {
-    let root = scratch("job-blocked-llm");
+fn several_people_on_too_little_memory_stop_and_say_how_much_it_takes() {
+    let root = scratch("job-low-memory");
     let paths = ready(&root);
-    assert_eq!(
-        refusal(
-            &paths,
-            &root,
-            2,
-            &Hardware {
-                memory_gib: 12,
-                ..mac()
-            }
+    let low = Hardware {
+        is_mac: false,
+        memory_gib: 4,
+        gpu: None,
+    };
+    let refused = refusal(&paths, &root, 2, &low);
+    assert!(refused.contains("mossformer2-ss-16k"), "{refused}");
+    assert!(refused.contains('8'), "{refused}");
+    assert!(refused.contains('4'), "{refused}");
+}
+
+#[test]
+fn the_speaker_server_is_gone_when_the_job_ends_so_its_memory_is_free() {
+    let root = scratch("job-server-exit");
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    install_speech_llm(&paths);
+    install_speaker_decoder_head(&paths);
+    let pid_file = root.join("pid");
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &format!(
+            "echo $$ > '{}'\n{}",
+            pid_file.display(),
+            fake_server(200, TWO_VOICES)
         ),
-        "separating speakers needs models that are missing: [Diarize]"
     );
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 0,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    let pid = fs::read_to_string(pid_file).unwrap();
+    let alive = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!alive.success());
 }
 
 #[test]
@@ -590,40 +626,15 @@ fn writing_captions_again_needs_no_speaker_models() {
 }
 
 #[test]
-fn a_job_with_an_unknown_speaker_model_fails() {
-    let root = scratch("job-unknown-model");
-    let paths = with_tools(&root);
-    install_speech_llm(&paths);
-    let settings = Settings {
-        diarize_model: "nope".to_owned(),
-        ..bottom_anchored()
-    };
-    assert_eq!(
-        pipeline::run_job(
-            &root.join("clip.mp4"),
-            &paths,
-            &settings,
-            &mac(),
-            &CancelToken::default(),
-            &mut |_| {}
-        )
-        .unwrap_err()
-        .to_string(),
-        "unknown diarize model nope"
-    );
-}
-
-#[test]
 fn a_job_refuses_a_model_too_large_for_the_machine() {
     let root = scratch("job-too-large");
     let paths = with_tools(&root);
     install_speech_llm(&paths);
     let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q8".to_owned(),
         ..bottom_anchored()
     };
     let hardware = Hardware {
-        memory_gib: 24,
+        memory_gib: 2,
         ..mac()
     };
     assert_eq!(
@@ -637,7 +648,7 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
         )
         .unwrap_err()
         .to_string(),
-        "model nemotron-3.5-transcribe-q8 needs 48 GiB of memory, this machine has 24 GiB"
+        "model mossformer2-ss-16k needs 8 GiB of unified memory, this machine has 2 GiB"
     );
 }
 
@@ -645,9 +656,7 @@ fn a_job_refuses_a_model_too_large_for_the_machine() {
 fn a_job_refuses_a_chosen_model_that_is_not_installed() {
     let root = scratch("job-not-installed");
     let paths = with_tools(&root);
-    install_speech_llm(&paths);
     let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-iq4".to_owned(),
         ..bottom_anchored()
     };
     assert_eq!(
@@ -661,7 +670,7 @@ fn a_job_refuses_a_chosen_model_that_is_not_installed() {
         )
         .unwrap_err()
         .to_string(),
-        "model nemotron-3.5-transcribe-iq4 is not installed"
+        "separating speakers needs models that are missing: [Diarize, Separate]"
     );
 }
 
@@ -1173,21 +1182,23 @@ fn a_transcriber_that_writes_nothing_is_an_error() {
 fn a_server_that_exits_at_once_is_an_error() {
     let root = scratch("diarize-empty");
     let paths = with_tools(&root);
-    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    install_speaker_decoder_head(&paths);
+    fs::write(root.join("a.wav"), pcm_wav(&[0; 1600])).unwrap();
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         "",
     );
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-        main_file: Path::new("m.gguf"),
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
         encoder: None,
-        device: "auto",
+        device: "cpu",
+        resources: &paths.resources,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
+        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1199,20 +1210,123 @@ fn a_server_that_exits_at_once_is_an_error() {
     );
 }
 
+fn speech_llm_on_its_stand_in(root: &Path) -> (DiarizeModel<'_>, PathBuf) {
+    let resources = root.join("resources/resources");
+    fs::create_dir_all(&resources).unwrap();
+    let head = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/speaker-decoder-head.gguf");
+    fs::copy(head, resources.join("speaker-decoder-head.gguf")).unwrap();
+    let wav = root.join("a.wav");
+    fs::write(&wav, pcm_wav(&[0; 1600])).unwrap();
+    (
+        DiarizeModel {
+            entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
+            encoder: Some(Path::new("e.gguf")),
+            device: "vulkan",
+            resources: leak_path(root.join("resources")),
+        },
+        wav,
+    )
+}
+
+fn leak_path(path: PathBuf) -> &'static Path {
+    Box::leak(path.into_boxed_path())
+}
+
+#[test]
+fn a_gpu_the_stand_in_fails_on_gives_way_to_the_cpu() {
+    let root = scratch("diarize-stand-in-cpu");
+    let paths = with_tools(&root);
+    let log = root.join("nemo-calls.log");
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &format!(
+            "echo \"$*\" >> \"{log}\"\ncase \"$*\" in *\"--device vulkan\"*) echo 'no vulkan' >&2; exit 7 ;; esac\n{server}",
+            log = log.display(),
+            server = fake_server(200, TWO_VOICES),
+        ),
+    );
+    let (model, wav) = speech_llm_on_its_stand_in(&root);
+    let turns = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &wav,
+        &root,
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap();
+    assert_eq!(turns.len(), 2);
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 2);
+    assert!(
+        calls.lines().nth(1).unwrap().contains("--device cpu"),
+        "{calls}"
+    );
+    assert!(calls.contains("speaker-decoder-head.gguf"), "{calls}");
+}
+
+#[test]
+fn a_stand_in_that_fails_on_the_cpu_too_says_why() {
+    let root = scratch("diarize-stand-in-fails");
+    let paths = with_tools(&root);
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        "echo 'bad gguf' >&2; exit 7",
+    );
+    let (model, wav) = speech_llm_on_its_stand_in(&root);
+    let error = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &wav,
+        &root,
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "nemo-speech failed: exit status: 7\nbad gguf");
+}
+
+#[test]
+fn without_the_head_the_job_stops_with_the_reason() {
+    let root = scratch("diarize-no-head");
+    let paths = with_tools(&root);
+    let wav = root.join("a.wav");
+    let model = DiarizeModel {
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
+        encoder: Some(Path::new("e.gguf")),
+        device: "auto",
+        resources: &root,
+    };
+    let error = engines::diarize(
+        &tools_in(&paths),
+        &model,
+        &wav,
+        &root,
+        &CancelToken::default(),
+        &mut || {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.starts_with("read the speaker decoder: "), "{error}");
+}
+
 #[test]
 fn audio_that_cannot_be_read_stops_the_server_too() {
     let root = scratch("diarize-no-audio");
     let paths = with_tools(&root);
+    install_speaker_decoder_head(&paths);
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-        main_file: Path::new("m.gguf"),
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
         encoder: None,
-        device: "auto",
+        device: "cpu",
+        resources: &paths.resources,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("missing.wav"),
+        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1228,21 +1342,23 @@ fn audio_that_cannot_be_read_stops_the_server_too() {
 fn a_refusal_from_the_server_says_why() {
     let root = scratch("diarize-refused");
     let paths = with_tools(&root);
-    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    install_speaker_decoder_head(&paths);
+    fs::write(root.join("a.wav"), pcm_wav(&[0; 1600])).unwrap();
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         &fake_server(422, "bad audio"),
     );
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-        main_file: Path::new("m.gguf"),
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
         encoder: None,
-        device: "auto",
+        device: "cpu",
+        resources: &paths.resources,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
+        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1258,17 +1374,19 @@ fn a_refusal_from_the_server_says_why() {
 fn turns_come_from_the_server_and_it_is_stopped_afterwards() {
     let root = scratch("diarize-answer");
     let paths = with_tools(&root);
-    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    install_speaker_decoder_head(&paths);
+    fs::write(root.join("a.wav"), pcm_wav(&[0; 1600])).unwrap();
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-        main_file: Path::new("m.gguf"),
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
         encoder: None,
-        device: "auto",
+        device: "cpu",
+        resources: &paths.resources,
     };
     let turns = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
+        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1281,16 +1399,17 @@ fn turns_come_from_the_server_and_it_is_stopped_afterwards() {
 fn cancelling_stops_the_speaker_server() {
     let root = scratch("diarize-cancel");
     let paths = with_tools(&root);
-    fs::write(root.join("a.wav"), b"RIFF").unwrap();
+    install_speaker_decoder_head(&paths);
+    fs::write(root.join("a.wav"), pcm_wav(&[0; 1600])).unwrap();
     write_tool(
         &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
         "exec sleep 60",
     );
     let model = DiarizeModel {
-        entry: catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-        main_file: Path::new("m.gguf"),
+        entry: catalog::find_entry("nemotron-3.5-speaker").unwrap(),
         encoder: None,
-        device: "auto",
+        device: "cpu",
+        resources: &paths.resources,
     };
     let cancel = CancelToken::default();
     let began = std::time::Instant::now();
@@ -1298,6 +1417,7 @@ fn cancelling_stops_the_speaker_server() {
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
+        &root,
         &cancel,
         &mut || cancel.cancel(),
     )
@@ -1312,7 +1432,6 @@ fn a_model_that_hears_nobody_is_reported_on_the_job() {
     let root = scratch("job-no-speakers");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
     sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     write_tool(
@@ -1320,7 +1439,6 @@ fn a_model_that_hears_nobody_is_reported_on_the_job() {
         &fake_server(200, r#"{"segments":[]}"#),
     );
     let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         ..bottom_anchored()
     };
     let outcome = pipeline::run_job(
@@ -1342,14 +1460,15 @@ fn only_diarization_models_can_diarize() {
     let paths = with_tools(&root);
     let model = DiarizeModel {
         entry: catalog::find_entry("yunet").unwrap(),
-        main_file: Path::new("m.gguf"),
         encoder: None,
         device: "auto",
+        resources: &root,
     };
     let error = engines::diarize(
         &tools_in(&paths),
         &model,
         &root.join("a.wav"),
+        &root,
         &CancelToken::default(),
         &mut || {},
     )
@@ -1420,6 +1539,30 @@ fn a_model_with_the_wrong_outputs_fails_the_scan() {
 }
 
 #[test]
+fn a_video_ffmpeg_cannot_decode_fails_the_scan_with_the_reason() {
+    let root = scratch("scan-undecodable");
+    let paths = with_tools(&root);
+    install_yunet(&paths);
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        "echo 'no AV1 decoder' >&2; exit 69",
+    );
+    let detector = FaceDetector::load(&paths.yunet_model(), FaceModelKind::Yunet).unwrap();
+    let error = scan_faces(
+        &tools_in(&paths),
+        &detector,
+        &root.join("clip.mp4"),
+        &VIDEO,
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert_eq!(error, "ffmpeg failed: exit status: 69\nno AV1 decoder");
+}
+
+#[test]
 fn a_scan_whose_tool_cannot_start_is_an_error() {
     let root = scratch("scan-no-tool");
     let paths = with_tools(&root);
@@ -1464,7 +1607,7 @@ fn files_are_found_by_name_and_size_in_any_root() {
         catalog::speech_llm_encoder(std::slice::from_ref(&extra), &paths),
         None
     );
-    let file = extra.join("a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf");
+    let file = extra.join("a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf");
     sparse(&file, 5);
     assert_eq!(
         catalog::speech_llm_encoder(std::slice::from_ref(&extra), &paths),
@@ -1473,7 +1616,7 @@ fn files_are_found_by_name_and_size_in_any_root() {
     sparse(&file, ENCODER_BYTES);
     assert!(catalog::speech_llm_encoder(&[extra], &paths)
         .unwrap()
-        .ends_with("user/a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+        .ends_with("user/a/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf"));
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -1486,16 +1629,22 @@ fn hidden_and_too_deep_folders_are_not_searched() {
         hf_hub: None,
     };
     sparse(
-        &root.join("data/models/.cache/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        &root.join(
+            "data/models/.cache/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf",
+        ),
         ENCODER_BYTES,
     );
     sparse(
-        &root.join("data/models/a/b/c/d/e/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        &root.join(
+            "data/models/a/b/c/d/e/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf",
+        ),
         ENCODER_BYTES,
     );
     assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(
-        &root.join("data/models/a/b/c/d/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        &root.join(
+            "data/models/a/b/c/d/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf",
+        ),
         ENCODER_BYTES,
     );
     assert!(catalog::speech_llm_encoder(&[], &paths).is_some());
@@ -1512,35 +1661,45 @@ fn the_hugging_face_cache_counts_as_installed() {
     };
     assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(
-        &root.join("hub/models--AtomicChat--NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        &root.join("hub/models--kkk4oru--nemotron-3.5-speaker-encoder-gguf/snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf"),
         ENCODER_BYTES,
     );
-    assert!(catalog::speech_llm_encoder(&[], &paths)
-        .unwrap()
-        .ends_with("snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+    assert!(catalog::speech_llm_encoder(&[], &paths).unwrap().ends_with(
+        "snapshots/abc/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf"
+    ));
     fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
-fn a_speech_llm_needs_both_of_its_files() {
+fn an_encoder_an_earlier_download_left_is_used_without_another_download() {
+    let root = scratch("locate-earlier-encoder");
+    let paths = with_tools(&root);
+    sparse(
+        &root.join("elsewhere/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"),
+        1_670_410_080,
+    );
+    let found = catalog::speech_llm_encoder(&[root.join("elsewhere")], &paths).unwrap();
+    assert!(found.ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+}
+
+#[test]
+fn the_speaker_branch_is_found_by_its_encoder() {
     let root = scratch("locate-speech-llm");
     let paths = AppPaths {
         data: root.join("data"),
         resources: root.join("resources"),
         hf_hub: None,
     };
-    let entry = catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap();
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
+    let entry = catalog::find_entry("nemotron-3.5-speaker").unwrap();
     assert_eq!(catalog::locate(entry, &paths, &[]), None);
     assert_eq!(catalog::speech_llm_encoder(&[], &paths), None);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     assert!(catalog::locate(entry, &paths, &[])
         .unwrap()
-        .ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf"));
+        .ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf"));
     assert!(catalog::speech_llm_encoder(&[], &paths)
         .unwrap()
-        .ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf"));
+        .ends_with("NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf"));
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -1626,12 +1785,9 @@ fn statuses_describe_every_entry_for_this_hardware() {
         rows.iter().map(|row| row.id).collect::<Vec<_>>(),
         vec![
             "whisper-large-v3-turbo",
-            "nemotron-3.5-transcribe-iq4",
-            "nemotron-3.5-transcribe-nvfp4",
-            "nemotron-3.5-transcribe-q2m",
-            "nemotron-3.5-transcribe-q2l",
-            "nemotron-3.5-transcribe-q8",
+            "nemotron-3.5-speaker",
             "mossformer2-ss-16k",
+            "mossformer2-ss-16k-coreml",
             "yunet",
             "avatar-face-yolo"
         ]
@@ -1643,7 +1799,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
             .collect::<Vec<_>>(),
         vec![
             "whisper-large-v3-turbo",
-            "nemotron-3.5-transcribe-q8",
+            "nemotron-3.5-speaker",
             "mossformer2-ss-16k",
             "yunet"
         ]
@@ -1655,7 +1811,7 @@ fn statuses_describe_every_entry_for_this_hardware() {
             .collect::<Vec<_>>(),
         vec![
             "whisper-large-v3-turbo",
-            "nemotron-3.5-transcribe-q2l",
+            "nemotron-3.5-speaker",
             "mossformer2-ss-16k"
         ]
     );
@@ -1664,42 +1820,9 @@ fn statuses_describe_every_entry_for_this_hardware() {
             .filter(|row| row.blocked.is_some())
             .map(|row| row.id)
             .collect::<Vec<_>>(),
-        vec![
-            "nemotron-3.5-transcribe-nvfp4",
-            "nemotron-3.5-transcribe-q2m"
-        ]
+        Vec::<&str>::new()
     );
     assert_eq!(rows[0].download_bytes, 1_617_824_864);
-}
-
-#[test]
-fn the_default_speaker_model_prefers_the_recommended_build() {
-    let root = scratch("default-model");
-    let paths = with_tools(&root);
-    let hardware = Hardware {
-        memory_gib: 24,
-        ..mac()
-    };
-    let installed_small = catalog::statuses(&hardware, &paths, &[]);
-    assert_eq!(
-        catalog::default_diarize_model(&hardware, &installed_small),
-        None
-    );
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
-    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
-    let installed_both = catalog::statuses(&hardware, &paths, &[]);
-    assert_eq!(
-        catalog::default_diarize_model(&hardware, &installed_both),
-        Some("nemotron-3.5-transcribe-q2l")
-    );
-    let too_small = Hardware {
-        memory_gib: 1,
-        ..mac()
-    };
-    let blocked = catalog::statuses(&too_small, &paths, &[]);
-    assert_eq!(catalog::default_diarize_model(&too_small, &blocked), None);
-    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1844,12 +1967,16 @@ fn separated(root: &Path, library: &Path) -> Result<Vec<f32>, String> {
         outputs: [root.join("a.wav"), root.join("b.wav")],
     }];
     transcribe_app::separation::separate_clips(
-        Path::new(env!("CARGO_BIN_EXE_transcribe-app")),
-        library,
-        &model,
+        &transcribe_app::separation::SeparationRun {
+            flag: Some(transcribe_app::separation::SEPARATE_FLAG),
+            exe: Path::new(env!("CARGO_BIN_EXE_transcribe-app")),
+            library,
+            model: &model,
+            runs_on: catalog::RunsOn::Cpu,
+            work: root,
+            cancel: &CancelToken::default(),
+        },
         &clips,
-        root,
-        &CancelToken::default(),
         &mut |_| {},
     )
     .map_err(|error| error.to_string())?;
@@ -1860,7 +1987,7 @@ fn separated(root: &Path, library: &Path) -> Result<Vec<f32>, String> {
         .collect())
 }
 
-/// The fake ffmpeg's audio is no WAV, so reaching the cutting of clips shows the overlap was acted on.
+/// The fake runtime has no ONNX Runtime, so asking for it shows the overlap was acted on.
 #[test]
 fn people_talking_at_once_go_through_voice_separation() {
     let root = scratch("job-overlap");
@@ -1885,13 +2012,13 @@ fn people_talking_at_once_go_through_voice_separation() {
     )
     .unwrap_err()
     .to_string();
-    assert!(failure.ends_with("not a WAV file"), "{failure}");
+    assert!(failure.ends_with("is missing"), "{failure}");
 }
 
 /// `TWO_TRACKS_MODEL` at the size the catalog wants: an unknown field of zeros pads it, which ONNX skips.
-fn padded_model(file: &Path, size: u64) {
-    let mut bytes: Vec<u8> = (0..TWO_TRACKS_MODEL.len() / 2)
-        .map(|at| u8::from_str_radix(&TWO_TRACKS_MODEL[at * 2..at * 2 + 2], 16).unwrap())
+fn padded_model(file: &Path, model: &str, size: u64) {
+    let mut bytes: Vec<u8> = (0..model.len() / 2)
+        .map(|at| u8::from_str_radix(&model[at * 2..at * 2 + 2], 16).unwrap())
         .collect();
     // Field 1000, length-delimited, with a varint length the header's own size is counted out of.
     let header = [0xc2, 0x3e];
@@ -1937,12 +2064,16 @@ fn people_talking_at_once_come_out_with_the_rows_decided_from_their_tracks() {
             r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
         ),
     );
-    padded_model(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
+    padded_model(
+        &paths.data.join(MOSSFORMER2_FILE),
+        TWO_TRACKS_MODEL,
+        MOSSFORMER2_BYTES,
+    );
     let library = paths
         .bundled_runtime_dir()
         .join("onnxruntime/libonnxruntime.dylib");
     fs::create_dir_all(library.parent().unwrap()).unwrap();
-    fs::hard_link(
+    fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/onnxruntime/libonnxruntime.dylib"),
         &library,
     )
@@ -1957,8 +2088,12 @@ fn people_talking_at_once_come_out_with_the_rows_decided_from_their_tracks() {
         .unwrap(),
     )
     .unwrap();
-    let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
+    let output = headless(&root, &root.join("clip.mp4"))
+        .env("HOME", &root)
+        .output()
+        .unwrap();
     assert_eq!(stderr(&output), "");
+    assert!(!root.join("Library/Application Support/Microsoft").exists());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let outcome: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
     // Every run of the fake Whisper says the same words: one row, in the first pass's text.
@@ -1966,6 +2101,272 @@ fn people_talking_at_once_come_out_with_the_rows_decided_from_their_tracks() {
     assert_eq!(outcome["lanes"]["same_text"], 1);
     assert_eq!(outcome["lanes"]["first_pass_kept"], 1);
     assert_eq!(outcome["lanes"]["rows"]["1"], 1);
+}
+
+/// Speakers without a speaker model, through the app's own child process on ONNX Runtime.
+/// With the hardened runtime an ad hoc signed app cannot load ONNX Runtime, so MossFormer2 fails.
+#[test]
+fn the_mac_app_is_signed_so_that_it_can_load_onnx_runtime() {
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    assert_eq!(config["bundle"]["macOS"]["signingIdentity"], "-");
+    assert_eq!(config["bundle"]["macOS"]["hardenedRuntime"], false);
+}
+
+/// The notices name what FFmpeg's license asks for, so they travel with the app.
+#[test]
+fn the_app_ships_its_third_party_notices() {
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    assert_eq!(
+        config["bundle"]["resources"]["../THIRD_PARTY_NOTICES.md"],
+        "THIRD_PARTY_NOTICES.md"
+    );
+    assert!(include_str!("../../THIRD_PARTY_NOTICES.md").contains("LGPL-2.1-or-later"));
+}
+
+/// A job on a Mac with no ONNX model: only Core ML's files and the given runner.
+fn job_on_core_ml(name: &str, runner: &str) -> Result<pipeline::JobOutcome, String> {
+    let root = scratch(name);
+    let paths = with_tools(&root);
+    sparse(&paths.data.join(GGML_FILE), 0);
+    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
+    install_speaker_decoder_head(&paths);
+    let package = paths
+        .data
+        .join("models/mossformer2-ss-16k-coreml/model.mlpackage");
+    sparse(&package.join("Manifest.json"), 617);
+    sparse(
+        &package.join("Data/com.apple.CoreML/model.mlmodel"),
+        1_811_303,
+    );
+    sparse(
+        &package.join("Data/com.apple.CoreML/weights/weight.bin"),
+        129_964_736,
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(
+            200,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
+        ),
+    );
+    write_tool(
+        &paths
+            .bundled_runtime_dir()
+            .join("separate-coreml/separate-coreml"),
+        runner,
+    );
+    fs::create_dir_all(root.join("audio")).unwrap();
+    let audio = root.join("audio/audio.wav");
+    fs::write(&audio, pcm_wav(&vec![8192; 32_000])).unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        &format!(
+            "echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2\nfor last; do :; done\ncp '{}' \"$last\"\n",
+            audio.display()
+        ),
+    );
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 2,
+            separation_backend: SeparationBackend::Coreml,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[test]
+fn a_mac_separates_through_the_core_ml_runner_with_only_the_request() {
+    let outcome = job_on_core_ml(
+        "job-coreml",
+        r#"[ $# -eq 1 ] || exit 3
+python3 -c '
+import json, shutil, sys
+for clip in json.load(open(sys.argv[1]))["clips"]:
+    for output in clip["outputs"]:
+        shutil.copy(clip["input"], output)
+    print("separated 1/1", file=sys.stderr)
+' "$1"
+"#,
+    )
+    .unwrap();
+    let plan = outcome.speaker_plan.unwrap();
+    assert_eq!(plan.separator, "mossformer2-ss-16k-coreml");
+    assert_eq!(plan.separate_on, catalog::RunsOn::Gpu);
+    assert_eq!(outcome.lanes.ranges, 1);
+}
+
+#[test]
+fn a_failed_core_ml_runner_says_why_when_there_is_no_onnx_model_to_fall_back_on() {
+    let failure =
+        job_on_core_ml("job-coreml-failed", "echo 'no GPU today' >&2; exit 1").unwrap_err();
+    assert!(failure.contains("no GPU today"), "{failure}");
+    assert!(
+        failure.contains("MossFormer2 for ONNX Runtime is not installed to fall back on"),
+        "{failure}"
+    );
+}
+
+/// The real app: the runner fails, and the same job goes on with ONNX Runtime in its own child.
+#[test]
+fn a_failed_core_ml_runner_falls_back_to_onnx_runtime() {
+    let root = scratch("cli-coreml-fallback");
+    let paths = ready(&root);
+    fs::create_dir_all(root.join("audio")).unwrap();
+    let audio = root.join("audio/audio.wav");
+    fs::write(&audio, pcm_wav(&vec![8192; 32_000])).unwrap();
+    write_tool(
+        &paths.bundled_runtime_dir().join("ffmpeg/ffmpeg"),
+        &format!(
+            "echo 'frame=1 time=00:00:01.00 bitrate=1kbits/s' >&2\nfor last; do :; done\ncp '{}' \"$last\"\n",
+            audio.display()
+        ),
+    );
+    write_tool(
+        &paths.bundled_runtime_dir().join("nemo/bin/nemo-speech"),
+        &fake_server(
+            200,
+            r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1},{"start":0.5,"end":2.0,"speaker":2}]}"#,
+        ),
+    );
+    write_tool(
+        &paths
+            .bundled_runtime_dir()
+            .join("separate-coreml/separate-coreml"),
+        "exit 1",
+    );
+    let package = paths
+        .data
+        .join("models/mossformer2-ss-16k-coreml/model.mlpackage");
+    sparse(&package.join("Manifest.json"), 617);
+    sparse(
+        &package.join("Data/com.apple.CoreML/model.mlmodel"),
+        1_811_303,
+    );
+    sparse(
+        &package.join("Data/com.apple.CoreML/weights/weight.bin"),
+        129_964_736,
+    );
+    padded_model(
+        &paths.data.join(MOSSFORMER2_FILE),
+        TWO_TRACKS_MODEL,
+        MOSSFORMER2_BYTES,
+    );
+    let library = paths
+        .bundled_runtime_dir()
+        .join("onnxruntime/libonnxruntime.dylib");
+    fs::create_dir_all(library.parent().unwrap()).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime/onnxruntime/libonnxruntime.dylib"),
+        &library,
+    )
+    .unwrap();
+    fs::write(
+        root.join("data/settings.json"),
+        serde_json::to_vec(&Settings {
+            speaker_count: 2,
+            separation_backend: SeparationBackend::Coreml,
+            subtitle_format: SubtitleFormat::Srt,
+            ..bottom_anchored()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let output = headless(&root, &root.join("clip.mp4")).output().unwrap();
+    assert_eq!(stderr(&output), "");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let outcome: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        outcome["speaker_plan"]["separator"],
+        "mossformer2-ss-16k-coreml"
+    );
+    assert_eq!(outcome["lanes"]["ranges"], 1);
+}
+
+#[test]
+fn a_core_ml_package_with_a_missing_file_is_not_found() {
+    let root = scratch("coreml-partial");
+    let paths = with_tools(&root);
+    let entry = catalog::find_entry("mossformer2-ss-16k-coreml").unwrap();
+    let package = paths
+        .data
+        .join("models/mossformer2-ss-16k-coreml/model.mlpackage");
+    sparse(&package.join("Manifest.json"), 617);
+    assert_eq!(catalog::locate(entry, &paths, &[]), None);
+    sparse(
+        &package.join("Data/com.apple.CoreML/model.mlmodel"),
+        1_811_303,
+    );
+    sparse(
+        &package.join("Data/com.apple.CoreML/weights/weight.bin"),
+        129_964_736,
+    );
+    assert_eq!(catalog::locate(entry, &paths, &[]), Some(package));
+}
+
+#[test]
+fn core_ml_is_listed_only_on_a_mac() {
+    let root = scratch("coreml-listed");
+    let paths = with_tools(&root);
+    let lists = |hardware: &Hardware| {
+        catalog::statuses(hardware, &paths, &[])
+            .iter()
+            .any(|row| row.id == "mossformer2-ss-16k-coreml")
+    };
+    assert!(lists(&mac()));
+    assert!(!lists(&Hardware {
+        is_mac: false,
+        ..mac()
+    }));
+}
+
+#[test]
+fn whisper_runs_without_the_gpu_when_its_memory_is_too_small() {
+    let root = scratch("whisper-cpu");
+    let paths = ready(&root);
+    let log = root.join("args");
+    write_tool(
+        &paths.bundled_runtime_dir().join("whisper/whisper-cli"),
+        &format!("echo \"$*\" >> '{}'\n{}", log.display(), WHISPER),
+    );
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 1,
+            ..bottom_anchored()
+        },
+        &Hardware {
+            is_mac: false,
+            memory_gib: 8,
+            gpu: None,
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(fs::read_to_string(&log).unwrap().contains("-ng"));
+    fs::remove_file(&log).unwrap();
+    pipeline::run_job(
+        &root.join("clip.mp4"),
+        &paths,
+        &Settings {
+            speaker_count: 1,
+            ..bottom_anchored()
+        },
+        &mac(),
+        &CancelToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(!fs::read_to_string(&log).unwrap().contains("-ng"));
 }
 
 /// With the runtime missing the job stops there, rather than giving wrong rows.
@@ -2280,12 +2681,16 @@ done
 }
 
 #[test]
-fn a_radeon_job_runs_the_vulkan_build_on_its_gpu() {
+fn a_radeon_job_runs_the_vulkan_build_on_its_gpu_then_the_cpu_if_that_fails() {
     let root = scratch("job-vulkan");
     let paths = ready(&root);
+    let log = root.join("devices");
     write_tool(
         &paths.bundled_runtime_dir().join("nemo-vulkan/nemo-speech"),
-        "echo \"$*\" | grep -o -- '--device [a-z]*' >&2; exit 7",
+        &format!(
+            "echo \"$*\" | grep -o -- '--device [a-z]*' >> '{}'; exit 7",
+            log.display()
+        ),
     );
     let error = pipeline::run_job(
         &root.join("clip.mp4"),
@@ -2297,7 +2702,14 @@ fn a_radeon_job_runs_the_vulkan_build_on_its_gpu() {
     )
     .unwrap_err()
     .to_string();
-    assert_eq!(error, "nemo-speech failed: exit status: 7\n--device vulkan");
+    assert!(
+        error.starts_with("nemo-speech failed: exit status: 7"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(log).unwrap(),
+        "--device vulkan\n--device cpu\n"
+    );
 }
 
 #[test]
@@ -2320,77 +2732,6 @@ fn the_vulkan_build_is_used_only_where_it_is_installed() {
     assert!(tools
         .whisper
         .ends_with("resources/runtime/whisper-vulkan/whisper-cli"));
-}
-
-#[test]
-fn a_cuda_only_model_asks_for_the_runtime_on_vulkan() {
-    let root = scratch("job-needs-cuda");
-    let paths = with_tools(&root);
-    sparse(
-        &root.join("data/models/q2m/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_M.gguf"),
-        13_572_208_800,
-    );
-    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
-    let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q2m".to_owned(),
-        ..bottom_anchored()
-    };
-    let hardware = Hardware {
-        is_mac: false,
-        memory_gib: 64,
-        gpu: Some(Gpu {
-            vendor: GpuVendor::Nvidia,
-            name: "NVIDIA GeForce RTX 4080".to_owned(),
-            memory_gib: 16,
-        }),
-    };
-    let error = pipeline::run_job(
-        &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &hardware,
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap_err()
-    .to_string();
-    assert_eq!(error, "model geforce-runtime is not installed");
-    fs::remove_dir_all(&root).unwrap();
-}
-
-#[test]
-fn a_video_too_long_for_the_model_fails_before_any_long_work() {
-    let root = scratch("job-too-long");
-    let paths = with_tools(&root);
-    sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
-    sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
-    sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
-    write_tool(
-        &paths.bundled_runtime_dir().join("ffmpeg/ffprobe"),
-        r#"echo '{"format":{"duration":"3601"},"streams":[{"codec_type":"video","width":2,"height":2},{"codec_type":"audio"}]}'"#,
-    );
-    let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
-        ..bottom_anchored()
-    };
-    let error = pipeline::run_job(
-        &root.join("clip.mp4"),
-        &paths,
-        &settings,
-        &mac(),
-        &CancelToken::default(),
-        &mut |_| {},
-    )
-    .unwrap_err()
-    .to_string();
-    assert_eq!(
-        error,
-        "model nemotron-3.5-transcribe-q2l takes recordings up to 60 minutes"
-    );
-    assert!(!paths.jobs_dir().exists());
-    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -2443,7 +2784,6 @@ fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
     let root = scratch("job-llm-no-retry");
     let paths = with_tools(&root);
     sparse(&paths.data.join(GGML_FILE), 0);
-    sparse(&paths.data.join(Q2L_FILE), Q2L_BYTES);
     sparse(&paths.data.join(ENCODER_FILE), ENCODER_BYTES);
     sparse(&paths.data.join(MOSSFORMER2_FILE), MOSSFORMER2_BYTES);
     let one_word = r#"{"segments":[{"start":0.0,"end":2.0,"speaker":1}]}"#;
@@ -2452,7 +2792,6 @@ fn a_known_count_asks_once_and_missing_voices_are_not_invented() {
         &counting_nemo(&root, one_word),
     );
     let settings = Settings {
-        diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
         speaker_count: 2,
         ..bottom_anchored()
     };

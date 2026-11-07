@@ -1,6 +1,7 @@
 //! MossFormer2 through ONNX Runtime, in a process of its own: the runtime is loaded from the bundle at
 //! run time, a crash or the model's gigabytes stay out of the app, and cancelling kills the process.
 
+use crate::catalog::RunsOn;
 use crate::error::{io_context, AppError, AppResult};
 use crate::paths::{write_atomic, AppPaths};
 use crate::process::{background_command, run_with_progress, CancelToken};
@@ -9,11 +10,15 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 /// The app run with this flag and a request file separates the clips listed there.
 pub const SEPARATE_FLAG: &str = "--separate-voices";
+const TELEMETRY_OFF_VARIABLE: &str = "ORT_DISABLE_TELEMETRY";
 const TOOL_NAME: &str = "voice separation";
 const LIBRARY_FOLDER: &str = "onnxruntime";
 const LIBRARY_FILE: &str = if cfg!(windows) {
@@ -39,13 +44,17 @@ const PROGRESS_PREFIX: &str = "separated ";
 
 /// Cuts `[start, end)` seconds of a 16 kHz mono WAV into files of their own, in the same form of samples.
 pub fn cut_clips(wav: &Path, clips: &[(f64, f64, PathBuf)]) -> AppResult<()> {
-    let bytes = std::fs::read(wav).map_err(io_context(format!("read {}", wav.display())))?;
-    let samples = read_wav(&bytes).map_err(|error| invalid(&wav.display().to_string(), error))?;
+    let context = || wav.display().to_string();
+    let mut source = File::open(wav).map_err(io_context(format!("read {}", wav.display())))?;
+    let layout = wav_layout(&mut source).map_err(|error| invalid(&context(), error))?;
     clips.iter().try_for_each(|(start, end, file)| {
-        let at = |seconds: f64| {
-            ((seconds * f64::from(SAMPLE_RATE)).round().max(0.0) as usize).min(samples.len())
-        };
-        write_atomic(file, &write_float_wav(&samples[at(*start)..at(*end)]))
+        let (first, bytes) = layout.slice(*start, *end);
+        let mut raw = vec![0; bytes as usize];
+        source
+            .seek(SeekFrom::Start(first))
+            .and_then(|_| source.read_exact(&mut raw))
+            .map_err(io_context(format!("read {}", wav.display())))?;
+        write_atomic(file, &write_float_wav(&decode_samples(&raw, layout.float)))
     })
 }
 
@@ -60,10 +69,11 @@ pub struct SeparationClip {
 struct SeparationRequest {
     library: PathBuf,
     model: PathBuf,
+    runs_on: RunsOn,
     clips: Vec<SeparationClip>,
 }
 
-fn invalid(context: &str, error: impl std::fmt::Display) -> AppError {
+pub(crate) fn invalid(context: &str, error: impl std::fmt::Display) -> AppError {
     AppError::Invalid(format!("{context}: {error}"))
 }
 
@@ -82,35 +92,44 @@ pub fn runtime_library(paths: &AppPaths) -> AppResult<PathBuf> {
     )))
 }
 
-/// Separates `clips` in one child process of `exe`, so the model is loaded once. `work` holds the request.
+/// How MossFormer2 runs: the child process, its runtime and model, and on what.
+pub struct SeparationRun<'a> {
+    /// Marks the app re-invoked as its own child; a runner of its own takes only the request.
+    pub flag: Option<&'a str>,
+    pub exe: &'a Path,
+    pub library: &'a Path,
+    pub model: &'a Path,
+    pub runs_on: RunsOn,
+    pub work: &'a Path,
+    pub cancel: &'a CancelToken,
+}
+
+/// Separates `clips` in one child process, so the model is loaded once and its memory goes with it.
 pub fn separate_clips(
-    exe: &Path,
-    library: &Path,
-    model: &Path,
+    run: &SeparationRun<'_>,
     clips: &[SeparationClip],
-    work: &Path,
-    cancel: &CancelToken,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<()> {
     let request = SeparationRequest {
-        library: library.to_path_buf(),
-        model: model.to_path_buf(),
+        library: run.library.to_path_buf(),
+        model: run.model.to_path_buf(),
+        runs_on: run.runs_on,
         clips: clips.to_vec(),
     };
-    let file = work.join(REQUEST_FILE);
+    let file = run.work.join(REQUEST_FILE);
     let text = serde_json::to_vec(&request).map_err(|error| invalid(TOOL_NAME, error))?;
     write_atomic(&file, &text)?;
-    let mut command = background_command(exe);
-    command.arg(SEPARATE_FLAG).arg(&file);
+    let mut command = onnx_runtime_command(run.exe);
+    command.args(run.flag).arg(&file);
     // Windows looks for the library's Visual C++ runtime on the path; it sits beside the library.
-    if let Some(folder) = library.parent() {
+    if let Some(folder) = run.library.parent() {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let searched =
             std::iter::once(folder.to_path_buf()).chain(std::env::split_paths(&inherited));
         let path = std::env::join_paths(searched).map_err(|error| invalid(TOOL_NAME, error))?;
         command.env("PATH", path);
     }
-    run_with_progress(command, TOOL_NAME, cancel, |line| {
+    run_with_progress(command, TOOL_NAME, run.cancel, |line| {
         if let Some(done) = line.strip_prefix(PROGRESS_PREFIX).and_then(parse_share) {
             progress(done);
         }
@@ -122,13 +141,24 @@ fn parse_share(text: &str) -> Option<f64> {
     Some(done.parse::<f64>().ok()? / total.parse::<f64>().ok()?)
 }
 
+/// A child that loads ONNX Runtime. On macOS `with_telemetry(false)` still opens the runtime's event store
+/// under Application Support and flushes it at exit, where a child that had finished was seen to hang; only
+/// this variable keeps that code from starting.
+fn onnx_runtime_command(exe: &Path) -> Command {
+    let mut command = background_command(exe);
+    command.env(TELEMETRY_OFF_VARIABLE, "1");
+    command
+}
+
 /// ONNX Runtime allows one environment per process, loaded from the first library asked for.
-fn environment(library: &Path) -> AppResult<&'static Environment> {
+pub(crate) fn environment(library: &Path) -> AppResult<&'static Environment> {
     static ENVIRONMENT: OnceLock<Result<Environment, String>> = OnceLock::new();
     ENVIRONMENT
         .get_or_init(|| {
             ort::init_from(library)
                 .map_err(|error| error.to_string())?
+                // People's speech passes through here; nothing about it may leave the machine.
+                .with_telemetry(false)
                 .build()
                 .map_err(|error| error.to_string())
         })
@@ -141,9 +171,17 @@ pub fn run_request(file: &Path) -> AppResult<()> {
     let text = std::fs::read(file).map_err(io_context(format!("read {}", file.display())))?;
     let request: SeparationRequest =
         serde_json::from_slice(&text).map_err(|error| invalid("separation request", error))?;
+    // shortcut: no GPU provider of ONNX Runtime has run this model yet; the catalog's `min_gpu_memory_gib`
+    // of 0 keeps it on the CPU, and a provider registered here is all a GPU run would need.
+    let RunsOn::Cpu = request.runs_on else {
+        return Err(invalid(TOOL_NAME, "no GPU provider is available"));
+    };
     let mut builder = Session::builder(environment(&request.library)?)
         .map_err(|error| invalid("set up MossFormer2", error))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|error| invalid("set up MossFormer2", error))?
+        // Same output and speed; an 8 s range peaks at 1.65 GB instead of 2.4 GB.
+        .with_memory_pattern(false)
         .map_err(|error| invalid("set up MossFormer2", error))?;
     let mut session = builder
         .commit_from_file(&request.model)
@@ -244,57 +282,128 @@ fn decode_samples(bytes: &[u8], float: bool) -> Vec<f32> {
         .collect()
 }
 
-/// The samples of a 16 kHz mono WAV: 16-bit as `extract_audio` writes it, or float as a track is written.
-fn read_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    if bytes.len() < RIFF_HEADER_BYTES || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+/// Where the samples of a 16 kHz mono WAV are in its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WavLayout {
+    pub data_start: u64,
+    pub data_bytes: u64,
+    pub float: bool,
+}
+
+impl WavLayout {
+    /// The first byte and the length of `[start, end)` seconds, inside the file and on whole samples.
+    pub(crate) fn slice(&self, start: f64, end: f64) -> (u64, u64) {
+        let sample_bytes = if self.float { 4 } else { 2 };
+        let at = |seconds: f64| {
+            let sample = (seconds * f64::from(SAMPLE_RATE)).round().max(0.0) as u64;
+            (sample * sample_bytes).min(self.data_bytes / sample_bytes * sample_bytes)
+        };
+        (
+            self.data_start + at(start),
+            at(end).saturating_sub(at(start)),
+        )
+    }
+
+    pub(crate) fn seconds(&self) -> f64 {
+        let sample_bytes = if self.float { 4 } else { 2 };
+        (self.data_bytes / sample_bytes) as f64 / f64::from(SAMPLE_RATE)
+    }
+}
+
+/// Reads only the headers, so an hour of audio stays on the disk: 16-bit as `extract_audio` writes
+/// it, or float as a track is written.
+pub(crate) fn wav_layout(reader: &mut (impl Read + Seek)) -> Result<WavLayout, String> {
+    let length = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|error| error.to_string())?;
+    let mut riff = [0_u8; RIFF_HEADER_BYTES];
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    if reader.read_exact(&mut riff).is_err() || &riff[..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
         return Err("not a WAV file".to_owned());
     }
-    let mut at = RIFF_HEADER_BYTES;
-    let mut format_seen = false;
-    let mut float = false;
-    while at + CHUNK_HEADER_BYTES <= bytes.len() {
-        let size = little_u32(bytes, at + 4) as usize;
-        let body = at + CHUNK_HEADER_BYTES;
-        let end = body.saturating_add(size).min(bytes.len());
-        match &bytes[at..at + 4] {
-            b"fmt " if end - body >= FORMAT_CHUNK_BYTES => {
-                let form = (little_u16(bytes, body), little_u16(bytes, body + 14));
-                let wanted = (form == (WAV_FORMAT_PCM, 16) || form == (WAV_FORMAT_FLOAT, 32))
-                    && little_u16(bytes, body + 2) == 1
-                    && little_u32(bytes, body + 4) == SAMPLE_RATE;
-                if !wanted {
-                    return Err("not 16 kHz mono audio".to_owned());
-                }
-                float = form.0 == WAV_FORMAT_FLOAT;
-                format_seen = true;
-            }
-            b"data" if format_seen => {
-                return Ok(decode_samples(&bytes[body..end], float));
-            }
-            _ => {}
+    let mut at = RIFF_HEADER_BYTES as u64;
+    let mut float = None;
+    let mut chunk = [0_u8; CHUNK_HEADER_BYTES];
+    while at + CHUNK_HEADER_BYTES as u64 <= length {
+        reader
+            .seek(SeekFrom::Start(at))
+            .map_err(|error| error.to_string())?;
+        reader
+            .read_exact(&mut chunk)
+            .map_err(|error| error.to_string())?;
+        let size = u64::from(little_u32(&chunk, 4));
+        let body = at + CHUNK_HEADER_BYTES as u64;
+        let available = size.min(length - body);
+        if &chunk[..4] == b"fmt " && available >= FORMAT_CHUNK_BYTES as u64 {
+            let mut format = [0_u8; FORMAT_CHUNK_BYTES];
+            reader
+                .read_exact(&mut format)
+                .map_err(|error| error.to_string())?;
+            float = Some(format_is_float(&format)?);
+        } else if let (b"data", Some(float)) = (&chunk[..4], float) {
+            return Ok(WavLayout {
+                data_start: body,
+                data_bytes: available,
+                float,
+            });
         }
         // Chunks are padded to an even size.
-        at = end + (size & 1);
+        at = body + size + (size & 1);
     }
     Err("no audio in the WAV file".to_owned())
+}
+
+fn format_is_float(format: &[u8]) -> Result<bool, String> {
+    let form = (little_u16(format, 0), little_u16(format, 14));
+    let wanted = (form == (WAV_FORMAT_PCM, 16) || form == (WAV_FORMAT_FLOAT, 32))
+        && little_u16(format, 2) == 1
+        && little_u32(format, 4) == SAMPLE_RATE;
+    if !wanted {
+        return Err("not 16 kHz mono audio".to_owned());
+    }
+    Ok(form.0 == WAV_FORMAT_FLOAT)
+}
+
+/// The samples of a 16 kHz mono WAV held in memory.
+pub(crate) fn read_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
+    let layout = wav_layout(&mut Cursor::new(bytes))?;
+    let start = layout.data_start as usize;
+    Ok(decode_samples(
+        &bytes[start..start + layout.data_bytes as usize],
+        layout.float,
+    ))
+}
+
+/// The header of a 16 kHz mono WAV holding `data_bytes` of samples.
+pub(crate) fn wav_head(data_bytes: u32, float: bool) -> Vec<u8> {
+    let (form, width) = if float {
+        (WAV_FORMAT_FLOAT, 4_u16)
+    } else {
+        (WAV_FORMAT_PCM, 2_u16)
+    };
+    let mut out = Vec::with_capacity(WAV_HEADER_BYTES as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(WAV_HEADER_BYTES - 8 + data_bytes).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&(FORMAT_CHUNK_BYTES as u32).to_le_bytes());
+    out.extend_from_slice(&form.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    out.extend_from_slice(&(SAMPLE_RATE * u32::from(width)).to_le_bytes());
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&(width * 8).to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_bytes.to_le_bytes());
+    out
 }
 
 /// 32-bit float: restoring the level can take a quiet track past full scale, where 16 bits would clip it.
 fn write_float_wav(samples: &[f32]) -> Vec<u8> {
     let data_bytes = samples.len() as u32 * 4;
     let mut out = Vec::with_capacity((WAV_HEADER_BYTES + data_bytes) as usize);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(WAV_HEADER_BYTES - 8 + data_bytes).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&(FORMAT_CHUNK_BYTES as u32).to_le_bytes());
-    out.extend_from_slice(&WAV_FORMAT_FLOAT.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    out.extend_from_slice(&(SAMPLE_RATE * 4).to_le_bytes());
-    out.extend_from_slice(&4u16.to_le_bytes());
-    out.extend_from_slice(&32u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_bytes.to_le_bytes());
+    out.extend_from_slice(&wav_head(data_bytes, true));
     samples
         .iter()
         .for_each(|sample| out.extend_from_slice(&sample.to_le_bytes()));
@@ -373,6 +482,7 @@ mod tests {
         let request = SeparationRequest {
             library: library(),
             model: model_file,
+            runs_on: RunsOn::Cpu,
             clips,
         };
         std::fs::write(&file, serde_json::to_vec(&request).unwrap()).unwrap();
@@ -408,6 +518,21 @@ mod tests {
             "voice separation: unexpected output shape [1, 2]"
         );
         assert!(!clip.outputs[0].exists());
+    }
+
+    #[test]
+    fn a_gpu_run_is_refused_until_a_provider_exists() {
+        let root = scratch("gpu");
+        let clip = clip_in(&root, &[8192]);
+        let request = request_file(&root, TWO_TRACKS_MODEL, vec![clip]);
+        let text = std::fs::read_to_string(&request)
+            .unwrap()
+            .replace("\"cpu\"", "\"gpu\"");
+        std::fs::write(&request, text).unwrap();
+        assert_eq!(
+            run_request(&request).unwrap_err().to_string(),
+            "voice separation: no GPU provider is available"
+        );
     }
 
     #[test]
@@ -560,18 +685,22 @@ mod tests {
         let exe = root.join("child.sh");
         std::fs::write(
             &exe,
-            "#!/bin/sh\necho \"$1\" > \"$2.flag\"\necho \"$PATH\" > \"$2.path\"\necho 'separated 1/2' >&2\n",
+            "#!/bin/sh\necho \"$1\" > \"$2.flag\"\necho \"$PATH\" > \"$2.path\"\necho \"$ORT_DISABLE_TELEMETRY\" > \"$2.telemetry\"\necho 'separated 1/2' >&2\n",
         )
         .unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let clips = [clip_in(&root, &[16384])];
         separate_clips(
-            &exe,
-            &root.join("lib/onnxruntime"),
-            &root.join("model.onnx"),
+            &SeparationRun {
+                flag: Some(SEPARATE_FLAG),
+                exe: &exe,
+                library: &root.join("lib/onnxruntime"),
+                model: &root.join("model.onnx"),
+                runs_on: RunsOn::Cpu,
+                work: &root,
+                cancel: &CancelToken::default(),
+            },
             &clips,
-            &root,
-            &CancelToken::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -584,6 +713,7 @@ mod tests {
             std::fs::read_to_string(format!("{}.{extension}", request.display())).unwrap()
         };
         assert_eq!(told("flag").trim(), SEPARATE_FLAG);
+        assert_eq!(told("telemetry").trim(), "1");
         assert!(told("path").starts_with(root.join("lib").to_str().unwrap()));
     }
 

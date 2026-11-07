@@ -124,7 +124,7 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 4/8 0/4 0/5 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/0 3/2 3/0 0/2 3/2 3/3 2/0"]),
+    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 0/4 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/1 3/2 3/0 0/2 3/2 3/3 2/0"]),
   );
 });
 
@@ -167,7 +167,7 @@ it("shows each annotated picture lazily, sized, in this language, and described"
   expect(picture.getAttribute("src")).toBe("/help/ja/models.webp");
   expect(picture.getAttribute("loading")).toBe("lazy");
   expect(picture.getAttribute("width")).toBe("1100");
-  expect(picture.getAttribute("height")).toBe("980");
+  expect(picture.getAttribute("height")).toBe("1000");
 });
 
 it("has a picture for each topic with numbered marks", () => {
@@ -236,11 +236,25 @@ it("shows each DaVinci Resolve picture under the step it belongs to", () => {
   );
 });
 
-it("gives the same measured Mac figures as the jobs tab", () => {
+it("quotes the speaker figures from their one place", () => {
   render(<HelpPane />);
   expect(
     screen.getByText(
-      "Voice separation takes about as long as the audio it handles, which is about half of the audio. Measured on a Mac: for a 4-hour video, voice separation alone takes about 2 h 20 min, and Whisper's time comes on top. Memory: up to about 8 GB for voice separation and about 22 GB for speaker separation (Nemotron). It varies by video and computer. Windows has not been measured.",
+      "Whisper on the CPU took about 14 min on one video of about an hour, with no passages redone. These figures were measured on one Mac, and vary by video and computer. RAM and GPU memory on Windows have not been measured.",
     ).tagName,
   ).toBe("LI");
+  expect(
+    screen.getByText(
+      "Nemotron 3.5 encoder: per hour of audio, about 4 seconds on a Mac's GPU, about 33 seconds on the CPU. Voice separation, measured on one video of about an hour: about 5 min on Core ML, about 14 min on the CPU. It changes with how much of the video it handles.",
+    ).tagName,
+  ).toBe("LI");
+});
+
+it("says Nemotron only tells speakers apart, and Whisper does the transcribing", () => {
+  render(<HelpPane />);
+  expect(
+    screen.getByText(
+      "With automatic detection or 2 or more speakers, Whisper turbo, the Nemotron 3.5 encoder and MossFormer2 run. Whisper turbo always does the transcribing; Nemotron only tells speakers apart.",
+    ).tagName,
+  ).toBe("P");
 });

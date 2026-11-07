@@ -16,6 +16,7 @@ pub mod paths;
 pub mod pipeline;
 pub mod process;
 pub mod profiles;
+pub mod schedule;
 pub mod separation;
 pub mod service;
 pub mod settings;

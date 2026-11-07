@@ -11,6 +11,12 @@ export const frMessages: Messages = {
   uiThemeLabel: "Apparence",
   uiThemeSystem: "Comme le système",
   uiThemeLight: "Clair",
+  licensesOpen: "Licences open source",
+  licensesLoading: "Chargement des licences",
+  licensesFailed: "La liste des licences n'a pas pu être lue.",
+  licensesNoText: "Ce paquet ne contient pas de texte de licence.",
+  licensesUnknown: "Non indiquée",
+  licensesClose: "Fermer",
   uiThemeDark: "Sombre",
   updateCheck: "Rechercher une mise à jour",
   updateChecking: "Recherche d'une mise à jour",
@@ -49,14 +55,36 @@ export const frMessages: Messages = {
   speakerOptionLoad: "{label} ({load})",
   speakerLoadLightDetail: "Utilise Whisper seulement, sans isolation des voix ni séparation des voix.",
   speakerLoadHeavyDetail:
-    "Lance Nemotron, puis MossFormer2, puis Whisper. Cela prend beaucoup plus de temps et de mémoire.",
-  speakerLoadHeavyEstimate:
-    "Mesuré sur un Mac : pour une vidéo de 4 heures, l'isolation des voix prend à elle seule environ 2 h 20, sans compter Whisper. Mémoire : jusqu'à environ 8 Go pour l'isolation des voix et environ 22 Go pour la séparation des voix (Nemotron). Cela dépend de la vidéo et de l'ordinateur. Windows n'a pas été mesuré.",
-  speakerModelsMissing: "Il manque des modèles pour ce nombre de locuteurs : {roles}.",
+    "Distingue les voix, ce qui prend beaucoup plus de temps et de RAM ou de mémoire GPU.",
+  speakerFiguresNote:
+    "Whisper a pris environ {whisperCpuMinutes} min sur le CPU pour une vidéo d'environ une heure, sans reprise. Ces valeurs ont été mesurées sur un Mac et dépendent de la vidéo et de l'ordinateur. La RAM et la mémoire GPU sous Windows n'ont pas été mesurées.",
+  memoryUnified: "mémoire unifiée (RAM et mémoire GPU partagées)",
+  memoryRam: "mémoire vive (RAM)",
+  memoryGpu: "mémoire GPU",
+  speakerPlanRuns: "S'exécute sur : Whisper {whisper}, séparation {diarize}.",
+  speakerPlanRunsSeparate: " Isolation des voix {separate}.",
+  speakerPlanDeep:
+    "À partir de 3 voix simultanées, l'isolation passe deux fois, ce qui prend plus de temps. Jusqu'à 4 lignes s'affichent.",
+  separationBackend: "Exécution de l'isolation des voix",
+  separationBackends: { onnx: "CPU (ONNX Runtime)", coreml: "GPU du Mac (Core ML)" },
+  speakerPlanLine: "Modèles utilisés : {models}.",
+  speakerFactLabels: {
+    runs: "Ce qui tourne",
+    rows: "Lignes",
+    memory: "RAM et mémoire GPU",
+    time: "Temps (Whisper en plus)",
+  },
+  speakerFacts: {
+    runs: "Encodeur Nemotron 3.5 et MossFormer2",
+    rows: "Les voix simultanées s'affichent sur plusieurs lignes.",
+    memory:
+      "Sur un Mac, {memoryUnified} : {encoderGb} Go pour l'encodeur Nemotron 3.5, environ {separateCoreMlGb} Go (estimation) pour MossFormer2 avec Core ML, {separateGb} Go sur le CPU avec ONNX Runtime (passages de {separateSeconds} secondes). Environ {jobPeakGb} Go au pic de la tâche.",
+    time: "Encodeur Nemotron 3.5 : par heure de son, environ {encoderGpuSeconds} secondes sur le GPU d'un Mac, environ {encoderCpuSeconds} secondes sur le CPU. Isolation des voix, mesurée sur une vidéo d'environ une heure : environ {separateCoreMlMinutes} min avec Core ML, environ {separateCpuMinutes} min sur le CPU. Cela dépend de la part de la vidéo à traiter. À partir de 3 voix simultanées, l'isolation passe deux fois, ce qui prend plus de temps.",
+  },
   openModelsTab: "Ouvrir l'onglet « {tabModels} »",
   runWithOneSpeaker: "Lancer avec 1 locuteur",
   roleSeparate: "l'isolation des voix",
-  badgeRequiredForSpeakers: "Requis à partir de 2 locuteurs",
+  badgeUsedBySteps: "Pour 2 locuteurs ou plus",
   speakerRolesHint:
     "Nécessaire quand 2 personnes ou plus parlent, ou quand le nombre est détecté automatiquement.",
   profilesHeading: "Profils",
@@ -225,15 +253,13 @@ export const frMessages: Messages = {
   resetPalette: "Rétablir les couleurs d’origine",
   modelsHeading: "Modèles",
   noRecommendedSpeakerModel:
-    "Aucun modèle Nemotron 3.5 n'est recommandé pour cet ordinateur. Tu peux quand même créer des sous-titres pour 1 locuteur.",
+    "Aucun modèle de séparation des voix n'est recommandé pour cet ordinateur. Tu peux quand même créer des sous-titres pour 1 locuteur.",
   modelsHint:
     "Les modèles adaptés à cet ordinateur sont marqués comme recommandés. Les modèles déjà téléchargés sont retrouvés et réutilisés.",
   addModelFolder: "Ajouter un dossier contenant des modèles existants",
   modelFolders: "Dossiers explorés",
   badgeRecommended: "Recommandé ici",
   badgePresent: "Disponible",
-  useModel: "Utiliser {name}",
-  inUseModel: "Utilisé : {name}",
   download: "Télécharger {name} ({size})",
   downloadCancel: "Annuler le téléchargement de {name}",
   downloadProgress: "{done} sur {total}",
@@ -250,11 +276,8 @@ export const frMessages: Messages = {
     no_words: "Aucun mot n’a été trouvé dans l’audio.",
     model_missing: "{model} n’est pas installé. Télécharge-le dans Modèles.",
     no_model_for_role: "Aucun modèle n’est installé pour {role}. Télécharge-en un dans Modèles.",
-    needs_nvidia: "{model} nécessite un GPU NVIDIA. Choisis un autre modèle dans Modèles.",
     needs_memory:
-      "{model} nécessite {required} Go de mémoire ; cet ordinateur en a {available} Go. Choisis un modèle plus petit.",
-    too_long_for_model:
-      "{model} accepte les enregistrements jusqu'à {limit} minutes. Cette vidéo est plus longue. Règle le nombre de locuteurs sur 1.",
+      "{model} nécessite {required} Go de {memory} ; cet ordinateur en a {available} Go. Choisis un modèle plus petit.",
     transcript_missing:
       "{file} n'a pas de transcription à côté de lui ; il ne peut donc pas être réécrit. Garde le fichier .transcript.json du même nom dans le même dossier.",
     profile_exists: "Un profil nommé {name} existe déjà. Choisis un autre nom ou écrase-le depuis la liste.",
@@ -276,21 +299,16 @@ export const frMessages: Messages = {
   },
   modelNotes: {
     "whisper-large-v3-turbo": "Transcription. Le même modèle fonctionne sur Mac (Metal) et Windows (Vulkan).",
-    "nemotron-3.5-transcribe-iq4":
-      "Séparation des voix. Pour les Mac de 32 Go ou plus, les GPU de 24 Go ou plus et les CPU.",
-    "nemotron-3.5-transcribe-nvfp4":
-      "Séparation des voix. Pour les GPU Blackwell comme la série GeForce RTX 50.",
-    "nemotron-3.5-transcribe-q2m":
-      "Séparation des voix. Pour les GPU de 16 Go ; chaque enregistrement peut durer environ 7 minutes.",
-    "nemotron-3.5-transcribe-q2l": "Séparation des voix. Pour les Mac de 24 Go.",
-    "mossformer2-ss-16k": "Sépare les voix qui se superposent. Requis à partir de 2 locuteurs.",
-    "nemotron-3.5-transcribe-q8":
-      "Séparation des voix. Qualité maximale, pour les Mac de 64 Go et les GPU de 48 Go.",
+    "nemotron-3.5-speaker":
+      "Un encodeur servant seulement à distinguer les locuteurs. Il tourne sur le GPU ou le CPU. Whisper turbo fait la transcription. Un modèle complet déjà dans tes dossiers fonctionne aussi.",
+    "mossformer2-ss-16k-coreml":
+      "Sépare les voix superposées sur le GPU du Mac avec Core ML. Utilisé par « Haute qualité ».",
+    "mossformer2-ss-16k": "Sépare les voix qui se superposent. Utilisé par « Haute qualité ».",
     yunet: "Visages réels. Fourni avec l’app ; donne le même résultat sur Mac et Windows.",
     "avatar-face-yolo":
       "Visages d’avatars. Fonctionne une fois le fichier ONNX exporté placé dans un dossier de modèles.",
     "geforce-runtime":
-      "Version CUDA de l’outil de séparation des voix. Sans elle, la séparation s’exécute sur le CPU.",
+      "Facultatif. Accélère la séparation des voix sur le GPU. Sans lui, elle tourne sur le CPU, et elle y revient si le GPU échoue.",
   },
   help: {
     version: "Version {version}",
@@ -360,8 +378,7 @@ export const frMessages: Messages = {
             notes: [
               "Le « ? » à côté du nombre explique à quoi il sert.",
               "Si une seule personne parle, laisse 1. C'est plus rapide.",
-              "1 locuteur est léger : seul Whisper tourne. La détection automatique et 2 locuteurs ou plus demandent une charge élevée : Nemotron, MossFormer2 et Whisper tournent, ce qui prend beaucoup plus de temps et de mémoire.",
-              "L'isolation des voix prend à peu près la durée du son traité, soit environ la moitié du son. {speakerLoadHeavyEstimate}",
+              "1 locuteur est léger : seul Whisper tourne. La détection automatique et 2 locuteurs ou plus demandent une charge élevée : Nemotron et MossFormer2 tournent aussi, ce qui prend beaucoup plus de temps et de RAM ou de mémoire GPU.",
               "Vidéos acceptées : .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Fichiers de sous-titres : .drt .fcpxml .srt .ttml .transcript.json. Avec un autre fichier, l'application dit qu'il n'est pas accepté.",
               "Si tu ajoutes plusieurs vidéos, elles sont traitées une par une.",
               "La première fois, l'application met aussi un modèle sous une forme qu'elle peut utiliser.",
@@ -390,6 +407,18 @@ export const frMessages: Messages = {
               ".ttml : des sous-titres avec couleurs et positions.",
               ".srt : des sous-titres avec les mots et les temps. Les couleurs peuvent ne pas s'afficher. Il n'y a ni contours ni positions.",
               ".transcript.json : les données pour réécrire les sous-titres. Garde-le.",
+            ],
+          },
+          {
+            heading: "Quand 2 personnes ou plus parlent",
+            intro:
+              "Avec la détection automatique ou 2 locuteurs ou plus, Whisper turbo, l'encodeur Nemotron 3.5 et MossFormer2 tournent. Whisper turbo fait toujours la transcription ; Nemotron sert seulement à distinguer les locuteurs.",
+            steps: [],
+            notes: [
+              "Les voix simultanées s'affichent sur plusieurs lignes. Sur un Mac, {memoryUnified} : {encoderGb} Go pour l'encodeur Nemotron 3.5, environ {separateCoreMlGb} Go (estimation) pour MossFormer2 avec Core ML. À partir de 3 voix simultanées, l'isolation passe deux fois, ce qui prend plus de temps.",
+              "Sur un Mac, « {separationBackend} » permet de choisir le CPU ou le GPU du Mac pour l'isolation des voix.",
+              "Encodeur Nemotron 3.5 : par heure de son, environ {encoderGpuSeconds} secondes sur le GPU d'un Mac, environ {encoderCpuSeconds} secondes sur le CPU. Isolation des voix, mesurée sur une vidéo d'environ une heure : environ {separateCoreMlMinutes} min avec Core ML, environ {separateCpuMinutes} min sur le CPU. Cela dépend de la part de la vidéo à traiter.",
+              "{speakerFiguresNote}",
             ],
           },
         ],
@@ -545,7 +574,9 @@ export const frMessages: Messages = {
               "Dans « {uiLanguageLabel} », choisis une langue. L'écran change tout de suite.",
               "Dans « {uiThemeLabel} », choisis « {uiThemeLight} » ou « {uiThemeDark} ». « {uiThemeSystem} » suit ton ordinateur.",
             ],
-            notes: [],
+            notes: [
+              "En bas de l'onglet, « {licensesOpen} » liste les bibliothèques de l'application et leurs licences.",
+            ],
           },
           {
             heading: "Mettre à jour l'application",
@@ -579,7 +610,7 @@ export const frMessages: Messages = {
           {
             heading: "Les sous-titres pour 2 locuteurs ou plus ne démarrent pas",
             intro:
-              "La détection automatique et 2 locuteurs ou plus demandent un modèle Nemotron 3.5 et MossFormer2.",
+              "La détection automatique et 2 locuteurs ou plus demandent l'encodeur Nemotron 3.5 et MossFormer2, ainsi qu'au moins 8 Go de RAM.",
             steps: [],
             notes: [
               "Dans l'onglet « {tabModels} », télécharge les modèles manquants. S'ils ne conviennent pas à cet ordinateur, appuie sur « {runWithOneSpeaker} ».",

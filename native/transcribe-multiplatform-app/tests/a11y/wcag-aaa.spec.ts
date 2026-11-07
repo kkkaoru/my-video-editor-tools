@@ -1,6 +1,8 @@
 // Runs with bun: drives every UI state through WCAG AAA checks in real browser engines.
+
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
+import type { LicenseList } from "../../src/backend/licenses.ts";
 import { languageFor } from "../../src/i18n/language.ts";
 import {
   COLOR_SCHEMES,
@@ -116,6 +118,21 @@ async function applySteps(page: Page, state: UiState, locale: string): Promise<v
   }, Promise.resolve());
 }
 
+const SHORT_LICENSES: LicenseList = {
+  entries: [
+    {
+      name: "with-a-text",
+      version: "1.0.0",
+      license: "MIT OR Apache-2.0",
+      url: "https://example.com/a",
+      text: 0,
+    },
+    { name: "without-a-text", version: "0.3.0", license: "MIT", url: "", text: null },
+    { name: "with-no-license-declared", version: "2.0.0", license: "", url: "", text: null },
+  ],
+  texts: ["Permission is hereby granted, free of charge, to any person obtaining a copy of this software."],
+};
+
 async function applyStep(page: Page, step: string): Promise<void> {
   if (step === "hover-drop") {
     await page.evaluate((): void =>
@@ -133,6 +150,10 @@ async function applyStep(page: Page, step: string): Promise<void> {
         Reflect.get(window, "__emitTauri")("tauri://drag-drop", { paths, position: { x: 1, y: 1 } }),
       dropped,
     );
+    return;
+  }
+  if (step === "open-license-row") {
+    await page.getByRole("alertdialog").getByRole("listitem").getByRole("button").first().click();
     return;
   }
   // Kept-mounted panels stay in the DOM; only the open one may be exposed to assistive technology.
@@ -177,6 +198,19 @@ async function applyStep(page: Page, step: string): Promise<void> {
     return;
   }
   // The Jobs tab has the speaker count first and the format second; the speaker count has its own help step.
+  if (step === "open-licenses") {
+    // A short list: the checks walk every row, and the generated one has hundreds.
+    await page.route("**/licenses.js", (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: `export default ${JSON.stringify(SHORT_LICENSES)};`,
+      }),
+    );
+    await panel.getByRole("button").last().click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("listitem").first().waitFor();
+    return;
+  }
   if (step === "open-speaker-count") {
     await panel.getByRole("combobox").first().click();
     await page.getByRole("listbox").waitFor();

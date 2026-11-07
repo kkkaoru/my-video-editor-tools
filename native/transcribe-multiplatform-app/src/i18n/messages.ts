@@ -1,5 +1,5 @@
 // Runs with bun: the text every language must supply, and the formatter that fills it in.
-import type { BackendError, Role, Stage, SubtitleFormat } from "../backend/types.ts";
+import type { BackendError, Role, SeparationBackend, Stage, SubtitleFormat } from "../backend/types.ts";
 
 export interface StepStates {
   done: string;
@@ -7,14 +7,18 @@ export interface StepStates {
   pending: string;
 }
 
+export interface SpeakerFacts {
+  runs: string;
+  rows: string;
+  memory: string;
+  time: string;
+}
+
 export interface ModelNotes {
   "whisper-large-v3-turbo": string;
-  "nemotron-3.5-transcribe-iq4": string;
-  "nemotron-3.5-transcribe-nvfp4": string;
-  "nemotron-3.5-transcribe-q2l": string;
+  "nemotron-3.5-speaker": string;
+  "mossformer2-ss-16k-coreml": string;
   "mossformer2-ss-16k": string;
-  "nemotron-3.5-transcribe-q8": string;
-  "nemotron-3.5-transcribe-q2m": string;
   yunet: string;
   "avatar-face-yolo": string;
   "geforce-runtime": string;
@@ -28,7 +32,6 @@ export interface ErrorMessages {
   no_words: string;
   model_missing: string;
   no_model_for_role: string;
-  needs_nvidia: string;
   needs_memory: string;
   transcript_missing: string;
   profile_exists: string;
@@ -39,7 +42,6 @@ export interface ErrorMessages {
   update_busy: string;
   no_supported_files: string;
   profile_invalid: string;
-  too_long_for_model: string;
   internal: string;
   cancelled: string;
 }
@@ -109,6 +111,12 @@ export interface Messages {
   uiThemeLabel: string;
   uiThemeSystem: string;
   uiThemeLight: string;
+  licensesOpen: string;
+  licensesLoading: string;
+  licensesFailed: string;
+  licensesNoText: string;
+  licensesUnknown: string;
+  licensesClose: string;
   uiThemeDark: string;
   updateCheck: string;
   updateChecking: string;
@@ -140,12 +148,23 @@ export interface Messages {
   speakerOptionLoad: string;
   speakerLoadLightDetail: string;
   speakerLoadHeavyDetail: string;
-  /** Measured on a Mac only; the help shows the same text, so numbers change here once. */
-  speakerLoadHeavyEstimate: string;
-  speakerModelsMissing: string;
+  /** The figures in these texts come from speaker-figures.ts. */
+  speakerFiguresNote: string;
+  speakerFactLabels: SpeakerFacts;
+  speakerFacts: SpeakerFacts;
+  separationBackend: string;
+  separationBackends: Record<SeparationBackend, string>;
+  speakerPlanLine: string;
+  speakerPlanRuns: string;
+  /** Follows the sentence before it, so it starts with the space the language needs. */
+  speakerPlanRunsSeparate: string;
+  speakerPlanDeep: string;
+  memoryUnified: string;
+  memoryRam: string;
+  memoryGpu: string;
   openModelsTab: string;
   runWithOneSpeaker: string;
-  badgeRequiredForSpeakers: string;
+  badgeUsedBySteps: string;
   speakerRolesHint: string;
   profilesHeading: string;
   profilesHint: string;
@@ -276,8 +295,6 @@ export interface Messages {
   modelFolders: string;
   badgeRecommended: string;
   badgePresent: string;
-  useModel: string;
-  inUseModel: string;
   download: string;
   downloadCancel: string;
   downloadProgress: string;
@@ -317,10 +334,12 @@ export const errorText = (messages: Messages, error: BackendError, modelLabel: s
   isErrorCode(messages, error.code)
     ? format(messages.errors[error.code], {
         model: modelLabel,
+        memory: { ram: messages.memoryRam, gpu_memory: messages.memoryGpu, unified: messages.memoryUnified }[
+          error.kind ?? "ram"
+        ],
         role: error.role === "diarize" ? messages.roleDiarize : messages.roleTranscribe,
         required: error.required ?? 0,
         available: error.available ?? 0,
-        limit: error.limit_minutes ?? 0,
         detail: error.detail ?? "",
         file: error.file ?? "",
         name: error.name ?? "",

@@ -11,6 +11,12 @@ export const jaMessages: Messages = {
   uiThemeLabel: "表示モード",
   uiThemeSystem: "システムに合わせる",
   uiThemeLight: "通常",
+  licensesOpen: "オープンソースライセンス",
+  licensesLoading: "ライセンスを読み込んでいます",
+  licensesFailed: "ライセンスの一覧を読み込めませんでした。",
+  licensesNoText: "このパッケージにはライセンスの本文が入っていません。",
+  licensesUnknown: "記載なし",
+  licensesClose: "閉じる",
   uiThemeDark: "ダーク",
   updateCheck: "更新を確認",
   updateChecking: "更新を確認しています",
@@ -45,15 +51,35 @@ export const jaMessages: Messages = {
   speakerLoadHeavy: "高負荷",
   speakerOptionLoad: "{label} ({load})",
   speakerLoadLightDetail: "Whisper だけで処理します。声の分離も話す人の聞き分けもしません。",
-  speakerLoadHeavyDetail:
-    "Nemotron、MossFormer2、Whisper の順に処理します。時間が大きく増え、メモリも多く使います。",
-  speakerLoadHeavyEstimate:
-    "Mac での実測の目安です。4 時間の動画で、声の分離だけで約 2 時間 20 分かかります (Whisper は別)。メモリは、声の分離で最大約 8 GB、話す人の聞き分け (Nemotron) で約 22 GB です。動画と PC で変わります。Windows は計測していません。",
-  speakerModelsMissing: "この人数には、次のモデルが足りません: {roles}。",
+  speakerLoadHeavyDetail: "話す人を聞き分けるので、時間が大きく増え、RAM や GPU メモリも多く使います。",
+  speakerFiguresNote:
+    "Whisper は CPU で、約 1 時間の動画 1 本に約 {whisperCpuMinutes} 分でした (やり直しなし)。数値は 1 台の Mac での実測で、動画とパソコンで変わります。Windows の RAM と GPU メモリは計測していません。",
+  memoryUnified: "統合メモリ (RAM と GPU メモリの共有)",
+  memoryRam: "RAM (作業に使う場所)",
+  memoryGpu: "GPU メモリ (GPU が作業に使う場所)",
+  speakerPlanRuns: "実行先: Whisper は {whisper}、聞き分けは {diarize}。",
+  speakerPlanRunsSeparate: "声の分離は {separate}。",
+  speakerPlanDeep: "3 人以上の同時発話は 2 回分離するので、時間が増えます。最大 4 段に出します。",
+  separationBackend: "声の分離の動かし方",
+  separationBackends: { onnx: "CPU (ONNX Runtime)", coreml: "Mac の GPU (Core ML)" },
+  speakerPlanLine: "動くモデル: {models}。",
+  speakerFactLabels: {
+    runs: "動くもの",
+    rows: "字幕の段",
+    memory: "RAM と GPU メモリ",
+    time: "時間 (Whisper は別)",
+  },
+  speakerFacts: {
+    runs: "Nemotron 3.5 のエンコーダ と MossFormer2",
+    rows: "重なった声を複数の段に出します。",
+    memory:
+      "Mac の{memoryUnified}: Nemotron 3.5 のエンコーダで {encoderGb} GB。MossFormer2 は Core ML で約 {separateCoreMlGb} GB (推定)、CPU の ONNX Runtime で {separateGb} GB ({separateSeconds} 秒の範囲)。ジョブ全体のピークは約 {jobPeakGb} GB。",
+    time: "Nemotron 3.5 のエンコーダは音声 1 時間に、Mac の GPU で約 {encoderGpuSeconds} 秒、CPU で約 {encoderCpuSeconds} 秒。声の分離は、約 1 時間の動画 1 本の実測で、Core ML が約 {separateCoreMlMinutes} 分、CPU が約 {separateCpuMinutes} 分です。分離する範囲の長さで変わります。3 人以上の同時発話は 2 回分離するので、さらに増えます。",
+  },
   openModelsTab: "「{tabModels}」のタブを開く",
   runWithOneSpeaker: "1 人で実行",
   roleSeparate: "声の分離",
-  badgeRequiredForSpeakers: "話す人が 2 人以上で必須",
+  badgeUsedBySteps: "2 人以上で使う",
   speakerRolesHint: "話す人が 2 人以上のときと、人数を自動で決めるときに要ります。",
   profilesHeading: "プロファイル",
   profilesHint:
@@ -214,15 +240,13 @@ export const jaMessages: Messages = {
   resetPalette: "最初の色に戻す",
   modelsHeading: "モデル",
   noRecommendedSpeakerModel:
-    "このパソコンに合う、おすすめの Nemotron 3.5 のモデルがありません。話す人が 1 人の字幕は作れます。",
+    "このパソコンに合う、おすすめの聞き分けのモデルがありません。話す人が 1 人の字幕は作れます。",
   modelsHint:
     "モデルは、文字起こしに使うデータです。このパソコンに合うモデルには「おすすめ」と出ます。ダウンロードしたことのあるモデルは、自動で見つけて使います。",
   addModelFolder: "持っているモデルのフォルダを追加",
   modelFolders: "さがすフォルダ",
   badgeRecommended: "おすすめ",
   badgePresent: "使えます",
-  useModel: "{name} を使う",
-  inUseModel: "使用中: {name}",
   download: "{name} をダウンロード ({size})",
   downloadCancel: "{name} のダウンロードをやめる",
   downloadProgress: "{done} / {total}",
@@ -239,12 +263,8 @@ export const jaMessages: Messages = {
     no_words: "音声の中に言葉が見つかりませんでした。",
     model_missing: "{model} がありません。「モデル」のタブでダウンロードしてください。",
     no_model_for_role: "{role}のモデルがありません。「モデル」のタブでダウンロードしてください。",
-    needs_nvidia:
-      "{model} は、NVIDIA の GPU (絵や計算が速い部品) がないと動きません。「モデル」のタブで別のモデルを選んでください。",
     needs_memory:
-      "{model} を動かすには、メモリ (作業に使う場所) が {required} GB 必要です。このパソコンは {available} GB です。小さいモデルを選んでください。",
-    too_long_for_model:
-      "{model} は {limit} 分までの音声に使えます。この動画は長すぎます。話す人の数を 1 人にしてください。",
+      "{model} を動かすには、{memory} が {required} GB 必要です。このパソコンは {available} GB です。小さいモデルを選んでください。",
     transcript_missing:
       "{file} と同じフォルダに、字幕を作り直すデータがありません。だから作り直せません。同じ名前の .transcript.json を同じフォルダに置いてください。",
     profile_exists:
@@ -267,20 +287,16 @@ export const jaMessages: Messages = {
   },
   modelNotes: {
     "whisper-large-v3-turbo": "文字起こしに使います。Mac でも Windows でも同じモデルです。",
-    "nemotron-3.5-transcribe-iq4":
-      "話す人の聞き分けに使います。メモリ 32 GB 以上の Mac、24 GB 以上の GPU、CPU 向けです。",
-    "nemotron-3.5-transcribe-nvfp4":
-      "話す人の聞き分けに使います。GeForce RTX 50 シリーズなどの GPU 向けです。",
-    "nemotron-3.5-transcribe-q2m":
-      "話す人の聞き分けに使います。16 GB の GPU 向けです。1 回の音声は 7 分くらいまでです。",
-    "nemotron-3.5-transcribe-q2l": "話す人の聞き分けに使います。メモリ 24 GB の Mac 向けです。",
-    "mossformer2-ss-16k": "重なった声を分けるモデルです。話す人が 2 人以上のときに必須です。",
-    "nemotron-3.5-transcribe-q8":
-      "話す人の聞き分けに使います。一番ていねいです。メモリ 64 GB の Mac と 48 GB の GPU 向けです。",
+    "nemotron-3.5-speaker":
+      "話す人の聞き分けだけに使うエンコーダです。GPU でも CPU でも動きます。文字起こしは Whisper turbo が行います。フォルダにフルのモデルがあれば、それも使えます。",
+    "mossformer2-ss-16k-coreml":
+      "重なった声を、Mac の GPU (Core ML) で分けるモデルです。「高品質」で使います。",
+    "mossformer2-ss-16k": "重なった声を分けるモデルです。「高品質」で使います。",
     yunet: "人の顔を見つけます。アプリに入っています。",
     "avatar-face-yolo":
       "アバターの顔を見つけます。自分で用意したモデルのファイル (.onnx) をモデルのフォルダに置くと使えます。",
-    "geforce-runtime": "話す人の聞き分けを GeForce で速く動かすためのデータです。ないときは CPU で動きます。",
+    "geforce-runtime":
+      "任意です。話す人の聞き分けを GPU で速くします。なくても CPU で動きます。GPU で失敗すると CPU に戻ります。",
   },
   help: {
     version: "バージョン {version}",
@@ -350,8 +366,7 @@ export const jaMessages: Messages = {
             notes: [
               "人数の横の「?」を押すと、人数を選ぶ理由が読めます。",
               "1 人しか話さない動画は「1 人」のままにします。速く終わります。",
-              "1 人は軽量で、Whisper だけが動きます。自動と 2 人以上は高負荷で、Nemotron、MossFormer2、Whisper が動きます。時間が大きく増え、メモリも多く使います。",
-              "声の分離には、分離する音声と同じくらいの時間がかかります。分離するのは、音声の約半分です。 {speakerLoadHeavyEstimate}",
+              "1 人は軽量で、Whisper だけが動きます。自動と 2 人以上は高負荷で、Nemotron と MossFormer2 も動きます。時間が大きく増え、RAM や GPU メモリも多く使います。",
               "動画を入れられる形は .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts です。字幕ファイルは .drt .fcpxml .srt .ttml .transcript.json です。ほかのファイルを入れると、入れられないと出ます。",
               "動画を何本も入れると、1 本ずつ順番に作ります。",
               "はじめて作るときは、モデルをこのアプリで使える形に直す作業が入ります。",
@@ -380,6 +395,18 @@ export const jaMessages: Messages = {
               ".ttml: 色と位置が入った字幕のファイルです。",
               ".srt: 文字と時間の字幕です。色は出ないことがあります。縁と位置は入りません。",
               ".transcript.json: 字幕を作り直すときに使うデータです。消さないでください。",
+            ],
+          },
+          {
+            heading: "話す人が 2 人以上のときの処理",
+            intro:
+              "話す人が 2 人以上か自動のときは、Whisper turbo、Nemotron 3.5 のエンコーダ、MossFormer2 が動きます。文字起こしはいつも Whisper turbo で、Nemotron は話す人の判定だけに使います。",
+            steps: [],
+            notes: [
+              "重なった声を複数の段に出します。Mac の{memoryUnified}: Nemotron 3.5 のエンコーダで {encoderGb} GB。MossFormer2 は Core ML で約 {separateCoreMlGb} GB (推定) です。3 人以上の同時発話は 2 回分離するので、さらに増えます。",
+              "Mac では「{separationBackend}」で、声の分離を CPU で動かすか Mac の GPU で動かすかを選べます。",
+              "Nemotron 3.5 のエンコーダは音声 1 時間に、Mac の GPU で約 {encoderGpuSeconds} 秒、CPU で約 {encoderCpuSeconds} 秒。声の分離は、約 1 時間の動画 1 本の実測で、Core ML が約 {separateCoreMlMinutes} 分、CPU が約 {separateCpuMinutes} 分です。分離する範囲の長さで変わります。",
+              "{speakerFiguresNote}",
             ],
           },
         ],
@@ -533,7 +560,7 @@ export const jaMessages: Messages = {
               "「{uiLanguageLabel}」で言語を選びます。画面がすぐ変わります。",
               "「{uiThemeLabel}」で「{uiThemeLight}」か「{uiThemeDark}」を選びます。「{uiThemeSystem}」にすると、パソコンの設定に合わせます。",
             ],
-            notes: [],
+            notes: ["タブの一番下の「{licensesOpen}」で、アプリのライブラリとライセンスを見られます。"],
           },
           {
             heading: "アプリを更新する",
@@ -565,7 +592,8 @@ export const jaMessages: Messages = {
           },
           {
             heading: "話す人が 2 人以上の字幕を作れないとき",
-            intro: "自動と 2 人以上には、Nemotron 3.5 のモデルと MossFormer2 が要ります。",
+            intro:
+              "自動と 2 人以上には、Nemotron 3.5 のエンコーダと MossFormer2 が要ります。RAM は 8 GB 以上必要です。",
             steps: [],
             notes: [
               "「{tabModels}」のタブで、足りないモデルをダウンロードします。このパソコンに合わないときは「{runWithOneSpeaker}」を押します。",

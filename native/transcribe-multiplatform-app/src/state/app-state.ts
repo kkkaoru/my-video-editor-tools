@@ -11,6 +11,7 @@ import type {
   Role,
   Settings,
   Snapshot,
+  SpeakerMissing,
 } from "../backend/types.ts";
 
 const SYSTEM_LANGUAGE: string = "";
@@ -59,6 +60,8 @@ export interface AppState {
   downloads: ReadonlyMap<string, DownloadRow>;
   hovering: boolean;
   loadError: BackendError | null;
+  /** Settings changed and unanswered: the speaker plan in the snapshot is the old one. */
+  planPending: boolean;
 }
 
 export const initialState = (snapshot: Snapshot): AppState => ({
@@ -67,6 +70,7 @@ export const initialState = (snapshot: Snapshot): AppState => ({
   downloads: new Map(),
   hovering: false,
   loadError: null,
+  planPending: false,
 });
 
 const newJob = (id: number, path: string, startedAt: number): JobRow => ({
@@ -135,6 +139,7 @@ export const applyDownloadEvent = (state: AppState, event: DownloadEvent): AppSt
 export const withSettings = (state: AppState, settings: Settings): AppState => ({
   ...state,
   snapshot: { ...state.snapshot, settings },
+  planPending: true,
 });
 
 /** A save that answered also ends the banner of an earlier failed one. */
@@ -145,9 +150,16 @@ export const withModels = (state: AppState, models: ModelStatus[]): AppState => 
 });
 
 /** A save answers with the models and the language it now means; newer settings on screen stay. */
-export const withSaveAnswer = (state: AppState, { models, locale }: Snapshot): AppState => {
+export const withSaveAnswer = (
+  state: AppState,
+  { models, locale, speaker_plan, speaker_missing }: Snapshot,
+): AppState => {
   const updated: AppState = withModels(state, models);
-  return { ...updated, snapshot: { ...updated.snapshot, locale } };
+  return {
+    ...updated,
+    snapshot: { ...updated.snapshot, locale, speaker_plan, speaker_missing },
+    planPending: false,
+  };
 };
 
 const isJobActive = ({ state }: JobRow): boolean => state === "queued" || state === "running";
@@ -165,22 +177,32 @@ export const uiLocale = ({ locale, settings }: Pick<Snapshot, "locale" | "settin
 export const isHeavySpeakerCount = ({ speaker_count: count }: Pick<Settings, "speaker_count">): boolean =>
   count !== 1;
 
-const HEAVY_ROLES: ReadonlySet<Role> = new Set<Role>(["diarize", "separate"]);
-
-export const isHeavyRole = (role: Role): boolean => HEAVY_ROLES.has(role);
-
-/** A job refused here never starts, so the choice of the speaker count is never overruled in silence. */
-export const missingModelRoles = ({ models, settings }: Pick<Snapshot, "models" | "settings">): Role[] =>
-  (isHeavySpeakerCount(settings)
-    ? (["transcribe", "diarize", "separate"] satisfies Role[])
-    : (["transcribe"] satisfies Role[])
-  ).filter(
+/** Speaker separation has its own refusal: see lacksSpeakerModels. */
+export const missingModelRoles = ({ models }: Pick<Snapshot, "models">): Role[] =>
+  (["transcribe"] satisfies Role[]).filter(
     (role: Role): boolean =>
       !models.some(
         (model: ModelStatus): boolean =>
           model.role === role && model.found_at !== null && model.blocked === null,
       ),
   );
+
+/** What the backend says is missing, unless settings it has not answered for may have changed that. */
+export const speakerModelsMissing = ({
+  snapshot,
+  planPending,
+}: Pick<AppState, "snapshot" | "planPending">): SpeakerMissing | null =>
+  planPending ? null : snapshot.speaker_missing;
+
+/** Nothing starts without its models; null lets a video through. */
+export const videoRefusal = (state: Pick<AppState, "snapshot" | "planPending">): BackendError | null => {
+  const missing: Role[] = missingModelRoles(state.snapshot);
+  if (missing.length > 0) {
+    return { code: "models_missing", roles: missing };
+  }
+  const speakers: SpeakerMissing | null = speakerModelsMissing(state);
+  return speakers === null ? null : { code: "speaker_models_missing", ...speakers };
+};
 
 const lookFields = ({
   palette,

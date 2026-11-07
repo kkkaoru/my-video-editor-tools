@@ -19,6 +19,8 @@ export type StateStep =
   | "open-language-select"
   | "open-subtitle-format"
   | "open-speaker-count"
+  | "open-licenses"
+  | "open-license-row"
   | "hover-drop"
   | "open-speaker-help"
   | "press-update-check"
@@ -104,24 +106,34 @@ export const ALL_MODELS: ModelStatus[] = [
     found_at: "/data/models/ggml.bin",
     recommended: true,
   }),
-  model("nemotron-3.5-transcribe-iq4", "diarize", "Nemotron 3.5 Transcribe 30B-A4B (IQ4_NL)", {
+  model("nemotron-3.5-speaker", "diarize", "Nemotron 3.5 speakers (encoder only)", {
+    download_bytes: 200_779_392,
     recommended: true,
-  }),
-  model("nemotron-3.5-transcribe-nvfp4", "diarize", "Nemotron 3.5 Transcribe 30B-A4B (NVFP4)", {
-    blocked: { code: "needs_nvidia", model: "nemotron-3.5-transcribe-nvfp4" },
-  }),
-  model("nemotron-3.5-transcribe-q8", "diarize", "Nemotron 3.5 Transcribe 30B-A4B (Q8_0)", {
-    blocked: { code: "needs_memory", model: "nemotron-3.5-transcribe-q8", required: 48, available: 12 },
   }),
   model("mossformer2-ss-16k", "separate", "MossFormer2 SS 16K", {
     download_bytes: 230_156_008,
     recommended: true,
   }),
+  model("mossformer2-ss-16k-coreml", "separate", "MossFormer2 SS 16K Core ML", {
+    download_bytes: 132_000_000,
+    blocked: {
+      code: "needs_memory",
+      kind: "unified",
+      model: "mossformer2-ss-16k-coreml",
+      required: 48,
+      available: 12,
+    },
+  }),
   model("yunet", "face", "YuNet", { found_at: "/app/yunet.onnx", download_bytes: 0, recommended: true }),
   model("avatar-face-yolo", "face", "Avatar face YOLO", { download_bytes: 0, source_url: "" }),
 ];
 /** Only the GeForce distribution, on a machine with a GeForce, lists its runtime. */
-const GEFORCE_RUNTIME: ModelStatus = model("geforce-runtime", "runtime", "GeForce CUDA runtime", {});
+const GEFORCE_RUNTIME: ModelStatus = model(
+  "geforce-runtime",
+  "runtime",
+  "GeForce CUDA runtime for speakers (optional)",
+  {},
+);
 
 export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
   version: "1.2.3",
@@ -129,6 +141,8 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
   backend: "default",
   hardware: { is_mac: true, memory_gib: 48, gpu: null },
   models: ALL_MODELS,
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/data/models",
   settings: {
     palette: FIRST_FILL.map(
@@ -171,7 +185,7 @@ export const snapshot = (changes: Partial<Snapshot>): Snapshot => ({
       offset_y_percent: 0,
     },
     language: "auto",
-    diarize_model: "nemotron-3.5-transcribe-iq4",
+    separation_backend: "onnx",
     speaker_count: 1,
     subtitle_format: "drt",
     ui_language: "",
@@ -210,6 +224,13 @@ export const WITH_PROFILES: Snapshot = snapshot({
   settings: { ...snapshot({}).settings, active_profile: "配信用 16:9 白フチ" },
 });
 
+const WITH_SPEAKER_MODELS: ModelStatus[] = ALL_MODELS.map(
+  (row: ModelStatus): ModelStatus =>
+    row.role === "separate" || row.id === "nemotron-3.5-speaker"
+      ? { ...row, found_at: "/data/models/found" }
+      : row,
+);
+
 const NO_UPDATE: UpdaterFixture = { available: null, checkError: null, installError: null };
 const NEW_VERSION: UpdateInfo = {
   version: "9.9.9",
@@ -239,11 +260,10 @@ const errorsByCode = (): BackendError[] =>
     (code: string): BackendError => ({
       code,
       detail: "ffmpeg failed: exit status 1\nInvalid data found when processing input",
-      model: "nemotron-3.5-transcribe-iq4",
+      model: "nemotron-3.5-speaker",
       role: "diarize",
       required: 24,
       available: 12,
-      limit_minutes: 60,
       file: "recording.fcpxml",
       name: "配信用",
       roles: ["transcribe", "diarize"],
@@ -322,28 +342,55 @@ export const UI_STATES: UiState[] = [
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
   }),
   state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
-  state("jobs heavy with every model", "jobs", {
+  state("jobs heavy", "jobs", {
     snapshot: snapshot({
       settings: { ...snapshot({}).settings, speaker_count: 3 },
-      models: ALL_MODELS.map(
-        (row: ModelStatus): ModelStatus =>
-          row.id === "nemotron-3.5-transcribe-iq4" || row.id === "mossformer2-ss-16k"
-            ? { ...row, found_at: "/data/models/found" }
-            : row,
-      ),
+      speaker_plan: {
+        diarize: "nemotron-3.5-speaker",
+        whisper_on: "gpu",
+        diarize_on: "gpu",
+        separate_on: "cpu",
+        separator: "mossformer2-ss-16k",
+        deep: false,
+      },
+      models: WITH_SPEAKER_MODELS,
     }),
   }),
-  state("jobs heavy missing mossformer2", "jobs", {
+  state("jobs heavy missing its models", "jobs", {
     snapshot: snapshot({
       settings: { ...snapshot({}).settings, speaker_count: 2 },
-      models: ALL_MODELS.map(
-        (row: ModelStatus): ModelStatus =>
-          row.id === "nemotron-3.5-transcribe-iq4" ? { ...row, found_at: "/data/models/iq4.gguf" } : row,
-      ),
+      speaker_missing: { missing: ["diarize", "separate"], suggested: "nemotron-3.5-speaker" },
     }),
   }),
-  state("jobs automatic missing both speaker models", "jobs", {
-    snapshot: snapshot({ settings: { ...snapshot({}).settings, speaker_count: 0 } }),
+  state("jobs automatic with no speaker model", "jobs", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, speaker_count: 0 },
+      speaker_missing: { missing: ["diarize"], suggested: "nemotron-3.5-speaker" },
+    }),
+  }),
+  state("jobs heavy with deep separation on the gpu", "jobs", {
+    snapshot: snapshot({
+      settings: { ...snapshot({}).settings, speaker_count: 0 },
+      speaker_plan: {
+        diarize: "nemotron-3.5-speaker",
+        whisper_on: "gpu",
+        diarize_on: "gpu",
+        separate_on: "cpu",
+        separator: "mossformer2-ss-16k",
+        deep: true,
+      },
+      models: WITH_SPEAKER_MODELS,
+    }),
+  }),
+  state("jobs failed with a model to download", "jobs", {
+    jobEvents: [
+      queued(1),
+      {
+        state: "failed",
+        id: 1,
+        error: { code: "speaker_models_missing", missing: ["separate"], suggested: "mossformer2-ss-16k" },
+      },
+    ],
   }),
   state("jobs speaker count list open", "jobs", { steps: ["open-speaker-count"] }),
   state("jobs subtitle file dropped", "jobs", { steps: ["drop-subtitles"] }),
@@ -377,6 +424,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 120,
           faceless: false,
           font_missing: false,
+          speaker_plan: null,
           speakers_missing: false,
         },
       },
@@ -396,6 +444,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 20,
           faceless: false,
           font_missing: false,
+          speaker_plan: null,
           speakers_missing: false,
         },
       },
@@ -422,6 +471,7 @@ export const UI_STATES: UiState[] = [
           cue_count: 20,
           faceless: false,
           font_missing: true,
+          speaker_plan: null,
           speakers_missing: false,
         },
       },
@@ -441,18 +491,9 @@ export const UI_STATES: UiState[] = [
           cue_count: 2,
           faceless: true,
           font_missing: false,
+          speaker_plan: null,
           speakers_missing: false,
         },
-      },
-    ],
-  }),
-  state("job failed too long", "jobs", {
-    jobEvents: [
-      queued(1),
-      {
-        state: "failed",
-        id: 1,
-        error: { code: "too_long_for_model", model: "nemotron-3.5-transcribe-iq4", limit_minutes: 60 },
       },
     ],
   }),
@@ -607,6 +648,8 @@ export const UI_STATES: UiState[] = [
     updater: { ...OFFERED, installError: UPDATE_FAILURE },
     steps: ["press-update-install"],
   }),
+  state("settings licenses open", "settings", { steps: ["open-licenses"] }),
+  state("settings license text open", "settings", { steps: ["open-licenses", "open-license-row"] }),
   state("settings up to date", "settings", { steps: ["press-update-check"] }),
   state("settings update found", "settings", { updater: OFFERED, steps: ["press-update-check"] }),
   state("settings update check failed", "settings", {
@@ -671,13 +714,13 @@ export const UI_STATES: UiState[] = [
       { state: "running", id: "whisper-large-v3-turbo", done_bytes: 0, total_bytes: 1_700_000_000 },
       {
         state: "running",
-        id: "nemotron-3.5-transcribe-iq4",
-        done_bytes: 800_000_000,
-        total_bytes: 1_700_000_000,
+        id: "nemotron-3.5-speaker",
+        done_bytes: 100_000_000,
+        total_bytes: 200_779_392,
       },
       {
         state: "running",
-        id: "nemotron-3.5-transcribe-q8",
+        id: "mossformer2-ss-16k",
         done_bytes: 100_000_000,
         total_bytes: 1_700_000_000,
       },
@@ -687,9 +730,9 @@ export const UI_STATES: UiState[] = [
     downloadEvents: [
       {
         state: "running",
-        id: "nemotron-3.5-transcribe-iq4",
-        done_bytes: 800_000_000,
-        total_bytes: 1_700_000_000,
+        id: "nemotron-3.5-speaker",
+        done_bytes: 100_000_000,
+        total_bytes: 200_779_392,
       },
     ],
   }),
@@ -697,7 +740,7 @@ export const UI_STATES: UiState[] = [
     downloadEvents: [
       {
         state: "failed",
-        id: "nemotron-3.5-transcribe-iq4",
+        id: "nemotron-3.5-speaker",
         error: { code: "internal", detail: "download failed: SHA-256 mismatch" },
       },
     ],

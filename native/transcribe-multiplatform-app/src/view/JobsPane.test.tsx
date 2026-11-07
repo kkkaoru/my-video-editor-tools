@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, expect, it, type Mock, vi } from "vitest";
-import type { ModelStatus, Settings, Snapshot } from "../backend/types.ts";
+import type { ModelStatus, Settings, Snapshot, SpeakerPlan } from "../backend/types.ts";
 import { enMessages } from "../i18n/locale-en.ts";
 import { initialState, type JobRow } from "../state/app-state.ts";
 import type { AppStore } from "../state/use-app-store.ts";
@@ -33,11 +33,11 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
   face_model: "c",
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  separation_backend: "onnx",
   speaker_count: 1,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -55,7 +55,7 @@ const WHISPER: ModelStatus = {
 };
 const DIARIZER: ModelStatus = {
   ...WHISPER,
-  id: "nemotron-3.5-transcribe-iq4",
+  id: "nemotron-3.5-speaker",
   role: "diarize",
   label: "Diarizer",
   found_at: "/d",
@@ -67,6 +67,8 @@ const READY: Snapshot = {
   backend: "default",
   settings: SETTINGS,
   models: [WHISPER, DIARIZER],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };
@@ -146,7 +148,7 @@ it("needs a present, unblocked model for each required role", () => {
   ).toStrictEqual(["transcription"]);
   expect(
     missingRoles(
-      { ...READY, models: [WHISPER, { ...DIARIZER, blocked: { code: "needs_nvidia" } }] },
+      { ...READY, models: [WHISPER, { ...DIARIZER, blocked: { code: "needs_memory" } }] },
       enMessages,
     ),
   ).toStrictEqual([]);
@@ -319,6 +321,7 @@ it("warns when the speaker model heard nobody", () => {
       cue_count: 9,
       faceless: false,
       font_missing: false,
+      speaker_plan: null,
       speakers_missing: true,
       requested_speakers: 0,
     },
@@ -340,6 +343,7 @@ it("warns when the chosen font was missing", () => {
       cue_count: 9,
       faceless: false,
       font_missing: true,
+      speaker_plan: null,
       speakers_missing: false,
       requested_speakers: 0,
     },
@@ -361,6 +365,7 @@ it("says speaker, not speakers, when a finished job found one", () => {
       cue_count: 9,
       faceless: false,
       font_missing: false,
+      speaker_plan: null,
       speakers_missing: false,
       requested_speakers: 0,
     },
@@ -377,8 +382,25 @@ it("says each speaker count's load in the option itself", () => {
   expect(speakerCountOptions(enMessages).length).toBe(9);
 });
 
-function showSpeakers(speakers: number, models: ModelStatus[]): { store: AppStore; open: Mock<() => void> } {
-  const snapshot: Snapshot = { ...READY, models, settings: { ...READY.settings, speaker_count: speakers } };
+const PLAN_HIGH: SpeakerPlan = {
+  diarize: "nemotron-3.5-speaker",
+  whisper_on: "gpu",
+  diarize_on: "gpu",
+  separate_on: "cpu",
+  separator: "mossformer2-ss-16k",
+  deep: false,
+};
+
+function showSpeakers(
+  speakers: number,
+  plan: SpeakerPlan | null,
+): { store: AppStore; open: Mock<() => void> } {
+  const snapshot: Snapshot = {
+    ...READY,
+    models: [WHISPER, { ...DIARIZER, id: "nemotron-3.5-speaker", label: "Nemotron" }, SEPARATOR],
+    speaker_plan: plan,
+    settings: { ...READY.settings, speaker_count: speakers },
+  };
   const store: AppStore = storeWith(snapshot, [], false);
   const open: Mock<() => void> = vi.fn();
   render(
@@ -396,76 +418,95 @@ const SEPARATOR: ModelStatus = {
   label: "MossFormer2",
 };
 const HEAVY_TEXT: string =
-  "Heavy: Runs Nemotron, then MossFormer2, then Whisper. It takes much longer and uses much more memory.";
+  "Heavy: Tells the voices apart, so it takes much longer and uses much more RAM or GPU memory.";
 
-const loadText = (container: Element): string | null | undefined =>
-  container.querySelector('[data-slot="speaker-load"]')?.textContent;
+const loadText = (): string | null | undefined =>
+  document.querySelector('[data-slot="speaker-load"]')?.textContent;
+const planText = (): string | null | undefined =>
+  document.querySelector('[data-slot="speaker-plan"]')?.textContent;
 
-it("says one speaker is light, in words and not only by its icon", () => {
-  const snapshot: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 1 } };
-  const { container } = render(
-    <JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />,
-  );
-  expect(loadText(container)).toBe(
-    "Light: Uses Whisper only, with no voice separation or speaker separation.",
-  );
+it("says one speaker is light, in words and not only by its icon, with no facts about the heavy models", () => {
+  showSpeakers(1, null);
+  expect(loadText()).toBe("Light: Uses Whisper only, with no voice separation or speaker separation.");
+  expect(document.querySelector('[data-slot="speaker-facts"]')).toBe(null);
 });
 
 it("says automatic detection and more speakers are heavy", () => {
-  showSpeakers(0, [WHISPER, DIARIZER, SEPARATOR]);
-  expect(loadText(document.body)).toBe(HEAVY_TEXT);
+  showSpeakers(0, PLAN_HIGH);
+  expect(loadText()).toBe(HEAVY_TEXT);
   cleanup();
-  showSpeakers(3, [WHISPER, DIARIZER, SEPARATOR]);
-  expect(loadText(document.body)).toBe(HEAVY_TEXT);
+  showSpeakers(3, PLAN_HIGH);
+  expect(loadText()).toBe(HEAVY_TEXT);
   expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
 });
 
-it("gives the measured Mac figures for a heavy choice, and none for one speaker", () => {
-  const estimate: string =
-    "Measured on a Mac: for a 4-hour video, voice separation alone takes about 2 h 20 min, and Whisper's time comes on top. Memory: up to about 8 GB for voice separation and about 22 GB for speaker separation (Nemotron). It varies by video and computer. Windows has not been measured.";
-  showSpeakers(2, [WHISPER, DIARIZER, SEPARATOR]);
-  expect(screen.getByText(estimate).tagName).toBe("P");
-  cleanup();
-  showSpeakers(1, [WHISPER, DIARIZER, SEPARATOR]);
-  expect(screen.queryByText(estimate)).toBe(null);
+it("says what the backend will run, by the names of the models", () => {
+  showSpeakers(2, PLAN_HIGH);
+  expect(planText()).toBe("Runs: Nemotron and MossFormer2.");
 });
 
-it("asks for nothing when a heavy choice has every model", () => {
-  showSpeakers(2, [WHISPER, DIARIZER, SEPARATOR]);
+it("spells out what runs, with the figures, and RAM apart from GPU memory", () => {
+  showSpeakers(2, PLAN_HIGH);
+  expect(
+    Array.from(
+      document.querySelectorAll('[data-slot="speaker-facts"] dd'),
+      ({ textContent }: Element): string | null => textContent,
+    ),
+  ).toStrictEqual([
+    "Nemotron 3.5 encoder and MossFormer2",
+    "Voices at once appear on several rows.",
+    "On a Mac, unified memory (shared RAM and GPU memory): 2.85 GB for the Nemotron 3.5 encoder, about 1.1 GB (estimate) for MossFormer2 on Core ML, 1.65 GB on the CPU with ONNX Runtime (8-second passages). About 3 GB at the job's peak.",
+    "Nemotron 3.5 encoder: per hour of audio, about 4 seconds on a Mac's GPU, about 33 seconds on the CPU. Voice separation, measured on one video of about an hour: about 5 min on Core ML, about 14 min on the CPU. It changes with how much of the video it handles. Three or more people at once are separated twice, which takes longer.",
+  ]);
+  expect(screen.getByText("Time (Whisper not included)").tagName).toBe("DT");
+});
+
+it("asks for nothing when the backend has a plan", () => {
+  showSpeakers(2, PLAN_HIGH);
   expect(screen.queryByRole("alert")).toBe(null);
   expect(screen.queryByRole("button", { name: "Run with 1 speaker" })).toBe(null);
 });
 
 it("needs no speaker models for one speaker", () => {
-  showSpeakers(1, [WHISPER]);
+  showSpeakers(1, null);
   expect(screen.queryByRole("alert")).toBe(null);
 });
 
-it("names what a heavy choice lacks, with a way to the models", () => {
-  const { open } = showSpeakers(2, [WHISPER, DIARIZER]);
-  expect(screen.getByRole("alert").textContent).toBe(
-    "This number of speakers needs models that are missing: voice separation.",
+it("gives a way to the models tab when speaker models are missing", () => {
+  const open: Mock<() => void> = vi.fn();
+  const snapshot: Snapshot = {
+    ...READY,
+    settings: { ...READY.settings, speaker_count: 2 },
+    speaker_missing: { missing: ["separate"], suggested: null },
+  };
+  render(
+    <main>
+      <JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={open} />
+    </main>,
   );
   fireEvent.click(screen.getByRole("button", { name: "Open the “Models” tab" }));
   expect(open).toHaveBeenCalledTimes(1);
 });
 
-it("lists both speaker models when both are missing", () => {
-  showSpeakers(0, [WHISPER]);
-  expect(screen.getByRole("alert").textContent).toBe(
-    "This number of speakers needs models that are missing: speaker separation and voice separation.",
-  );
-});
-
 it("runs for one speaker only when the person says so", () => {
-  const { store } = showSpeakers(3, [WHISPER]);
+  const snapshot: Snapshot = {
+    ...READY,
+    settings: { ...READY.settings, speaker_count: 3 },
+    speaker_missing: { missing: ["diarize"], suggested: null },
+  };
+  const store: AppStore = storeWith(snapshot, [], false);
+  render(
+    <main>
+      <JobsPane store={store} snapshot={snapshot} onOpenModels={vi.fn()} />
+    </main>,
+  );
   expect(store.updateSettings).toHaveBeenCalledTimes(0);
   fireEvent.click(screen.getByRole("button", { name: "Run with 1 speaker" }));
   expect(vi.mocked(store.updateSettings).mock.lastCall?.[0].speaker_count).toBe(1);
 });
 
 it("keeps a saved speaker count, whatever models there are", () => {
-  showSpeakers(3, [WHISPER]);
+  showSpeakers(3, null);
   expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
 });
 
@@ -532,6 +573,7 @@ it("shows the results of a finished job and can write it again", () => {
       cue_count: 9,
       faceless: false,
       font_missing: false,
+      speaker_plan: null,
       speakers_missing: false,
       requested_speakers: 0,
     },
@@ -568,6 +610,7 @@ it("mentions captions placed without a face", () => {
       cue_count: 1,
       faceless: true,
       font_missing: false,
+      speaker_plan: null,
       speakers_missing: false,
       requested_speakers: 0,
     },
@@ -589,6 +632,7 @@ it("reports a rewrite that fails", async () => {
       cue_count: 1,
       faceless: false,
       font_missing: false,
+      speaker_plan: null,
       speakers_missing: false,
       requested_speakers: 0,
     },
@@ -752,4 +796,144 @@ it("warns when no usable GPU was found", () => {
   expect(
     slowProcessingNotice({ ...READY, hardware: { is_mac: false, memory_gib: 8, gpu: null } }, enMessages),
   ).toBe("No GPU this version can use was found, so everything runs on the CPU. It is slower.");
+});
+
+const failedWith = (suggested: string | null): AppStore => {
+  const missing: ModelStatus = { ...SEPARATOR, found_at: null, download_bytes: 230_156_008 };
+  const snapshot: Snapshot = { ...READY, models: [WHISPER, missing] };
+  const job: JobRow = {
+    state: "failed",
+    id: 1,
+    path: "/a.mp4",
+    startedAt: 0,
+    error: { code: "speaker_models_missing", missing: ["separate"], suggested },
+  };
+  const store: AppStore = storeWith(snapshot, [job], false);
+  render(
+    <main>
+      <JobsPane store={store} snapshot={snapshot} onOpenModels={vi.fn()} />
+    </main>,
+  );
+  return store;
+};
+
+it("offers the suggested model for download where a job failed for it", () => {
+  failedWith("mossformer2-ss-16k");
+  fireEvent.click(screen.getByRole("button", { name: "Download MossFormer2 (230 MB)" }));
+  expect(vi.mocked(invoke).mock.lastCall).toStrictEqual(["start_download", { id: "mossformer2-ss-16k" }]);
+});
+
+it("offers nothing when no model is suggested, or the suggestion is unknown", () => {
+  failedWith(null);
+  expect(document.querySelector('[data-slot="model-download"]')).toBe(null);
+  cleanup();
+  failedWith("unknown");
+  expect(document.querySelector('[data-slot="model-download"]')).toBe(null);
+});
+
+const runsText = (): string | null | undefined =>
+  document.querySelector('[data-slot="speaker-plan-runs"]')?.textContent;
+
+it("says where each part runs", () => {
+  showSpeakers(2, PLAN_HIGH);
+  expect(runsText()).toBe("Runs on: Whisper GPU, speakers GPU. Voice separation CPU.");
+  cleanup();
+  showSpeakers(2, { ...PLAN_HIGH, whisper_on: "cpu", diarize_on: "cpu" });
+  expect(runsText()).toBe("Runs on: Whisper CPU, speakers CPU. Voice separation CPU.");
+});
+
+it("says when three people at once get up to four rows", () => {
+  const deep: string =
+    "Three or more people at once are separated twice, so it takes longer. Up to four rows appear.";
+  showSpeakers(2, { ...PLAN_HIGH, deep: true });
+  expect(screen.getByText(deep).tagName).toBe("P");
+  cleanup();
+  showSpeakers(2, PLAN_HIGH);
+  expect(screen.queryByText(deep)).toBe(null);
+});
+
+const showMissing = (suggested: string | null): void => {
+  const missing: ModelStatus = { ...SEPARATOR, found_at: null, download_bytes: 230_156_008 };
+  const snapshot: Snapshot = {
+    ...READY,
+    models: [WHISPER, missing],
+    settings: { ...READY.settings, speaker_count: 2 },
+    speaker_missing: { missing: ["diarize", "separate"], suggested },
+  };
+  render(
+    <main>
+      <JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />
+    </main>,
+  );
+};
+
+it("offers the suggested model right where a choice lacks its models", () => {
+  showMissing("mossformer2-ss-16k");
+  expect(screen.getByRole("button", { name: "Download MossFormer2 (230 MB)" }).tagName).toBe("BUTTON");
+});
+
+it("still names what is missing when nothing can be suggested", () => {
+  showMissing(null);
+  expect(document.querySelector('[data-slot="model-download"]')).toBe(null);
+  expect(screen.getByRole("alert").textContent).toBe(
+    "These models are needed for 2 or more speakers, or for automatic detection: speaker separation, voice separation. Download them in Models, or set the number of speakers to 1 and add the video again.",
+  );
+});
+
+it("names only the separator the plan uses, when both builds are on the list", () => {
+  const coreml: ModelStatus = { ...SEPARATOR, id: "mossformer2-ss-16k-coreml", label: "MossFormer2 Core ML" };
+  const snapshot: Snapshot = {
+    ...READY,
+    models: [WHISPER, { ...DIARIZER, id: "nemotron-3.5-speaker", label: "Nemotron" }, SEPARATOR, coreml],
+    speaker_plan: { ...PLAN_HIGH, separate_on: "gpu", separator: "mossformer2-ss-16k-coreml" },
+    settings: { ...READY.settings, speaker_count: 2 },
+  };
+  render(
+    <main>
+      <JobsPane store={storeWith(snapshot, [], false)} snapshot={snapshot} onOpenModels={vi.fn()} />
+    </main>,
+  );
+  expect(planText()).toBe("Runs: Nemotron and MossFormer2 Core ML.");
+  expect(runsText()).toBe("Runs on: Whisper GPU, speakers GPU. Voice separation GPU.");
+});
+
+const showBackend = (isMac: boolean): AppStore => {
+  const snapshot: Snapshot = {
+    ...READY,
+    hardware: { ...READY.hardware, is_mac: isMac },
+    settings: { ...READY.settings, speaker_count: 2 },
+  };
+  const store: AppStore = storeWith(snapshot, [], false);
+  render(
+    <main>
+      <JobsPane store={store} snapshot={snapshot} onOpenModels={vi.fn()} />
+    </main>,
+  );
+  return store;
+};
+
+it("lets a Mac choose how voice separation runs, and saves the choice", async () => {
+  const store: AppStore = showBackend(true);
+  await act(async (): Promise<void> => {
+    fireEvent.click(screen.getByRole("combobox", { name: "How voice separation runs" }));
+  });
+  await act(async (): Promise<void> => {
+    fireEvent.pointerDown(screen.getByRole("option", { name: "Mac GPU (Core ML)" }));
+    fireEvent.click(screen.getByRole("option", { name: "Mac GPU (Core ML)" }));
+  });
+  expect(vi.mocked(store.updateSettings).mock.lastCall?.[0].separation_backend).toBe("coreml");
+});
+
+it("offers no separation choice on other systems", () => {
+  showBackend(false);
+  expect(screen.queryByRole("combobox", { name: "How voice separation runs" })).toBe(null);
+});
+
+it("fills in the measured figures in the note under a step", () => {
+  showSpeakers(2, PLAN_HIGH);
+  expect(
+    screen.getByText(
+      "Whisper on the CPU took about 14 min on one video of about an hour, with no passages redone. These figures were measured on one Mac, and vary by video and computer. RAM and GPU memory on Windows have not been measured.",
+    ).tagName,
+  ).toBe("P");
 });

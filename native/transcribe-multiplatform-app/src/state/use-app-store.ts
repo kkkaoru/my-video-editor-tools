@@ -9,13 +9,13 @@ import {
   reformatFiles,
   saveSettings,
 } from "../backend/backend.ts";
-import type { BackendError, Role, Settings, Snapshot } from "../backend/types.ts";
+import type { BackendError, Settings, Snapshot } from "../backend/types.ts";
 import {
   type AppState,
   applyDownloadEvent,
   applyJobEvent,
   initialState,
-  missingModelRoles,
+  videoRefusal,
   withSaveAnswer,
   withSettings,
 } from "./app-state.ts";
@@ -68,9 +68,13 @@ export function useAppStore(initial: Snapshot): AppStore {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestSnapshot = useRef<Snapshot>(initial);
   latestSnapshot.current = state.snapshot;
+  const latestState = useRef<AppState>(state);
+  latestState.current = state;
 
   const applySnapshot = useCallback((snapshot: Snapshot): void => {
-    setState((current: AppState): AppState => ({ ...current, snapshot, loadError: null }));
+    setState(
+      (current: AppState): AppState => ({ ...current, snapshot, loadError: null, planPending: false }),
+    );
   }, []);
 
   const replaceSnapshot = useCallback(
@@ -85,9 +89,9 @@ export function useAppStore(initial: Snapshot): AppStore {
 
   /** Nothing starts without its models: the refusal says what is missing and what to do. */
   const dropVideos = useCallback((videos: string[]): void => {
-    const missing: Role[] = missingModelRoles(latestSnapshot.current);
-    if (missing.length > 0) {
-      reportFailure(setState, { code: "models_missing", roles: missing });
+    const refusal: BackendError | null = videoRefusal(latestState.current);
+    if (refusal !== null) {
+      reportFailure(setState, refusal);
       return;
     }
     addVideos(videos).catch((error: unknown): void => reportFailure(setState, error));

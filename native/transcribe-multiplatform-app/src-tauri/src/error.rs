@@ -1,6 +1,25 @@
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
+/// Which memory a model lacks: RAM and GPU memory are separate, except on a Mac, where one holds both.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Ram,
+    GpuMemory,
+    Unified,
+}
+
+impl std::fmt::Display for MemoryKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Ram => "RAM",
+            Self::GpuMemory => "GPU memory",
+            Self::Unified => "unified memory",
+        })
+    }
+}
+
 /// Failures the user can act on. The UI translates each code into the OS language.
 #[derive(Clone, Debug, thiserror::Error, Serialize, PartialEq, Eq)]
 #[serde(tag = "code", rename_all = "snake_case")]
@@ -19,15 +38,12 @@ pub enum UserError {
     ModelMissing { model: String },
     #[error("no model is installed for {role}")]
     NoModelForRole { role: String },
-    #[error("model {model} needs an NVIDIA GPU")]
-    NeedsNvidia { model: String },
-    #[error("model {model} takes recordings up to {limit_minutes} minutes")]
-    TooLongForModel { model: String, limit_minutes: u64 },
-    #[error("model {model} needs {required} GiB of memory, this machine has {available} GiB")]
+    #[error("model {model} needs {required} GiB of {kind}, this machine has {available} GiB")]
     NeedsMemory {
         model: String,
         required: u64,
         available: u64,
+        kind: MemoryKind,
     },
     #[error("no transcript was found beside {file}")]
     TranscriptMissing { file: String },
@@ -42,7 +58,11 @@ pub enum UserError {
     #[error("an update cannot be applied while a job, a download or another update is running")]
     UpdateBusy,
     #[error("separating speakers needs models that are missing: {missing:?}")]
-    SpeakerModelsMissing { missing: Vec<crate::catalog::Role> },
+    SpeakerModelsMissing {
+        missing: Vec<crate::catalog::Role>,
+        /// The model to fetch first, when one would do.
+        suggested: Option<String>,
+    },
 }
 
 /// Every failure the app reports; messages reach the UI, so they name the failed step.
@@ -118,14 +138,15 @@ mod tests {
             model: "m".to_owned(),
             required: 24,
             available: 12,
+            kind: MemoryKind::GpuMemory,
         });
         assert_eq!(
             serde_json::to_string(&error).unwrap(),
-            r#"{"code":"needs_memory","model":"m","required":24,"available":12}"#
+            r#"{"code":"needs_memory","model":"m","required":24,"available":12,"kind":"gpu_memory"}"#
         );
         assert_eq!(
             error.to_string(),
-            "model m needs 24 GiB of memory, this machine has 12 GiB"
+            "model m needs 24 GiB of GPU memory, this machine has 12 GiB"
         );
     }
 

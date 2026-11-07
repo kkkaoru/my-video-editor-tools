@@ -43,15 +43,15 @@ folder, the Hugging Face cache, and any folder you add. Downloads are pinned to 
 | Purpose | Model | Notes |
 | --- | --- | --- |
 | Transcription | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Same weights everywhere. Converted once to whisper.cpp's ggml format. A local MLX copy converts too. |
-| Speakers | [Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) | NVIDIA publishes safetensors only; GGUF builds come from AtomicChat. Chosen per machine: GeForce ≥ 24 GB IQ4_NL (Blackwell NVFP4), 16 GB GeForce Q2_0_M, Radeon ≥ 48 GB Q8_0, Radeon ≥ 24 GB IQ4_NL, Macs and CPU-only PCs by system memory: 64 GB Q8_0, 32 GB IQ4_NL, 24 GB Q2_0_L. |
-| Voice separation | [MossFormer2_SS_16K, ONNX](https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx) | Apache-2.0, a conversion of [the upstream weights](https://huggingface.co/alibabasglab/MossFormer2_SS_16K). Runs on ONNX Runtime on the CPU, in a process of its own, only where the speaker turns overlap. |
+| Speakers | [Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B), encoder only | The speaker turns come from the encoder's speaker branch alone: 201 MB to download, about 3 GB of memory. The app makes an empty decoder of its own, so no decoder is ever downloaded. An encoder a full Nemotron 3.5 download left in a model folder is found and used. |
+| Voice separation | [MossFormer2_SS_16K, ONNX](https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx) | Apache-2.0, a conversion of [the upstream weights](https://huggingface.co/alibabasglab/MossFormer2_SS_16K). Runs on ONNX Runtime on the CPU, in a process of its own, only where the speaker turns overlap, up to 8 s at a time. |
 | Faces | YuNet (bundled), `avatar-face-caption-v2.onnx` | The same model and engine (`tract`) on both systems. Put the avatar ONNX in a model folder to use it. |
 
-In the GeForce build, on a PC with a GeForce, the model manager offers the CUDA runtime download (509 MB) for speaker
-separation; no other build or machine lists it. NVFP4 and Q2_0_M run only on CUDA. Nemotron speaker models reach eight
+In the GeForce build, on a PC with a GeForce, the model manager offers the optional CUDA runtime download (509 MB), which
+runs the speaker models on the GPU; without it they run on the CPU. No other build or machine lists it, and a speaker step
+that fails on CUDA goes on on the CPU. Nemotron speaker models reach eight
 speakers at most, so the palette has eight editable slots at most; it starts with eight and can be shortened. One speaker is light: only Whisper
-runs. Automatic detection and two or more speakers are heavy: a Nemotron 3.5 model and MossFormer2 are required, and the
-app refuses to start without them rather than quietly running for one speaker.
+runs. Automatic detection and two or more speakers are heavy: see the speaker quality setting below for what they need.
 
 Models can be downloaded together, each with its own progress bar. Resetting deletes only what the app itself downloaded,
 after a confirmation; folders you added, anything overlapping them and the Hugging Face cache are never touched, and it
@@ -75,6 +75,13 @@ before, and with no voice over it to the nearest in time; with no speaker separa
 earlier versions still open: a saved colour for unknown speakers is ignored, and words without a speaker read as speaker 1.
 A speaker talking for under a second right beside other speech joins that speech, and a change of speaker never falls
 inside a word, so colours do not flicker; voices really at once and turns set apart by pauses keep their speaker.
+
+A job for several people always runs Whisper, Nemotron 3.5's speaker branch (its encoder alone, 201 MB to fetch, about 3 GB
+of memory, on the GPU or the CPU) and MossFormer2, whose second pass needs 16 GB of RAM. It stops with the models to fetch if
+any is missing, and below 8 GB of RAM it stops and says so: the largest step peaks at 2.9 GB, on top of what the system and the
+app need. RAM and GPU memory are judged apart: each step stays on the
+GPU while its memory holds it and moves to the CPU only when it does not, Whisper too, always the same non-quantized
+large-v3-turbo. Steps run one after the other in processes of their own, so what must fit is the largest of them.
 
 With two or more speakers, or automatic detection, the audio around each overlap of speaker turns of at least 0.5 s goes
 through MossFormer2 (twice where three people talk at once, for up to four tracks) and each track through Whisper again,
@@ -136,7 +143,7 @@ A Windows distribution is chosen when building: `bunx tauri build --bundles nsis
 `transcribe-app --headless VIDEO` runs the same pipeline without a window. `TRANSCRIBE_DATA_DIR` and
 `TRANSCRIBE_RESOURCE_DIR` override where data and bundled files live.
 
-Quality checks run before a commit, not in CI, and only for what changed: `bun run check:changed` runs what the staged files need, and `bun run test:a11y:changed` only the WCAG part. Install the hook once per clone:
+Quality checks run before a commit, not in CI, and only for what changed: `bun run check:changed` runs what the staged files need, and `bun run test:a11y:changed` only the WCAG part. The WCAG part is a sample in one browser: the changed screen in two language and theme pairs, or one state of each screen for a shared file. The whole sweep runs only by hand, with `bun run test:a11y`. Install the hook once per clone:
 
 ```sh
 git config --local hook.transcribe-app.event pre-commit
@@ -155,7 +162,7 @@ Checked on an Apple Silicon Mac with DaVinci Resolve 21.1.2 and two real one-spe
 - FCPXML imports as a timeline. Viewed in Resolve: white text with a black edge, a blue speaker colour with a white edge, one and two lines, a larger font, an offset, and positions above the face, below the face, at the top and at the bottom.
 - Caption starts against Nemotron 3.5 word times, which the app does not use, on the captions that could be matched: more than 200 ms early on 7 of 287 (full landscape) and 36 of 1044 (the part of the portrait video measured before the run was stopped). Nemotron is not ground truth.
 - Resolve draws FCPXML text at height / 1080 x 0.974 of `fontSize` (measured at 720x1280, 1280x720, 1920x1080 and 3840x2160) and half of `strokeWidth` in frame pixels. It ignores shadow and `kerning`, so the app offers neither.
-- A real download of whisper-large-v3-turbo and Nemotron 3.5 Transcribe IQ4 (21 GB, with a resume after a dropped connection).
+- A real download of whisper-large-v3-turbo and a large model file, with a resume after a dropped connection.
 - Real Nemotron 3.5 inference through Metal on a 30-second clip: one speaker found, word times returned.
 - Speaker turns through Metal from `nemo-speech serve` on a real hour of three people: 2770 turns in 13 s, with the same hour losing every word time through `transcribe --diarize` (`Unrepresentable character`). Purity against an assignment no one checked by hand: 0.81 on that hour.
 

@@ -2,6 +2,7 @@
 import type { VNode } from "preact";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { format, type HelpPart, type HelpSections, type Messages, type Params } from "../i18n/messages.ts";
+import { SPEAKER_FIGURES } from "../i18n/speaker-figures.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import {
   figuresOfStep,
@@ -62,11 +63,15 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
-  speakerLoadHeavyEstimate,
+  speakerFiguresNote,
+  licensesOpen,
+  separationBackend,
+  memoryUnified,
   updateCheck,
   runWithOneSpeaker,
   updateInstall,
 }: Messages): Params => ({
+  ...SPEAKER_FIGURES,
   tabJobs,
   tabStyle,
   tabModels,
@@ -96,7 +101,10 @@ export const helpLabels = ({
   uiThemeSystem,
   uiThemeLight,
   uiThemeDark,
-  speakerLoadHeavyEstimate,
+  speakerFiguresNote: format(speakerFiguresNote, SPEAKER_FIGURES),
+  licensesOpen,
+  separationBackend,
+  memoryUnified,
   updateCheck,
   runWithOneSpeaker,
   updateInstall,

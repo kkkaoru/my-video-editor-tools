@@ -6,18 +6,32 @@ import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { cancelJob, pickFiles, relayoutTranscript } from "../backend/backend.ts";
-import type { Profile, Role, Snapshot, Stage, SubtitleFormat } from "../backend/types.ts";
+import type {
+  BackendError,
+  ModelStatus,
+  Profile,
+  Role,
+  RunsOn,
+  SeparationBackend,
+  Snapshot,
+  SpeakerMissing,
+  SpeakerPlan,
+  Stage,
+  SubtitleFormat,
+} from "../backend/types.ts";
 import { languageFor } from "../i18n/language.ts";
-import { errorText, format, type Messages, roleName } from "../i18n/messages.ts";
+import { errorText, format, type Messages, roleName, type SpeakerFacts } from "../i18n/messages.ts";
+import { SPEAKER_FIGURES } from "../i18n/speaker-figures.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import {
   type FinishedJobRow,
-  isHeavyRole,
   isHeavySpeakerCount,
   type JobRow,
   missingModelRoles,
   type RunningJobRow,
+  speakerModelsMissing,
   uiLocale,
+  videoRefusal,
 } from "../state/app-state.ts";
 import {
   type AppStore,
@@ -28,6 +42,7 @@ import {
 import { FormatLimit } from "./FormatLimit.tsx";
 import { SelectField, type SelectOption } from "./fields.tsx";
 import { HelpTip } from "./HelpTip.tsx";
+import { ModelDownload } from "./ModelsPane.tsx";
 
 export type StepPosition = "done" | "current" | "pending";
 
@@ -35,10 +50,6 @@ export interface JobsPaneProps {
   store: AppStore;
   snapshot: Snapshot;
   onOpenModels: () => void;
-}
-
-interface SpeakerModelsMissingProps extends JobsPaneProps {
-  roles: Role[];
 }
 
 interface JobItemProps {
@@ -126,17 +137,14 @@ const SpeakerLoad = ({ heavy }: { heavy: boolean }): VNode => {
   const messages: Messages = useMessages();
   const Icon = heavy ? FlameIcon : FeatherIcon;
   return (
-    <>
-      <p data-slot="speaker-load" className="text-muted-foreground">
-        <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
-        <span className="font-medium text-foreground">
-          {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
-        </span>
-        {": "}
-        {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
-      </p>
-      {heavy ? <p className="text-muted-foreground">{messages.speakerLoadHeavyEstimate}</p> : null}
-    </>
+    <p data-slot="speaker-load" className="text-muted-foreground">
+      <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
+      <span className="font-medium text-foreground">
+        {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
+      </span>
+      {": "}
+      {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
+    </p>
   );
 };
 
@@ -155,18 +163,19 @@ const listOf = (snapshot: Snapshot, names: string[]): string =>
 export const missingRoles = (snapshot: Snapshot, messages: Messages): string[] =>
   missingModelRoles(snapshot).map((role: Role): string => roleName(messages, role));
 
-const SpeakerModelsMissing = ({ store, snapshot, onOpenModels, roles }: SpeakerModelsMissingProps): VNode => {
+const SpeakerModelsMissingNotice = ({
+  store,
+  snapshot,
+  onOpenModels,
+  missing,
+}: JobsPaneProps & { missing: SpeakerMissing }): VNode => {
   const messages: Messages = useMessages();
   return (
     <div data-slot="speaker-models-missing" className="grid grid-cols-1 gap-2">
-      <Alert>
-        {format(messages.speakerModelsMissing, {
-          roles: listOf(
-            snapshot,
-            roles.map((role: Role): string => roleName(messages, role)),
-          ),
-        })}
-      </Alert>
+      <Alert>{errorText(messages, { code: "speaker_models_missing", ...missing }, "")}</Alert>
+      {missing.suggested === null ? null : (
+        <ModelDownload id={missing.suggested} store={store} snapshot={snapshot} />
+      )}
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" onClick={onOpenModels}>
           {format(messages.openModelsTab, { tabModels: messages.tabModels })}
@@ -178,6 +187,92 @@ const SpeakerModelsMissing = ({ store, snapshot, onOpenModels, roles }: SpeakerM
           {messages.runWithOneSpeaker}
         </Button>
       </div>
+    </div>
+  );
+};
+
+const SEPARATION_BACKENDS: SeparationBackend[] = ["onnx", "coreml"];
+const processor = (runsOn: RunsOn): string => runsOn.toUpperCase();
+const FACTS: (keyof SpeakerFacts)[] = ["runs", "rows", "memory", "time"];
+const SpeakerFactsList = (): VNode => {
+  const messages: Messages = useMessages();
+  return (
+    <div data-slot="speaker-facts" className="mt-1 grid grid-cols-1 gap-2">
+      <dl className="grid grid-cols-1 gap-1">
+        {FACTS.map(
+          (fact: keyof SpeakerFacts): VNode => (
+            <div key={fact}>
+              <dt className="font-medium">
+                {format(messages.speakerFactLabels[fact], {
+                  ...SPEAKER_FIGURES,
+                  memoryUnified: messages.memoryUnified,
+                })}
+              </dt>
+              <dd className="text-muted-foreground">
+                {format(messages.speakerFacts[fact], {
+                  ...SPEAKER_FIGURES,
+                  memoryUnified: messages.memoryUnified,
+                })}
+              </dd>
+            </div>
+          ),
+        )}
+      </dl>
+      <p className="text-muted-foreground">{format(messages.speakerFiguresNote, SPEAKER_FIGURES)}</p>
+    </div>
+  );
+};
+
+const planModels = ({ diarize, separator }: SpeakerPlan, { models }: Snapshot): string[] =>
+  models
+    .filter(({ id }: ModelStatus): boolean => id === diarize || id === separator)
+    .map(({ label }: ModelStatus): string => label);
+
+const SpeakerPlanField = ({ store, snapshot }: Pick<JobsPaneProps, "store" | "snapshot">): VNode => {
+  const messages: Messages = useMessages();
+  const { speaker_plan: plan, settings } = snapshot;
+  return (
+    <div className="mt-3 grid grid-cols-1 gap-1">
+      {snapshot.hardware.is_mac ? (
+        <div className="mt-3 grid grid-cols-1 gap-1">
+          <SelectField
+            label={messages.separationBackend}
+            value={settings.separation_backend}
+            options={SEPARATION_BACKENDS.map(
+              (backend: SeparationBackend): SelectOption => ({
+                value: backend,
+                label: messages.separationBackends[backend],
+                disabled: false,
+              }),
+            )}
+            onChange={(value: string): void =>
+              SEPARATION_BACKENDS.filter((backend: SeparationBackend): boolean => backend === value).forEach(
+                (backend: SeparationBackend): void => {
+                  store.updateSettings({ ...settings, separation_backend: backend });
+                },
+              )
+            }
+          />
+        </div>
+      ) : null}
+      {plan === null ? null : (
+        <div className="mt-3 grid grid-cols-1 gap-1">
+          <p data-slot="speaker-plan" className="text-muted-foreground">
+            {format(messages.speakerPlanLine, {
+              models: listOf(snapshot, planModels(plan, snapshot)),
+            })}
+          </p>
+          <p data-slot="speaker-plan-runs" className="text-muted-foreground">
+            {format(messages.speakerPlanRuns, {
+              whisper: processor(plan.whisper_on),
+              diarize: processor(plan.diarize_on),
+            })}
+            {format(messages.speakerPlanRunsSeparate, { separate: processor(plan.separate_on) })}
+          </p>
+          {plan.deep ? <p className="text-muted-foreground">{messages.speakerPlanDeep}</p> : null}
+        </div>
+      )}
+      <SpeakerFactsList />
     </div>
   );
 };
@@ -335,7 +430,12 @@ function JobItem({ job, store, snapshot }: JobItemProps): VNode {
           ) : null}
           {job.state === "finished" ? <FinishedJob job={job} /> : null}
           {job.state === "failed" ? (
-            <Alert>{errorText(messages, job.error, modelLabel(snapshot, job.error.model))}</Alert>
+            <>
+              <Alert>{errorText(messages, job.error, modelLabel(snapshot, job.error.model))}</Alert>
+              {job.error.suggested === undefined || job.error.suggested === null ? null : (
+                <ModelDownload id={job.error.suggested} store={store} snapshot={snapshot} />
+              )}
+            </>
           ) : null}
         </CardContent>
       </Card>
@@ -354,9 +454,9 @@ function chooseSubtitles(store: AppStore, messages: Messages): void {
 }
 
 function chooseVideos(store: AppStore, messages: Messages): void {
-  const missing: Role[] = missingModelRoles(store.state.snapshot);
-  if (missing.length > 0) {
-    reportFailure(store.setState, { code: "models_missing", roles: missing });
+  const refusal: BackendError | null = videoRefusal(store.state);
+  if (refusal !== null) {
+    reportFailure(store.setState, refusal);
     return;
   }
   pickFiles(VIDEO_EXTENSIONS, messages.videoFilterName)
@@ -372,10 +472,9 @@ export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNod
   const messages: Messages = useMessages();
   const { hovering, jobs } = store.state;
   const notice: string | null = slowProcessingNotice(snapshot, messages);
-  const missingForSpeakers: Role[] = missingModelRoles(snapshot).filter(isHeavyRole);
-  const missingOthers: Role[] = missingModelRoles(snapshot).filter(
-    (role: Role): boolean => !isHeavyRole(role),
-  );
+  const missing: string[] = missingRoles(snapshot, messages);
+  const heavy: boolean = isHeavySpeakerCount(snapshot.settings);
+  const speakersMissing: SpeakerMissing | null = speakerModelsMissing(store.state);
   return (
     <div className="grid grid-cols-1 gap-4">
       {notice === null ? null : <p className="text-muted-foreground">{notice}</p>}
@@ -390,7 +489,8 @@ export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNod
               store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
             }
           />
-          <SpeakerLoad heavy={isHeavySpeakerCount(snapshot.settings)} />
+          <SpeakerLoad heavy={heavy} />
+          {heavy ? <SpeakerPlanField store={store} snapshot={snapshot} /> : null}
         </div>
         <div className="grid w-full max-w-sm grid-cols-1 gap-1">
           <SelectField
@@ -411,12 +511,12 @@ export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNod
           <FormatLimit format={snapshot.settings.subtitle_format} />
         </div>
       </div>
-      {missingForSpeakers.length === 0 ? null : (
-        <SpeakerModelsMissing
+      {speakersMissing === null ? null : (
+        <SpeakerModelsMissingNotice
           store={store}
           snapshot={snapshot}
           onOpenModels={onOpenModels}
-          roles={missingForSpeakers}
+          missing={speakersMissing}
         />
       )}
       <section
@@ -437,15 +537,8 @@ export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNod
           </Button>
         </div>
       </section>
-      {missingOthers.length === 0 ? null : (
-        <Alert>
-          {format(messages.readinessMissing, {
-            roles: listOf(
-              snapshot,
-              missingOthers.map((role: Role): string => roleName(messages, role)),
-            ),
-          })}
-        </Alert>
+      {missing.length === 0 ? null : (
+        <Alert>{format(messages.readinessMissing, { roles: listOf(snapshot, missing) })}</Alert>
       )}
       {jobs.length === 0 ? null : (
         <ul className="grid grid-cols-1 gap-3">

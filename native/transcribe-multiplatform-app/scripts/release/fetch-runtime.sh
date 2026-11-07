@@ -81,7 +81,10 @@ mac_ffmpeg() {
   rm -rf "$work/ffmpeg-src" && mkdir -p "$work/ffmpeg-src" && tar xJf "$work/ffmpeg.tar.xz" -C "$work/ffmpeg-src" --strip-components=1
   (cd "$work/ffmpeg-src" && ./configure --disable-doc --disable-debug --disable-ffplay --disable-network --disable-autodetect --enable-videotoolbox --enable-audiotoolbox >/dev/null && make -j 8 ffmpeg ffprobe >/dev/null)
   rm -rf "$runtime/ffmpeg" && mkdir -p "$runtime/ffmpeg"
-  cp "$work/ffmpeg-src/ffmpeg" "$work/ffmpeg-src/ffprobe" "$runtime/ffmpeg/"
+  cp "$work/ffmpeg-src/ffmpeg" "$work/ffmpeg-src/ffprobe" "$work/ffmpeg-src/COPYING.LGPLv2.1" "$runtime/ffmpeg/"
+  printf 'FFmpeg %s, built from https://ffmpeg.org/releases/ffmpeg-%s.tar.xz (SHA-256 %s).\nConfigured with: %s\n' \
+    "$FFMPEG_MAC_VERSION" "$FFMPEG_MAC_VERSION" "$FFMPEG_MAC_SHA256" "$("$runtime/ffmpeg/ffmpeg" -hide_banner -buildconf | sed -n 's/^ *--/--/p' | tr '\n' ' ')" \
+    > "$runtime/ffmpeg/BUILD.txt"
 }
 
 # whisper.cpp publishes no Vulkan binary. Needs the Vulkan SDK (VULKAN_SDK) at build time only.
@@ -199,6 +202,14 @@ mac_onnxruntime() {
   cp "$work/onnxruntime/$name/LICENSE" "$work/onnxruntime/$name/ThirdPartyNotices.txt" "$runtime/onnxruntime/"
 }
 
+# MossFormer2 on Core ML: the app's own runner, signed ad hoc like the other tools.
+mac_separate_coreml() {
+  swift build -c release --arch arm64 --package-path "$app_dir/separate-coreml" --scratch-path "$work/separate-coreml"
+  rm -rf "$runtime/separate-coreml" && mkdir -p "$runtime/separate-coreml"
+  cp "$work/separate-coreml/arm64-apple-macosx/release/separate-coreml" "$runtime/separate-coreml/"
+  codesign --force --sign - "$runtime/separate-coreml/separate-coreml"
+}
+
 windows_onnxruntime() {
   local name="onnxruntime-win-x64-$ONNXRUNTIME_VERSION"
   fetch "$(onnxruntime_url "$name.zip")" "$ONNXRUNTIME_WIN_SHA256" "$work/onnxruntime.zip"
@@ -224,11 +235,13 @@ windows_common() {
   windows_onnxruntime
   fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
   rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg" && unzip -q -o "$work/ffmpeg.zip" -d "$work/ffmpeg"
-  find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe \) -exec cp {} "$runtime/ffmpeg/" \;
+  find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe -o -name LICENSE.txt \) -exec cp {} "$runtime/ffmpeg/" \;
+  printf 'FFmpeg built by BtbN/FFmpeg-Builds: https://github.com/BtbN/FFmpeg-Builds/releases/tag/%s\nFile: %s (SHA-256 %s)\n' \
+    "$FFMPEG_WIN_TAG" "$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" > "$runtime/ffmpeg/BUILD.txt"
 }
 
 case "$distribution" in
-  macos) mac_nemo; mac_whisper; mac_ffmpeg; mac_onnxruntime ;;
+  macos) mac_nemo; mac_whisper; mac_ffmpeg; mac_onnxruntime; mac_separate_coreml ;;
   # A GeForce runs nemo-speech on the CUDA runtime the app downloads, so no Vulkan nemo-speech ships.
   windows-geforce) windows_common; rm -rf "$runtime/nemo-vulkan" ;;
   windows-radeon) windows_common; nemo_zip 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce windows-x86_64-vulkan.zip nemo-vulkan ;;

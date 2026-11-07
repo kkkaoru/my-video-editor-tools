@@ -1,11 +1,12 @@
 {
   "name": "transcribe-multiplatform-app",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "bun scripts/docs/licenses.ts && vite build",
+    "licenses": "bun scripts/docs/licenses.ts",
     "tsc": "tsc --noEmit",
     "lint": "biome check .",
     "test": "vitest run --coverage",

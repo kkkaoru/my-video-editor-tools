@@ -391,10 +391,9 @@ mod tests {
             label: "",
             source_url: "",
             files: Box::leak(files.into_boxed_slice()),
-            min_memory_gib: 0,
-            needs_cuda: false,
-            extra_args: &[],
-            max_audio_seconds: None,
+            min_ram_gib: 0,
+            min_gpu_memory_gib: 0,
+            min_ram_with_gpu_gib: 0,
         }))
     }
 

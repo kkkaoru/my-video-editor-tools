@@ -1,19 +1,16 @@
 //! Downloadable models and runtimes, per hardware, and detection of copies already on disk.
 
-use crate::error::{AppError, AppResult, UserError};
+use crate::error::{AppError, AppResult, MemoryKind, UserError};
 use crate::paths::AppPaths;
 use crate::process::{background_command, run_capture};
-use serde::Serialize;
+use crate::settings::{SeparationBackend, Settings};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const HF_RESOLVE: &str = "https://huggingface.co";
 const GIB: u64 = 1 << 30;
 /// Below this an adapter is an integrated GPU sharing system memory: slower than the CPU path for speech.
 const MIN_GPU_MEMORY_GIB: u64 = 4;
-/// The speech-LLM takes a recording of up to an hour; Q2_0_M's `max_context` holds about 7 minutes.
-const SPEECH_LLM_MAX_SECONDS: u64 = 3600;
-const Q2M_MAX_SECONDS: u64 = 420;
-const SECONDS_PER_MINUTE: u64 = 60;
 #[cfg(all(feature = "windows-geforce", feature = "windows-radeon"))]
 compile_error!("a build is either windows-geforce or windows-radeon, not both");
 /// The GPU vendor this distribution was built for; other vendors' cards are never used.
@@ -48,19 +45,20 @@ const MEMORY_QUERY: ToolQuery = if cfg!(windows) {
 const SEARCH_DEPTH: usize = 4;
 const WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 const WHISPER_REVISION: &str = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9";
-const NEMOTRON_REPO: &str = "AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF";
-const NEMOTRON_REVISION: &str = "dbd06c5cad7a2f33c8e06be2fb3ef814dbd9aa59";
 const NEMOTRON_SOURCE: &str =
     "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B";
 const ENCODER: FileSpec = FileSpec {
     url_kind: UrlKind::HuggingFace {
-        repo: NEMOTRON_REPO,
-        revision: NEMOTRON_REVISION,
+        repo: "kkk4oru/nemotron-3.5-speaker-encoder-gguf",
+        revision: "a0054b68c46cbe33ade39746bd5be4bae3792524",
     },
-    path: "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf",
-    size: 1_670_410_080,
-    sha256: "4221029c8a565c4a80c507ffa760c716e595acf663f9f4273ce69910050e7ba2",
+    path: "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Speaker-Encoder-F16.gguf",
+    size: 200_779_392,
+    sha256: "657afaeac267f6f8f38501927a354eeac1da19b34b87f10c71d320eb5bb757c5",
 };
+/// An encoder an earlier download left in a model folder: found by name and size, never fetched.
+const EARLIER_ENCODER_NAME: &str = "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf";
+const EARLIER_ENCODER_BYTES: u64 = 1_670_410_080;
 /// The converted ggml model whisper.cpp reads; made once from the checkpoint.
 pub const WHISPER_GGML_NAME: &str = "ggml-large-v3-turbo.bin";
 /// Ready ggml files from other tools are used as they are.
@@ -77,31 +75,8 @@ pub const YUNET_ID: &str = "yunet";
 pub const AVATAR_YOLO_ID: &str = "avatar-face-yolo";
 const AVATAR_YOLO_NAME: &str = "avatar-face-caption-v2.onnx";
 pub const GEFORCE_RUNTIME_ID: &str = "geforce-runtime";
-const IQ4_ID: &str = "nemotron-3.5-transcribe-iq4";
-const NVFP4_ID: &str = "nemotron-3.5-transcribe-nvfp4";
-const Q2M_ID: &str = "nemotron-3.5-transcribe-q2m";
-const Q2L_ID: &str = "nemotron-3.5-transcribe-q2l";
-const Q8_ID: &str = "nemotron-3.5-transcribe-q8";
 const NEMO_CUDA_URL: &str =
     "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip";
-/// Settings for 16 GB GPUs, documented by the GGUF publisher; `max_context` holds about 7 minutes.
-const Q2M_ARGS: [&str; 12] = [
-    "--asr.salm.max_sequences",
-    "2",
-    "--asr.salm.n_ctx_per_sequence",
-    "8192",
-    "--asr.salm.max_context",
-    "8192",
-    "--asr.salm.mtp_draft",
-    "0",
-    "--asr.salm.n_batch",
-    "512",
-    "--asr.salm.encoder_max_batch",
-    "2",
-];
-/// Blackwell GPUs are the ones with native NVFP4 kernels.
-const BLACKWELL_MARKERS: [&str; 3] = ["RTX 50", "RTX PRO 6000 Blackwell", "DGX Spark"];
-
 type ToolQuery = (&'static str, &'static [&'static str]);
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -112,6 +87,14 @@ pub enum Role {
     Separate,
     Face,
     Runtime,
+}
+
+/// Where a model runs on this machine.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunsOn {
+    Gpu,
+    Cpu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,19 +147,71 @@ pub struct ModelEntry {
     pub label: &'static str,
     pub source_url: &'static str,
     pub files: &'static [FileSpec],
-    /// Memory the model needs: GPU memory under CUDA, otherwise system memory.
-    pub min_memory_gib: u64,
-    pub needs_cuda: bool,
-    pub extra_args: &'static [&'static str],
-    /// The longest recording the model takes, if it has a limit.
-    pub max_audio_seconds: Option<u64>,
+    /// RAM to run on the CPU.
+    pub min_ram_gib: u64,
+    /// GPU memory to run on the GPU; 0 never runs there.
+    pub min_gpu_memory_gib: u64,
+    /// RAM beside the GPU memory while it runs on the GPU.
+    pub min_ram_with_gpu_gib: u64,
 }
+
+/// Nemotron 3.5's speaker branch alone: its encoder and an empty decoder the app makes (`engines`).
+pub const NEMOTRON35_SPEAKER_ID: &str = "nemotron-3.5-speaker";
+/// An hour of audio on the CPU peaks at 2.85 GB; an earlier, full encoder takes 5.0 GB.
+const NEMOTRON35_SPEAKER_RAM_GIB: u64 = 3;
+/// An hour of audio on Metal raises the machine's GPU use by 2.98 to 3.17 GB against an idle base that
+/// moves about 0.3 GB (three runs). A GPU that still fails gives way to the CPU.
+/// shortcut: no discrete GPU has been measured; replace when Vulkan and CUDA have.
+const NEMOTRON35_SPEAKER_GPU_MEMORY_GIB: u64 = 4;
+/// Where the encoder comes from; the one thing to change when another copy is published.
+const NEMOTRON35_SPEAKER_SOURCE: &str = NEMOTRON_SOURCE;
+const NEMOTRON35_SPEAKER_FILES: [FileSpec; 1] = [ENCODER];
+/// Whisper large-v3-turbo, never another: 2.4 GB of RAM on the CPU, about 2 GB of GPU memory.
+const WHISPER_RAM_GIB: u64 = 3;
+const WHISPER_GPU_MEMORY_GIB: u64 = 2;
+/// Several people need this much RAM: the largest step peaks at 2.9 GB (a 3 GiB budget), on top of what
+/// `schedule` keeps for the system and the app. With the second, MossFormer2 also runs its second pass.
+const SEVERAL_SPEAKERS_RAM_GIB: u64 = 8;
+const DEEP_SEPARATE_RAM_GIB: u64 = 16;
 
 // Everything about where MossFormer2 comes from: a new build replaces these and nothing else.
 pub const MOSSFORMER2_ID: &str = "mossformer2-ss-16k";
 const MOSSFORMER2_SOURCE: &str = "https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx";
-/// Measured with ONNX Runtime on the CPU: 2.35 GB for an 8 s clip, 7.25 GB for the longest range, 30 s.
-const MOSSFORMER2_MEMORY_GIB: u64 = 8;
+/// Measured with ONNX Runtime on the CPU, its memory pattern off: 1.65 GB for the longest range, 8 s.
+const MOSSFORMER2_MEMORY_GIB: u64 = 2;
+pub const MOSSFORMER2_COREML_ID: &str = "mossformer2-ss-16k-coreml";
+const MOSSFORMER2_COREML_SOURCE: &str = "https://huggingface.co/kkk4oru/mossformer2-ss-16k-coreml";
+const MOSSFORMER2_COREML_PACKAGE: &str = "model.mlpackage";
+/// About 1.1 GB of unified memory in all, partly estimated.
+const MOSSFORMER2_COREML_MEMORY_GIB: u64 = 2;
+const fn coreml_file(path: &'static str, size: u64, sha256: &'static str) -> FileSpec {
+    FileSpec {
+        url_kind: UrlKind::HuggingFace {
+            repo: "kkk4oru/mossformer2-ss-16k-coreml",
+            revision: "00ad477c4ee88956c4852161f0bcb21d0fd40b98",
+        },
+        path,
+        size,
+        sha256,
+    }
+}
+const MOSSFORMER2_COREML_FILES: [FileSpec; 3] = [
+    coreml_file(
+        "model.mlpackage/Manifest.json",
+        617,
+        "ecc977b873a7c7b454d54cc909b55b72a5d362a2dc7b594fdcb4e706bf777c1b",
+    ),
+    coreml_file(
+        "model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+        1_811_303,
+        "76d8219d0e23750f9b14900b58f211aeeb18e6b1acfff2a893c6ecb0bc307bce",
+    ),
+    coreml_file(
+        "model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+        129_964_736,
+        "3c64c07066c55bb840da968804f75976638fe3fbb96ec26494fd27ee0ec7bb35",
+    ),
+];
 const MOSSFORMER2_FILES: [FileSpec; 1] = [FileSpec {
     url_kind: UrlKind::HuggingFace {
         repo: "kkk4oru/mossformer2-ss-16k-onnx",
@@ -187,77 +222,6 @@ const MOSSFORMER2_FILES: [FileSpec; 1] = [FileSpec {
     sha256: "d658037076e27c76b347f98b0b18eb0f51ef5df9da09a359dbb058fec52db2de",
 }];
 
-const fn nemotron_file(path: &'static str, size: u64, sha256: &'static str) -> FileSpec {
-    FileSpec {
-        url_kind: UrlKind::HuggingFace {
-            repo: NEMOTRON_REPO,
-            revision: NEMOTRON_REVISION,
-        },
-        path,
-        size,
-        sha256,
-    }
-}
-
-const fn nemotron(
-    id: &'static str,
-    label: &'static str,
-    files: &'static [FileSpec],
-    min_memory_gib: u64,
-) -> ModelEntry {
-    ModelEntry {
-        id,
-        role: Role::Diarize,
-        label,
-        source_url: NEMOTRON_SOURCE,
-        files,
-        min_memory_gib,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: Some(SPEECH_LLM_MAX_SECONDS),
-    }
-}
-
-const NEMOTRON_IQ4_FILES: [FileSpec; 2] = [
-    nemotron_file(
-        "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-IQ4_NL.gguf",
-        19_678_656_672,
-        "0c47d4ab6c783e7606ec03714b354fab0b2052027a7ea1991e7e2d3009c345ad",
-    ),
-    ENCODER,
-];
-const NEMOTRON_NVFP4_FILES: [FileSpec; 2] = [
-    nemotron_file(
-        "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-NVFP4.gguf",
-        19_678_656_416,
-        "ff1ae7655e66efe1d161a83e71c24853cea0614261b041b961089a23c7dcf2d3",
-    ),
-    ENCODER,
-];
-const NEMOTRON_Q2M_FILES: [FileSpec; 2] = [
-    nemotron_file(
-        "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_M.gguf",
-        13_572_208_800,
-        "764dc3aedbc800a96346e188d74f56fc4d0932299e4771df1bc2e1c952ceed81",
-    ),
-    ENCODER,
-];
-const NEMOTRON_Q2L_FILES: [FileSpec; 2] = [
-    nemotron_file(
-        "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-Q2_0_L.gguf",
-        15_547_824_288,
-        "67eee66a7bb205867e3f9b7c0944e287fc4d2661db2280030e1c26e6ebdea7b4",
-    ),
-    ENCODER,
-];
-const NEMOTRON_Q8_FILES: [FileSpec; 2] = [
-    nemotron_file(
-        "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Q8_0.gguf",
-        35_004_643_232,
-        "3d99075b58f15153d87e8922f54e12dda818bbb505c2e0d7d50cd4f30beac9f2",
-    ),
-    ENCODER,
-];
 const WHISPER_FILES: [FileSpec; 1] = [FileSpec {
     url_kind: UrlKind::HuggingFace {
         repo: WHISPER_REPO,
@@ -275,66 +239,46 @@ const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
 }];
 
 /// Every model and runtime the app knows.
-pub const CATALOG: [ModelEntry; 10] = [
+pub const CATALOG: [ModelEntry; 7] = [
     ModelEntry {
         id: WHISPER_ID,
         role: Role::Transcribe,
         label: "Whisper large-v3-turbo",
         source_url: "https://huggingface.co/openai/whisper-large-v3-turbo",
         files: &WHISPER_FILES,
-        min_memory_gib: 4,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
-    },
-    nemotron(
-        IQ4_ID,
-        "Nemotron 3.5 Transcribe 30B-A4B (IQ4_NL)",
-        &NEMOTRON_IQ4_FILES,
-        24,
-    ),
-    ModelEntry {
-        needs_cuda: true,
-        ..nemotron(
-            NVFP4_ID,
-            "Nemotron 3.5 Transcribe 30B-A4B (NVFP4)",
-            &NEMOTRON_NVFP4_FILES,
-            24,
-        )
+        min_ram_gib: WHISPER_RAM_GIB,
+        min_gpu_memory_gib: WHISPER_GPU_MEMORY_GIB,
+        min_ram_with_gpu_gib: WHISPER_GPU_MEMORY_GIB,
     },
     ModelEntry {
-        needs_cuda: true,
-        extra_args: &Q2M_ARGS,
-        max_audio_seconds: Some(Q2M_MAX_SECONDS),
-        ..nemotron(
-            Q2M_ID,
-            "Nemotron 3.5 Transcribe 30B-A4B (Q2_0_M)",
-            &NEMOTRON_Q2M_FILES,
-            16,
-        )
+        id: NEMOTRON35_SPEAKER_ID,
+        role: Role::Diarize,
+        label: "Nemotron 3.5 speakers (encoder only)",
+        source_url: NEMOTRON35_SPEAKER_SOURCE,
+        files: &NEMOTRON35_SPEAKER_FILES,
+        min_ram_gib: NEMOTRON35_SPEAKER_RAM_GIB,
+        min_gpu_memory_gib: NEMOTRON35_SPEAKER_GPU_MEMORY_GIB,
+        min_ram_with_gpu_gib: 1,
     },
-    nemotron(
-        Q2L_ID,
-        "Nemotron 3.5 Transcribe 30B-A4B (Q2_0_L)",
-        &NEMOTRON_Q2L_FILES,
-        20,
-    ),
-    nemotron(
-        Q8_ID,
-        "Nemotron 3.5 Transcribe 30B-A4B (Q8_0)",
-        &NEMOTRON_Q8_FILES,
-        48,
-    ),
     ModelEntry {
         id: MOSSFORMER2_ID,
         role: Role::Separate,
         label: "MossFormer2 SS 16K",
         source_url: MOSSFORMER2_SOURCE,
         files: &MOSSFORMER2_FILES,
-        min_memory_gib: MOSSFORMER2_MEMORY_GIB,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
+        min_ram_gib: MOSSFORMER2_MEMORY_GIB,
+        min_gpu_memory_gib: 0,
+        min_ram_with_gpu_gib: 0,
+    },
+    ModelEntry {
+        id: MOSSFORMER2_COREML_ID,
+        role: Role::Separate,
+        label: "MossFormer2 on Core ML (GPU)",
+        source_url: MOSSFORMER2_COREML_SOURCE,
+        files: &MOSSFORMER2_COREML_FILES,
+        min_ram_gib: MOSSFORMER2_COREML_MEMORY_GIB,
+        min_gpu_memory_gib: MOSSFORMER2_COREML_MEMORY_GIB,
+        min_ram_with_gpu_gib: 1,
     },
     ModelEntry {
         id: YUNET_ID,
@@ -342,10 +286,9 @@ pub const CATALOG: [ModelEntry; 10] = [
         label: "YuNet",
         source_url: "https://huggingface.co/opencv/face_detection_yunet",
         files: &[],
-        min_memory_gib: 1,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
+        min_ram_gib: 1,
+        min_gpu_memory_gib: 0,
+        min_ram_with_gpu_gib: 0,
     },
     ModelEntry {
         id: AVATAR_YOLO_ID,
@@ -353,21 +296,19 @@ pub const CATALOG: [ModelEntry; 10] = [
         label: "Avatar face YOLO",
         source_url: "",
         files: &[],
-        min_memory_gib: 1,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
+        min_ram_gib: 1,
+        min_gpu_memory_gib: 0,
+        min_ram_with_gpu_gib: 0,
     },
     ModelEntry {
         id: GEFORCE_RUNTIME_ID,
         role: Role::Runtime,
-        label: "GeForce CUDA runtime",
+        label: "GeForce CUDA runtime for speakers (optional)",
         source_url: "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/tag/v0.3.0",
         files: &GEFORCE_FILES,
-        min_memory_gib: 0,
-        needs_cuda: false,
-        extra_args: &[],
-        max_audio_seconds: None,
+        min_ram_gib: 0,
+        min_gpu_memory_gib: 0,
+        min_ram_with_gpu_gib: 0,
     },
 ];
 
@@ -496,45 +437,6 @@ pub fn find_entry(id: &str) -> Option<&'static ModelEntry> {
     CATALOG.iter().find(|entry| entry.id == id)
 }
 
-fn is_blackwell(name: &str) -> bool {
-    BLACKWELL_MARKERS.iter().any(|marker| name.contains(marker))
-}
-
-const fn recommended_for_nvidia(memory_gib: u64, blackwell: bool) -> Option<&'static str> {
-    match memory_gib {
-        24.. if blackwell => Some(NVFP4_ID),
-        24.. => Some(IQ4_ID),
-        16.. => Some(Q2M_ID),
-        _ => None,
-    }
-}
-
-/// Vulkan runs upstream llama.cpp kernels, which the model's documentation pairs with IQ4_NL and Q8_0.
-const fn recommended_for_radeon(memory_gib: u64) -> Option<&'static str> {
-    match memory_gib {
-        48.. => Some(Q8_ID),
-        24.. => Some(IQ4_ID),
-        _ => None,
-    }
-}
-
-/// The Nemotron 3.5 build the model card lists for this hardware; `None` means none will fit.
-#[must_use]
-pub fn recommended_speech_llm(hardware: &Hardware) -> Option<&'static str> {
-    if let Some(gpu) = &hardware.gpu {
-        return match gpu.vendor {
-            GpuVendor::Nvidia => recommended_for_nvidia(gpu.memory_gib, is_blackwell(&gpu.name)),
-            GpuVendor::Radeon => recommended_for_radeon(gpu.memory_gib),
-        };
-    }
-    match hardware.memory_gib {
-        64.. => Some(Q8_ID),
-        32.. => Some(IQ4_ID),
-        24.. => Some(Q2L_ID),
-        _ => None,
-    }
-}
-
 const fn has_nvidia(hardware: &Hardware) -> bool {
     matches!(
         &hardware.gpu,
@@ -565,66 +467,96 @@ pub fn backend_for(hardware: &Hardware, paths: &AppPaths) -> Backend {
     }
 }
 
-/// The `--device` for a model: the GPU when the model fits in its memory, else system memory on the CPU.
+impl Hardware {
+    /// GPU memory to run models in. A Mac's memory is unified, so it counts as this and as RAM.
+    #[must_use]
+    pub fn gpu_memory_gib(&self) -> Option<u64> {
+        if self.is_mac {
+            return Some(self.memory_gib);
+        }
+        self.gpu.as_ref().map(|gpu| gpu.memory_gib)
+    }
+}
+
+/// Where a model runs: the GPU while its memory holds it, else the CPU from RAM; `None` when neither
+/// does. RAM and GPU memory are judged apart, as each way of running needs different amounts.
+#[must_use]
+pub fn runs_on(entry: &ModelEntry, hardware: &Hardware) -> Option<RunsOn> {
+    let fits_gpu = entry.min_gpu_memory_gib > 0
+        && hardware
+            .gpu_memory_gib()
+            .is_some_and(|memory| memory >= entry.min_gpu_memory_gib)
+        && hardware.memory_gib >= entry.min_ram_with_gpu_gib;
+    if fits_gpu {
+        Some(RunsOn::Gpu)
+    } else if hardware.memory_gib >= entry.min_ram_gib {
+        Some(RunsOn::Cpu)
+    } else {
+        None
+    }
+}
+
+/// The `--device` for a model: the GPU when the model fits in its memory, else the CPU.
 #[must_use]
 pub fn device_for(entry: &ModelEntry, hardware: &Hardware, backend: Backend) -> &'static str {
-    let fits_gpu = hardware
-        .gpu
-        .as_ref()
-        .is_some_and(|gpu| gpu.memory_gib >= entry.min_memory_gib);
+    let on_gpu = runs_on(entry, hardware) == Some(RunsOn::Gpu);
     match backend {
-        Backend::Default => "auto",
-        Backend::SpeakersOnCpu => "cpu",
-        Backend::Cuda | Backend::Vulkan if !fits_gpu => "cpu",
+        Backend::Default if on_gpu || !hardware.is_mac => "auto",
+        Backend::Default | Backend::SpeakersOnCpu => "cpu",
+        Backend::Cuda | Backend::Vulkan if !on_gpu => "cpu",
         Backend::Cuda => "cuda",
         Backend::Vulkan => "vulkan",
     }
 }
 
-/// `TooLongForModel` when the video exceeds what the model takes.
-#[must_use]
-pub fn too_long(entry: &ModelEntry, duration_seconds: f64) -> Option<UserError> {
-    let limit = entry.max_audio_seconds?;
-    (duration_seconds > limit as f64).then(|| UserError::TooLongForModel {
-        model: entry.id.to_owned(),
-        limit_minutes: limit / SECONDS_PER_MINUTE,
-    })
-}
-
 /// Why this hardware cannot run the model, if it cannot.
 #[must_use]
 pub fn blocked_reason(entry: &ModelEntry, hardware: &Hardware) -> Option<UserError> {
-    if entry.needs_cuda && !has_nvidia(hardware) {
-        return Some(UserError::NeedsNvidia {
-            model: entry.id.to_owned(),
-        });
+    if runs_on(entry, hardware).is_some() {
+        return None;
     }
-    // A model too big for the GPU still runs from system memory on the CPU (see `device_for`).
-    let gpu_memory = hardware.gpu.as_ref().map_or(0, |gpu| gpu.memory_gib);
-    let available = if entry.role == Role::Diarize {
-        gpu_memory.max(hardware.memory_gib)
+    let (kind, required, available) = if hardware.is_mac {
+        (MemoryKind::Unified, entry.min_ram_gib, hardware.memory_gib)
     } else {
-        hardware.memory_gib
+        (MemoryKind::Ram, entry.min_ram_gib, hardware.memory_gib)
     };
-    (available < entry.min_memory_gib).then(|| UserError::NeedsMemory {
+    Some(UserError::NeedsMemory {
         model: entry.id.to_owned(),
-        required: entry.min_memory_gib,
+        required,
         available,
+        kind,
     })
 }
 
 /// The runtime exists only for a GeForce; every other machine never sees it.
 fn is_listed(entry: &ModelEntry, hardware: &Hardware) -> bool {
-    entry.id != GEFORCE_RUNTIME_ID || has_nvidia(hardware)
+    match entry.id {
+        GEFORCE_RUNTIME_ID => has_nvidia(hardware),
+        MOSSFORMER2_COREML_ID => hardware.is_mac,
+        _ => true,
+    }
 }
 
 fn find_named(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
+    find_accepted(root, names, depth, &|_| true)
+}
+
+/// `accepts` tells apart models that share a file name, like two `model.onnx`.
+fn find_accepted(
+    root: &Path,
+    names: &[&str],
+    depth: usize,
+    accepts: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     let mut subfolders = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let path = entry.path();
-        if names.iter().any(|wanted| name.to_string_lossy() == *wanted) && path.is_file() {
+        if names.iter().any(|wanted| name.to_string_lossy() == *wanted)
+            && path.is_file()
+            && accepts(&path)
+        {
             return Some(path);
         }
         let hidden = name.to_string_lossy().starts_with('.');
@@ -634,7 +566,7 @@ fn find_named(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
     }
     subfolders
         .iter()
-        .find_map(|folder| find_named(folder, names, depth - 1))
+        .find_map(|folder| find_accepted(folder, names, depth - 1, accepts))
 }
 
 fn hf_snapshots(hub: Option<&Path>, repo: &str) -> Vec<PathBuf> {
@@ -652,16 +584,16 @@ fn hf_snapshots(hub: Option<&Path>, repo: &str) -> Vec<PathBuf> {
 pub fn locate_file(file: &FileSpec, roots: &[PathBuf], hub: Option<&Path>) -> Option<PathBuf> {
     let name = Path::new(file.path).file_name()?.to_str()?;
     let matches_size =
-        |path: &PathBuf| std::fs::metadata(path).is_ok_and(|meta| meta.len() == file.size);
+        |path: &Path| std::fs::metadata(path).is_ok_and(|meta| meta.len() == file.size);
     let from_roots = roots
         .iter()
-        .filter_map(|root| find_named(root, &[name], SEARCH_DEPTH));
+        .filter_map(|root| find_accepted(root, &[name], SEARCH_DEPTH, &matches_size));
     let from_cache = file
         .hf_repo()
         .into_iter()
         .flat_map(|repo| hf_snapshots(hub, repo))
         .map(|snapshot| snapshot.join(name));
-    from_roots.chain(from_cache).find(matches_size)
+    from_roots.chain(from_cache).find(|path| matches_size(path))
 }
 
 fn search_roots(paths: &AppPaths, extra: &[PathBuf]) -> Vec<PathBuf> {
@@ -726,6 +658,28 @@ pub fn locate(entry: &ModelEntry, paths: &AppPaths, extra: &[PathBuf]) -> Option
             .iter()
             .find_map(|root| find_named(root, &[AVATAR_YOLO_NAME], SEARCH_DEPTH)),
         GEFORCE_RUNTIME_ID => locate_runtime(paths),
+        NEMOTRON35_SPEAKER_ID => {
+            locate_file(&ENCODER, &roots, paths.hf_hub.as_deref()).or_else(|| {
+                let right_size = |path: &Path| {
+                    std::fs::metadata(path).is_ok_and(|meta| meta.len() == EARLIER_ENCODER_BYTES)
+                };
+                roots.iter().find_map(|root| {
+                    find_accepted(root, &[EARLIER_ENCODER_NAME], SEARCH_DEPTH, &right_size)
+                })
+            })
+        }
+        // A package reads its files by their places inside it, so only the copy the app downloaded does.
+        MOSSFORMER2_COREML_ID => {
+            let folder = paths.models_dir().join(entry.id);
+            entry
+                .files
+                .iter()
+                .all(|file| {
+                    std::fs::metadata(folder.join(file.path))
+                        .is_ok_and(|meta| meta.len() == file.size)
+                })
+                .then(|| folder.join(MOSSFORMER2_COREML_PACKAGE))
+        }
         _ => {
             let located: Option<Vec<PathBuf>> = entry
                 .files
@@ -740,17 +694,12 @@ pub fn locate(entry: &ModelEntry, paths: &AppPaths, extra: &[PathBuf]) -> Option
 /// The encoder that must sit beside a speech-LLM decoder; decoders load it by file name.
 #[must_use]
 pub fn speech_llm_encoder(extra_roots: &[PathBuf], paths: &AppPaths) -> Option<PathBuf> {
-    locate_file(
-        &ENCODER,
-        &search_roots(paths, extra_roots),
-        paths.hf_hub.as_deref(),
-    )
+    locate(find_entry(NEMOTRON35_SPEAKER_ID)?, paths, extra_roots)
 }
 
 /// The state of every catalog entry for the model manager.
 #[must_use]
 pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec<ModelStatus> {
-    let recommended = recommended_speech_llm(hardware);
     CATALOG
         .iter()
         .filter(|entry| is_listed(entry, hardware))
@@ -762,44 +711,125 @@ pub fn statuses(hardware: &Hardware, paths: &AppPaths, extra: &[PathBuf]) -> Vec
             download_bytes: entry.files.iter().map(|file| file.size).sum(),
             found_at: locate(entry, paths, extra),
             blocked: blocked_reason(entry, hardware),
-            recommended: recommended == Some(entry.id)
-                || entry.id == WHISPER_ID
+            recommended: entry.id == WHISPER_ID
                 || entry.id == YUNET_ID
-                || entry.id == MOSSFORMER2_ID
-                || entry.id == GEFORCE_RUNTIME_ID,
+                || entry.id == NEMOTRON35_SPEAKER_ID
+                || entry.id == MOSSFORMER2_ID,
         })
         .collect()
 }
 
-/// The roles a job of `speaker_count` people lacks a usable model for; one person needs neither.
-#[must_use]
-pub fn missing_speaker_models(speaker_count: u32, rows: &[ModelStatus]) -> Vec<Role> {
-    if speaker_count == 1 {
-        return Vec::new();
-    }
-    [Role::Diarize, Role::Separate]
-        .into_iter()
-        .filter(|role| {
-            !rows
-                .iter()
-                .any(|row| row.role == *role && row.found_at.is_some() && row.blocked.is_none())
-        })
-        .collect()
+/// What a job for several people runs and where, within this machine's RAM and GPU memory. Whisper is
+/// always the same model: only where it runs changes. Steps run one after the other in processes of their
+/// own, so what must fit is the largest of them.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct SpeakerPlan {
+    pub diarize: &'static str,
+    pub whisper_on: RunsOn,
+    pub diarize_on: RunsOn,
+    /// `None` skips MossFormer2: one row at a time.
+    pub separate_on: RunsOn,
+    /// Which build of MossFormer2.
+    pub separator: &'static str,
+    /// Three people at once go through the model twice, for up to four rows.
+    pub deep: bool,
 }
 
-/// The diarization model to use when none is chosen: an installed one, the recommended build first, so
-/// nothing downloads silently.
+/// Where Whisper runs on this machine, for any number of speakers: the same model on either.
 #[must_use]
-pub fn default_diarize_model(hardware: &Hardware, rows: &[ModelStatus]) -> Option<&'static str> {
-    let usable = |row: &&ModelStatus| {
-        row.role == Role::Diarize && row.found_at.is_some() && row.blocked.is_none()
-    };
-    let recommended = recommended_speech_llm(hardware);
+pub fn whisper_runs_on(hardware: &Hardware) -> RunsOn {
+    find_entry(WHISPER_ID)
+        .and_then(|entry| runs_on(entry, hardware))
+        .unwrap_or(RunsOn::Cpu)
+}
+
+fn is_usable(rows: &[ModelStatus], id: &str) -> bool {
     rows.iter()
-        .filter(usable)
-        .find(|row| Some(row.id) == recommended)
-        .or_else(|| rows.iter().find(usable))
-        .map(|row| row.id)
+        .any(|row| row.id == id && row.found_at.is_some() && row.blocked.is_none())
+}
+
+/// The separator to run: the one the settings prefer, or the other if only that is here. Core ML exists
+/// only on a Mac.
+fn usable_separator(
+    backend: SeparationBackend,
+    hardware: &Hardware,
+    rows: &[ModelStatus],
+) -> Option<&'static str> {
+    let coreml = (hardware.is_mac && is_usable(rows, MOSSFORMER2_COREML_ID))
+        .then_some(MOSSFORMER2_COREML_ID);
+    let onnx = is_usable(rows, MOSSFORMER2_ID).then_some(MOSSFORMER2_ID);
+    match backend {
+        SeparationBackend::Coreml => coreml.or(onnx),
+        SeparationBackend::Onnx => onnx.or(coreml),
+    }
+}
+
+fn separator_to_fetch(settings: &Settings, hardware: &Hardware) -> &'static str {
+    if hardware.is_mac && settings.separation_backend == SeparationBackend::Coreml {
+        MOSSFORMER2_COREML_ID
+    } else {
+        MOSSFORMER2_ID
+    }
+}
+
+/// What a job for these settings runs; `None` for one person, who needs no speaker model at all.
+/// Automatic takes what is here and refuses only with no speaker model; a quality asked for by name
+/// refuses without its models.
+pub fn choose_speaker_plan(
+    settings: &Settings,
+    hardware: &Hardware,
+    rows: &[ModelStatus],
+) -> AppResult<Option<SpeakerPlan>> {
+    if settings.speaker_count == 1 {
+        return Ok(None);
+    }
+    // Before the models: fetching them would not help.
+    if hardware.memory_gib < SEVERAL_SPEAKERS_RAM_GIB {
+        return Err(UserError::NeedsMemory {
+            model: MOSSFORMER2_ID.to_owned(),
+            required: SEVERAL_SPEAKERS_RAM_GIB,
+            available: hardware.memory_gib,
+            kind: if hardware.is_mac {
+                MemoryKind::Unified
+            } else {
+                MemoryKind::Ram
+            },
+        }
+        .into());
+    }
+    let separator = usable_separator(settings.separation_backend, hardware, rows);
+    let lacks_speaker_model = !is_usable(rows, NEMOTRON35_SPEAKER_ID);
+    let Some(separator) = separator.filter(|_| !lacks_speaker_model) else {
+        return Err(UserError::SpeakerModelsMissing {
+            missing: lacks_speaker_model
+                .then_some(Role::Diarize)
+                .into_iter()
+                .chain(separator.is_none().then_some(Role::Separate))
+                .collect(),
+            suggested: Some(
+                if lacks_speaker_model {
+                    NEMOTRON35_SPEAKER_ID
+                } else {
+                    separator_to_fetch(settings, hardware)
+                }
+                .to_owned(),
+            ),
+        }
+        .into());
+    };
+    let place = |id: &str| {
+        find_entry(id)
+            .and_then(|entry| runs_on(entry, hardware))
+            .unwrap_or(RunsOn::Cpu)
+    };
+    Ok(Some(SpeakerPlan {
+        diarize: NEMOTRON35_SPEAKER_ID,
+        whisper_on: whisper_runs_on(hardware),
+        diarize_on: place(NEMOTRON35_SPEAKER_ID),
+        separator,
+        separate_on: place(separator),
+        deep: hardware.memory_gib >= DEEP_SEPARATE_RAM_GIB,
+    }))
 }
 
 #[cfg(test)]
@@ -931,28 +961,6 @@ mod tests {
     }
 
     #[test]
-    fn radeon_gets_the_builds_vulkan_can_run() {
-        let radeon = |memory_gib: u64| Hardware {
-            is_mac: false,
-            memory_gib: 64,
-            gpu: Some(Gpu {
-                vendor: GpuVendor::Radeon,
-                name: "AMD Radeon".to_owned(),
-                memory_gib,
-            }),
-        };
-        assert_eq!(
-            recommended_speech_llm(&radeon(48)),
-            Some("nemotron-3.5-transcribe-q8")
-        );
-        assert_eq!(
-            recommended_speech_llm(&radeon(24)),
-            Some("nemotron-3.5-transcribe-iq4")
-        );
-        assert_eq!(recommended_speech_llm(&radeon(16)), None);
-    }
-
-    #[test]
     fn the_backend_depends_on_the_gpu_and_the_downloaded_runtime() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/catalog-backend");
         let _ = std::fs::remove_dir_all(&root);
@@ -991,7 +999,11 @@ mod tests {
 
     #[test]
     fn the_device_is_the_gpu_only_when_the_model_fits() {
-        let iq4 = find_entry("nemotron-3.5-transcribe-iq4").unwrap();
+        let iq4 = &ModelEntry {
+            min_ram_gib: 24,
+            min_gpu_memory_gib: 24,
+            ..*find_entry("nemotron-3.5-speaker").unwrap()
+        };
         let big = geforce("RTX 4090", 24);
         let small = geforce("RTX 3060", 12);
         assert_eq!(device_for(iq4, &mac(64), Backend::Default), "auto");
@@ -1000,91 +1012,23 @@ mod tests {
         assert_eq!(device_for(iq4, &big, Backend::Vulkan), "vulkan");
         assert_eq!(device_for(iq4, &small, Backend::Cuda), "cpu");
         assert_eq!(device_for(iq4, &small, Backend::Vulkan), "cpu");
-        assert_eq!(device_for(iq4, &mac(64), Backend::Vulkan), "cpu");
+        assert_eq!(device_for(iq4, &mac(16), Backend::Default), "cpu");
     }
 
     #[test]
-    fn only_a_model_with_a_limit_can_be_too_long() {
-        let unlimited = find_entry("yunet").unwrap();
-        assert_eq!(too_long(unlimited, 1e9), None);
-        let limited = ModelEntry {
-            max_audio_seconds: Some(600),
-            ..*unlimited
-        };
-        assert_eq!(too_long(&limited, 600.0), None);
-        assert_eq!(
-            too_long(&limited, 601.0),
-            Some(UserError::TooLongForModel {
-                model: "yunet".to_owned(),
-                limit_minutes: 10
-            })
-        );
-    }
-
-    #[test]
-    fn macs_get_the_build_their_memory_fits() {
-        assert_eq!(recommended_speech_llm(&mac(16)), None);
-        assert_eq!(
-            recommended_speech_llm(&mac(24)),
-            Some("nemotron-3.5-transcribe-q2l")
-        );
-        assert_eq!(
-            recommended_speech_llm(&mac(48)),
-            Some("nemotron-3.5-transcribe-iq4")
-        );
-        assert_eq!(
-            recommended_speech_llm(&mac(64)),
-            Some("nemotron-3.5-transcribe-q8")
-        );
-    }
-
-    #[test]
-    fn geforce_gets_its_own_builds() {
-        assert_eq!(
-            recommended_speech_llm(&geforce("NVIDIA GeForce RTX 5090", 32)),
-            Some("nemotron-3.5-transcribe-nvfp4")
-        );
-        assert_eq!(
-            recommended_speech_llm(&geforce("NVIDIA GeForce RTX 4090", 24)),
-            Some("nemotron-3.5-transcribe-iq4")
-        );
-        assert_eq!(
-            recommended_speech_llm(&geforce("NVIDIA GeForce RTX 4080", 16)),
-            Some("nemotron-3.5-transcribe-q2m")
-        );
-        assert_eq!(
-            recommended_speech_llm(&geforce("NVIDIA GeForce RTX 3060", 12)),
-            None
-        );
-    }
-
-    #[test]
-    fn a_12gb_vm_cannot_run_the_30b_model_but_can_run_the_small_one() {
+    fn a_machine_too_small_for_the_speaker_branch_says_how_much_it_needs() {
         let vm = Hardware {
             is_mac: false,
-            memory_gib: 12,
+            memory_gib: 2,
             gpu: None,
         };
-        let large = find_entry("nemotron-3.5-transcribe-iq4").unwrap();
-        let small = find_entry("whisper-large-v3-turbo").unwrap();
         assert_eq!(
-            blocked_reason(large, &vm).unwrap(),
+            blocked_reason(find_entry("nemotron-3.5-speaker").unwrap(), &vm).unwrap(),
             UserError::NeedsMemory {
-                model: "nemotron-3.5-transcribe-iq4".to_owned(),
-                required: 24,
-                available: 12
-            }
-        );
-        assert_eq!(blocked_reason(small, &vm), None);
-    }
-
-    #[test]
-    fn cuda_builds_need_a_nvidia_gpu() {
-        let entry = find_entry("nemotron-3.5-transcribe-nvfp4").unwrap();
-        assert_eq!(
-            blocked_reason(entry, &mac(128)).unwrap(),
-            UserError::NeedsNvidia {
-                model: "nemotron-3.5-transcribe-nvfp4".to_owned()
+                model: "nemotron-3.5-speaker".to_owned(),
+                required: 3,
+                available: 2,
+                kind: MemoryKind::Ram,
             }
         );
     }
@@ -1121,17 +1065,6 @@ mod tests {
     }
 
     #[test]
-    fn const_builders_also_work_at_run_time() {
-        let file = nemotron_file("a.gguf", 1, "00");
-        assert_eq!(
-            file.url(),
-            "https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/resolve/dbd06c5cad7a2f33c8e06be2fb3ef814dbd9aa59/a.gguf"
-        );
-        let entry = nemotron("id", "label", &[], 3);
-        assert_eq!(entry.min_memory_gib, 3);
-    }
-
-    #[test]
     fn direct_files_have_no_repository_and_may_be_archives() {
         let file = GEFORCE_FILES[0];
         assert_eq!(file.url(), "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip");
@@ -1154,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn a_geforce_counts_its_larger_memory_for_speaker_models_only() {
+    fn a_geforce_keeps_a_speaker_model_in_its_memory_with_little_ram() {
         let hardware = Hardware {
             is_mac: false,
             memory_gib: 8,
@@ -1165,30 +1098,28 @@ mod tests {
             }),
         };
         assert_eq!(
-            blocked_reason(
-                find_entry("nemotron-3.5-transcribe-iq4").unwrap(),
-                &hardware
-            ),
+            blocked_reason(find_entry("nemotron-3.5-speaker").unwrap(), &hardware),
             None
         );
         assert_eq!(
             blocked_reason(
                 find_entry("whisper-large-v3-turbo").unwrap(),
                 &Hardware {
-                    memory_gib: 2,
+                    memory_gib: 1,
                     ..hardware
                 }
             ),
             Some(UserError::NeedsMemory {
                 model: "whisper-large-v3-turbo".to_owned(),
-                required: 4,
-                available: 2
+                required: 3,
+                available: 1,
+                kind: MemoryKind::Ram,
             })
         );
     }
 
     #[test]
-    fn the_runtime_is_recommended_where_it_is_listed() {
+    fn the_optional_runtime_is_listed_but_not_recommended() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/catalog-recommended");
         let paths = AppPaths {
             data: root.join("data"),
@@ -1204,9 +1135,9 @@ mod tests {
             recommended,
             vec![
                 "whisper-large-v3-turbo",
+                "nemotron-3.5-speaker",
                 "mossformer2-ss-16k",
-                "yunet",
-                "geforce-runtime"
+                "yunet"
             ]
         );
     }
@@ -1218,20 +1149,6 @@ mod tests {
         assert_eq!(
             entry.files[0].url(),
             "https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx/resolve/fb27e5ff961cff11372473f9808ca00d83144f69/model.onnx"
-        );
-        let rows = [ModelStatus {
-            id: entry.id,
-            role: entry.role,
-            label: entry.label,
-            source_url: entry.source_url,
-            download_bytes: 1,
-            found_at: Some("/models/moss".into()),
-            blocked: None,
-            recommended: true,
-        }];
-        assert_eq!(
-            default_diarize_model(&geforce("NVIDIA GeForce RTX 3060", 12), &rows),
-            None
         );
     }
 
@@ -1248,67 +1165,289 @@ mod tests {
         }
     }
 
-    #[test]
-    fn one_person_needs_no_speaker_models() {
-        assert_eq!(missing_speaker_models(1, &[]), Vec::<Role>::new());
-    }
-
-    fn separator(found: bool, blocked: bool) -> ModelStatus {
+    fn moss(found: bool) -> ModelStatus {
         ModelStatus {
             role: Role::Separate,
-            ..row("mossformer2-ss-16k", found, blocked)
+            ..row("mossformer2-ss-16k", found, false)
+        }
+    }
+
+    fn speaker_branch() -> ModelStatus {
+        row("nemotron-3.5-speaker", true, false)
+    }
+
+    fn asked() -> Settings {
+        Settings {
+            speaker_count: 2,
+            ..Settings::default()
+        }
+    }
+
+    fn windows(ram: u64, gram: Option<u64>) -> Hardware {
+        Hardware {
+            is_mac: false,
+            memory_gib: ram,
+            gpu: gram.map(|memory_gib| Gpu {
+                vendor: GpuVendor::Radeon,
+                name: "R".to_owned(),
+                memory_gib,
+            }),
         }
     }
 
     #[test]
-    fn several_people_or_automatic_need_both_models() {
-        let nemotron = || row("nemotron-3.5-transcribe-q2l", true, false);
+    fn one_person_has_no_plan_and_needs_no_speaker_models() {
+        let settings = Settings {
+            speaker_count: 1,
+            ..Settings::default()
+        };
+        assert_eq!(choose_speaker_plan(&settings, &mac(64), &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn several_people_always_run_all_three_and_the_memory_decides_where() {
+        let rows = [speaker_branch(), moss(true)];
+        let table = |hardware: Hardware| {
+            let plan = choose_speaker_plan(&asked(), &hardware, &rows)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.diarize, "nemotron-3.5-speaker");
+            assert_eq!(plan.separator, "mossformer2-ss-16k");
+            (
+                plan.whisper_on,
+                plan.diarize_on,
+                plan.separate_on,
+                plan.deep,
+            )
+        };
         assert_eq!(
-            missing_speaker_models(0, &[nemotron(), separator(true, false)]),
-            Vec::<Role>::new()
+            table(windows(8, None)),
+            (RunsOn::Cpu, RunsOn::Cpu, RunsOn::Cpu, false)
         );
         assert_eq!(
-            missing_speaker_models(2, &[nemotron(), separator(true, false)]),
-            Vec::<Role>::new()
+            table(windows(8, Some(3))),
+            (RunsOn::Gpu, RunsOn::Cpu, RunsOn::Cpu, false)
         );
         assert_eq!(
-            missing_speaker_models(3, &[]),
-            vec![Role::Diarize, Role::Separate]
+            table(windows(8, Some(4))),
+            (RunsOn::Gpu, RunsOn::Gpu, RunsOn::Cpu, false)
         );
         assert_eq!(
-            missing_speaker_models(0, &[nemotron()]),
-            vec![Role::Separate]
+            table(windows(16, None)),
+            (RunsOn::Cpu, RunsOn::Cpu, RunsOn::Cpu, true)
         );
         assert_eq!(
-            missing_speaker_models(2, &[separator(true, false)]),
-            vec![Role::Diarize]
+            table(windows(16, Some(12))),
+            (RunsOn::Gpu, RunsOn::Gpu, RunsOn::Cpu, true)
+        );
+        assert_eq!(
+            table(mac(8)),
+            (RunsOn::Gpu, RunsOn::Gpu, RunsOn::Cpu, false)
         );
     }
 
     #[test]
-    fn a_model_not_downloaded_or_too_big_for_this_machine_counts_as_missing() {
+    fn too_little_memory_says_how_much_it_takes_whatever_is_here() {
+        let refused = |hardware: Hardware, rows: &[ModelStatus]| {
+            serde_json::to_value(choose_speaker_plan(&asked(), &hardware, rows).unwrap_err())
+                .unwrap()
+        };
+        let low = refused(windows(7, Some(12)), &[speaker_branch(), moss(true)]);
+        assert_eq!(low["required"], 8);
+        assert_eq!(low["available"], 7);
+        assert_eq!(low["kind"], "ram");
+        let mac_low = refused(mac(4), &[]);
+        assert_eq!(mac_low["required"], 8);
+        assert_eq!(mac_low["available"], 4);
+        assert_eq!(mac_low["kind"], "unified");
+    }
+
+    #[test]
+    fn missing_models_stop_the_job_and_name_what_to_fetch() {
+        let refused = |rows: &[ModelStatus]| {
+            serde_json::to_value(choose_speaker_plan(&asked(), &mac(64), rows).unwrap_err())
+                .unwrap()
+        };
+        let both = refused(&[]);
+        assert_eq!(both["missing"], serde_json::json!(["diarize", "separate"]));
+        assert_eq!(both["suggested"], "nemotron-3.5-speaker");
+        let speaker = refused(&[moss(true)]);
+        assert_eq!(speaker["missing"], serde_json::json!(["diarize"]));
+        assert_eq!(speaker["suggested"], "nemotron-3.5-speaker");
+        let separator = refused(&[speaker_branch()]);
+        assert_eq!(separator["missing"], serde_json::json!(["separate"]));
+        assert_eq!(separator["suggested"], "mossformer2-ss-16k");
+        let unable = refused(&[row("nemotron-3.5-speaker", true, true), moss(true)]);
+        assert_eq!(unable["missing"], serde_json::json!(["diarize"]));
+    }
+
+    fn coreml(found: bool) -> ModelStatus {
+        ModelStatus {
+            role: Role::Separate,
+            ..row("mossformer2-ss-16k-coreml", found, false)
+        }
+    }
+
+    #[test]
+    fn a_mac_runs_the_separator_the_settings_prefer_or_the_one_that_is_here() {
+        let chosen = |backend: SeparationBackend, hardware: Hardware, rows: &[ModelStatus]| {
+            let plan = choose_speaker_plan(
+                &Settings {
+                    separation_backend: backend,
+                    ..asked()
+                },
+                &hardware,
+                rows,
+            )
+            .unwrap()
+            .unwrap();
+            (plan.separator, plan.separate_on)
+        };
+        let both = [speaker_branch(), moss(true), coreml(true)];
         assert_eq!(
-            missing_speaker_models(
-                2,
-                &[
-                    row("nemotron-3.5-transcribe-q2l", false, false),
-                    separator(true, true)
-                ]
-            ),
-            vec![Role::Diarize, Role::Separate]
+            chosen(SeparationBackend::Coreml, mac(16), &both),
+            ("mossformer2-ss-16k-coreml", RunsOn::Gpu)
         );
         assert_eq!(
-            missing_speaker_models(
-                2,
-                &[
-                    ModelStatus {
-                        role: Role::Transcribe,
-                        ..row("whisper-large-v3-turbo", true, false)
-                    },
-                    separator(false, false)
-                ]
+            chosen(SeparationBackend::Onnx, mac(16), &both),
+            ("mossformer2-ss-16k", RunsOn::Cpu)
+        );
+        assert_eq!(
+            chosen(
+                SeparationBackend::Coreml,
+                mac(16),
+                &[speaker_branch(), moss(true)]
             ),
-            vec![Role::Diarize, Role::Separate]
+            ("mossformer2-ss-16k", RunsOn::Cpu)
+        );
+        assert_eq!(
+            chosen(
+                SeparationBackend::Onnx,
+                mac(16),
+                &[speaker_branch(), coreml(true)]
+            ),
+            ("mossformer2-ss-16k-coreml", RunsOn::Gpu)
+        );
+        assert_eq!(
+            chosen(SeparationBackend::Coreml, windows(16, None), &both),
+            ("mossformer2-ss-16k", RunsOn::Cpu)
+        );
+    }
+
+    #[test]
+    fn a_mac_set_to_core_ml_is_told_to_fetch_core_ml() {
+        let refused = serde_json::to_value(
+            choose_speaker_plan(
+                &Settings {
+                    separation_backend: SeparationBackend::Coreml,
+                    ..asked()
+                },
+                &mac(16),
+                &[speaker_branch()],
+            )
+            .unwrap_err(),
+        )
+        .unwrap();
+        assert_eq!(refused["suggested"], "mossformer2-ss-16k-coreml");
+    }
+
+    #[test]
+    fn whisper_is_one_model_that_only_moves_between_gpu_and_cpu() {
+        assert_eq!(whisper_runs_on(&windows(8, Some(4))), RunsOn::Gpu);
+        assert_eq!(whisper_runs_on(&windows(8, Some(1))), RunsOn::Cpu);
+        assert_eq!(whisper_runs_on(&windows(8, None)), RunsOn::Cpu);
+        assert_eq!(whisper_runs_on(&windows(1, None)), RunsOn::Cpu);
+        assert_eq!(whisper_runs_on(&mac(8)), RunsOn::Gpu);
+    }
+
+    #[test]
+    fn ram_and_gpu_memory_are_judged_apart() {
+        let entry = &ModelEntry {
+            min_ram_gib: 20,
+            min_gpu_memory_gib: 20,
+            min_ram_with_gpu_gib: 4,
+            ..*find_entry("nemotron-3.5-speaker").unwrap()
+        };
+        let windows = |ram: u64, gram: u64| windows(ram, Some(gram));
+        // GPU memory enough: little RAM is needed beside it.
+        assert_eq!(runs_on(entry, &windows(8, 24)), Some(RunsOn::Gpu));
+        assert_eq!(
+            device_for(entry, &windows(8, 24), Backend::Vulkan),
+            "vulkan"
+        );
+        // Too little GPU memory: the CPU from RAM.
+        assert_eq!(runs_on(entry, &windows(24, 8)), Some(RunsOn::Cpu));
+        assert_eq!(device_for(entry, &windows(24, 8), Backend::Vulkan), "cpu");
+        // Neither, and the RAM it asks for is what is reported.
+        assert_eq!(runs_on(entry, &windows(8, 8)), None);
+        assert_eq!(
+            blocked_reason(entry, &windows(8, 8)),
+            Some(UserError::NeedsMemory {
+                model: "nemotron-3.5-speaker".to_owned(),
+                required: 20,
+                available: 8,
+                kind: MemoryKind::Ram,
+            })
+        );
+        // GPU memory enough but no RAM beside it.
+        assert_eq!(runs_on(entry, &windows(2, 24)), None);
+    }
+
+    #[test]
+    fn a_mac_has_one_memory_for_both() {
+        let entry = &ModelEntry {
+            min_ram_gib: 20,
+            min_gpu_memory_gib: 20,
+            min_ram_with_gpu_gib: 4,
+            ..*find_entry("nemotron-3.5-speaker").unwrap()
+        };
+        assert_eq!(mac(32).gpu_memory_gib(), Some(32));
+        assert_eq!(runs_on(entry, &mac(32)), Some(RunsOn::Gpu));
+        assert_eq!(device_for(entry, &mac(32), Backend::Default), "auto");
+        assert_eq!(runs_on(entry, &mac(16)), None);
+        assert_eq!(
+            blocked_reason(entry, &mac(16)),
+            Some(UserError::NeedsMemory {
+                model: "nemotron-3.5-speaker".to_owned(),
+                required: 20,
+                available: 16,
+                kind: MemoryKind::Unified,
+            })
+        );
+        let cpu_only = find_entry("mossformer2-ss-16k").unwrap();
+        assert_eq!(runs_on(cpu_only, &mac(32)), Some(RunsOn::Cpu));
+        assert_eq!(device_for(cpu_only, &mac(32), Backend::Default), "cpu");
+    }
+
+    #[test]
+    fn every_model_a_job_for_several_people_needs_is_recommended() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/catalog-low-memory");
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let recommended: Vec<&str> = statuses(
+            &Hardware {
+                is_mac: false,
+                memory_gib: 6,
+                gpu: None,
+            },
+            &paths,
+            &[],
+        )
+        .iter()
+        .filter(|row| row.recommended)
+        .map(|row| row.id)
+        .collect();
+        assert_eq!(
+            recommended,
+            vec![
+                "whisper-large-v3-turbo",
+                "nemotron-3.5-speaker",
+                "mossformer2-ss-16k",
+                "yunet"
+            ]
         );
     }
 }

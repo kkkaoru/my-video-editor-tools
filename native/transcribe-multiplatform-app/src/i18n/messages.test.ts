@@ -1,5 +1,6 @@
 // Runs with bun: placeholders fill in and backend errors read as sentences.
 import { expect, it } from "vitest";
+import type { BackendError } from "../backend/types.ts";
 import { enMessages } from "./locale-en.ts";
 import { errorText, format, roleName } from "./messages.ts";
 
@@ -35,13 +36,13 @@ it("names transcription for any other role", () => {
 
 it("states the memory numbers when they are known", () => {
   expect(errorText(enMessages, { code: "needs_memory", required: 32, available: 16 }, "Big")).toBe(
-    "Big needs 32 GB of memory; this computer has 16 GB. Choose a smaller model.",
+    "Big needs 32 GB of RAM; this computer has 16 GB. Choose a smaller model.",
   );
 });
 
 it("falls back to zero when the memory numbers are absent", () => {
   expect(errorText(enMessages, { code: "needs_memory" }, "Big")).toBe(
-    "Big needs 0 GB of memory; this computer has 0 GB. Choose a smaller model.",
+    "Big needs 0 GB of RAM; this computer has 0 GB. Choose a smaller model.",
   );
 });
 
@@ -59,12 +60,6 @@ it("shows the detail of an unknown code", () => {
 
 it("shows an unknown code when it has no detail", () => {
   expect(errorText(enMessages, { code: "new_code" }, "")).toBe("new_code");
-});
-
-it("states the recording limit when it is known", () => {
-  expect(errorText(enMessages, { code: "too_long_for_model", limit_minutes: 7 }, "Big")).toBe(
-    "Big takes recordings up to 7 minutes. This video is longer. Set the number of speakers to 1.",
-  );
 });
 
 it("names every model role", () => {
@@ -95,6 +90,19 @@ it("says which models are missing and what to do", () => {
 it("names the file that is not a profile", () => {
   expect(errorText(enMessages, { code: "profile_invalid", file: "bad.json" }, "")).toBe(
     "bad.json cannot be read as a profile. Choose a file this app exported.",
+  );
+});
+
+it("names the memory that runs short", () => {
+  const error: BackendError = { code: "needs_memory", required: 24, available: 12, kind: "gpu_memory" };
+  expect(errorText(enMessages, error, "Nemotron")).toBe(
+    "Nemotron needs 24 GB of GPU memory; this computer has 12 GB. Choose a smaller model.",
+  );
+  expect(errorText(enMessages, { ...error, kind: "unified" }, "Nemotron")).toBe(
+    "Nemotron needs 24 GB of unified memory (shared RAM and GPU memory); this computer has 12 GB. Choose a smaller model.",
+  );
+  expect(errorText(enMessages, { ...error, kind: "ram" }, "Nemotron")).toBe(
+    "Nemotron needs 24 GB of RAM; this computer has 12 GB. Choose a smaller model.",
   );
 });
 

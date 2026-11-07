@@ -11,6 +11,12 @@ export const koMessages: Messages = {
   uiThemeLabel: "표시 모드",
   uiThemeSystem: "시스템에 맞춤",
   uiThemeLight: "밝게",
+  licensesOpen: "오픈 소스 라이선스",
+  licensesLoading: "라이선스를 읽고 있습니다",
+  licensesFailed: "라이선스 목록을 읽을 수 없습니다.",
+  licensesNoText: "이 패키지에는 라이선스 본문이 없습니다.",
+  licensesUnknown: "표시 없음",
+  licensesClose: "닫기",
   uiThemeDark: "어둡게",
   updateCheck: "업데이트 확인",
   updateChecking: "업데이트를 확인하고 있습니다",
@@ -43,15 +49,35 @@ export const koMessages: Messages = {
   speakerLoadHeavy: "고부하",
   speakerOptionLoad: "{label} ({load})",
   speakerLoadLightDetail: "Whisper만 사용하며, 음성 분리와 화자 분리는 하지 않습니다.",
-  speakerLoadHeavyDetail:
-    "Nemotron, MossFormer2, Whisper 순서로 처리합니다. 시간이 크게 늘고 메모리도 많이 씁니다.",
-  speakerLoadHeavyEstimate:
-    "Mac에서 측정한 기준입니다. 4시간 동영상은 음성 분리에만 약 2시간 20분이 걸립니다(Whisper 시간은 별도). 메모리는 음성 분리에 최대 약 8GB, 화자 분리(Nemotron)에 약 22GB를 씁니다. 동영상과 컴퓨터에 따라 달라집니다. Windows는 측정하지 않았습니다.",
-  speakerModelsMissing: "이 인원수에 필요한 모델이 없습니다: {roles}.",
+  speakerLoadHeavyDetail: "화자를 구별하므로 시간이 크게 늘고 RAM이나 GPU 메모리도 많이 씁니다.",
+  speakerFiguresNote:
+    "Whisper는 CPU에서 약 1시간 동영상 1개에 약 {whisperCpuMinutes}분 걸렸습니다(다시 실행 없음). 이 수치는 Mac 한 대에서 측정했으며 동영상과 컴퓨터에 따라 달라집니다. Windows의 RAM과 GPU 메모리는 측정하지 않았습니다.",
+  memoryUnified: "통합 메모리(RAM과 GPU 메모리 공유)",
+  memoryRam: "RAM",
+  memoryGpu: "GPU 메모리",
+  speakerPlanRuns: "실행 위치: Whisper는 {whisper}, 화자 분리는 {diarize}.",
+  speakerPlanRunsSeparate: " 음성 분리는 {separate}.",
+  speakerPlanDeep: "3명 이상이 동시에 말하면 두 번 분리하므로 시간이 늘어납니다. 최대 4줄로 표시합니다.",
+  separationBackend: "음성 분리 실행 방식",
+  separationBackends: { onnx: "CPU(ONNX Runtime)", coreml: "Mac GPU(Core ML)" },
+  speakerPlanLine: "실행 모델: {models}.",
+  speakerFactLabels: {
+    runs: "실행되는 것",
+    rows: "자막 줄",
+    memory: "RAM과 GPU 메모리",
+    time: "시간(Whisper 별도)",
+  },
+  speakerFacts: {
+    runs: "Nemotron 3.5 인코더와 MossFormer2",
+    rows: "겹친 목소리를 여러 줄로 표시합니다.",
+    memory:
+      "Mac의 {memoryUnified}: Nemotron 3.5 인코더에 {encoderGb} GB, MossFormer2는 Core ML에서 약 {separateCoreMlGb} GB(추정), CPU의 ONNX Runtime에서 {separateGb} GB({separateSeconds}초 구간). 작업 전체 최대치는 약 {jobPeakGb} GB.",
+    time: "Nemotron 3.5 인코더는 음성 1시간에 Mac GPU에서 약 {encoderGpuSeconds}초, CPU에서 약 {encoderCpuSeconds}초. 음성 분리는 약 1시간 동영상 1개의 측정값으로 Core ML에서 약 {separateCoreMlMinutes}분, CPU에서 약 {separateCpuMinutes}분입니다. 분리할 구간의 길이에 따라 달라집니다. 3명 이상이 동시에 말하면 두 번 분리하므로 더 걸립니다.",
+  },
   openModelsTab: "“{tabModels}” 탭 열기",
   runWithOneSpeaker: "1명으로 실행",
   roleSeparate: "음성 분리",
-  badgeRequiredForSpeakers: "화자 2명 이상일 때 필수",
+  badgeUsedBySteps: "2명 이상에서 사용",
   speakerRolesHint: "화자가 2명 이상이거나 인원수를 자동으로 정할 때 필요합니다.",
   profilesHeading: "프로필",
   profilesHint:
@@ -212,15 +238,13 @@ export const koMessages: Messages = {
   resetPalette: "처음 색상으로 되돌리기",
   modelsHeading: "모델",
   noRecommendedSpeakerModel:
-    "이 컴퓨터에 추천하는 Nemotron 3.5 모델이 없습니다. 화자 1명의 자막은 만들 수 있습니다.",
+    "이 컴퓨터에 추천하는 화자 분리 모델이 없습니다. 화자 1명의 자막은 만들 수 있습니다.",
   modelsHint:
     "이 컴퓨터에 알맞은 모델에는 추천 표시가 붙습니다. 이미 다운로드한 모델은 자동으로 찾아 다시 사용합니다.",
   addModelFolder: "기존 모델이 있는 폴더 추가",
   modelFolders: "검색할 폴더",
   badgeRecommended: "이 컴퓨터에 추천",
   badgePresent: "사용 가능",
-  useModel: "{name} 사용",
-  inUseModel: "사용 중: {name}",
   download: "{name} 다운로드 ({size})",
   downloadCancel: "{name} 다운로드 취소",
   downloadProgress: "{done} / {total}",
@@ -237,11 +261,8 @@ export const koMessages: Messages = {
     no_words: "오디오에서 말을 찾지 못했습니다.",
     model_missing: "{model}이(가) 설치되어 있지 않습니다. 모델에서 다운로드하세요.",
     no_model_for_role: "{role} 모델이 없습니다. 모델 탭에서 내려받으세요.",
-    needs_nvidia: "{model}에는 NVIDIA GPU가 필요합니다. 모델에서 다른 모델을 선택하세요.",
     needs_memory:
-      "{model}에는 메모리 {required} GB가 필요하지만 이 컴퓨터는 {available} GB입니다. 더 작은 모델을 선택하세요.",
-    too_long_for_model:
-      "{model}은(는) 최대 {limit}분 음성을 지원합니다. 이 동영상은 더 깁니다. 화자 수를 1명으로 하세요.",
+      "{model}에는 {memory} {required} GB가 필요하지만 이 컴퓨터는 {available} GB입니다. 더 작은 모델을 선택하세요.",
     transcript_missing:
       "{file} 옆에 대본 데이터가 없어 다시 쓸 수 없습니다. 같은 이름의 .transcript.json 파일을 같은 폴더에 두세요.",
     profile_exists: "{name} 프로필이 이미 있습니다. 다른 이름을 쓰거나 목록에서 덮어쓰세요.",
@@ -262,15 +283,14 @@ export const koMessages: Messages = {
   },
   modelNotes: {
     "whisper-large-v3-turbo": "받아쓰기. 같은 모델이 Mac (Metal)과 Windows (Vulkan)에서 동작합니다.",
-    "nemotron-3.5-transcribe-iq4": "화자 분리. 32 GB 이상의 Mac, 24 GB 이상의 GPU, CPU용입니다.",
-    "nemotron-3.5-transcribe-nvfp4": "화자 분리. GeForce RTX 50 시리즈 같은 Blackwell GPU용입니다.",
-    "nemotron-3.5-transcribe-q2m": "화자 분리. 16 GB GPU용이며, 녹음 한 건은 약 7분까지입니다.",
-    "nemotron-3.5-transcribe-q2l": "화자 분리. 24 GB Mac용입니다.",
-    "mossformer2-ss-16k": "겹친 목소리를 나눕니다. 화자가 2명 이상일 때 필수입니다.",
-    "nemotron-3.5-transcribe-q8": "화자 분리. 최고 품질이며 64 GB Mac과 48 GB GPU용입니다.",
+    "nemotron-3.5-speaker":
+      "화자 구별에만 쓰는 인코더입니다. GPU나 CPU에서 실행됩니다. 받아쓰기는 Whisper turbo가 합니다. 폴더에 있는 전체 모델도 쓸 수 있습니다.",
+    "mossformer2-ss-16k-coreml": "겹친 목소리를 Mac의 GPU(Core ML)로 나눕니다. “고품질”에서 사용합니다.",
+    "mossformer2-ss-16k": "겹친 목소리를 나눕니다. “고품질”에서 사용합니다.",
     yunet: "실제 얼굴. 앱에 포함되어 있으며 Mac과 Windows에서 같은 결과를 냅니다.",
     "avatar-face-yolo": "아바타 얼굴. 내보낸 ONNX 파일을 모델 폴더에 넣으면 사용할 수 있습니다.",
-    "geforce-runtime": "화자 분리 도구의 CUDA 버전. 없으면 화자 분리를 CPU에서 실행합니다.",
+    "geforce-runtime":
+      "선택 사항입니다. 화자 구별을 GPU로 빠르게 합니다. 없어도 CPU로 실행됩니다. GPU에서 실패하면 CPU로 돌아갑니다.",
   },
   help: {
     version: "버전 {version}",
@@ -339,8 +359,7 @@ export const koMessages: Messages = {
             notes: [
               "인원 옆의 “?”를 누르면 인원을 고르는 이유를 읽을 수 있습니다.",
               "한 사람만 말하면 1명 그대로 둡니다. 더 빨리 끝납니다.",
-              "1명은 가벼운 처리로 Whisper만 실행됩니다. 자동과 2명 이상은 고부하로 Nemotron, MossFormer2, Whisper가 실행되어 시간이 크게 늘고 메모리도 많이 씁니다.",
-              "음성 분리에는 분리할 음성과 비슷한 시간이 걸립니다. 분리할 부분은 음성의 약 절반입니다. {speakerLoadHeavyEstimate}",
+              "1명은 가벼운 처리로 Whisper만 실행됩니다. 자동과 2명 이상은 고부하로 Nemotron과 MossFormer2도 실행되어 시간이 크게 늘고 RAM이나 GPU 메모리도 많이 씁니다.",
               "넣을 수 있는 동영상: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. 자막 파일: .drt .fcpxml .srt .ttml .transcript.json. 다른 파일을 넣으면 넣을 수 없다는 안내가 나옵니다.",
               "동영상을 여러 개 넣으면 하나씩 차례로 만듭니다.",
               "처음 만들 때는 모델을 이 앱에서 쓸 수 있는 형태로 바꾸는 작업이 더 있습니다.",
@@ -369,6 +388,18 @@ export const koMessages: Messages = {
               ".ttml: 색과 위치가 든 자막 파일입니다.",
               ".srt: 글자와 시간이 든 자막입니다. 색은 나오지 않을 수 있습니다. 테두리와 위치는 들어 있지 않습니다.",
               ".transcript.json: 자막을 다시 쓸 때 쓰는 데이터입니다. 지우지 마세요.",
+            ],
+          },
+          {
+            heading: "화자가 2명 이상일 때의 처리",
+            intro:
+              "자동이나 화자 2명 이상일 때는 Whisper turbo, Nemotron 3.5 인코더, MossFormer2가 실행됩니다. 받아쓰기는 항상 Whisper turbo가 하고, Nemotron은 화자 판별에만 씁니다.",
+            steps: [],
+            notes: [
+              "겹친 목소리를 여러 줄로 표시합니다. Mac의 {memoryUnified}: Nemotron 3.5 인코더에 {encoderGb} GB, MossFormer2는 Core ML에서 약 {separateCoreMlGb} GB(추정). 3명 이상이 동시에 말하면 두 번 분리하므로 더 걸립니다.",
+              "Mac에서는 “{separationBackend}”에서 음성 분리를 CPU와 Mac GPU 중 어디서 실행할지 고릅니다.",
+              "Nemotron 3.5 인코더는 음성 1시간에 Mac GPU에서 약 {encoderGpuSeconds}초, CPU에서 약 {encoderCpuSeconds}초. 음성 분리는 약 1시간 동영상 1개의 측정값으로 Core ML에서 약 {separateCoreMlMinutes}분, CPU에서 약 {separateCpuMinutes}분입니다. 분리할 구간의 길이에 따라 달라집니다.",
+              "{speakerFiguresNote}",
             ],
           },
         ],
@@ -514,7 +545,7 @@ export const koMessages: Messages = {
               "“{uiLanguageLabel}” 항목에서 언어를 고릅니다. 화면이 바로 바뀝니다.",
               "“{uiThemeLabel}” 항목에서 “{uiThemeLight}” 또는 “{uiThemeDark}” 항목을 고릅니다. “{uiThemeSystem}” 항목은 컴퓨터 설정을 따릅니다.",
             ],
-            notes: [],
+            notes: ["탭 맨 아래의 “{licensesOpen}”에서 앱의 라이브러리와 라이선스를 볼 수 있습니다."],
           },
           {
             heading: "앱 업데이트하기",
@@ -546,7 +577,8 @@ export const koMessages: Messages = {
           },
           {
             heading: "화자 2명 이상의 자막을 만들 수 없을 때",
-            intro: "자동과 2명 이상에는 Nemotron 3.5 모델과 MossFormer2가 필요합니다.",
+            intro:
+              "자동과 2명 이상에는 Nemotron 3.5 인코더와 MossFormer2, 그리고 8 GB 이상의 RAM이 필요합니다.",
             steps: [],
             notes: [
               "“{tabModels}” 탭에서 없는 모델을 내려받습니다. 이 컴퓨터에 맞지 않으면 “{runWithOneSpeaker}” 버튼을 누릅니다.",

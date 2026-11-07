@@ -12,17 +12,19 @@ use std::time::Instant;
 
 /// Measured on an M5 Pro with Whisper turbo and YOLO faces: 85 min video in 18 min.
 const FAST_TRANSCRIBE_RATE: f64 = 0.09;
-const FAST_DIARIZE_RATE: f64 = 0.02;
-const FAST_SPEECH_LLM_RATE: f64 = 0.01;
+const FAST_DIARIZE_RATE: f64 = 0.018;
+const FAST_SPEECH_LLM_RATE: f64 = 0.005;
 /// Measured under x64 emulation on a 4-core ARM VM: 20 s of video in 84 s; plain x64 CPUs do better.
 const CPU_TRANSCRIBE_RATE: f64 = 3.0;
-const CPU_DIARIZE_RATE: f64 = 0.5;
-const CPU_SPEECH_LLM_RATE: f64 = 0.1;
+const CPU_DIARIZE_RATE: f64 = 0.24;
+const CPU_SPEECH_LLM_RATE: f64 = 0.043;
 /// Measured on an M5 Pro, two hours of three people: 23% of it goes through the model, on the CPU.
-const SEPARATE_RATE: f64 = 0.22;
-const FAST_RETRANSCRIBE_RATE: f64 = 0.035;
+const SEPARATE_RATE: f64 = 0.36;
+/// Measured on an hour of three people, second pass included: Core ML on a Mac, 296 s.
+const COREML_SEPARATE_RATE: f64 = 0.08;
+const FAST_RETRANSCRIBE_RATE: f64 = 0.05;
 /// Two tracks of that 23%, at the CPU's speed of transcribing.
-const CPU_RETRANSCRIBE_RATE: f64 = 1.4;
+const CPU_RETRANSCRIBE_RATE: f64 = 0.8;
 const EXTRACT_RATE: f64 = 0.01;
 const FACES_RATE: f64 = 0.1;
 const CONVERT_SECONDS: f64 = 60.0;
@@ -51,6 +53,7 @@ pub enum Stage {
 impl Stage {
     /// The learned speeds of the steps for voices talking at once, per second of the whole video.
     pub const SEPARATE_KEY: &'static str = "separate";
+    pub const COREML_SEPARATE_KEY: &'static str = "separate/coreml";
     pub const RETRANSCRIBE_KEY: &'static str = "retranscribe";
 }
 
@@ -94,7 +97,9 @@ pub struct Tracker {
     plan: Vec<PlannedStage>,
     rates: StageRates,
     duration: f64,
-    current: Option<(usize, Instant)>,
+    /// When each step was first and last heard from. Steps can overlap; the bar follows the one in `shown`.
+    spans: Vec<Option<(Instant, Instant)>>,
+    shown: Option<usize>,
 }
 
 fn default_rate(stage: Stage, inputs: RateInputs) -> f64 {
@@ -160,10 +165,15 @@ impl StageRates {
         inputs: RateInputs,
         duration: f64,
     ) -> PlannedStage {
+        let fallback = if key == Stage::COREML_SEPARATE_KEY {
+            COREML_SEPARATE_RATE
+        } else {
+            default_rate(stage, inputs)
+        };
         PlannedStage {
             stage,
             key: Some(key.to_owned()),
-            expected_seconds: self.rate(key, default_rate(stage, inputs)) * duration,
+            expected_seconds: self.rate(key, fallback) * duration,
         }
     }
 }
@@ -192,46 +202,44 @@ impl Tracker {
     #[must_use]
     pub fn new(plan: Vec<PlannedStage>, rates: StageRates, duration: f64) -> Self {
         Self {
+            spans: vec![None; plan.len()],
             plan,
             rates,
             duration,
-            current: None,
+            shown: None,
         }
     }
 
-    fn learn_finished(&mut self, now: Instant) {
-        let Some((index, started)) = self.current else {
-            return;
-        };
-        let elapsed = now.duration_since(started).as_secs_f64();
-        let Some(key) = self.plan.get(index).and_then(|step| step.key.clone()) else {
-            return;
-        };
-        // Sub-second steps carry only timer noise.
-        if self.duration > 0.0 && elapsed >= MIN_LEARNED_SECONDS {
-            self.rates.learn(&key, elapsed / self.duration);
-        }
+    fn index_of(&self, stage: Stage) -> usize {
+        self.plan
+            .iter()
+            .position(|step| step.stage == stage)
+            .unwrap_or(0)
     }
 
-    fn enter(&mut self, index: usize, now: Instant) -> Instant {
-        match self.current {
-            Some((current, started)) if current == index => started,
-            _ => {
-                self.learn_finished(now);
-                self.current = Some((index, now));
-                now
-            }
-        }
+    /// Returns when the step started.
+    fn heard_from(&mut self, index: usize, now: Instant) -> Instant {
+        let Some(span) = self.spans.get_mut(index) else {
+            return now;
+        };
+        let started = span.map_or(now, |(started, _)| started);
+        *span = Some((started, now));
+        started
+    }
+
+    /// A step running behind the one on the bar: only its time is kept.
+    pub fn note(&mut self, stage: Stage, now: Instant) {
+        self.heard_from(self.index_of(stage), now);
     }
 
     /// `fraction` is the tool's own progress; `None` when it reports none.
     pub fn update(&mut self, stage: Stage, fraction: Option<f64>, now: Instant) -> Progress {
-        let index = self
-            .plan
-            .iter()
-            .position(|step| step.stage == stage)
-            .unwrap_or(0);
-        let started = self.enter(index, now);
+        let index = self.index_of(stage);
+        if let Some(previous) = self.shown.filter(|previous| *previous != index) {
+            self.heard_from(previous, now);
+        }
+        self.shown = Some(index);
+        let started = self.heard_from(index, now);
         let elapsed = now.duration_since(started).as_secs_f64();
         let expected = self
             .plan
@@ -247,7 +255,7 @@ impl Tracker {
             stage_fraction,
             determinate: fraction.is_some(),
             plan: self.plan.iter().map(|step| step.stage).collect(),
-            remaining_seconds: Some(self.remaining(index, elapsed, expected, fraction)),
+            remaining_seconds: Some(self.remaining(index, elapsed, fraction, now)),
         }
     }
 
@@ -263,26 +271,58 @@ impl Tracker {
         ((done + expected * fraction) / total).clamp(0.0, 1.0)
     }
 
-    fn remaining(&self, index: usize, elapsed: f64, expected: f64, fraction: Option<f64>) -> f64 {
-        let later: f64 = self
+    fn remaining(&self, index: usize, elapsed: f64, fraction: Option<f64>, now: Instant) -> f64 {
+        let expected = self
             .plan
-            .get(index + 1..)
-            .unwrap_or_default()
-            .iter()
-            .map(|step| step.expected_seconds)
-            .sum();
+            .get(index)
+            .map_or(0.0, |step| step.expected_seconds);
         let here = fraction
             .filter(|reported| *reported >= MIN_FRACTION_FOR_EXTRAPOLATION)
             .map_or((expected - elapsed).max(0.0), |reported| {
                 elapsed * (1.0 - reported.min(1.0)) / reported
             });
-        here + later
+        let later = self
+            .plan
+            .iter()
+            .zip(&self.spans)
+            .skip(index + 1)
+            .map(|(step, span)| (step.expected_seconds, *span));
+        // What already runs alongside ends with this step or after it; what has not started comes after.
+        let (beside, ahead) =
+            later.fold(
+                (here, 0.0_f64),
+                |(beside, ahead), (expected, span)| match span {
+                    Some((started, _)) => {
+                        let left = expected - now.duration_since(started).as_secs_f64();
+                        (beside.max(left), ahead)
+                    }
+                    None => (beside, ahead + expected),
+                },
+            );
+        beside + ahead
     }
 
     /// Records the last step and keeps what this run taught.
     pub fn finish(&mut self, now: Instant) -> AppResult<()> {
-        self.learn_finished(now);
-        self.current = None;
+        if let Some(last) = self.shown.take() {
+            self.heard_from(last, now);
+        }
+        // Sub-second steps carry only timer noise.
+        let learned: Vec<(String, f64)> = self
+            .plan
+            .iter()
+            .zip(&self.spans)
+            .filter_map(|(step, span)| {
+                let (started, last) = (*span)?;
+                let elapsed = last.duration_since(started).as_secs_f64();
+                let key = step.key.clone()?;
+                (self.duration > 0.0 && elapsed >= MIN_LEARNED_SECONDS)
+                    .then(|| (key, elapsed / self.duration))
+            })
+            .collect();
+        learned
+            .iter()
+            .for_each(|(key, measured)| self.rates.learn(key, *measured));
         self.rates.save().map_err(|error| match error {
             AppError::Io { context, source } => {
                 io_context(format!("save speeds: {context}"))(source)
@@ -413,6 +453,64 @@ mod tests {
     }
 
     #[test]
+    fn a_step_behind_the_bar_learns_its_own_time_and_does_not_add_to_the_wait() {
+        let start = Instant::now();
+        let mut tracker = Tracker::new(
+            vec![
+                step(Stage::Transcribe, 100.0),
+                step(Stage::Faces, 40.0),
+                step(Stage::Export, 5.0),
+            ],
+            StageRates::default(),
+            100.0,
+        );
+        tracker.note(Stage::Faces, start);
+        let progress = tracker.update(Stage::Transcribe, None, start);
+        assert_eq!(progress.remaining_seconds, Some(105.0));
+        tracker.note(Stage::Faces, start + Duration::from_secs(30));
+        tracker.update(Stage::Export, None, start + Duration::from_secs(50));
+        tracker.finish(start + Duration::from_secs(50)).unwrap();
+        assert_eq!(tracker.rates.rate("Faces", 7.0), 0.3);
+        assert_eq!(tracker.rates.rate("Transcribe", 7.0), 0.5);
+    }
+
+    #[test]
+    fn a_long_step_behind_the_bar_sets_the_wait() {
+        let start = Instant::now();
+        let mut tracker = Tracker::new(
+            vec![step(Stage::Transcribe, 10.0), step(Stage::Faces, 40.0)],
+            StageRates::default(),
+            100.0,
+        );
+        tracker.note(Stage::Faces, start);
+        let progress = tracker.update(Stage::Transcribe, None, start);
+        assert_eq!(progress.remaining_seconds, Some(40.0));
+    }
+
+    #[test]
+    fn core_ml_separation_has_its_own_estimate() {
+        let inputs = RateInputs {
+            accelerated: true,
+            speech_llm: false,
+        };
+        let planned = StageRates::default().scaled(
+            Stage::Separate,
+            Stage::COREML_SEPARATE_KEY,
+            inputs,
+            100.0,
+        );
+        assert_eq!(planned.expected_seconds, 8.0);
+    }
+
+    #[test]
+    fn noting_a_step_outside_the_plan_is_harmless() {
+        let start = Instant::now();
+        let mut tracker = Tracker::new(Vec::new(), StageRates::default(), 10.0);
+        tracker.note(Stage::Faces, start);
+        assert!(tracker.finish(start).is_ok());
+    }
+
+    #[test]
     fn steps_too_short_to_measure_teach_nothing() {
         let start = Instant::now();
         let mut tracker = Tracker::new(
@@ -449,10 +547,10 @@ mod tests {
             accelerated: false,
             speech_llm: true,
         };
-        assert_eq!(default_rate(Stage::Separate, fast), 0.22);
-        assert_eq!(default_rate(Stage::Separate, slow), 0.22);
-        assert_eq!(default_rate(Stage::Retranscribe, fast), 0.035);
-        assert_eq!(default_rate(Stage::Retranscribe, slow), 1.4);
+        assert_eq!(default_rate(Stage::Separate, fast), 0.36);
+        assert_eq!(default_rate(Stage::Separate, slow), 0.36);
+        assert_eq!(default_rate(Stage::Retranscribe, fast), 0.05);
+        assert_eq!(default_rate(Stage::Retranscribe, slow), 0.8);
     }
 
     #[test]
@@ -471,9 +569,9 @@ mod tests {
         };
         assert_eq!(default_rate(Stage::Transcribe, fast), 0.09);
         assert_eq!(default_rate(Stage::Transcribe, slow), 3.0);
-        assert_eq!(default_rate(Stage::Diarize, fast), 0.02);
-        assert_eq!(default_rate(Stage::Diarize, slow), 0.5);
-        assert_eq!(default_rate(Stage::Diarize, llm), 0.01);
+        assert_eq!(default_rate(Stage::Diarize, fast), 0.018);
+        assert_eq!(default_rate(Stage::Diarize, slow), 0.24);
+        assert_eq!(default_rate(Stage::Diarize, llm), 0.005);
         assert_eq!(default_rate(Stage::Faces, slow), 0.1);
         assert_eq!(default_rate(Stage::ExtractAudio, slow), 0.01);
     }
@@ -538,7 +636,7 @@ mod tests {
             accelerated: false,
             speech_llm: true,
         };
-        assert_eq!(default_rate(Stage::Diarize, slow_llm), 0.1);
+        assert_eq!(default_rate(Stage::Diarize, slow_llm), 0.043);
     }
 
     #[test]

@@ -3,20 +3,40 @@
 use crate::captions::{SpeakerTurn, VoiceSpan, Word};
 use crate::catalog::{Backend, ModelEntry, Role};
 use crate::error::{io_context, AppError, AppResult, UserError};
+use crate::paths::write_atomic;
 use crate::paths::AppPaths;
 use crate::process::{
     background_command, run_capture, run_with_progress, run_with_ticks, CancelToken,
 };
-use crate::separation::cut_clips;
+use crate::separation::{cut_clips, wav_head, wav_layout, WavLayout};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::ffi::OsStr;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ureq::SendBody;
 
 const TOOL_SEARCH_DEPTH: usize = 3;
 const EXE_SUFFIX: &str = if cfg!(windows) { ".exe" } else { "" };
+/// The vocabulary and settings of Nemotron 3.5's decoder; the rest of the file is zeros. The speaker
+/// turns come from the encoder and never touch the decoder's weights, so this takes their place:
+/// 2.8 GB against 22 GB at the peak over an hour, with identical turns.
+/// `scripts/release/make-speaker-models.py` writes it from NVIDIA's release.
+const SPEAKER_DECODER_HEAD: &str = "speaker-decoder-head.gguf";
+const SPEAKER_DECODER_HEAD_SHA256: &str =
+    "4072f5c796ddc46434140743953615bfacc40ba0aef5c12ebd58b8a9af5a280c";
+const SPEAKER_DECODER_BYTES: u64 = 445_521_952;
+/// `nemo-speech` refuses longer audio per request (`kMaxDurationSeconds`, 3600), whatever the model.
+const LONGEST_SPEAKER_REQUEST_SECONDS: f64 = 3600.0;
+/// Long audio goes in overlapping requests; this much in common tells whose number is whose.
+const SPEAKER_REQUEST_OVERLAP_SECONDS: f64 = 300.0;
+const CPU_DEVICE: &str = "cpu";
+/// Warmup and speculative decoding both need the weights the stand-in lacks.
+const SPEAKER_BRANCH_ARGS: [&str; 3] = ["--no-warmup", "--asr.salm.mtp_draft", "0"];
 const LOOPBACK: &str = "127.0.0.1";
 const SERVER_POLL: Duration = Duration::from_millis(100);
 /// Loading about 20 GB from a slow disk can take minutes; past this the server is stuck.
@@ -55,6 +75,7 @@ const LOOP_MARGIN_SECONDS: f64 = 2.0;
 const FIRST_PASS_PROGRESS: f64 = 0.9;
 /// Files per whisper-cli run, as two long paths each must stay under Windows's 32 KB command line.
 const WHISPER_BATCH_FILES: usize = 64;
+const WHISPER_NO_GPU_FLAG: &str = "-ng";
 /// Speech stays above about five syllables a second: a word after a pause started at most this
 /// long per beat before its end.
 const LONGEST_ONSET_SECONDS_PER_CHARACTER: f64 = 0.2;
@@ -87,6 +108,8 @@ pub struct Tools {
     pub nemo: PathBuf,
     /// The build `nemo` and `whisper` actually came from.
     pub backend: Backend,
+    /// Run Whisper on the CPU whichever build it is: its model does not fit the GPU's memory.
+    pub whisper_without_gpu: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -150,6 +173,7 @@ impl Tools {
         let nemo = accelerated(nemo_root, "nemo-speech");
         let whisper = accelerated(whisper_root, "whisper-cli");
         Ok(Self {
+            whisper_without_gpu: false,
             backend: match (&nemo, &whisper) {
                 (Some(_), _) => backend,
                 (None, Some(_)) => Backend::SpeakersOnCpu,
@@ -320,6 +344,7 @@ struct WhisperRun<'a> {
     model: &'a Path,
     language: &'a str,
     cancel: &'a CancelToken,
+    without_gpu: bool,
     /// Whichever other arguments every file of the run takes.
     context: &'a [&'a str],
 }
@@ -552,6 +577,9 @@ fn run_whisper(
         .args(["-l", run.language, "-ojf", "-pp"])
         .args(run.context)
         .args(extra_args);
+    if run.without_gpu {
+        command.arg(WHISPER_NO_GPU_FLAG);
+    }
     let (mut finished, mut last) = (0.0, 0.0);
     run_with_progress(command, "whisper-cli", run.cancel, |line| {
         if let Some(fraction) = parse_whisper_progress(line) {
@@ -637,6 +665,7 @@ pub fn transcribe(
         model,
         language,
         cancel,
+        without_gpu: tools.whisper_without_gpu,
         context: &[],
     };
     let heard = transcribe_files(tools, &run, &[clip], &mut |fraction| {
@@ -684,6 +713,7 @@ fn redo_ranges(
         model: first.model,
         language: first.language,
         cancel: first.cancel,
+        without_gpu: tools.whisper_without_gpu,
         context: &NO_ROLLING_CONTEXT_ARGS,
     };
     transcribe_files(tools, &run, &clips, progress)
@@ -820,6 +850,7 @@ pub fn transcribe_many(
         model,
         language,
         cancel,
+        without_gpu: tools.whisper_without_gpu,
         context: &[],
     };
     transcribe_files(tools, &run, clips, progress)
@@ -889,37 +920,54 @@ pub fn parse_speaker_segments(bytes: &[u8]) -> AppResult<Vec<SpeakerTurn>> {
 #[derive(Clone, Debug)]
 pub struct DiarizeModel<'a> {
     pub entry: &'a ModelEntry,
-    pub main_file: &'a Path,
     pub encoder: Option<&'a Path>,
     /// `--device`: the GPU when the model fits, else the CPU.
     pub device: &'a str,
+    /// Holds the stand-in's head; see `SPEAKER_DECODER_HEAD`.
+    pub resources: &'a Path,
 }
 
 fn speaker_server_command(
     tools: &Tools,
     model: &DiarizeModel<'_>,
+    decoder: &Path,
     port: u16,
 ) -> AppResult<std::process::Command> {
-    if model.entry.role != Role::Diarize {
-        return Err(AppError::Invalid(format!(
-            "{} is not a diarization model",
-            model.entry.id
-        )));
-    }
     let mut command = background_command(&tools.nemo);
     command
         .args(["serve", "--no-ui", "--host", LOOPBACK, "--port"])
         .arg(port.to_string())
         .arg("--asr-model")
-        .arg(model.main_file);
+        .arg(decoder);
     if let Some(encoder) = model.encoder {
         command.arg("--salm-encoder").arg(encoder);
     }
-    command.args(model.entry.extra_args.iter().map(OsStr::new));
+    command.args(SPEAKER_BRANCH_ARGS);
     command.args(["--device", model.device]);
     command.args(["--read-timeout", SERVER_SOCKET_SECONDS]);
     command.args(["--write-timeout", SERVER_SOCKET_SECONDS]);
     Ok(command)
+}
+
+/// The stand-in for the decoder, made in `work`: a damaged or missing head is an error, not a silently
+/// wrong model.
+fn speaker_decoder_stand_in(resources: &Path, work: &Path) -> AppResult<PathBuf> {
+    let source = resources.join("resources").join(SPEAKER_DECODER_HEAD);
+    let head = std::fs::read(&source).map_err(io_context("read the speaker decoder"))?;
+    if format!("{:x}", Sha256::digest(&head)) != SPEAKER_DECODER_HEAD_SHA256 {
+        return Err(AppError::Invalid(format!(
+            "{} is damaged; reinstall the app",
+            source.display()
+        )));
+    }
+    let file = work.join(SPEAKER_DECODER_HEAD);
+    write_atomic(&file, &head)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file)
+        .and_then(|opened| opened.set_len(SPEAKER_DECODER_BYTES))
+        .map_err(io_context("extend the speaker decoder"))?;
+    Ok(file)
 }
 
 fn free_port() -> AppResult<u16> {
@@ -963,30 +1011,51 @@ fn wait_for_server(agent: &ureq::Agent, base: &str, stop: &CancelToken) -> AppRe
     ))
 }
 
-fn wav_upload(wav: &Path) -> AppResult<Vec<u8>> {
-    let audio = std::fs::read(wav).map_err(io_context("read the audio for speakers"))?;
+/// The requests long audio goes in; audio that fits one request is sent whole.
+fn speaker_spans(seconds: f64) -> Vec<TimeRange> {
+    let mut spans = Vec::new();
+    let mut start = 0.0;
+    loop {
+        let end = (start + LONGEST_SPEAKER_REQUEST_SECONDS).min(seconds);
+        spans.push((start, end));
+        if end >= seconds {
+            return spans;
+        }
+        start = end - SPEAKER_REQUEST_OVERLAP_SECONDS;
+    }
+}
+
+/// One span of `wav` as a form field, read as it is sent so it never sits in memory.
+fn post_audio(
+    agent: &ureq::Agent,
+    url: &str,
+    wav: &Path,
+    layout: &WavLayout,
+    span: TimeRange,
+) -> AppResult<Vec<u8>> {
+    let (first, bytes) = layout.slice(span.0, span.1);
+    let mut audio = File::open(wav).map_err(io_context("read the audio for speakers"))?;
+    audio
+        .seek(SeekFrom::Start(first))
+        .map_err(io_context("read the audio for speakers"))?;
+    let wav_header = wav_head(u32::try_from(bytes).unwrap_or(u32::MAX), layout.float);
     let head = format!(
         "--{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: {AUDIO_CONTENT_TYPE}\r\n\r\n"
     );
     let tail = format!("\r\n--{UPLOAD_BOUNDARY}--\r\n");
-    Ok([head.as_bytes(), &audio, tail.as_bytes()].concat())
-}
-
-/// Asks once the server is up. Its speaker branch needs no decoding, so a transcript the alignment
-/// cannot place (one character outside its vocabulary loses a whole recording's word times) costs
-/// nothing here.
-fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<SpeakerTurn>> {
-    let agent = local_agent();
-    let base = format!("http://{LOOPBACK}:{port}");
-    let upload = wav_upload(wav)?;
-    wait_for_server(&agent, &base, stop)?;
+    let length = head.len() as u64 + wav_header.len() as u64 + bytes + tail.len() as u64;
+    let mut body = Cursor::new(head)
+        .chain(Cursor::new(wav_header))
+        .chain(audio.take(bytes))
+        .chain(Cursor::new(tail));
     let mut reply = agent
-        .post(format!("{base}/v1/audio/diarizations"))
+        .post(url)
         .content_type(format!("multipart/form-data; boundary={UPLOAD_BOUNDARY}"))
-        .send(&upload[..])
+        .header("Content-Length", length.to_string())
+        .send(SendBody::from_reader(&mut body))
         .map_err(server_failure)?;
     let status = reply.status();
-    let body = reply
+    let answer = reply
         .body_mut()
         .with_config()
         .limit(MOST_SEGMENT_BYTES)
@@ -995,10 +1064,120 @@ fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<Spe
     if status != HTTP_OK {
         return Err(server_failure(format!(
             "{status}: {}",
-            String::from_utf8_lossy(&body)
+            String::from_utf8_lossy(&answer)
         )));
     }
-    parse_speaker_segments(&body)
+    Ok(answer)
+}
+
+/// Asks once the server is up, request by request. Its speaker branch needs no decoding, so a
+/// transcript the alignment cannot place (one character outside its vocabulary loses a whole
+/// recording's word times) costs nothing here.
+fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<SpeakerTurn>> {
+    let agent = local_agent();
+    let base = format!("http://{LOOPBACK}:{port}");
+    let mut source = File::open(wav).map_err(io_context("read the audio for speakers"))?;
+    let layout = wav_layout(&mut source)
+        .map_err(|error| AppError::Invalid(format!("{}: {error}", wav.display())))?;
+    drop(source);
+    wait_for_server(&agent, &base, stop)?;
+    let url = format!("{base}/v1/audio/diarizations");
+    let mut parts = Vec::new();
+    for span in speaker_spans(layout.seconds()) {
+        if stop.is_cancelled() {
+            return Err(server_failure("the speaker server stopped"));
+        }
+        let answer = post_audio(&agent, &url, wav, &layout, span)?;
+        parts.push((span, moved_turns(parse_speaker_segments(&answer)?, span.0)));
+    }
+    Ok(stitched_turns(parts))
+}
+
+fn moved_turns(turns: Vec<SpeakerTurn>, offset: f64) -> Vec<SpeakerTurn> {
+    turns
+        .into_iter()
+        .map(|turn| SpeakerTurn {
+            start: turn.start + offset,
+            end: turn.end + offset,
+            ..turn
+        })
+        .collect()
+}
+
+fn shared_seconds(left: &SpeakerTurn, right: &SpeakerTurn, range: TimeRange) -> f64 {
+    let start = left.start.max(right.start).max(range.0);
+    let end = left.end.min(right.end).min(range.1);
+    (end - start).max(0.0)
+}
+
+fn by_most_shared(left: &(u32, u32, f64), right: &(u32, u32, f64)) -> std::cmp::Ordering {
+    right.2.total_cmp(&left.2)
+}
+
+/// Which number of the earlier turns each number of `later` is, by who speaks together in `range`.
+/// A voice the overlap does not hear gets a number of its own.
+fn matched_speakers(
+    earlier: &[SpeakerTurn],
+    later: &[SpeakerTurn],
+    range: TimeRange,
+) -> HashMap<u32, u32> {
+    let mut shared: HashMap<(u32, u32), f64> = HashMap::new();
+    for old in earlier.iter().filter(|turn| turn.end > range.0) {
+        for new in later.iter().filter(|turn| turn.start < range.1) {
+            *shared.entry((new.speaker, old.speaker)).or_default() +=
+                shared_seconds(old, new, range);
+        }
+    }
+    let mut pairs: Vec<(u32, u32, f64)> = shared
+        .into_iter()
+        .filter(|(_, seconds)| *seconds > 0.0)
+        .map(|((new, old), seconds)| (new, old, seconds))
+        .collect();
+    pairs.sort_by(by_most_shared);
+    let mut matched = HashMap::new();
+    let mut taken = HashSet::new();
+    for (new, old, _) in pairs {
+        if !matched.contains_key(&new) && taken.insert(old) {
+            matched.insert(new, old);
+        }
+    }
+    matched
+}
+
+/// One list of turns from overlapping requests: each request speaks up to the middle of its overlap.
+fn stitched_turns(parts: Vec<(TimeRange, Vec<SpeakerTurn>)>) -> Vec<SpeakerTurn> {
+    let mut joined: Vec<SpeakerTurn> = Vec::new();
+    let mut heard_until = 0.0_f64;
+    for ((start, end), turns) in parts {
+        heard_until = heard_until.max(start);
+        if joined.is_empty() {
+            joined = turns;
+            heard_until = end;
+            continue;
+        }
+        let overlap = (start, heard_until);
+        let middle = (start + heard_until) / 2.0;
+        let matched = matched_speakers(&joined, &turns, overlap);
+        let mut unused = joined.iter().map(|turn| turn.speaker).max().unwrap_or(0);
+        let mut named: HashMap<u32, u32> = matched;
+        joined.retain(|turn| turn.start < middle);
+        joined
+            .iter_mut()
+            .for_each(|turn| turn.end = turn.end.min(middle));
+        for turn in turns.into_iter().filter(|turn| turn.end > middle) {
+            let speaker = *named.entry(turn.speaker).or_insert_with(|| {
+                unused += 1;
+                unused
+            });
+            joined.push(SpeakerTurn {
+                start: turn.start.max(middle),
+                speaker,
+                ..turn
+            });
+        }
+        heard_until = end;
+    }
+    joined
 }
 
 /// Cancelling wins; then the answer; then why the server died, which says more than a lost connection.
@@ -1020,11 +1199,48 @@ pub fn diarize(
     tools: &Tools,
     model: &DiarizeModel<'_>,
     wav: &Path,
+    work: &Path,
+    cancel: &CancelToken,
+    on_tick: &mut dyn FnMut(),
+) -> AppResult<Vec<SpeakerTurn>> {
+    if model.entry.role != Role::Diarize {
+        return Err(AppError::Invalid(format!(
+            "{} is not a diarization model",
+            model.entry.id
+        )));
+    }
+    let stand_in = speaker_decoder_stand_in(model.resources, work);
+    let first = stand_in
+        .as_ref()
+        .map_err(|failure| AppError::Invalid(failure.to_string()))
+        .and_then(|file| turns_from_server(tools, model, file, wav, cancel, on_tick));
+    let failure = match first {
+        Err(AppError::Cancelled) | Ok(_) => return first,
+        Err(failure) => failure,
+    };
+    // A GPU the stand-in does not load on: the CPU reads it the same way, only slower.
+    match (&stand_in, &failure) {
+        (Ok(file), AppError::Tool { .. }) if model.device != CPU_DEVICE => {
+            let on_cpu = DiarizeModel {
+                device: CPU_DEVICE,
+                ..model.clone()
+            };
+            turns_from_server(tools, &on_cpu, file, wav, cancel, on_tick)
+        }
+        _ => Err(failure),
+    }
+}
+
+fn turns_from_server(
+    tools: &Tools,
+    model: &DiarizeModel<'_>,
+    decoder: &Path,
+    wav: &Path,
     cancel: &CancelToken,
     on_tick: &mut dyn FnMut(),
 ) -> AppResult<Vec<SpeakerTurn>> {
     let port = free_port()?;
-    let command = speaker_server_command(tools, model, port)?;
+    let command = speaker_server_command(tools, model, decoder, port)?;
     let stop = CancelToken::default();
     std::thread::scope(|scope| {
         let answer = scope.spawn(|| {
@@ -1059,6 +1275,7 @@ mod tests {
             whisper_cpu: whisper_cpu.map(Into::into),
             voice_detector: "d".into(),
             nemo: "n".into(),
+            whisper_without_gpu: false,
             backend: Backend::Vulkan,
         }
     }
@@ -1338,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn the_speaker_server_gets_its_encoder_and_extra_arguments() {
+    fn the_speaker_server_reads_the_encoder_and_never_decodes() {
         let tools = Tools {
             ffmpeg: "f".into(),
             ffprobe: "p".into(),
@@ -1346,15 +1563,16 @@ mod tests {
             whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
+            whisper_without_gpu: false,
             backend: Backend::Default,
         };
         let model = DiarizeModel {
-            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2m").unwrap(),
-            main_file: Path::new("m.gguf"),
+            entry: crate::catalog::find_entry("nemotron-3.5-speaker").unwrap(),
             encoder: Some(Path::new("e.gguf")),
             device: "cpu",
+            resources: Path::new("r"),
         };
-        let command = speaker_server_command(&tools, &model, 4321).unwrap();
+        let command = speaker_server_command(&tools, &model, Path::new("m.gguf"), 4321).unwrap();
         assert_eq!(
             args_of(&command),
             vec![
@@ -1368,18 +1586,9 @@ mod tests {
                 "m.gguf",
                 "--salm-encoder",
                 "e.gguf",
-                "--asr.salm.max_sequences",
-                "2",
-                "--asr.salm.n_ctx_per_sequence",
-                "8192",
-                "--asr.salm.max_context",
-                "8192",
+                "--no-warmup",
                 "--asr.salm.mtp_draft",
                 "0",
-                "--asr.salm.n_batch",
-                "512",
-                "--asr.salm.encoder_max_batch",
-                "2",
                 "--device",
                 "cpu",
                 "--read-timeout",
@@ -1399,15 +1608,16 @@ mod tests {
             whisper_cpu: None,
             voice_detector: "d".into(),
             nemo: "n".into(),
+            whisper_without_gpu: false,
             backend: Backend::Default,
         };
         let model = DiarizeModel {
-            entry: crate::catalog::find_entry("nemotron-3.5-transcribe-q2l").unwrap(),
-            main_file: Path::new("m.gguf"),
+            entry: crate::catalog::find_entry("nemotron-3.5-speaker").unwrap(),
             encoder: None,
             device: "auto",
+            resources: Path::new("r"),
         };
-        let command = speaker_server_command(&tools, &model, 1).unwrap();
+        let command = speaker_server_command(&tools, &model, Path::new("m.gguf"), 1).unwrap();
         assert_eq!(
             args_of(&command),
             vec![
@@ -1419,6 +1629,9 @@ mod tests {
                 "1",
                 "--asr-model",
                 "m.gguf",
+                "--no-warmup",
+                "--asr.salm.mtp_draft",
+                "0",
                 "--device",
                 "auto",
                 "--read-timeout",
@@ -1430,16 +1643,100 @@ mod tests {
     }
 
     #[test]
-    fn the_upload_wraps_the_audio_as_one_form_field() {
-        let root = std::env::temp_dir().join(format!("wav-upload-{}", std::process::id()));
+    fn the_stand_in_is_the_verified_head_followed_by_zeros() {
+        let root = std::env::temp_dir().join(format!("stand-in-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let wav = root.join("a.wav");
-        std::fs::write(&wav, b"RIFF").unwrap();
-        let body = wav_upload(&wav).unwrap();
+        let file = speaker_decoder_stand_in(Path::new(env!("CARGO_MANIFEST_DIR")), &root).unwrap();
+        let mut start = [0_u8; 4];
+        std::io::Read::read_exact(&mut File::open(&file).unwrap(), &mut start).unwrap();
+        let bytes = std::fs::metadata(&file).unwrap().len();
         std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(&start, b"GGUF");
+        assert_eq!(bytes, 445_521_952);
+    }
+
+    #[test]
+    fn a_damaged_or_missing_head_is_an_error() {
+        let root = std::env::temp_dir().join(format!("stand-in-bad-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("resources")).unwrap();
+        let missing = speaker_decoder_stand_in(&root, &root)
+            .unwrap_err()
+            .to_string();
+        std::fs::write(root.join("resources/speaker-decoder-head.gguf"), b"GGUF").unwrap();
+        let damaged = speaker_decoder_stand_in(&root, &root)
+            .unwrap_err()
+            .to_string();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            missing.starts_with("read the speaker decoder: "),
+            "{missing}"
+        );
+        assert!(
+            damaged.ends_with("is damaged; reinstall the app"),
+            "{damaged}"
+        );
+    }
+
+    #[test]
+    fn audio_that_fits_one_request_goes_whole() {
+        assert_eq!(speaker_spans(3600.0), vec![(0.0, 3600.0)]);
+        assert_eq!(speaker_spans(0.0), vec![(0.0, 0.0)]);
+    }
+
+    #[test]
+    fn long_audio_goes_in_overlapping_requests() {
         assert_eq!(
-            String::from_utf8(body).unwrap(),
-            "--transcribe-captions-3f7c1e9a5b2d4860a1c7e3f95d0b6824\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n--transcribe-captions-3f7c1e9a5b2d4860a1c7e3f95d0b6824--\r\n"
+            speaker_spans(7000.0),
+            vec![(0.0, 3600.0), (3300.0, 6900.0), (6600.0, 7000.0)]
+        );
+    }
+
+    fn voice(start: f64, end: f64, speaker: u32) -> SpeakerTurn {
+        SpeakerTurn {
+            start,
+            end,
+            speaker,
+        }
+    }
+
+    #[test]
+    fn requests_agree_on_who_is_who_through_their_overlap() {
+        let parts = vec![
+            (
+                (0.0, 100.0),
+                vec![
+                    voice(0.0, 50.0, 1),
+                    voice(70.0, 80.0, 1),
+                    voice(85.0, 100.0, 2),
+                ],
+            ),
+            (
+                (60.0, 160.0),
+                vec![
+                    voice(68.0, 82.0, 2),
+                    voice(84.0, 110.0, 1),
+                    voice(150.0, 160.0, 3),
+                ],
+            ),
+        ];
+        assert_eq!(
+            stitched_turns(parts),
+            vec![
+                voice(0.0, 50.0, 1),
+                voice(70.0, 80.0, 1),
+                voice(80.0, 82.0, 1),
+                voice(84.0, 110.0, 2),
+                voice(150.0, 160.0, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_request_keeps_its_turns_and_numbers() {
+        let parts = vec![((0.0, 10.0), vec![voice(1.0, 2.0, 2), voice(1.5, 3.0, 1)])];
+        assert_eq!(
+            stitched_turns(parts),
+            vec![voice(1.0, 2.0, 2), voice(1.5, 3.0, 1)]
         );
     }
 

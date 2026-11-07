@@ -61,9 +61,9 @@ const SCENES: Scene[] = [
     downloadEvents: [
       {
         state: "running",
-        id: "nemotron-3.5-transcribe-iq4",
-        done_bytes: 800_000_000,
-        total_bytes: 1_700_000_000,
+        id: "nemotron-3.5-speaker",
+        done_bytes: 100_000_000,
+        total_bytes: 200_779_392,
       },
     ],
     prepare: nothing,
@@ -208,6 +208,7 @@ const SCENES: Scene[] = [
           cue_count: 120,
           faceless: false,
           font_missing: false,
+          speaker_plan: null,
           speakers_missing: false,
         },
       },

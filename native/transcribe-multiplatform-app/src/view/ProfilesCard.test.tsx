@@ -35,7 +35,7 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
+  separation_backend: "onnx",
   speaker_count: 0,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -51,6 +51,8 @@ const SNAPSHOT: Snapshot = {
   backend: "default",
   settings: SETTINGS,
   models: [],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };

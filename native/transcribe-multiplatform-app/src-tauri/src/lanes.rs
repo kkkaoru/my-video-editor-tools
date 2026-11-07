@@ -23,8 +23,9 @@ const LOOP_SHARE: f64 = 0.5;
 const LOOP_MINIMUM_REPEATS: usize = 3;
 const LONG_UNIT_READINGS: usize = 4;
 const LONGEST_UNIT_READINGS: usize = 20;
-/// Longer ranges are divided at a phrase boundary.
-const LONGEST_RANGE_SECONDS: f64 = 30.0;
+/// Longer ranges are divided at a phrase boundary: as many voices are found as with longer ones, on a
+/// third of the memory (2.35 GB for 8 s, 7.25 GB for 30 s).
+const LONGEST_RANGE_SECONDS: f64 = 8.0;
 /// More than this with three people at once sends both tracks through the model again.
 const DEEP_SECONDS: f64 = 0.5;
 /// A track sharing less than this with the first pass's text is noise the first pass could not hear.
@@ -67,6 +68,8 @@ pub type TranscribeStep<'a> = dyn FnMut(&[WhisperClip]) -> AppResult<Vec<Vec<Wor
 
 /// The two long-running steps, passed in so the logic around them can be tested without the models.
 pub struct LaneEngine<'a> {
+    /// Whether three people at once may go through the model twice.
+    pub deep: bool,
     pub separate: &'a mut dyn FnMut(&[SeparationClip]) -> AppResult<()>,
     pub transcribe: &'a mut TranscribeStep<'a>,
 }
@@ -580,7 +583,7 @@ pub fn with_rows(
     let crowded = spans_with(turns, 3);
     let deep: Vec<bool> = ranges
         .iter()
-        .map(|range| seconds_inside(*range, &crowded) > DEEP_SECONDS)
+        .map(|range| engine.deep && seconds_inside(*range, &crowded) > DEEP_SECONDS)
         .collect();
     stats.ranges = ranges.len();
     stats.deep_ranges = deep.iter().filter(|deep| **deep).count();
@@ -795,6 +798,7 @@ mod tests {
             &root,
             test_segmenter(),
             &mut LaneEngine {
+                deep: true,
                 separate: &mut separate,
                 transcribe: &mut transcribe,
             },
@@ -857,8 +861,8 @@ mod tests {
             vec![span(2.0, 5.0)]
         );
         assert_eq!(
-            ranges_around(&[span(0.5, 0.8), span(9.5, 10.0)], &boundaries, 20.0),
-            vec![span(0.0, 1.0), span(9.0, 20.0)]
+            ranges_around(&[span(0.5, 0.8), span(9.5, 10.0)], &boundaries, 15.0),
+            vec![span(0.0, 1.0), span(9.0, 15.0)]
         );
         assert_eq!(
             ranges_around(&[span(2.5, 4.5), span(4.6, 5.5)], &boundaries, 20.0),
@@ -869,12 +873,12 @@ mod tests {
     #[test]
     fn a_long_range_is_divided_at_a_boundary_or_at_the_limit_without_one() {
         assert_eq!(
-            divided(span(0.0, 70.0), &[10.0, 25.0, 40.0, 50.0]),
-            vec![span(0.0, 25.0), span(25.0, 50.0), span(50.0, 70.0)]
+            divided(span(0.0, 20.0), &[3.0, 7.0, 11.0, 15.0]),
+            vec![span(0.0, 7.0), span(7.0, 15.0), span(15.0, 20.0)]
         );
         assert_eq!(
-            divided(span(0.0, 40.0), &[]),
-            vec![span(0.0, 30.0), span(30.0, 40.0)]
+            divided(span(0.0, 10.0), &[]),
+            vec![span(0.0, 8.0), span(8.0, 10.0)]
         );
         assert_eq!(divided(span(0.0, 5.0), &[]), vec![span(0.0, 5.0)]);
     }
@@ -1246,6 +1250,41 @@ mod tests {
     }
 
     #[test]
+    fn without_the_memory_for_a_second_pass_three_people_stay_at_two_tracks() {
+        let root = scratch("not-deep");
+        let wav = audio(&root, 20);
+        let turns = [turn(9.0, 12.0, 1), turn(9.0, 12.0, 2), turn(9.0, 12.0, 3)];
+        let mut clips_seen: Vec<String> = Vec::new();
+        let mut separate = |clips: &[SeparationClip]| {
+            clips_seen = clips
+                .iter()
+                .map(|clip| clip.input.to_string_lossy().into_owned())
+                .collect();
+            Ok(())
+        };
+        let mut transcribe = |clips: &[WhisperClip]| Ok(vec![Vec::new(); clips.len()]);
+        let (_, stats) = with_rows(
+            vec![said(9.5, 11.5, "全部が混ざった言葉です", 1)],
+            &turns,
+            &wav,
+            20.0,
+            &root,
+            test_segmenter(),
+            &mut LaneEngine {
+                deep: false,
+                separate: &mut separate,
+                transcribe: &mut transcribe,
+            },
+        )
+        .unwrap();
+        assert!(
+            clips_seen.iter().all(|name| name.ends_with("-mix.wav")),
+            "{clips_seen:?}"
+        );
+        assert_eq!(stats.deep_ranges, 0);
+    }
+
+    #[test]
     fn a_failure_of_either_step_stops_the_job() {
         let root = scratch("fail");
         let wav = audio(&root, 5);
@@ -1262,6 +1301,7 @@ mod tests {
                 &root,
                 test_segmenter(),
                 &mut LaneEngine {
+                    deep: true,
                     separate: &mut fail_separate,
                     transcribe: &mut unused,
                 },
@@ -1279,6 +1319,7 @@ mod tests {
                 &root,
                 test_segmenter(),
                 &mut LaneEngine {
+                    deep: true,
                     separate: &mut fine,
                     transcribe: &mut fail_transcribe,
                 },
@@ -1301,6 +1342,7 @@ mod tests {
             &root,
             test_segmenter(),
             &mut LaneEngine {
+                deep: true,
                 separate: &mut unused_separate,
                 transcribe: &mut unused,
             },

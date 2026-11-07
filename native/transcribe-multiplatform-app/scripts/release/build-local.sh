@@ -19,7 +19,7 @@ mkdir -p "$out"
 # Beside src-tauri/runtime, which the Mac's development builds and running jobs use.
 fetch_runtime() { # distribution
   local runtime="$local_dir/runtime-$1" stamp
-  stamp="$(cat "$app_dir/scripts/release/fetch-runtime.sh" "$app_dir/scripts/release/whisper-cpp.patch" | shasum -a 256 | cut -d' ' -f1)"
+  stamp="$(cat "$app_dir/scripts/release/fetch-runtime.sh" "$app_dir/scripts/release/whisper-cpp.patch" "$app_dir/separate-coreml/Package.swift" "$app_dir"/separate-coreml/Sources/*/*.swift | shasum -a 256 | cut -d' ' -f1)"
   if [ "$(cat "$runtime/.fetched" 2>/dev/null)" != "$stamp" ]; then
     rm -rf "$runtime"
     RUNTIME_DIR="$runtime" bash "$app_dir/scripts/release/fetch-runtime.sh" "$1"

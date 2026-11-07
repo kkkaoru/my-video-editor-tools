@@ -1,1 +1,2 @@
 scripts/release/whisper-cpp.patch -text
+src-tauri/resources/speaker-decoder-head.gguf binary

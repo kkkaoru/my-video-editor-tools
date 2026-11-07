@@ -36,11 +36,11 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
   face_model: "here",
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  separation_backend: "onnx",
   speaker_count: 1,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -84,6 +84,8 @@ const SNAPSHOT: Snapshot = {
       recommended: false,
     },
   ],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };
@@ -303,7 +305,16 @@ it("says nothing when the check at startup fails", async () => {
 });
 
 it("opens the models tab from a missing speaker model, and takes the focus along", async () => {
-  render(<App initial={{ ...SNAPSHOT, models: [], settings: { ...SETTINGS, speaker_count: 2 } }} />);
+  render(
+    <App
+      initial={{
+        ...SNAPSHOT,
+        models: [],
+        settings: { ...SETTINGS, speaker_count: 2 },
+        speaker_missing: { missing: ["diarize"], suggested: null },
+      }}
+    />,
+  );
   await act(async (): Promise<void> => {
     fireEvent.click(screen.getByRole("button", { name: "Open the “Models” tab" }));
   });

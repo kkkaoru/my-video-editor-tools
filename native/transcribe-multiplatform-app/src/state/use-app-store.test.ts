@@ -36,11 +36,11 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
   face_model: "c",
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  separation_backend: "onnx",
   speaker_count: 1,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -53,6 +53,8 @@ const SNAPSHOT: Snapshot = {
   backend: "default",
   settings: SETTINGS,
   models: [],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };
@@ -213,11 +215,11 @@ it("shows new settings at once and saves only the last of a burst", async () => 
             offset_y_percent: 0,
           },
           language: "ko",
-          diarize_model: "b",
           face_model: "c",
           model_dirs: [],
           active_profile: "",
           line_height: 1.448,
+          separation_backend: "onnx",
           speaker_count: 1,
           subtitle_format: "fcpxml",
           ui_language: "",
@@ -378,22 +380,34 @@ it("refuses videos without their models, naming what is missing, and starts noth
   });
 });
 
-it("refuses videos for several speakers without the speaker models, and starts nothing", () => {
-  const heavy: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 2 } };
+it("refuses videos when the backend says speaker models are missing, and starts nothing", () => {
+  const heavy: Snapshot = { ...READY, speaker_missing: { missing: ["separate"], suggested: "m" } };
   const view: HookView = renderHook((): AppStore => useAppStore(heavy));
   act((): void => view.result.current.dropFiles(["/a.mp4"]));
   expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
   expect(view.result.current.state.loadError).toStrictEqual({
-    code: "models_missing",
-    roles: ["separate"],
+    code: "speaker_models_missing",
+    missing: ["separate"],
+    suggested: "m",
   });
 });
 
-it("refuses videos for automatic detection without the speaker models", () => {
-  const automatic: Snapshot = { ...READY, settings: { ...READY.settings, speaker_count: 0 } };
-  const view: HookView = renderHook((): AppStore => useAppStore(automatic));
+it("adds videos for several speakers when the backend has a plan", () => {
+  const planned: Snapshot = {
+    ...READY,
+    settings: { ...READY.settings, speaker_count: 0 },
+    speaker_plan: {
+      diarize: "d",
+      whisper_on: "gpu",
+      diarize_on: "gpu",
+      separate_on: "cpu",
+      separator: "s",
+      deep: false,
+    },
+  };
+  const view: HookView = renderHook((): AppStore => useAppStore(planned));
   act((): void => view.result.current.dropFiles(["/a.mp4"]));
-  expect(vi.mocked(invoke).mock.calls).toStrictEqual([]);
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([["add_videos", { paths: ["/a.mp4"] }]]);
 });
 
 it("still rewrites subtitle files without any model", () => {

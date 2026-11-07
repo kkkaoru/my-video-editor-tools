@@ -58,7 +58,8 @@ export type SubtitleFormat = "drt" | "fcpxml" | "ttml" | "srt";
 
 export interface Settings extends CaptionLook {
   language: string;
-  diarize_model: string;
+  /** Mac only; other systems ignore it. */
+  separation_backend: SeparationBackend;
   speaker_count: number;
   subtitle_format: SubtitleFormat;
   /** Empty follows the system; a language tag overrides it. */
@@ -85,8 +86,32 @@ export interface Hardware {
   gpu: Gpu | null;
 }
 
+/** What a job for several speakers runs on. */
+export type RunsOn = "gpu" | "cpu";
+export type SeparationBackend = "onnx" | "coreml";
+
+export interface SpeakerPlan {
+  diarize: string;
+  whisper_on: RunsOn;
+  diarize_on: RunsOn;
+  separate_on: RunsOn;
+  /** The model id that separates. */
+  separator: string;
+  /** Three people at once go through separation twice, for up to four rows. */
+  deep: boolean;
+}
+
+export interface SpeakerMissing {
+  missing: Role[];
+  suggested: string | null;
+}
+
 export interface BackendError {
   code: string;
+  /** `needs_memory`: which memory runs short. */
+  kind?: "ram" | "gpu_memory" | "unified";
+  /** `speaker_models_missing`: the model to offer for download. */
+  suggested?: string | null;
   /** `speaker_models_missing`: the kinds of model a job needs. */
   missing?: Role[];
   detail?: string;
@@ -94,7 +119,6 @@ export interface BackendError {
   role?: string;
   required?: number;
   available?: number;
-  limit_minutes?: number;
   file?: string;
   name?: string;
   roles?: Role[];
@@ -125,6 +149,10 @@ export interface Snapshot {
   backend: Backend;
   settings: Settings;
   models: ModelStatus[];
+  /** Null for one speaker, and for several when their models are missing. */
+  speaker_plan: SpeakerPlan | null;
+  /** Why several speakers have no plan, and what to download first. */
+  speaker_missing: SpeakerMissing | null;
   models_dir: string;
   profiles: Profile[];
 }
@@ -142,6 +170,8 @@ export interface Progress {
 }
 
 export interface JobOutcome {
+  /** What actually ran; null for one speaker. */
+  speaker_plan: SpeakerPlan | null;
   outputs: string[];
   base: string;
   speaker_count: number;

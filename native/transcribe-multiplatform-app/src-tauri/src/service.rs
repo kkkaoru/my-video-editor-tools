@@ -11,6 +11,7 @@ use crate::paths::AppPaths;
 use crate::pipeline::{self, JobOutcome};
 use crate::process::CancelToken;
 use crate::profiles::{self, CaptionLook, Profile};
+use crate::schedule::{self, ExecutionPlan};
 use crate::settings::Settings;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -65,8 +66,20 @@ pub struct Snapshot {
     pub backend: Backend,
     pub settings: Settings,
     pub models: Vec<ModelStatus>,
+    /// What a job would run for several people now; `None` for one, or with no speaker model.
+    pub speaker_plan: Option<catalog::SpeakerPlan>,
+    /// What keeps a job for several people from starting now; `None` when one can.
+    pub speaker_missing: Option<SpeakerMissing>,
+    /// Which steps a job would run at once and in order, and the most memory that takes.
+    pub execution: ExecutionPlan,
     pub models_dir: PathBuf,
     pub profiles: Vec<Profile>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SpeakerMissing {
+    pub missing: Vec<catalog::Role>,
+    pub suggested: Option<String>,
 }
 
 enum JobRequest {
@@ -110,6 +123,19 @@ fn locked<'a, Value>(mutex: &'a Mutex<Value>, name: &str) -> AppResult<MutexGuar
 /// The JSON shape the UI translates; serializing an `AppError` cannot fail.
 fn error_json(error: &AppError) -> serde_json::Value {
     serde_json::to_value(error).unwrap_or(serde_json::Value::Null)
+}
+
+/// What the settings screen shows: the plan, or which models keep one from starting.
+fn speaker_state(
+    plan: AppResult<Option<catalog::SpeakerPlan>>,
+) -> (Option<catalog::SpeakerPlan>, Option<SpeakerMissing>) {
+    match plan {
+        Ok(plan) => (plan, None),
+        Err(AppError::User(UserError::SpeakerModelsMissing { missing, suggested })) => {
+            (None, Some(SpeakerMissing { missing, suggested }))
+        }
+        Err(_) => (None, None),
+    }
 }
 
 fn job_result_event(id: u64, result: AppResult<JobOutcome>) -> JobEvent {
@@ -272,6 +298,13 @@ impl Service {
             &self.shared.paths,
             &settings.model_dirs,
         );
+        let (speaker_plan, speaker_missing) = speaker_state(catalog::choose_speaker_plan(
+            &settings,
+            &self.shared.hardware,
+            &models,
+        ));
+        let execution =
+            schedule::execution_plan(&settings, &self.shared.hardware, speaker_plan.as_ref());
         Ok(Snapshot {
             version: env!("CARGO_PKG_VERSION"),
             locale: if settings.ui_language.is_empty() {
@@ -281,6 +314,9 @@ impl Service {
             },
             hardware: self.shared.hardware.clone(),
             backend: catalog::backend_for(&self.shared.hardware, &self.shared.paths),
+            speaker_plan,
+            speaker_missing,
+            execution,
             settings,
             models,
             models_dir: self.shared.paths.models_dir(),
@@ -519,6 +555,28 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_speaker_models_reach_the_snapshot_in_the_form_the_ui_reads() {
+        let (plan, missing) = speaker_state(Err(UserError::SpeakerModelsMissing {
+            missing: vec![catalog::Role::Diarize, catalog::Role::Separate],
+            suggested: Some("nemotron-3.5-speaker".to_owned()),
+        }
+        .into()));
+        assert_eq!(plan, None);
+        assert_eq!(
+            serde_json::to_value(missing).unwrap(),
+            serde_json::json!({
+                "missing": ["diarize", "separate"],
+                "suggested": "nemotron-3.5-speaker",
+            })
+        );
+        assert_eq!(speaker_state(Ok(None)), (None, None));
+        assert_eq!(
+            speaker_state(Err(AppError::Invalid("unknown model".to_owned()))),
+            (None, None)
+        );
+    }
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
@@ -641,7 +699,11 @@ mod tests {
             serde_json::json!({
                 "state": "failed",
                 "id": 1,
-                "error": { "code": "speaker_models_missing", "missing": ["diarize", "separate"] }
+                "error": {
+                    "code": "speaker_models_missing",
+                    "missing": ["diarize", "separate"],
+                    "suggested": "nemotron-3.5-speaker"
+                }
             })
         );
     }
@@ -719,6 +781,7 @@ mod tests {
             font_missing: false,
             speakers_missing: false,
             lanes: crate::lanes::LaneStats::default(),
+            speaker_plan: None,
         };
         assert!(matches!(
             job_result_event(5, Ok(outcome)),
@@ -838,10 +901,9 @@ mod tests {
                 size: 1,
                 sha256: "00",
             }])),
-            min_memory_gib: 0,
-            needs_cuda: false,
-            extra_args: &[],
-            max_audio_seconds: None,
+            min_ram_gib: 0,
+            min_gpu_memory_gib: 0,
+            min_ram_with_gpu_gib: 0,
         }));
         let file = root.join("data/models/test-model/m.bin");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -1248,7 +1310,7 @@ mod tests {
         let root = scratch("reset-overlap");
         let (service, _events) = started(&root);
         let inside = root.join("data/models/whisper-large-v3-turbo/a.gguf");
-        let beside = root.join("data/models/nemotron-3.5-transcribe-q2l/a.gguf");
+        let beside = root.join("data/models/nemotron-3.5-speaker/a.gguf");
         std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
         std::fs::create_dir_all(beside.parent().unwrap()).unwrap();
         std::fs::write(&inside, b"x").unwrap();
@@ -1425,7 +1487,6 @@ mod tests {
             font_family: "Hiragino Sans".to_owned(),
             speaker_count: 3,
             language: "ja".to_owned(),
-            diarize_model: "nemotron-3.5-transcribe-q2l".to_owned(),
             ..Settings::default()
         };
         service.save_profile("A", custom.clone()).unwrap();
@@ -1435,10 +1496,6 @@ mod tests {
         assert_eq!(snapshot.settings.active_profile, "B");
         assert_eq!(snapshot.settings.speaker_count, 3);
         assert_eq!(snapshot.settings.language, "ja");
-        assert_eq!(
-            snapshot.settings.diarize_model,
-            "nemotron-3.5-transcribe-q2l"
-        );
         assert_eq!(profile_look(&service, "B"), CaptionLook::default());
         assert_eq!(profile_look(&service, "A").font_family, "Hiragino Sans");
         assert_eq!(

@@ -6,13 +6,14 @@ import {
   applyDownloadEvent,
   applyJobEvent,
   initialState,
-  isHeavyRole,
   isHeavySpeakerCount,
   isWorking,
   lookChanged,
   missingModelRoles,
+  speakerModelsMissing,
   startedDownload,
   uiLocale,
+  videoRefusal,
   withModels,
   withSaveAnswer,
   withSettings,
@@ -31,11 +32,11 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
   face_model: "c",
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  separation_backend: "onnx",
   speaker_count: 0,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -48,6 +49,8 @@ const SNAPSHOT: Snapshot = {
   backend: "default",
   settings: SETTINGS,
   models: [],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };
@@ -76,17 +79,19 @@ it("starts empty", () => {
           offset_y_percent: 0,
         },
         language: "auto",
-        diarize_model: "b",
         face_model: "c",
         model_dirs: [],
         active_profile: "",
         line_height: 1.448,
+        separation_backend: "onnx",
         speaker_count: 0,
         subtitle_format: "fcpxml",
         ui_language: "",
         ui_theme: "system",
       },
       models: [],
+      speaker_plan: null,
+      speaker_missing: null,
       models_dir: "/models",
       profiles: [],
     },
@@ -94,6 +99,7 @@ it("starts empty", () => {
     downloads: new Map(),
     hovering: false,
     loadError: null,
+    planPending: false,
   });
 });
 
@@ -155,6 +161,7 @@ it("records the outcome of a finished job", () => {
         cue_count: 9,
         faceless: false,
         font_missing: false,
+        speaker_plan: null,
         speakers_missing: false,
         requested_speakers: 0,
       },
@@ -174,6 +181,7 @@ it("records the outcome of a finished job", () => {
         cue_count: 9,
         faceless: false,
         font_missing: false,
+        speaker_plan: null,
         speakers_missing: false,
         requested_speakers: 0,
       },
@@ -268,46 +276,81 @@ const MODEL: ModelStatus = {
   recommended: true,
 };
 
-it("needs only a transcription model for one speaker", () => {
-  const one: Settings = { ...SETTINGS, speaker_count: 1 };
-  expect(missingModelRoles({ settings: one, models: [] })).toStrictEqual(["transcribe"]);
-  expect(missingModelRoles({ settings: one, models: [MODEL] })).toStrictEqual([]);
-  expect(
-    missingModelRoles({ settings: one, models: [{ ...MODEL, blocked: { code: "needs_nvidia" } }] }),
-  ).toStrictEqual(["transcribe"]);
+it("needs a present, unblocked model for transcription, whatever the speaker count", () => {
+  expect(missingModelRoles({ models: [] })).toStrictEqual(["transcribe"]);
+  expect(missingModelRoles({ models: [MODEL] })).toStrictEqual([]);
+  expect(missingModelRoles({ models: [{ ...MODEL, blocked: { code: "needs_memory" } }] })).toStrictEqual([
+    "transcribe",
+  ]);
 });
 
-it("needs every model of the chain for automatic detection and for more speakers", () => {
-  const diarizer: ModelStatus = { ...MODEL, id: "n", role: "diarize" };
-  const separator: ModelStatus = { ...MODEL, id: "m", role: "separate" };
-  expect(missingModelRoles({ settings: { ...SETTINGS, speaker_count: 0 }, models: [MODEL] })).toStrictEqual([
-    "diarize",
-    "separate",
-  ]);
+it("takes what is missing from the backend", () => {
+  const missing = { missing: ["separate"], suggested: "m" } as const;
+  expect(speakerModelsMissing({ snapshot: SNAPSHOT, planPending: false })).toBe(null);
   expect(
-    missingModelRoles({ settings: { ...SETTINGS, speaker_count: 2 }, models: [MODEL, diarizer] }),
-  ).toStrictEqual(["separate"]);
-  expect(
-    missingModelRoles({ settings: { ...SETTINGS, speaker_count: 2 }, models: [MODEL, diarizer, separator] }),
-  ).toStrictEqual([]);
-  expect(
-    missingModelRoles({
-      settings: { ...SETTINGS, speaker_count: 2 },
-      models: [MODEL, { ...diarizer, blocked: { code: "needs_nvidia" } }, separator],
+    speakerModelsMissing({
+      snapshot: { ...SNAPSHOT, speaker_missing: { ...missing, missing: ["separate"] } },
+      planPending: false,
     }),
-  ).toStrictEqual(["diarize"]);
+  ).toStrictEqual({ missing: ["separate"], suggested: "m" });
+});
+
+it("does not call speaker models missing while the answer for new settings is on its way", () => {
+  expect(
+    speakerModelsMissing({
+      snapshot: { ...SNAPSHOT, speaker_missing: { missing: ["separate"], suggested: "m" } },
+      planPending: true,
+    }),
+  ).toBe(null);
+});
+
+it("marks the plan as old when settings change, and takes the new one from the save's answer", () => {
+  const plan = {
+    diarize: "n",
+    whisper_on: "gpu",
+    diarize_on: "gpu",
+    separate_on: "cpu",
+    separator: "mossformer2-ss-16k",
+    deep: false,
+  } as const;
+  const changed: AppState = withSettings(initialState(SNAPSHOT), { ...SETTINGS, speaker_count: 2 });
+  expect(changed.planPending).toBe(true);
+  const answered: AppState = withSaveAnswer(changed, {
+    ...SNAPSHOT,
+    speaker_plan: plan,
+    speaker_missing: { missing: [], suggested: null },
+  });
+  expect(answered.snapshot.speaker_missing).toStrictEqual({ missing: [], suggested: null });
+  expect(answered.planPending).toBe(false);
+  expect(answered.snapshot.speaker_plan).toStrictEqual({
+    diarize: "n",
+    whisper_on: "gpu",
+    diarize_on: "gpu",
+    separate_on: "cpu",
+    separator: "mossformer2-ss-16k",
+    deep: false,
+  });
+});
+
+it("refuses a video for its missing transcription model first, then for its speaker models", () => {
+  const speakers = { missing: ["diarize"], suggested: "n" } as const;
+  const lacking: Snapshot = { ...SNAPSHOT, speaker_missing: { ...speakers, missing: ["diarize"] } };
+  expect(videoRefusal({ snapshot: { ...lacking, models: [] }, planPending: false })).toStrictEqual({
+    code: "models_missing",
+    roles: ["transcribe"],
+  });
+  expect(videoRefusal({ snapshot: { ...lacking, models: [MODEL] }, planPending: false })).toStrictEqual({
+    code: "speaker_models_missing",
+    missing: ["diarize"],
+    suggested: "n",
+  });
+  expect(videoRefusal({ snapshot: { ...SNAPSHOT, models: [MODEL] }, planPending: false })).toBe(null);
 });
 
 it("calls only one speaker light", () => {
   expect(isHeavySpeakerCount({ speaker_count: 1 })).toBe(false);
   expect(isHeavySpeakerCount({ speaker_count: 0 })).toBe(true);
   expect(isHeavySpeakerCount({ speaker_count: 2 })).toBe(true);
-});
-
-it("knows which kinds of model only the heavy chain needs", () => {
-  expect(isHeavyRole("separate")).toBe(true);
-  expect(isHeavyRole("diarize")).toBe(true);
-  expect(isHeavyRole("transcribe")).toBe(false);
 });
 
 it("notices a look that differs from the saved one, and ignores everything else", () => {

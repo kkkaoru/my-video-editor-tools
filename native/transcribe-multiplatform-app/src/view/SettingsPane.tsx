@@ -6,6 +6,7 @@ import { format, type Messages } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
 import type { Updater } from "../state/use-updater.ts";
 import { SelectField, type SelectOption } from "./fields.tsx";
+import { LicensesDialog } from "./LicensesDialog.tsx";
 import { UpdateCheck } from "./UpdatePanels.tsx";
 
 export interface SettingsPaneProps {
@@ -77,6 +78,9 @@ export function SettingsPane({ version, settings, onChange, updater }: SettingsP
           />
         </CardContent>
       </Card>
+      <div>
+        <LicensesDialog />
+      </div>
     </div>
   );
 }

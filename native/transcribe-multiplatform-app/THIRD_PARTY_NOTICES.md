@@ -4,7 +4,7 @@ Bundled in the release builds:
 
 | Component | Use | License |
 | --- | --- | --- |
-| [FFmpeg](https://ffmpeg.org/) (LGPL build) | audio extraction, frame sampling | LGPL-2.1-or-later |
+| [FFmpeg](https://ffmpeg.org/) (LGPL build; `runtime/ffmpeg/` holds its license and `BUILD.txt`, which says how it was built; the macOS source is in each GitHub release as `ffmpeg-macos-source.tar.xz`, the Windows build names its [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) release) | audio extraction, frame sampling | LGPL-2.1-or-later |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp), built with `scripts/release/whisper-cpp.patch` | transcription runtime (Vulkan and CPU in both Windows builds, Metal on macOS) | MIT |
 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | speaker separation runtime (CPU in both Windows builds, Vulkan in the Radeon build, Metal on macOS) | Apache-2.0 |
 | [Vibrato](https://github.com/daac-tools/vibrato) with MeCab IPADIC (`resources/ipadic-*`) | Japanese phrase boundaries for caption breaks | MIT/Apache-2.0; IPADIC license in `resources/ipadic-COPYING` |
@@ -19,5 +19,4 @@ Downloaded by the user in the app, never bundled: MossFormer2_SS_16K (Apache-2.0
 [kkk4oru/mossformer2-ss-16k-onnx](https://huggingface.co/kkk4oru/mossformer2-ss-16k-onnx) of
 [alibabasglab/MossFormer2_SS_16K](https://huggingface.co/alibabasglab/MossFormer2_SS_16K)), the CUDA build of NeMo-Speech.cpp (Apache-2.0; GeForce build only,
 which also fetches the NVIDIA CUDA libraries it ships with under NVIDIA's own license), Whisper large-v3-turbo (MIT) and
-Nemotron 3.5 Transcribe 30B-A4B (OpenMDW-1.1; the GGUF conversions come from the third-party repository
-AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF because NVIDIA publishes only safetensors checkpoints).
+the speaker branch of [NVIDIA Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) (OpenMDW-1.1), converted from NVIDIA's weights with NVIDIA's [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) tools by `scripts/release/make-speaker-models.py`; its other weights are replaced by zeros of smaller shapes. `src-tauri/resources/speaker-decoder-head.gguf` holds the vocabulary and settings of that NVIDIA model (OpenMDW-1.1); it has no weights, and the app fills the rest with zeros.

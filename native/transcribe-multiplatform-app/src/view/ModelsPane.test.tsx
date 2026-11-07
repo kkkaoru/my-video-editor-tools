@@ -21,11 +21,11 @@ const SETTINGS: Settings = {
     offset_y_percent: 0,
   },
   language: "auto",
-  diarize_model: "b",
   face_model: "c",
   model_dirs: [],
   active_profile: "",
   line_height: 1.448,
+  separation_backend: "onnx",
   speaker_count: 0,
   subtitle_format: "fcpxml",
   ui_language: "",
@@ -48,6 +48,8 @@ const SNAPSHOT: Snapshot = {
   backend: "default",
   settings: SETTINGS,
   models: [MODEL],
+  speaker_plan: null,
+  speaker_missing: null,
   models_dir: "/models",
   profiles: [],
 };
@@ -85,8 +87,11 @@ afterEach(cleanup);
 
 it("rounds sizes to megabytes or gigabytes", () => {
   expect(formatBytes(1)).toBe("1 MB");
-  expect(formatBytes(1024 * 1024 * 1024)).toBe("1.0 GB");
-  expect(formatBytes(1610612736)).toBe("1.5 GB");
+  expect(formatBytes(0)).toBe("0 MB");
+  expect(formatBytes(200_779_392)).toBe("201 MB");
+  expect(formatBytes(107_012_128)).toBe("107 MB");
+  expect(formatBytes(1_000_000_000)).toBe("1.0 GB");
+  expect(formatBytes(1_610_612_736)).toBe("1.6 GB");
 });
 
 it("groups visible models under their role, in a fixed order", () => {
@@ -142,43 +147,13 @@ it("hides the source of a present model", () => {
 });
 
 it("explains a blocked model and offers no action", () => {
-  showModel({ ...MODEL, download_bytes: 1, blocked: { code: "needs_nvidia" } }, null);
-  expect(screen.getByText("Whisper needs an NVIDIA GPU. Choose another model in Models.").tagName).toBe("P");
+  showModel({ ...MODEL, download_bytes: 1, blocked: { code: "needs_memory" } }, null);
+  expect(
+    screen.getByText("Whisper needs 0 GB of RAM; this computer has 0 GB. Choose a smaller model.").tagName,
+  ).toBe("P");
   expect(
     screen.queryAllByRole("button").map((button: HTMLElement): string | null => button.textContent),
   ).toStrictEqual(["Add a folder with existing models", "Reset models and download again"]);
-});
-
-it("selects a present diarizer", () => {
-  const store: AppStore = showModel({ ...MODEL, id: "d", role: "diarize", found_at: "/shared/d" }, null);
-  fireEvent.click(screen.getByRole("button", { name: "Use Whisper" }));
-  expect(screen.getByRole("button", { name: "Use Whisper" }).getAttribute("aria-pressed")).toBe("false");
-  expect(vi.mocked(store.updateSettings).mock.calls[0]?.[0].diarize_model).toBe("d");
-});
-
-it("offers no choice of transcription model", () => {
-  showModel({ ...MODEL, found_at: "/shared/whisper" }, null);
-  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
-});
-
-it("offers no choice of a blocked diarizer", () => {
-  showModel({ ...MODEL, role: "diarize", found_at: "/shared/d", blocked: { code: "needs_nvidia" } }, null);
-  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
-});
-
-it("offers no choice of a missing diarizer", () => {
-  showModel({ ...MODEL, role: "diarize" }, null);
-  expect(screen.queryByRole("button", { name: "Use Whisper" })).toBe(null);
-});
-
-it("marks the model in use", () => {
-  const snapshot: Snapshot = {
-    ...SNAPSHOT,
-    settings: { ...SETTINGS, diarize_model: "d" },
-    models: [{ ...MODEL, id: "d", role: "diarize", label: "Diarizer", found_at: "/d" }],
-  };
-  render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
-  expect(screen.getByRole("button", { name: "In use: Diarizer" }).getAttribute("aria-pressed")).toBe("true");
 });
 
 it("offers no selection for a role without a setting", () => {
@@ -317,11 +292,11 @@ it("adds a chosen folder and applies the saved snapshot", async () => {
             offset_y_percent: 0,
           },
           language: "auto",
-          diarize_model: "b",
           face_model: "c",
           model_dirs: ["/x", "/extra"],
           active_profile: "",
           line_height: 1.448,
+          separation_backend: "onnx",
           speaker_count: 0,
           subtitle_format: "fcpxml",
           ui_language: "",
@@ -492,7 +467,7 @@ it("says what to do on a computer with no recommended speaker model", () => {
   render(<ModelsPane store={storeWith(SNAPSHOT, new Map())} snapshot={SNAPSHOT} />);
   expect(
     screen.getByText(
-      "No Nemotron 3.5 model is recommended for this computer. You can still make subtitles for 1 speaker.",
+      "No model for telling speakers apart is recommended for this computer. You can still make subtitles for 1 speaker.",
     ).tagName,
   ).toBe("P");
 });
@@ -503,7 +478,7 @@ it("stays quiet when a speaker model is recommended", () => {
   expect(screen.queryByText(/No speaker separation model/)).toBe(null);
 });
 
-it("says the voice separation model is required for 2 or more speakers", () => {
+it("says when the voice separation model is needed", () => {
   const separator: ModelStatus = {
     ...SNAPSHOT.models[0],
     id: "mossformer2-ss-16k",
@@ -513,10 +488,25 @@ it("says the voice separation model is required for 2 or more speakers", () => {
   const snapshot: Snapshot = { ...SNAPSHOT, models: [separator] };
   render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
   expect(screen.getByRole("heading", { name: "voice separation" }).tagName).toBe("H2");
-  expect(screen.getByText("Required for 2 or more speakers").getAttribute("data-slot")).toBe("badge");
+  expect(screen.getByText("Used for 2 or more speakers").getAttribute("data-slot")).toBe("badge");
+  expect(screen.getByText("Splits overlapping voices. Used by “High quality”.").tagName).toBe("P");
   expect(
-    screen.getByText("Needed when 2 or more people speak, or when the number is detected automatically.")
-      .tagName,
+    screen.queryByText("Needed when 2 or more people speak, or when the number is detected automatically."),
+  ).toBe(null);
+});
+
+it("describes the Nemotron 3.5 encoder with its size, its one job and the full model", () => {
+  const encoder: ModelStatus = {
+    ...SNAPSHOT.models[0],
+    id: "nemotron-3.5-speaker",
+    role: "diarize",
+    label: "Nemotron 3.5",
+  };
+  const snapshot: Snapshot = { ...SNAPSHOT, models: [encoder] };
+  render(<ModelsPane store={storeWith(snapshot, new Map())} snapshot={snapshot} />);
+  expect(
+    screen.getByText(
+      "An encoder used only to tell speakers apart. It runs on the GPU or the CPU. Whisper turbo does the transcribing. A full Nemotron 3.5 model already in your folders also works.",
+    ).tagName,
   ).toBe("P");
-  expect(screen.getByText("Splits overlapping voices. Required for 2 or more speakers.").tagName).toBe("P");
 });

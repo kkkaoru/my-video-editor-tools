@@ -5,12 +5,21 @@ use crate::engines::{Tools, VideoInfo};
 use crate::error::{io_context, AppError, AppResult};
 use crate::process::{background_command, CancelToken};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
 use tract_onnx::prelude::*;
 
 const INPUT_SIZE: usize = 640;
+const ERROR_TAIL_LINES: usize = 12;
+/// The bundled macOS FFmpeg has no AV1 software decoder. Other codecs give the same frames this way
+/// (measured on H.264), and those VideoToolbox cannot decode fall back to software.
+const HARDWARE_DECODE: &[&str] = if cfg!(target_os = "macos") {
+    &["-hwaccel", "videotoolbox"]
+} else {
+    &[]
+};
 /// YuNet's feature strides, in its output order.
 const YUNET_STRIDES: [usize; 3] = [8, 16, 32];
 const YUNET_SCORE_THRESHOLD: f32 = 0.6;
@@ -259,14 +268,9 @@ pub fn scan_faces(
     let mut command = background_command(&tools.ffmpeg);
     // Keyframes alone keep long videos fast; the fps filter still gives true timestamps.
     command
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-skip_frame",
-            "nokey",
-            "-i",
-        ])
+        .args(["-hide_banner", "-loglevel", "error"])
+        .args(HARDWARE_DECODE)
+        .args(["-skip_frame", "nokey", "-i"])
         .arg(video)
         .args([
             "-an",
@@ -280,8 +284,14 @@ pub fn scan_faces(
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     let mut child = command.spawn().map_err(io_context("start ffmpeg"))?;
+    let errors = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Invalid("stderr was not captured".into()))?;
+    // Read beside the frames: a tool that fills this pipe would stop writing them.
+    let errors = std::thread::spawn(move || read_tail(errors));
     let mut stdout = child
         .stdout
         .take()
@@ -305,9 +315,33 @@ pub fn scan_faces(
         progress((time / info.duration).clamp(0.0, 1.0));
     };
     drop(stdout);
-    let _ = child.kill();
-    let _ = child.wait();
-    outcome.map(|()| samples)
+    if outcome.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(io_context("wait for ffmpeg"));
+    let detail = errors.join().unwrap_or_default();
+    outcome?;
+    let status = status?;
+    if status.success() {
+        return Ok(samples);
+    }
+    // Without this a video ffmpeg cannot decode looks like one with no faces in it.
+    Err(AppError::Tool {
+        tool: "ffmpeg".to_owned(),
+        detail: format!("{status}\n{detail}"),
+    })
+}
+
+/// The last of what `stream` says, keeping a long run of decoder errors from growing without bound.
+fn read_tail(stream: impl Read) -> String {
+    let mut tail = VecDeque::with_capacity(ERROR_TAIL_LINES);
+    for line in BufReader::new(stream).lines().map_while(Result::ok) {
+        if tail.len() == ERROR_TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    }
+    Vec::from(tail).join("\n")
 }
 
 #[cfg(test)]
@@ -331,6 +365,15 @@ mod tests {
             height: width,
             score,
         }
+    }
+
+    #[test]
+    fn only_the_last_error_lines_are_kept() {
+        let lines = (1..=14).map(|line| format!("{line}\n")).collect::<String>();
+        assert_eq!(
+            read_tail(lines.as_bytes()),
+            "3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14"
+        );
     }
 
     #[test]

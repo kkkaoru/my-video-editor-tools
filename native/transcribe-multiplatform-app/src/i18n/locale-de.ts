@@ -11,6 +11,12 @@ export const deMessages: Messages = {
   uiThemeLabel: "Darstellung",
   uiThemeSystem: "Wie das System",
   uiThemeLight: "Hell",
+  licensesOpen: "Open-Source-Lizenzen",
+  licensesLoading: "Die Lizenzen werden geladen",
+  licensesFailed: "Die Lizenzliste konnte nicht gelesen werden.",
+  licensesNoText: "Dieses Paket enthält keinen Lizenztext.",
+  licensesUnknown: "Nicht angegeben",
+  licensesClose: "Schließen",
   uiThemeDark: "Dunkel",
   updateCheck: "Nach Updates suchen",
   updateChecking: "Es wird nach Updates gesucht",
@@ -48,14 +54,36 @@ export const deMessages: Messages = {
   speakerOptionLoad: "{label} ({load})",
   speakerLoadLightDetail: "Nutzt nur Whisper, ohne Stimmentrennung und Sprechertrennung.",
   speakerLoadHeavyDetail:
-    "Führt Nemotron, dann MossFormer2, dann Whisper aus. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
-  speakerLoadHeavyEstimate:
-    "Gemessen auf einem Mac: Bei einem 4-stündigen Video dauert allein die Stimmentrennung etwa 2 Std. 20 Min., dazu kommt die Zeit für Whisper. Arbeitsspeicher: bis etwa 8 GB für die Stimmentrennung und etwa 22 GB für die Sprechertrennung (Nemotron). Das hängt vom Video und vom Computer ab. Windows wurde nicht gemessen.",
-  speakerModelsMissing: "Für diese Anzahl von Sprechern fehlen Modelle: {roles}.",
+    "Unterscheidet die Stimmen. Das dauert viel länger und braucht viel mehr RAM oder GPU-Speicher.",
+  speakerFiguresNote:
+    "Whisper brauchte auf der CPU für ein Video von etwa einer Stunde etwa {whisperCpuMinutes} Min., ohne Wiederholungen. Diese Werte wurden auf einem Mac gemessen und hängen vom Video und vom Computer ab. RAM und GPU-Speicher unter Windows wurden nicht gemessen.",
+  memoryUnified: "gemeinsamer Speicher (RAM und GPU-Speicher geteilt)",
+  memoryRam: "Arbeitsspeicher (RAM)",
+  memoryGpu: "GPU-Speicher",
+  speakerPlanRuns: "Läuft auf: Whisper {whisper}, Sprechertrennung {diarize}.",
+  speakerPlanRunsSeparate: " Stimmentrennung {separate}.",
+  speakerPlanDeep:
+    "3 oder mehr gleichzeitige Stimmen werden zweimal getrennt, das dauert länger. Bis zu 4 Zeilen erscheinen.",
+  separationBackend: "So läuft die Stimmentrennung",
+  separationBackends: { onnx: "CPU (ONNX Runtime)", coreml: "Mac-GPU (Core ML)" },
+  speakerPlanLine: "Läuft mit: {models}.",
+  speakerFactLabels: {
+    runs: "Was läuft",
+    rows: "Zeilen",
+    memory: "RAM und GPU-Speicher",
+    time: "Zeit (ohne Whisper)",
+  },
+  speakerFacts: {
+    runs: "Nemotron-3.5-Encoder und MossFormer2",
+    rows: "Gleichzeitige Stimmen stehen in mehreren Zeilen.",
+    memory:
+      "Auf einem Mac, {memoryUnified}: {encoderGb} GB für den Nemotron-3.5-Encoder, etwa {separateCoreMlGb} GB (geschätzt) für MossFormer2 mit Core ML, {separateGb} GB auf der CPU mit ONNX Runtime ({separateSeconds}-Sekunden-Abschnitte). Etwa {jobPeakGb} GB auf dem Höhepunkt des Auftrags.",
+    time: "Nemotron-3.5-Encoder: pro Stunde Ton etwa {encoderGpuSeconds} Sekunden auf der GPU eines Mac, etwa {encoderCpuSeconds} Sekunden auf der CPU. Stimmentrennung, gemessen an einem Video von etwa einer Stunde: etwa {separateCoreMlMinutes} Min. mit Core ML, etwa {separateCpuMinutes} Min. auf der CPU. Das hängt davon ab, wie viel vom Video getrennt wird. 3 oder mehr gleichzeitige Stimmen werden zweimal getrennt, das dauert länger.",
+  },
   openModelsTab: "Tab „{tabModels}“ öffnen",
   runWithOneSpeaker: "Mit 1 Sprecher ausführen",
   roleSeparate: "Stimmentrennung",
-  badgeRequiredForSpeakers: "Nötig ab 2 Sprechern",
+  badgeUsedBySteps: "Für 2 oder mehr Sprecher",
   speakerRolesHint: "Nötig, wenn 2 oder mehr Menschen sprechen oder die Anzahl automatisch erkannt wird.",
   profilesHeading: "Profile",
   profilesHint:
@@ -222,15 +250,13 @@ export const deMessages: Messages = {
   resetPalette: "Ursprüngliche Farben wiederherstellen",
   modelsHeading: "Modelle",
   noRecommendedSpeakerModel:
-    "Für diesen Computer wird kein Nemotron-3.5-Modell empfohlen. Untertitel für 1 Sprecher kannst du trotzdem machen.",
+    "Für diesen Computer wird kein Modell für die Sprechertrennung empfohlen. Untertitel für 1 Sprecher kannst du trotzdem machen.",
   modelsHint:
     "Die für diesen Computer geeigneten Modelle sind als empfohlen markiert. Bereits heruntergeladene Modelle werden gefunden und wiederverwendet.",
   addModelFolder: "Ordner mit vorhandenen Modellen hinzufügen",
   modelFolders: "Durchsuchte Ordner",
   badgeRecommended: "Hier empfohlen",
   badgePresent: "Verfügbar",
-  useModel: "{name} verwenden",
-  inUseModel: "In Verwendung: {name}",
   download: "{name} herunterladen ({size})",
   downloadCancel: "Download von {name} abbrechen",
   downloadProgress: "{done} von {total}",
@@ -249,11 +275,8 @@ export const deMessages: Messages = {
     no_words: "Im Audio wurden keine Wörter gefunden.",
     model_missing: "{model} ist nicht installiert. Lade es unter „Modelle“ herunter.",
     no_model_for_role: "Für {role} ist kein Modell installiert. Lade eines unter Modelle.",
-    needs_nvidia: "{model} benötigt eine NVIDIA GPU. Wähle unter „Modelle“ ein anderes Modell.",
     needs_memory:
-      "{model} benötigt {required} GB Arbeitsspeicher; dieser Computer hat {available} GB. Wähle ein kleineres Modell.",
-    too_long_for_model:
-      "{model} verarbeitet Aufnahmen bis {limit} Minuten. Dieses Video ist länger. Stelle die Anzahl der Sprecher auf 1.",
+      "{model} benötigt {required} GB {memory}; dieser Computer hat {available} GB. Wähle ein kleineres Modell.",
     transcript_missing:
       "Neben {file} liegt keine Transkription, daher kann die Datei nicht neu geschrieben werden. Lege die gleichnamige .transcript.json-Datei in denselben Ordner.",
     profile_exists:
@@ -277,20 +300,16 @@ export const deMessages: Messages = {
   modelNotes: {
     "whisper-large-v3-turbo":
       "Transkription. Dasselbe Modell läuft auf dem Mac (Metal) und auf Windows (Vulkan).",
-    "nemotron-3.5-transcribe-iq4":
-      "Sprechertrennung. Für Macs mit 32 GB oder mehr, GPUs mit 24 GB oder mehr und CPUs.",
-    "nemotron-3.5-transcribe-nvfp4": "Sprechertrennung. Für Blackwell-GPUs wie die GeForce-RTX-50-Serie.",
-    "nemotron-3.5-transcribe-q2m":
-      "Sprechertrennung. Für GPUs mit 16 GB; jede Aufnahme kann etwa 7 Minuten lang sein.",
-    "nemotron-3.5-transcribe-q2l": "Sprechertrennung. Für Macs mit 24 GB.",
-    "mossformer2-ss-16k": "Trennt Stimmen, die sich überlagern. Nötig ab 2 Sprechern.",
-    "nemotron-3.5-transcribe-q8":
-      "Sprechertrennung. Höchste Qualität, für Macs mit 64 GB und GPUs mit 48 GB.",
+    "nemotron-3.5-speaker":
+      "Ein Encoder nur für die Sprechertrennung. Er läuft auf der GPU oder der CPU. Die Transkription macht Whisper turbo. Ein vollständiges Modell in deinen Ordnern funktioniert auch.",
+    "mossformer2-ss-16k-coreml":
+      "Trennt überlagerte Stimmen auf der GPU des Mac mit Core ML. Für „Hohe Qualität“.",
+    "mossformer2-ss-16k": "Trennt Stimmen, die sich überlagern. Für „Hohe Qualität“.",
     yunet: "Echte Gesichter. Im Lieferumfang der App; liefert auf Mac und Windows dasselbe Ergebnis.",
     "avatar-face-yolo":
       "Avatar-Gesichter. Funktioniert, sobald die exportierte ONNX-Datei in einem Modellordner liegt.",
     "geforce-runtime":
-      "CUDA-Version des Werkzeugs zur Sprechertrennung. Ohne sie läuft die Sprechertrennung auf der CPU.",
+      "Optional. Beschleunigt die Sprechertrennung auf der GPU. Ohne läuft sie auf der CPU, und wenn die GPU versagt, wechselt sie zur CPU zurück.",
   },
   help: {
     version: "Version {version}",
@@ -360,8 +379,7 @@ export const deMessages: Messages = {
             notes: [
               "Das „?“ neben der Anzahl erklärt, warum sie hilft.",
               "Spricht nur eine Person, lass 1 stehen. Das geht schneller.",
-              "1 Sprecher ist leicht: Nur Whisper läuft. Automatische Erkennung und 2 oder mehr Sprecher sind hohe Last: Nemotron, MossFormer2 und Whisper laufen. Das dauert viel länger und braucht viel mehr Arbeitsspeicher.",
-              "Die Stimmentrennung dauert etwa so lange wie der Ton, den sie bearbeitet. Das ist etwa die Hälfte des Tons. {speakerLoadHeavyEstimate}",
+              "1 Sprecher ist leicht: Nur Whisper läuft. Automatische Erkennung und 2 oder mehr Sprecher sind hohe Last: Auch Nemotron und MossFormer2 laufen. Das dauert viel länger und braucht viel mehr RAM oder GPU-Speicher.",
               "Diese Videos gehen: .mp4 .mov .mkv .m4v .webm .avi .mts .mxf .ts. Untertiteldateien: .drt .fcpxml .srt .ttml .transcript.json. Bei anderen Dateien sagt die App, dass sie nicht gehen.",
               "Mehrere Videos werden eines nach dem anderen bearbeitet.",
               "Beim ersten Mal bringt die App außerdem ein Modell in eine Form, die sie nutzen kann.",
@@ -390,6 +408,18 @@ export const deMessages: Messages = {
               ".ttml: Untertitel mit Farben und Positionen.",
               ".srt: Untertitel mit Wörtern und Zeiten. Farben werden vielleicht nicht gezeigt. Ränder und Positionen fehlen.",
               ".transcript.json: die Daten, um Untertitel neu zu schreiben. Bitte behalten.",
+            ],
+          },
+          {
+            heading: "Wenn 2 oder mehr Personen sprechen",
+            intro:
+              "Bei automatischer Erkennung oder 2 oder mehr Sprechern laufen Whisper turbo, der Nemotron-3.5-Encoder und MossFormer2. Die Transkription macht immer Whisper turbo; Nemotron unterscheidet nur die Sprecher.",
+            steps: [],
+            notes: [
+              "Gleichzeitige Stimmen stehen in mehreren Zeilen. Auf einem Mac, {memoryUnified}: {encoderGb} GB für den Nemotron-3.5-Encoder, etwa {separateCoreMlGb} GB (geschätzt) für MossFormer2 mit Core ML. 3 oder mehr gleichzeitige Stimmen werden zweimal getrennt, das dauert länger.",
+              "Auf einem Mac wählst du unter „{separationBackend}“, ob die Stimmentrennung auf der CPU oder der GPU des Mac läuft.",
+              "Nemotron-3.5-Encoder: pro Stunde Ton etwa {encoderGpuSeconds} Sekunden auf der GPU eines Mac, etwa {encoderCpuSeconds} Sekunden auf der CPU. Stimmentrennung, gemessen an einem Video von etwa einer Stunde: etwa {separateCoreMlMinutes} Min. mit Core ML, etwa {separateCpuMinutes} Min. auf der CPU. Das hängt davon ab, wie viel vom Video getrennt wird.",
+              "{speakerFiguresNote}",
             ],
           },
         ],
@@ -545,7 +575,7 @@ export const deMessages: Messages = {
               "Wähle bei „{uiLanguageLabel}“ eine Sprache. Der Bildschirm ändert sich sofort.",
               "Wähle bei „{uiThemeLabel}“ „{uiThemeLight}“ oder „{uiThemeDark}“. „{uiThemeSystem}“ folgt deinem Computer.",
             ],
-            notes: [],
+            notes: ["Ganz unten im Tab zeigt „{licensesOpen}“ die Bibliotheken der App und ihre Lizenzen."],
           },
           {
             heading: "Die App aktualisieren",
@@ -579,7 +609,7 @@ export const deMessages: Messages = {
           {
             heading: "Untertitel für 2 oder mehr Sprecher starten nicht",
             intro:
-              "Automatische Erkennung und 2 oder mehr Sprecher brauchen ein Nemotron-3.5-Modell und MossFormer2.",
+              "Automatische Erkennung und 2 oder mehr Sprecher brauchen den Nemotron-3.5-Encoder und MossFormer2 sowie mindestens 8 GB RAM.",
             steps: [],
             notes: [
               "Lade im Tab „{tabModels}“ die fehlenden Modelle. Passen sie nicht zu diesem Computer, drücke „{runWithOneSpeaker}“.",

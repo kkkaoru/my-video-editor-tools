@@ -17,7 +17,7 @@ import {
 import type { ModelStatus, Role, Settings, Snapshot } from "../backend/types.ts";
 import { errorText, format, type Messages, type ModelNotes, roleName } from "../i18n/messages.ts";
 import { useMessages } from "../i18n/use-messages.ts";
-import { type AppState, type DownloadRow, isHeavyRole, startedDownload } from "../state/app-state.ts";
+import { type AppState, type DownloadRow, startedDownload } from "../state/app-state.ts";
 import { type AppStore, reportFailure } from "../state/use-app-store.ts";
 import { ConfirmButton } from "./ConfirmButton.tsx";
 
@@ -33,12 +33,13 @@ interface ModelRowProps {
   download: DownloadRow | undefined;
 }
 
-const GIB: number = 2 ** 30;
-const MIB: number = 2 ** 20;
+/** Decimal, as the published sizes and the system's own file sizes are. */
+const GB: number = 1_000_000_000;
+const MB: number = 1_000_000;
 const ROLE_ORDER: Role[] = ["transcribe", "diarize", "separate", "face", "runtime"];
 
 export const formatBytes = (bytes: number): string =>
-  bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.ceil(bytes / MIB)} MB`;
+  bytes >= GB ? `${(bytes / GB).toFixed(1)} GB` : `${Math.round(bytes / MB) || Math.ceil(bytes / MB)} MB`;
 
 const isOwnCopy = (model: ModelStatus, snapshot: Snapshot): boolean =>
   // The runtime lives outside the models folder, and may be a broken download that has to go.
@@ -66,32 +67,6 @@ function startDownloads(store: AppStore, models: ModelStatus[]): void {
     store.setState((state: AppState): AppState => startedDownload(state, id, bytes));
     startDownload(id).catch((error: unknown): void => reportFailure(store.setState, error));
   });
-}
-
-function SelectButton({
-  model,
-  store,
-  snapshot,
-}: {
-  model: ModelStatus;
-  store: AppStore;
-  snapshot: Snapshot;
-}): VNode | null {
-  const messages: Messages = useMessages();
-  if (model.role !== "diarize" || model.found_at === null || model.blocked !== null) {
-    return null;
-  }
-  const { settings } = snapshot;
-  const selected: boolean = settings.diarize_model === model.id;
-  return (
-    <Button
-      variant={selected ? "default" : "outline"}
-      aria-pressed={selected}
-      onClick={(): void => store.updateSettings({ ...settings, diarize_model: model.id })}
-    >
-      {format(selected ? messages.inUseModel : messages.useModel, { name: model.label })}
-    </Button>
-  );
 }
 
 function DownloadButtons({ model, store, snapshot, download }: ModelRowProps): VNode | null {
@@ -157,6 +132,29 @@ function DownloadState({
   );
 }
 
+/** Offers one model where it is missed, with the same download controls as its row in the models tab. */
+export function ModelDownload({
+  id,
+  store,
+  snapshot,
+}: {
+  id: string;
+  store: AppStore;
+  snapshot: Snapshot;
+}): VNode | null {
+  const model: ModelStatus | undefined = snapshot.models.find((row: ModelStatus): boolean => row.id === id);
+  if (model === undefined) {
+    return null;
+  }
+  const download: DownloadRow | undefined = store.state.downloads.get(id);
+  return (
+    <div data-slot="model-download" className="grid grid-cols-1 justify-items-start gap-2">
+      <DownloadButtons model={model} store={store} snapshot={snapshot} download={download} />
+      <DownloadState model={model} download={download} />
+    </div>
+  );
+}
+
 function ModelRow({ model, store, snapshot, download }: ModelRowProps): VNode {
   const messages: Messages = useMessages();
   return (
@@ -164,7 +162,7 @@ function ModelRow({ model, store, snapshot, download }: ModelRowProps): VNode {
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-medium">{model.label}</h3>
         {model.recommended ? <Badge variant="default">{messages.badgeRecommended}</Badge> : null}
-        {model.role === "separate" ? <Badge>{messages.badgeRequiredForSpeakers}</Badge> : null}
+        {model.role === "separate" ? <Badge>{messages.badgeUsedBySteps}</Badge> : null}
         {model.found_at === null ? null : <Badge variant="success">{messages.badgePresent}</Badge>}
       </div>
       <p className="text-muted-foreground">{noteFor(messages.modelNotes, model.id)}</p>
@@ -182,7 +180,6 @@ function ModelRow({ model, store, snapshot, download }: ModelRowProps): VNode {
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <SelectButton model={model} store={store} snapshot={snapshot} />
         <DownloadButtons model={model} store={store} snapshot={snapshot} download={download} />
       </div>
       <DownloadState model={model} download={download} />
@@ -261,7 +258,7 @@ export function ModelsPane({ store, snapshot }: ModelsPaneProps): VNode {
           <Card key={role}>
             <CardHeader>
               <CardTitle>{roleName(messages, role)}</CardTitle>
-              {isHeavyRole(role) ? <CardDescription>{messages.speakerRolesHint}</CardDescription> : null}
+              {role === "diarize" ? <CardDescription>{messages.speakerRolesHint}</CardDescription> : null}
             </CardHeader>
             <CardContent>
               <ul className="grid grid-cols-1 gap-3">

@@ -44,8 +44,6 @@ const MAX_OFFSET_PERCENT: f64 = 50.0;
 pub const FONT_FAMILY_FORBIDDEN: [char; 3] = ['"', '<', '&'];
 /// `EM_ADVANCE`: the line advance measured for the repository's captions (`caption_layout_file`).
 const DEFAULT_LINE_HEIGHT: f64 = 1.448;
-/// A speaker model the catalog no longer has: a saved selection of it reads as no selection.
-const RETIRED_DIARIZE_MODEL: &str = "nemotron-3-diarization";
 /// The speaker models separate at most eight voices; more would only be guesswork.
 const MAX_SPEAKER_COUNT: u32 = 8;
 /// One colour per speaker the models can tell apart.
@@ -91,10 +89,21 @@ pub enum Anchor {
 
 /// Where captions sit; offsets are percent of the frame so they survive any resolution.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Placement {
     pub anchor: Anchor,
     pub offset_x_percent: f64,
     pub offset_y_percent: f64,
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Self {
+            anchor: Anchor::FaceAbove,
+            offset_x_percent: 0.0,
+            offset_y_percent: 0.0,
+        }
+    }
 }
 
 /// Which subtitle file a job writes, beside the transcript that is always written.
@@ -117,6 +126,23 @@ pub enum UiTheme {
     System,
     Light,
     Dark,
+}
+
+/// What runs MossFormer2 on a Mac. Elsewhere it is always ONNX Runtime.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SeparationBackend {
+    /// ONNX Runtime on the CPU.
+    #[default]
+    Onnx,
+    /// Core ML on the GPU, through the app's own runner.
+    Coreml,
+}
+
+fn known_separation_backend<'de, D: Deserializer<'de>>(
+    values: D,
+) -> Result<SeparationBackend, D::Error> {
+    Ok(serde_json::from_value(Value::deserialize(values)?).unwrap_or_default())
 }
 
 /// An unknown theme, from a newer version or a hand-edited file, must not stop the app from opening.
@@ -150,7 +176,8 @@ pub struct Settings {
     pub placement: Placement,
     pub subtitle_format: SubtitleFormat,
     pub language: String,
-    pub diarize_model: String,
+    #[serde(deserialize_with = "known_separation_backend")]
+    pub separation_backend: SeparationBackend,
     /// How many people speak: 0 lets the model decide, 1 skips speaker separation altogether.
     pub speaker_count: u32,
     pub face_model: String,
@@ -191,14 +218,10 @@ impl Default for Settings {
             width_ratio: DEFAULT_WIDTH_RATIO,
             safe_left_percent: DEFAULT_SAFE_PERCENT,
             safe_right_percent: DEFAULT_SAFE_PERCENT,
-            placement: Placement {
-                anchor: Anchor::FaceAbove,
-                offset_x_percent: 0.0,
-                offset_y_percent: 0.0,
-            },
+            placement: Placement::default(),
             subtitle_format: SubtitleFormat::default(),
             language: DEFAULT_LANGUAGE.to_owned(),
-            diarize_model: String::new(),
+            separation_backend: SeparationBackend::default(),
             speaker_count: DEFAULT_SPEAKER_COUNT,
             face_model: "yunet".to_owned(),
             model_dirs: Vec::new(),
@@ -463,9 +486,6 @@ impl Settings {
             .map_err(|error| AppError::Invalid(format!("settings file: {error}")))?;
         // Earlier versions saved ten colours; a surplus one must not stop the app from opening.
         settings.palette.truncate(MAX_SPEAKER_COLORS);
-        if settings.diarize_model == RETIRED_DIARIZE_MODEL {
-            settings.diarize_model.clear();
-        }
         settings.validate()?;
         Ok(settings)
     }
@@ -1003,17 +1023,35 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_choice_of_the_retired_speaker_model_reads_as_no_choice() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-retired-model");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let file = root.join("settings.json");
-        std::fs::write(&file, br#"{"diarize_model":"nemotron-3-diarization"}"#).unwrap();
-        assert_eq!(Settings::load(&file).unwrap().diarize_model, "");
-        std::fs::write(&file, br#"{"diarize_model":"nemotron-3.5-transcribe-q2l"}"#).unwrap();
+    fn settings_saved_with_retired_speaker_choices_still_load() {
+        let settings = parse_settings(
+            r#"{"language":"ja","diarize_model":"campplus-zh-cn","speaker_quality":"lightest"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.language, "ja");
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved.get("diarize_model"), None);
+        assert_eq!(saved.get("speaker_quality"), None);
         assert_eq!(
-            Settings::load(&file).unwrap().diarize_model,
-            "nemotron-3.5-transcribe-q2l"
+            parse_settings(r#"{"separation_backend":"coreml"}"#)
+                .unwrap()
+                .separation_backend,
+            SeparationBackend::Coreml
+        );
+        assert_eq!(
+            parse_settings(r#"{"separation_backend":"gpu2"}"#)
+                .unwrap()
+                .separation_backend,
+            SeparationBackend::Onnx
+        );
+        assert_eq!(
+            parse_settings(r#"{"placement":{"anchor":"video_top"}}"#)
+                .unwrap()
+                .placement,
+            Placement {
+                anchor: Anchor::VideoTop,
+                ..Placement::default()
+            }
         );
     }
 
