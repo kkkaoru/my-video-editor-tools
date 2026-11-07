@@ -61,6 +61,9 @@ jobs:
           $root = (Get-ChildItem C:\VulkanSDK | Select-Object -First 1).FullName
           "VULKAN_SDK=$root" | Out-File -Append $env:GITHUB_ENV
           "$root\Bin" | Out-File -Append $env:GITHUB_PATH
+      - name: Install Ninja for the nemo-speech build
+        if: matrix.distribution == 'macos'
+        run: brew install ninja
       - name: Fetch pinned speech and media tools
         shell: bash
         run: bash "$APP_DIR/scripts/release/fetch-runtime.sh" "${{ matrix.distribution }}"
@@ -87,8 +90,6 @@ jobs:
           mkdir -p out
           bundle="$APP_DIR/src-tauri/target/release/bundle/macos"
           ditto -c -k --norsrc --keepParent "$bundle/Transcribe Captions.app" out/Transcribe-Captions-macos-arm64.zip
-          # LGPL: the source of the FFmpeg this build ships, beside the build.
-          cp "$APP_DIR/src-tauri/target-runtime/ffmpeg.tar.xz" out/ffmpeg-macos-source.tar.xz
           if [ "$SIGNED_BUILD" = true ]; then
             cp "$bundle/Transcribe Captions.app.tar.gz" out/Transcribe-Captions-macos-arm64.app.tar.gz
             cp "$bundle/Transcribe Captions.app.tar.gz.sig" out/Transcribe-Captions-macos-arm64.app.tar.gz.sig

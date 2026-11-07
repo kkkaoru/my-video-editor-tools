@@ -35,6 +35,8 @@ const SPEAKER_DECODER_BYTES: u64 = 445_521_952;
 const LONGEST_SPEAKER_REQUEST_SECONDS: f64 = 3600.0;
 /// Long audio goes in overlapping requests; this much in common tells whose number is whose.
 const SPEAKER_REQUEST_OVERLAP_SECONDS: f64 = 300.0;
+/// A server runs one job, so one name is enough for the requests of its video.
+const SPEAKER_SESSION: &str = "video";
 const CPU_DEVICE: &str = "cpu";
 /// Warmup and speculative decoding both need the weights the stand-in lacks.
 const SPEAKER_BRANCH_ARGS: [&str; 3] = ["--no-warmup", "--asr.salm.mtp_draft", "0"];
@@ -1099,11 +1101,27 @@ fn overlapping_spans(seconds: f64, longest: f64, overlap: f64) -> Vec<TimeRange>
     }
 }
 
-fn speaker_spans(seconds: f64) -> Vec<TimeRange> {
+fn speaker_spans(seconds: f64, keeps_speakers: bool) -> Vec<TimeRange> {
     overlapping_spans(
         seconds,
         LONGEST_SPEAKER_REQUEST_SECONDS,
-        SPEAKER_REQUEST_OVERLAP_SECONDS,
+        if keeps_speakers {
+            0.0
+        } else {
+            SPEAKER_REQUEST_OVERLAP_SECONDS
+        },
+    )
+}
+
+/// The form fields that tie a request to the ones before it; audio in one request needs none.
+fn session_fields(parts: usize, index: usize, keeps_speakers: bool) -> String {
+    if !keeps_speakers || parts < 2 {
+        return String::new();
+    }
+    let last = index + 1 == parts;
+    format!(
+        "--{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"session\"\r\n\r\n{SPEAKER_SESSION}\r\n\
+         --{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"final\"\r\n\r\n{last}\r\n"
     )
 }
 
@@ -1114,6 +1132,7 @@ fn post_audio(
     wav: &Path,
     layout: &WavLayout,
     span: TimeRange,
+    fields: &str,
 ) -> AppResult<Vec<u8>> {
     let (first, bytes) = layout.slice(span.0, span.1);
     let mut audio = File::open(wav).map_err(io_context("read the audio for speakers"))?;
@@ -1122,7 +1141,7 @@ fn post_audio(
         .map_err(io_context("read the audio for speakers"))?;
     let wav_header = wav_head(u32::try_from(bytes).unwrap_or(u32::MAX), layout.float);
     let head = format!(
-        "--{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: {AUDIO_CONTENT_TYPE}\r\n\r\n"
+        "{fields}--{UPLOAD_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: {AUDIO_CONTENT_TYPE}\r\n\r\n"
     );
     let tail = format!("\r\n--{UPLOAD_BOUNDARY}--\r\n");
     let length = head.len() as u64 + wav_header.len() as u64 + bytes + tail.len() as u64;
@@ -1152,10 +1171,21 @@ fn post_audio(
     Ok(answer)
 }
 
+/// Every build the app ships carries `scripts/release/nemo-speech.patch`, which keeps who is who between
+/// requests. The CUDA runtime is NVIDIA's own download, so its numbers have to be stitched afterwards.
+fn server_keeps_speakers(backend: Backend) -> bool {
+    backend != Backend::Cuda
+}
+
 /// Asks once the server is up, request by request. Its speaker branch needs no decoding, so a
 /// transcript the alignment cannot place (one character outside its vocabulary loses a whole
 /// recording's word times) costs nothing here.
-fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<SpeakerTurn>> {
+fn ask_for_turns(
+    port: u16,
+    wav: &Path,
+    stop: &CancelToken,
+    keeps_speakers: bool,
+) -> AppResult<Vec<SpeakerTurn>> {
     let agent = local_agent();
     let base = format!("http://{LOOPBACK}:{port}");
     let mut source = File::open(wav).map_err(io_context("read the audio for speakers"))?;
@@ -1164,15 +1194,40 @@ fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<Spe
     drop(source);
     wait_for_server(&agent, &base, stop)?;
     let url = format!("{base}/v1/audio/diarizations");
-    let mut parts = Vec::new();
-    for span in speaker_spans(layout.seconds()) {
+    let spans = speaker_spans(layout.seconds(), keeps_speakers);
+    let mut parts = Vec::with_capacity(spans.len());
+    for (index, span) in spans.iter().enumerate() {
         if stop.is_cancelled() {
             return Err(server_failure("the speaker server stopped"));
         }
-        let answer = post_audio(&agent, &url, wav, &layout, span)?;
-        parts.push((span, moved_turns(parse_speaker_segments(&answer)?, span.0)));
+        let fields = session_fields(spans.len(), index, keeps_speakers);
+        let answer = post_audio(&agent, &url, wav, &layout, *span, &fields)?;
+        parts.push((*span, parse_speaker_segments(&answer)?));
     }
-    Ok(stitched_turns(parts))
+    Ok(if keeps_speakers {
+        turns_of_one_session(parts)
+    } else {
+        stitched_turns(
+            parts
+                .into_iter()
+                .map(|(span, turns)| (span, moved_turns(turns, span.0)))
+                .collect(),
+        )
+    })
+}
+
+fn turn_by_start(left: &SpeakerTurn, right: &SpeakerTurn) -> std::cmp::Ordering {
+    left.start
+        .total_cmp(&right.start)
+        .then(left.end.total_cmp(&right.end))
+        .then(left.speaker.cmp(&right.speaker))
+}
+
+/// The server already numbers and times them for the whole video; a long turn arrives with the request it ends in.
+fn turns_of_one_session(parts: Vec<(TimeRange, Vec<SpeakerTurn>)>) -> Vec<SpeakerTurn> {
+    let mut turns: Vec<SpeakerTurn> = parts.into_iter().flat_map(|(_, turns)| turns).collect();
+    turns.sort_by(turn_by_start);
+    turns
 }
 
 fn moved_turns(turns: Vec<SpeakerTurn>, offset: f64) -> Vec<SpeakerTurn> {
@@ -1326,7 +1381,7 @@ fn turns_from_server(
     let stop = CancelToken::default();
     std::thread::scope(|scope| {
         let answer = scope.spawn(|| {
-            let turns = ask_for_turns(port, wav, &stop);
+            let turns = ask_for_turns(port, wav, &stop, server_keeps_speakers(tools.backend));
             stop.cancel();
             turns
         });
@@ -1761,15 +1816,65 @@ mod tests {
 
     #[test]
     fn audio_that_fits_one_request_goes_whole() {
-        assert_eq!(speaker_spans(3600.0), vec![(0.0, 3600.0)]);
-        assert_eq!(speaker_spans(0.0), vec![(0.0, 0.0)]);
+        assert_eq!(speaker_spans(3600.0, true), vec![(0.0, 3600.0)]);
+        assert_eq!(speaker_spans(0.0, false), vec![(0.0, 0.0)]);
     }
 
     #[test]
     fn long_audio_goes_in_overlapping_requests() {
         assert_eq!(
-            speaker_spans(7000.0),
+            speaker_spans(7000.0, false),
             vec![(0.0, 3600.0), (3300.0, 6900.0), (6600.0, 7000.0)]
+        );
+    }
+
+    #[test]
+    fn only_the_downloaded_cuda_server_does_not_keep_speakers() {
+        assert!(server_keeps_speakers(Backend::Default));
+        assert!(server_keeps_speakers(Backend::Vulkan));
+        assert!(server_keeps_speakers(Backend::SpeakersOnCpu));
+        assert!(!server_keeps_speakers(Backend::Cuda));
+    }
+
+    #[test]
+    fn a_server_that_keeps_speakers_gets_requests_without_overlap() {
+        assert_eq!(
+            speaker_spans(7300.0, true),
+            vec![(0.0, 3600.0), (3600.0, 7200.0), (7200.0, 7300.0)]
+        );
+    }
+
+    #[test]
+    fn only_the_last_request_of_a_session_says_it_is_the_last() {
+        assert_eq!(session_fields(1, 0, true), "");
+        assert_eq!(session_fields(2, 0, false), "");
+        let first = session_fields(2, 0, true);
+        assert!(
+            first.contains("name=\"session\"\r\n\r\nvideo\r\n"),
+            "{first}"
+        );
+        assert!(first.contains("name=\"final\"\r\n\r\nfalse\r\n"), "{first}");
+        let last = session_fields(2, 1, true);
+        assert!(last.contains("name=\"final\"\r\n\r\ntrue\r\n"), "{last}");
+    }
+
+    #[test]
+    fn turns_of_a_session_keep_their_numbers_and_come_in_order() {
+        let parts = vec![
+            ((0.0, 10.0), vec![voice(1.0, 2.0, 2), voice(8.0, 9.0, 1)]),
+            (
+                (10.0, 20.0),
+                vec![voice(5.0, 12.0, 2), voice(11.0, 13.0, 1)],
+            ),
+        ];
+        assert_eq!(
+            turns_of_one_session(parts),
+            vec![
+                voice(1.0, 2.0, 2),
+                voice(5.0, 12.0, 2),
+                voice(8.0, 9.0, 1),
+                voice(11.0, 13.0, 1),
+            ]
         );
     }
 

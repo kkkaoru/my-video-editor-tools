@@ -1,0 +1,598 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index dce0d91..6c45192 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -46,7 +46,10 @@ if(WIN32)
+         set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
+     endif()
+     set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+-    include(InstallRequiredSystemLibraries)
++    # A build from another system has no Visual Studio to read; it brings the runtime itself.
++    if(CMAKE_HOST_WIN32)
++        include(InstallRequiredSystemLibraries)
++    endif()
+     # The ARM64 runtime's vcruntime140_1.dll is x64 code (for emulated and ARM64EC
+     # processes); ARM64 binaries do not import it.
+     if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
+diff --git a/server/http/http_server.cpp b/server/http/http_server.cpp
+index 810dea2..e3cc581 100644
+--- a/server/http/http_server.cpp
++++ b/server/http/http_server.cpp
+@@ -1049,8 +1049,10 @@ struct Server::Impl {
+         auto diarize = [this](const httplib::Request& request, httplib::Response& response) {
+ #if defined(NEMO_SPEECH_REGISTRY_DIAR)
+             const auto upload = uploaded_file(request);
++            // The engine holds a speaker-only request to its own limit, and --max-upload-mb bounds it.
+             const auto source = audio::load_wav_memory(
+-                upload.content.data(), upload.content.size(), upload.filename);
++                upload.content.data(), upload.content.size(), upload.filename,
++                audio::IngestOptions::local_file());
+             const std::string mode =
+                 request.form.has_field("mode") ? request.form.get_field("mode") : "streaming";
+             if (mode != "streaming" && mode != "offline")
+@@ -1094,8 +1096,14 @@ struct Server::Impl {
+             }
+ #if defined(NEMO_SPEECH_REGISTRY_ASR)
+             else {
++                // `session` names one recording sent in several requests; `final=true` ends it.
++                const std::string session =
++                    request.form.has_field("session") ? request.form.get_field("session") : "";
++                const bool final = !request.form.has_field("final") ||
++                                   request.form.get_field("final") != "false";
+                 for (const auto& segment : recognizer->diarize(
+-                         source.samples.data(), source.samples.size(), source.sample_rate))
++                         source.samples.data(), source.samples.size(), source.sample_rate, session,
++                         final))
+                     segment_item(segment.start, segment.end, segment.speaker);
+             }
+ #endif
+diff --git a/src/asr/recognizer.cpp b/src/asr/recognizer.cpp
+index e5f7e43..9035352 100644
+--- a/src/asr/recognizer.cpp
++++ b/src/asr/recognizer.cpp
+@@ -846,10 +846,11 @@ Recognizer::supports_offline_diarization() const {
+ }
+ 
+ std::vector<SpeechLmSegment>
+-Recognizer::diarize(const float* samples, size_t n, int sample_rate) const {
++Recognizer::diarize(
++    const float* samples, size_t n, int sample_rate, const std::string& session, bool final) const {
+     if (!supports_offline_diarization())
+         throw std::runtime_error("diarization is not loaded");
+-    return offline_backend_->diarize(samples, n, sample_rate);
++    return offline_backend_->diarize(samples, n, sample_rate, session, final);
+ }
+ 
+ bool
+diff --git a/src/asr/recognizer.h b/src/asr/recognizer.h
+index 12ce79a..452125c 100644
+--- a/src/asr/recognizer.h
++++ b/src/asr/recognizer.h
+@@ -92,7 +92,13 @@ class OfflineRecognitionBackend {
+     // Speaker turns alone, without a transcript (only with supports_offline_diarization()):
+     // seconds, speaker = the diarizer's column.
+     virtual bool supports_offline_diarization() const { return false; }
+-    virtual std::vector<SpeechLmSegment> diarize(const float*, size_t, int) { return {}; }
++    // `session`, when not empty, names one recording sent in several requests: the columns and turns
++    // carry on from its earlier requests, and `final` ends it. A turn appears in the request where
++    // it ends, at seconds from the recording's start.
++    virtual std::vector<SpeechLmSegment> diarize(
++        const float*, size_t, int, const std::string& /*session*/ = {}, bool /*final*/ = true) {
++        return {};
++    }
+     // Speech translation (AsrRequestOptions::speechlm.task = "translate") and its target languages.
+     virtual bool supports_translation() const { return false; }
+     virtual std::vector<std::string> translation_languages() const { return {}; }
+@@ -248,7 +254,9 @@ class Recognizer {
+     // A complete-audio backend that diarizes without transcribing (the speech-LLM's encoder);
+     // diarize() throws without one.
+     bool supports_offline_diarization() const;
+-    std::vector<SpeechLmSegment> diarize(const float* samples, size_t n, int sample_rate) const;
++    std::vector<SpeechLmSegment> diarize(
++        const float* samples, size_t n, int sample_rate, const std::string& session = {},
++        bool final = true) const;
+     std::vector<std::string> translation_languages() const;
+     const std::string& model_name() const { return model_name_; }
+     std::vector<std::string> supported_languages() const;
+diff --git a/src/speechlm/pee/pee_model.cpp b/src/speechlm/pee/pee_model.cpp
+index 2cc7fb3..bb570a4 100644
+--- a/src/speechlm/pee/pee_model.cpp
++++ b/src/speechlm/pee/pee_model.cpp
+@@ -896,6 +896,43 @@ PeeModel::plan_windows(int t_mel) const {
+     return plan;
+ }
+ 
++std::vector<PeeModel::Window>
++PeeModel::plan_session_windows(
++    SpeakerSession& session, int t_mel, int hop, int64_t* frames_left) const {
++    // Frames kept before a window's left context and past its right context: the STFT of a frame
++    // this close to the end of the samples it was computed from would differ from the recording's.
++    constexpr int64_t kEdgeFrames = 8;
++    const int sub = cfg_.asr.subsampling_factor;
++    const int64_t chunk_feat = cfg_.online_inference_length * sub;
++    const int64_t lc = cfg_.chunk_left_context * sub;
++    const int64_t rc = cfg_.chunk_right_context * sub;
++    const int64_t base = session.base_mel;
++    const int64_t total = base + t_mel;  // the recording's frames so far
++    std::vector<Window> plan;
++    for (int64_t ci = session.first_window;; ++ci) {
++        const int64_t stt = ci * chunk_feat;
++        if (stt >= total || (!session.final && stt + chunk_feat + rc + kEdgeFrames > total))
++            break;
++        const int64_t end = std::min(stt + chunk_feat, total);
++        const int64_t enc_stt = std::max(stt - lc, int64_t{0});
++        const int64_t enc_end = std::min(end + rc, total);
++        Window w;
++        w.enc_stt = static_cast<int>(enc_stt - base);
++        w.enc_end = static_cast<int>(enc_end - base);
++        w.left_drop = static_cast<int>((stt - enc_stt) / sub);
++        w.right = static_cast<int>(enc_end - end);
++        int core = static_cast<int>((end + sub - 1) / sub - (stt + sub - 1) / sub);
++        core = std::max(0, std::min(core, out_frames(w.len()) - w.left_drop));
++        w.core = core;
++        plan.push_back(w);
++    }
++    *frames_left = total - session.first_window * chunk_feat;
++    session.first_window += static_cast<int>(plan.size());
++    session.base_mel = std::max(session.first_window * chunk_feat - lc - kEdgeFrames, int64_t{0});
++    session.drop_samples = static_cast<size_t>(session.base_mel - base) * hop;
++    return plan;
++}
++
+ PeeModel::NormStats
+ PeeModel::norm_stats(const float* mel, int t_mel) const {
+     // NeMo normalize_batch("per_feature"): per-bin mean, unbiased std, + 1e-5.
+@@ -1057,6 +1094,9 @@ PeeModel::speaker_steps_host(const MelStore& store, const std::vector<SpeakerUtt
+     const int n_spk = cfg_.num_speakers;
+     const int sub = cfg_.diar.subsampling_factor;
+     std::vector<HostSpeakerState> states(utts.size());
++    for (size_t u = 0; u < utts.size(); ++u)
++        if (const SpeakerSession* session = utts[u]->session)
++            states[u] = {session->cache, session->cache_preds, session->fifo, {}, session->compressed};
+     size_t max_windows = 0;
+     for (SpeakerUtt* u : utts) {
+         u->p80_host.assign(u->plan->size(), {});
+@@ -1157,7 +1197,7 @@ PeeModel::speaker_steps_host(const MelStore& store, const std::vector<SpeakerUtt
+                                 P10 + static_cast<size_t>(src) * sub * n_spk, sub * n_spk,
+                                 utt.p10[w].data() + static_cast<size_t>(t) * sub * n_spk);
+                     }
+-                    if (w + 1 == utt.plan->size())
++                    if (w + 1 == utt.plan->size() && !(utt.session && !utt.session->final))
+                         continue;  // the state after the last window is not used
+                     // SortformerModules.streaming_update (sync)
+                     ss.fifo_preds.assign(
+@@ -1194,6 +1234,14 @@ PeeModel::speaker_steps_host(const MelStore& store, const std::vector<SpeakerUtt
+             }
+         }
+     }
++    for (size_t u = 0; u < utts.size(); ++u) {
++        if (SpeakerSession* session = utts[u]->session) {
++            session->cache = std::move(states[u].cache);
++            session->cache_preds = std::move(states[u].cache_preds);
++            session->fifo = std::move(states[u].fifo);
++            session->compressed = states[u].compressed;
++        }
++    }
+     for (SpeakerUtt* u : utts)
+         for (size_t w = 0; w < u->p80.size(); ++w) u->p80[w].host = u->p80_host[w].data();
+ }
+@@ -1250,13 +1298,22 @@ PeeModel::speaker_steps_device(const MelStore& store, const std::vector<SpeakerU
+         size_t prev_at = 0, cpred_at = 0;  // [cache | FIFO] rows, cache probabilities (floats)
+         int prev_rows = 0, cache_rows = 0;
+     };
++    struct StateEnd {
++        int S = 0, F = 0;
++        bool compressed = false;
++    };
+     std::vector<Step> steps;
+     std::vector<UttMem> mem(utts.size());
++    std::vector<StateEnd> ends(utts.size());
+     size_t out_floats = 0;
+     for (size_t u = 0; u < utts.size(); ++u) {
+         const std::vector<Window>& plan = *utts[u]->plan;
+-        int S = 0, F = 0;
+-        bool compressed = false;
++        const SpeakerSession* session = utts[u]->session;
++        int S = session ? static_cast<int>(session->cache.size() / d) : 0;
++        int F = session ? static_cast<int>(session->fifo.size() / d) : 0;
++        bool compressed = session && session->compressed;
++        mem[u].prev_rows = S + F;
++        mem[u].cache_rows = S;
+         for (size_t w = 0; w < plan.size(); ++w) {
+             const Window& win = plan[w];
+             Step s;
+@@ -1272,7 +1329,7 @@ PeeModel::speaker_steps_device(const MelStore& store, const std::vector<SpeakerU
+             s.S = S;
+             s.F = F;
+             s.compressed = compressed;
+-            s.update = w + 1 < plan.size();
++            s.update = w + 1 < plan.size() || (session && !session->final);
+             if (s.update) {
+                 s.pop = F + s.c > kFifoLen
+                             ? std::min(std::max(kUpdatePeriod, s.c - kFifoLen + F), F + s.c)
+@@ -1286,6 +1343,11 @@ PeeModel::speaker_steps_device(const MelStore& store, const std::vector<SpeakerU
+                 mem[u].prev_rows = std::max(mem[u].prev_rows, S + F);
+                 mem[u].cache_rows = std::max(mem[u].cache_rows, S);
+             }
++            if (w + 1 == plan.size()) {
++                ends[u].S = S;
++                ends[u].F = F;
++                ends[u].compressed = compressed;
++            }
+             s.p80_at = out_floats;
+             out_floats += static_cast<size_t>(s.Tb) * n_spk;
+             if (utts[u]->want_p10) {
+@@ -1383,6 +1445,22 @@ PeeModel::speaker_steps_device(const MelStore& store, const std::vector<SpeakerU
+     const ggml_runtime::DeviceTensor dev{blk, device_pool_->buft, 0};
+     ggml_backend_tensor_set(blk, lists.data(), 0, lists.size() * sizeof(int32_t));
+     auto words = [](size_t n) { return n * sizeof(float); };  // 32-bit words -> bytes
++    for (size_t u = 0; u < utts.size(); ++u) {
++        const SpeakerSession* session = utts[u]->session;
++        if (!session)
++            continue;
++        const size_t cache_bytes = words(session->cache.size());
++        if (cache_bytes)
++            ggml_backend_tensor_set(blk, session->cache.data(), words(mem[u].prev_at), cache_bytes);
++        if (!session->fifo.empty())
++            ggml_backend_tensor_set(
++                blk, session->fifo.data(), words(mem[u].prev_at) + cache_bytes,
++                words(session->fifo.size()));
++        if (!session->cache_preds.empty())
++            ggml_backend_tensor_set(
++                blk, session->cache_preds.data(), words(mem[u].cpred_at),
++                words(session->cache_preds.size()));
++    }
+ 
+     {
+         std::lock_guard<std::mutex> batch_lock(batch_mu_);
+@@ -1519,6 +1597,27 @@ PeeModel::speaker_steps_device(const MelStore& store, const std::vector<SpeakerU
+         const float* p = outs.data() + s.p10_at;
+         utts[s.u]->p10[s.w].assign(p, p + static_cast<size_t>(s.core) * f10);
+     }
++    // After the wait above: the block holds each utterance's state after its last window.
++    for (size_t u = 0; u < utts.size(); ++u) {
++        SpeakerSession* session = utts[u]->session;
++        if (!session || session->final)
++            continue;
++        const StateEnd& end = ends[u];
++        std::vector<float> rows(static_cast<size_t>(end.S + end.F) * d);
++        session->cache_preds.resize(static_cast<size_t>(end.S) * n_spk);
++        std::lock_guard<std::mutex> lock(bm_->compute_mutex());
++        if (!rows.empty())
++            ggml_backend_tensor_get_async(gpu_, blk, rows.data(), words(mem[u].prev_at), words(rows.size()));
++        if (!session->cache_preds.empty())
++            ggml_backend_tensor_get_async(
++                gpu_, blk, session->cache_preds.data(), words(mem[u].cpred_at),
++                words(session->cache_preds.size()));
++        ggml_backend_synchronize(gpu_);
++        const auto split = rows.begin() + static_cast<std::ptrdiff_t>(end.S) * d;
++        session->cache.assign(rows.begin(), split);
++        session->fifo.assign(split, rows.end());
++        session->compressed = end.compressed;
++    }
+ }
+ 
+ const float*
+diff --git a/src/speechlm/pee/pee_model.h b/src/speechlm/pee/pee_model.h
+index 546466c..6219df3 100644
+--- a/src/speechlm/pee/pee_model.h
++++ b/src/speechlm/pee/pee_model.h
+@@ -45,6 +45,7 @@
+ #include <vector>
+ 
+ #include "ctc_timestamp.h"
++#include "speaker_session.h"
+ #include "nn.h"
+ #include "pee_rope_transformer.h"
+ #include "runtime.h"
+@@ -303,7 +304,17 @@ class PeeModel {
+         std::vector<SpeakerProbs> p80;             // per window
+         std::vector<std::vector<float>> p10;       // per window: core x 8 x n_spk (want_p10)
+         std::vector<std::vector<float>> p80_host;  // the host path's storage behind p80
++        // Part of a recording: the speaker state starts from here and, unless this is its last
++        // request, is saved here after the last window too.
++        SpeakerSession* session = nullptr;
+     };
++    // The windows of this request of a recording (t_mel raw log-mel frames from session.base_mel),
++    // exactly those of plan_windows over the whole recording: up to where a window's right context
++    // has arrived, or all of them in the last request. Advances the session past them, so a later
++    // request starts where they end. `*frames_left` gets how many 10 ms frames of the recording
++    // are left from the first of these windows on.
++    std::vector<Window> plan_session_windows(
++        SpeakerSession& session, int t_mel, int hop, int64_t* frames_left) const;
+     // Needs the speaker cache's learned silence embedding in the GGUF; older conversions lack it.
+     bool stateful_speakers() const { return !sil_emb_.empty(); }
+     // Every window step of the utterances: window index by window index, batched across the
+diff --git a/src/speechlm/pee/speaker_session.h b/src/speechlm/pee/speaker_session.h
+new file mode 100644
+index 0000000..4596ba8
+--- /dev/null
++++ b/src/speechlm/pee/speaker_session.h
+@@ -0,0 +1,30 @@
++// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++// SPDX-License-Identifier: Apache-2.0
++//
++// One recording sent in several speaker-turn requests. Between requests this keeps what a single
++// request keeps in memory (the streaming speaker state), the audio of the windows that could not
++// run yet (they need their right context) and the turns still open at the end, so the columns and
++// the turns are those of the whole recording sent at once.
++#pragma once
++
++#include <cstdint>
++#include <vector>
++
++namespace nemo_speech::speechlm {
++
++struct SpeakerSession {
++    // Streaming state: rows of the speaker cache and FIFO, the cache's 80 ms probabilities.
++    std::vector<float> cache, cache_preds, fifo;
++    bool compressed = false;
++    // Samples from raw log-mel frame `base_mel` of the recording on.
++    std::vector<float> carry;
++    int64_t base_mel = 0;
++    size_t drop_samples = 0;  // of carry, once the running request has used them
++    int first_window = 0;     // of the recording: the next to run
++    int64_t frames_out = 0;   // 10 ms frames of the recording already turned into turns
++    std::vector<int64_t> open;  // per column, the frame its unfinished turn began at, or -1
++    double seconds = 0;         // of the recording so far
++    bool final = false;         // the running request is the recording's last
++};
++
++}  // namespace nemo_speech::speechlm
+diff --git a/src/speechlm/salm_engine.cpp b/src/speechlm/salm_engine.cpp
+index 70679df..0f05e3f 100644
+--- a/src/speechlm/salm_engine.cpp
++++ b/src/speechlm/salm_engine.cpp
+@@ -3,6 +3,7 @@
+ #include "salm_engine.h"
+ 
+ #include <algorithm>
++#include <tuple>
+ #include <atomic>
+ #include <chrono>
+ #include <cmath>
+@@ -56,6 +57,45 @@ extern "C" void ggml_print_backtrace(void);
+ 
+ namespace {
+ 
++// timestamps::diarization_segments for a request of a recording: a turn still active at the end of
++// the frames stays open for the next request, so it comes out once, as from one whole request.
++std::vector<timestamps::Segment>
++session_segments(
++    SpeakerSession& session, const float* activity10, int frames, int speakers,
++    double frame_seconds, double duration) {
++    session.open.resize(static_cast<size_t>(speakers), -1);
++    std::vector<timestamps::Segment> segments;
++    for (int c = 0; c < speakers; ++c) {
++        int64_t begin = session.open[c];
++        for (int t = 0; t < frames; ++t) {
++            const int64_t at = session.frames_out + t;
++            const bool active = activity10[static_cast<size_t>(t) * speakers + c] > 0.5f;
++            if (active && begin < 0)
++                begin = at;
++            if (!active && begin >= 0) {
++                const double start = begin * frame_seconds;
++                const double end = std::min(at * frame_seconds, duration);
++                if (end > start)
++                    segments.push_back({c, start, end});
++                begin = -1;
++            }
++        }
++        if (begin >= 0 && session.final) {
++            const double start = begin * frame_seconds;
++            const double end = std::min((session.frames_out + frames) * frame_seconds, duration);
++            if (end > start)
++                segments.push_back({c, start, end});
++            begin = -1;
++        }
++        session.open[c] = begin;
++    }
++    session.frames_out += frames;
++    std::sort(segments.begin(), segments.end(), [](const auto& a, const auto& b) {
++        return std::tie(a.start, a.end, a.speaker) < std::tie(b.start, b.end, b.speaker);
++    });
++    return segments;
++}
++
+ double
+ audio_seconds_of(const SalmRequest& r) {
+     return r.seconds > 0 ? r.seconds : r.count / static_cast<double>(r.sample_rate);
+@@ -901,6 +941,7 @@ struct SalmEngine::Impl {
+             PeeModel::NormStats stats;
+             std::vector<PeeModel::Window> plan;
+             std::vector<PeeModel::WindowOut> outs;
++            int64_t session_frames = -1;  // a part of a recording: 10 ms frames left of it
+             std::shared_ptr<CtcEvidence> evidence;  // word timestamps: joined ASR state cores
+             std::vector<int> core_row;              // each window's first joined row
+         };
+@@ -1058,8 +1099,19 @@ struct SalmEngine::Impl {
+                 if (!enc[i].error.empty())
+                     continue;
+                 u.plan = pee.plan_windows(u.t_mel);
++                // A recording that fits one window in one request is simply that request.
++                SpeakerSession* session = reqs[first + i].speaker_session.get();
++                const bool part = session && !(session->final && session->first_window == 0 && u.plan.size() == 1);
++                if (part && !stateful) {
++                    enc[i].error = "SALM speaker session: this encoder has no speaker state";
++                    continue;
++                }
++                if (part) {
++                    u.plan = pee.plan_session_windows(*session, u.t_mel, hop, &u.session_frames);
++                    spk[i].session = session;
++                }
+                 u.outs.resize(u.plan.size());
+-                const bool external = stateful && u.plan.size() > 1;
++                const bool external = stateful && (u.plan.size() > 1 || part);
+                 for (size_t w = 0; w < u.plan.size(); w++) windows[external].push_back({i, w});
+             }
+             // Word-timestamp requests: device rows for their joined ASR state cores (the CTC head
+@@ -1161,7 +1213,10 @@ struct SalmEngine::Impl {
+                 ts->probs10 = std::move(out.spk_probs10);
+                 ts->frames = out.n_frames;
+                 ts->probs10.resize(std::min(
+-                    ts->probs10.size(), static_cast<size_t>(utts[i].t_mel) * pc.num_speakers));
++                    ts->probs10.size(),
++                    static_cast<size_t>(
++                        utts[i].session_frames >= 0 ? utts[i].session_frames : utts[i].t_mel) *
++                        pc.num_speakers));
+                 enc[i].timestamps = std::move(ts);
+             }
+         }
+@@ -2160,9 +2215,17 @@ struct SalmEngine::Impl {
+                 constexpr double kLabelSeconds = 0.01;  // NeMo's diarization_frame_seconds
+                 const auto& p10 = e.timestamps->probs10;
+                 auto details = std::make_shared<asr::SpeechLmDetails>();
+-                for (const auto& s : timestamps::diarization_segments(
+-                         p10.data(), static_cast<int>(p10.size() / n_spk), n_spk, kLabelSeconds,
+-                         r.audio_seconds))
++                const SalmRequest& request = reqs[e.req];
++                const auto segments =
++                    request.speaker_session
++                        ? session_segments(
++                              *request.speaker_session, p10.data(),
++                              static_cast<int>(p10.size() / n_spk), n_spk, kLabelSeconds,
++                              r.audio_seconds)
++                        : timestamps::diarization_segments(
++                              p10.data(), static_cast<int>(p10.size() / n_spk), n_spk,
++                              kLabelSeconds, r.audio_seconds);
++                for (const auto& s : segments)
+                     details->diarization.push_back(
+                         {s.speaker, timestamps::round_decimals(s.start, 3),
+                          timestamps::round_decimals(s.end, 3)});
+diff --git a/src/speechlm/salm_engine.h b/src/speechlm/salm_engine.h
+index f5053e9..d194557 100644
+--- a/src/speechlm/salm_engine.h
++++ b/src/speechlm/salm_engine.h
+@@ -26,6 +26,7 @@
+ #include <vector>
+ 
+ #include "pee/ctc_timestamp.h"
++#include "pee/speaker_session.h"
+ 
+ namespace nemo_speech::speechlm {
+ 
+@@ -88,6 +89,9 @@ struct SalmRequest {
+     // Speaker turns alone (with `timestamps`): the request ends at its encoder output, with the
+     // 10 ms diarization segments in SalmResult::details and no prefill, decode or transcript.
+     bool diarization_only = false;
++    // With `diarization_only`: this request is part of a recording sent in several (its samples
++    // start with SpeakerSession::carry). The caller holds it for the request's whole life.
++    std::shared_ptr<SpeakerSession> speaker_session;
+     // Decoded even when the speaker branch hears no voice (warmup, whose clips are noise).
+     bool decode_without_voice = false;
+     float temperature = 0;         // below 1e-5: greedy; else sampled at this temperature
+diff --git a/src/speechlm/salm_policy.h b/src/speechlm/salm_policy.h
+index 207fda7..2328cb3 100644
+--- a/src/speechlm/salm_policy.h
++++ b/src/speechlm/salm_policy.h
+@@ -37,6 +37,8 @@ inline constexpr std::string_view kChatSuffix =
+     "<|im_end|>\n<|im_start|>assistant\n<think></think>";
+ inline constexpr int kMaxOutputTokens = 21664;       // largest output budget
+ inline constexpr double kMaxDurationSeconds = 3600;  // longest accepted audio
++// Speaker turns alone: nothing is decoded, and the columns run on across a whole recording.
++inline constexpr double kMaxDiarizationSeconds = 24 * 3600;
+ inline constexpr double kGreedyTemperature = 1e-5;   // temperatures below this decode greedily
+ 
+ // An invalid request (HTTP 400). `param` names the offending public field (chat route), or is
+diff --git a/src/speechlm/salm_recognizer.cpp b/src/speechlm/salm_recognizer.cpp
+index 77bf828..4d695eb 100644
+--- a/src/speechlm/salm_recognizer.cpp
++++ b/src/speechlm/salm_recognizer.cpp
+@@ -30,6 +30,9 @@
+ namespace nemo_speech::speechlm {
+ namespace {
+ // The speaker-tagged transcription prompt the model was trained with.
++// A request before a recording's last must hold at least one whole window with its contexts.
++constexpr double kShortestPartSeconds = 50.0;
++
+ constexpr const char* kSpeakerPrompt =
+     "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. "
+     "Use no punctuation and no capitalization. Start every speaker turn with a speaker tag such as "
+@@ -287,7 +290,9 @@ class SalmRecognitionBackend final : public asr::OfflineRecognitionBackend {
+     bool supports_speaker_diarization() const override { return supports_word_timestamps(); }
+     bool supports_offline_diarization() const override { return supports_word_timestamps(); }
+     // The encoder's speaker branch alone: the request ends at the encoder output (no decode).
+-    std::vector<asr::SpeechLmSegment> diarize(const float* samples, size_t n, int rate) override {
++    std::vector<asr::SpeechLmSegment> diarize(
++        const float* samples, size_t n, int rate, const std::string& session_id,
++        bool final) override {
+         if (!supports_offline_diarization())
+             throw std::invalid_argument(
+                 "SALM diarization needs the CTC timestamp head, which this encoder file does not "
+@@ -298,8 +303,10 @@ class SalmRecognitionBackend final : public asr::OfflineRecognitionBackend {
+             throw std::invalid_argument(
+                 "invalid SALM audio: expected mono samples at 8000..96000 Hz");
+         const double seconds = static_cast<double>(n) / rate;
+-        if (const auto error = policy::duration_limit_error(seconds))
++        if (const auto error = policy::duration_limit_error(seconds, policy::kMaxDiarizationSeconds))
+             throw std::invalid_argument(*error);
++        if (!session_id.empty())
++            return diarize_part(samples, n, rate, seconds, session_id, final);
+         // Near-digital silence has no speaker turns (and no encoder work), as in recognize().
+         if (n == 0 || policy::near_silent(samples, n))
+             return {};
+@@ -322,6 +329,54 @@ class SalmRecognitionBackend final : public asr::OfflineRecognitionBackend {
+         }
+         return raw.details ? raw.details->diarization : std::vector<asr::SpeechLmSegment>{};
+     }
++    // One request of a recording sent in several. Its silence is not skipped: the speaker state
++    // runs through it, as in one request.
++    std::vector<asr::SpeechLmSegment> diarize_part(
++        const float* samples, size_t n, int rate, double seconds, const std::string& id,
++        bool final) {
++        if (rate != sample_rate())
++            throw std::invalid_argument("SALM speaker session: audio must be at the model's rate");
++        std::lock_guard<std::mutex> lock(sessions_mu_);
++        // One recording at a time: another's state never carries over, and an abandoned one goes.
++        if (session_id_ != id) {
++            session_ = std::make_shared<SpeakerSession>();
++            session_id_ = id;
++        }
++        std::shared_ptr<SpeakerSession> session = session_;
++        const auto forget = [&] {
++            session_.reset();
++            session_id_.clear();
++        };
++        std::vector<float> joined;
++        joined.reserve(session->carry.size() + n);
++        joined.insert(joined.end(), session->carry.begin(), session->carry.end());
++        if (n)
++            joined.insert(joined.end(), samples, samples + n);
++        if (!final && joined.size() < static_cast<size_t>(kShortestPartSeconds * rate)) {
++            forget();
++            throw std::invalid_argument("SALM speaker session: a request before the last is too short");
++        }
++        session->seconds += seconds;
++        session->final = final;
++        SalmRequest request{"", joined.data(), joined.size(), rate};
++        request.seconds = session->seconds;
++        request.timestamps = true;
++        request.diarization_only = true;
++        request.speaker_session = session;
++        auto raw = submit(std::move(request));
++        if (!raw.error.empty()) {
++            forget();
++            if (raw.invalid_request)
++                throw std::invalid_argument("SALM: " + raw.error);
++            throw std::runtime_error("SALM: " + raw.error);
++        }
++        if (final) {
++            forget();
++        } else {
++            session->carry.assign(joined.begin() + static_cast<std::ptrdiff_t>(session->drop_samples), joined.end());
++        }
++        return raw.details ? raw.details->diarization : std::vector<asr::SpeechLmSegment>{};
++    }
+     bool supports_translation() const override { return true; }
+     bool supports_instructions() const override { return true; }
+     std::vector<std::string> translation_languages() const override {
+@@ -480,6 +535,9 @@ class SalmRecognitionBackend final : public asr::OfflineRecognitionBackend {
+     }
+ 
+     SalmEngine engine_;
++    std::mutex sessions_mu_;  // one request of a speaker session at a time
++    std::string session_id_;
++    std::shared_ptr<SpeakerSession> session_;
+     // The served prompts and language hint; the transcription prompt is SalmConfig's.
+     policy::PromptConfig prompt_config_{std::string(SalmConfig{}.prompt)};
+     asr::postproc::Postprocessor postproc_;

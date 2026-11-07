@@ -1,2 +1,3 @@
 scripts/release/whisper-cpp.patch -text
+scripts/release/nemo-speech.patch -text -whitespace
 src-tauri/resources/speaker-decoder-head.gguf binary

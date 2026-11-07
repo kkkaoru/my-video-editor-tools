@@ -9,20 +9,18 @@ app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runtime="${RUNTIME_DIR:-$app_dir/src-tauri/runtime}"
 work="${RUNTIME_WORK_DIR:-$app_dir/src-tauri/target-runtime}"
 NEMO_VERSION=0.3.0
+NEMO_COMMIT=20999cc921d2b14aa58708f61756a8b2e787ba20
 WHISPER_TAG=v1.9.5
 WHISPER_COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 VOICE_MODEL=ggml-silero-v6.2.0.bin
 VOICE_MODEL_SHA256=2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
-FFMPEG_MAC_VERSION=8.0.1
-FFMPEG_MAC_SHA256=05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a41
-# BtbN keeps daily tags about two weeks but month-end ones for good.
-FFMPEG_WIN_TAG=autobuild-2026-10-31-12-59
-FFMPEG_WIN_ZIP=ffmpeg-n8.1.3-27-g8dca1586f4-win64-lgpl-8.1.zip
-FFMPEG_WIN_SHA256=d4c2a42673917b4a97104a3e9f082729a9730796b98664e37c0b7eba6c6c613d
+MY_FFMPEG_TAG=n8.0.1-2
+MY_FFMPEG_MAC_SHA256=b4896f6bc6a2f1e8aa4e86c60066bfeda880d0e6abdc2edd0ddbc24072b3c896
+MY_FFMPEG_WIN_SHA256=3e6b6cb550204a0b765c7b7f7261f7fe15e16907f69787295304791c12c7158b
 ONNXRUNTIME_VERSION=1.31.1
 ONNXRUNTIME_MAC_SHA256=2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f
 ONNXRUNTIME_WIN_SHA256=5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c
-VULKAN_LOADER_DEF_TAG=vulkan-sdk-1.4.335.0
+VULKAN_LOADER_DEF_TAG="vulkan-sdk-1.4.335.0"
 VULKAN_LOADER_DEF_SHA256=9ba339b7f5ee2df28487698a6840ecf095fac58b415c2c89ad9f161e9d316378
 mkdir -p "$runtime" "$work"
 
@@ -57,13 +55,29 @@ clone_whisper() { # folder
 
 nemo_url() { echo "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v$NEMO_VERSION/nemo-speech-$NEMO_VERSION-$1"; }
 
+# Built from source: scripts/release/nemo-speech.patch keeps who is who between the requests of one video.
+clone_nemo() { # folder
+  git clone --quiet --depth 1 --branch "v$NEMO_VERSION" https://github.com/NVIDIA/NeMo-Speech.cpp "$1"
+  [ "$(git -C "$1" rev-parse HEAD)" = "$NEMO_COMMIT" ] || { echo "NeMo-Speech.cpp v$NEMO_VERSION is not the pinned commit" >&2; return 1; }
+  git -C "$1" submodule update --quiet --init --depth 1 llama.cpp third_party/cpp-httplib
+  git -C "$1" apply "$app_dir/scripts/release/nemo-speech.patch"
+}
+
 mac_nemo() {
-  fetch "$(nemo_url macos-aarch64-metal.tar.gz)" 2b972ed8b5dba07492212acf8cb75cbf34ecb141198ffa1997febe84b7c4d9ed "$work/nemo.tgz"
-  rm -rf "$runtime/nemo" "$work/nemo" && mkdir -p "$runtime/nemo/bin" "$runtime/nemo/lib" "$work/nemo"
-  tar xzf "$work/nemo.tgz" -C "$work/nemo" --strip-components=1
-  cp "$work/nemo/bin/nemo-speech" "$runtime/nemo/bin/"
+  rm -rf "$work/nemo-src" "$work/nemo-build" && clone_nemo "$work/nemo-src"
+  # Without this archive CMake links Homebrew's dynamic sentencepiece and abseil, which a user's Mac lacks.
+  (cd "$work/nemo-src" && scripts/build_sentencepiece_static.sh >/dev/null)
+  (cd "$work/nemo-src" && cmake --preset metal-server -B "$work/nemo-build" -DGGML_NATIVE=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+    -DNEMO_SPEECH_BUILD_TTS=OFF -DNEMO_SPEECH_BUILD_NMT=OFF -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON "-DCMAKE_INSTALL_RPATH=@executable_path/../lib" >/dev/null)
+  cmake --build "$work/nemo-build" --target nemo-speech -j 8 >/dev/null
+  rm -rf "$runtime/nemo" && mkdir -p "$runtime/nemo/bin" "$runtime/nemo/lib"
+  cp "$work/nemo-build/bin/nemo-speech" "$runtime/nemo/bin/"
   # Tauri resources do not keep symlinks, so each name the binary may load becomes a real file.
-  (cd "$work/nemo/lib" && find . -maxdepth 1 -name '*.dylib' -exec cp -L {} "$runtime/nemo/lib/" \;)
+  (cd "$work/nemo-build/bin" && find . -maxdepth 1 -name '*.dylib' -exec cp -L {} "$runtime/nemo/lib/" \;)
+  if otool -L "$runtime/nemo/bin/nemo-speech" "$runtime"/nemo/lib/*.dylib | grep -E '/opt/homebrew|/usr/local'; then
+    echo "nemo-speech links a library outside the app" >&2; exit 1
+  fi
 }
 
 mac_whisper() {
@@ -75,16 +89,21 @@ mac_whisper() {
   voice_model_into "$runtime/whisper"
 }
 
+# The smallest LGPL build that holds what the app reads, from https://github.com/kkkaoru/my-ffmpeg, whose
+# release also holds its sources and how it was configured.
+ffmpeg_into_runtime() { # asset sha256
+  local base="https://github.com/kkkaoru/my-ffmpeg/releases/download/$MY_FFMPEG_TAG"
+  rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg"
+  fetch "$base/$1" "$2" "$work/$1"
+  case "$1" in
+    *.zip) unzip -q -o "$work/$1" -d "$work/ffmpeg" ;;
+    *) tar xJf "$work/$1" -C "$work/ffmpeg" ;;
+  esac
+  find "$work/ffmpeg" -type f \( -name 'ffmpeg' -o -name 'ffmpeg.exe' -o -name 'ffprobe' -o -name 'ffprobe.exe' -o -name 'LICENSE-*' -o -name NOTICE \) -exec cp {} "$runtime/ffmpeg/" \;
+}
+
 mac_ffmpeg() {
-  # LGPL build holding only what subtitle generation needs; hardware-free so it runs anywhere.
-  fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_MAC_VERSION.tar.xz" "$FFMPEG_MAC_SHA256" "$work/ffmpeg.tar.xz"
-  rm -rf "$work/ffmpeg-src" && mkdir -p "$work/ffmpeg-src" && tar xJf "$work/ffmpeg.tar.xz" -C "$work/ffmpeg-src" --strip-components=1
-  (cd "$work/ffmpeg-src" && ./configure --disable-doc --disable-debug --disable-ffplay --disable-network --disable-autodetect --enable-videotoolbox --enable-audiotoolbox >/dev/null && make -j 8 ffmpeg ffprobe >/dev/null)
-  rm -rf "$runtime/ffmpeg" && mkdir -p "$runtime/ffmpeg"
-  cp "$work/ffmpeg-src/ffmpeg" "$work/ffmpeg-src/ffprobe" "$work/ffmpeg-src/COPYING.LGPLv2.1" "$runtime/ffmpeg/"
-  printf 'FFmpeg %s, built from https://ffmpeg.org/releases/ffmpeg-%s.tar.xz (SHA-256 %s).\nConfigured with: %s\n' \
-    "$FFMPEG_MAC_VERSION" "$FFMPEG_MAC_VERSION" "$FFMPEG_MAC_SHA256" "$("$runtime/ffmpeg/ffmpeg" -hide_banner -buildconf | sed -n 's/^ *--/--/p' | tr '\n' ' ')" \
-    > "$runtime/ffmpeg/BUILD.txt"
+  ffmpeg_into_runtime "my-ffmpeg-$MY_FFMPEG_TAG-macos-arm64-av.tar.xz" "$MY_FFMPEG_MAC_SHA256"
 }
 
 # whisper.cpp publishes no Vulkan binary. Needs the Vulkan SDK (VULKAN_SDK) at build time only.
@@ -150,20 +169,28 @@ windows_whisper_cpu_from_mac() {
 # The Vulkan build from a Mac: the same toolchain, and Homebrew's headers and glslc for the Vulkan SDK.
 # shortcut: those Homebrew versions are not pinned and OpenMP is off (ggml's own threads run instead), so this
 # differs slightly from CI's binary; pin them if a local build ever replaces CI for a tagged release.
-windows_whisper_vulkan_from_mac() {
-  local short="$work/wv" brew_prefix
+# What a Vulkan ggml needs to cross-build on a Mac: headers, an import library and the shader tool's compiler.
+vulkan_cross_files() { # folder
+  local short="$1" brew_prefix
   brew_prefix="$(brew --prefix)"
-  rm -rf "$short" && mkdir -p "$short/include"
-  clone_whisper "$short/src"
+  mkdir -p "$short/include"
   cp -R "$brew_prefix/opt/vulkan-headers/include/." "$brew_prefix/opt/spirv-headers/include/." "$short/include/"
   fetch "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/$VULKAN_LOADER_DEF_TAG/loader/vulkan-1.def" "$VULKAN_LOADER_DEF_SHA256" "$work/vulkan-1.def"
   llvm-lib "/def:$work/vulkan-1.def" /machine:x64 "/out:$short/vulkan-1.lib" >/dev/null
-  cross_toolchain_file "$short/target.cmake"
   # Runs on the Mac during the build, to embed the shaders.
   cat >"$short/host.cmake" <<EOF
 set(CMAKE_C_COMPILER /usr/bin/clang)
 set(CMAKE_CXX_COMPILER /usr/bin/clang++)
 EOF
+}
+
+windows_whisper_vulkan_from_mac() {
+  local short="$work/wv" brew_prefix
+  brew_prefix="$(brew --prefix)"
+  rm -rf "$short" && mkdir -p "$short"
+  clone_whisper "$short/src"
+  vulkan_cross_files "$short"
+  cross_toolchain_file "$short/target.cmake"
   cmake -S "$short/src" -B "$short/b" -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$short/target.cmake" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
     -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_OPENMP=OFF \
     -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON "-DVulkan_INCLUDE_DIR=$short/include" "-DVulkan_LIBRARY=$short/vulkan-1.lib" \
@@ -220,6 +247,52 @@ windows_onnxruntime() {
 }
 
 # Both Windows distributions: whisper on Vulkan, and CPU builds for machines without a usable GPU.
+# The official zip gives the VC++ runtime and licenses; these binaries carry scripts/release/nemo-speech.patch.
+# GGML_NATIVE off leaves AVX off in a cross build, and a runner with AVX-512 must not decide what a PC needs.
+windows_nemo_build() { # preset folder
+  local short="${RUNNER_TEMP:-$work}/n-$2" brew_prefix sentencepiece_commit library from
+  local -a target=() vulkan=()
+  rm -rf "$short" && mkdir -p "$short/include"
+  clone_nemo "$short/src"
+  sentencepiece_commit="$(sed -n 's/^COMMIT=//p' "$short/src/scripts/build_sentencepiece_static.sh")"
+  git clone --quiet --filter=blob:none --no-checkout https://github.com/google/sentencepiece.git "$short/sp"
+  git -C "$short/sp" fetch --quiet --depth 1 origin "$sentencepiece_commit"
+  git -C "$short/sp" checkout --quiet "$sentencepiece_commit"
+  if [ "$(uname -s)" = Darwin ]; then
+    brew_prefix="$(brew --prefix)"
+    cross_toolchain_file "$short/target.cmake"
+    # lld-link gets no default libraries here, and Homebrew's Mac libraries must not be found for Windows.
+    printf 'string(APPEND CMAKE_EXE_LINKER_FLAGS " shell32.lib")\nstring(APPEND CMAKE_SHARED_LINKER_FLAGS " shell32.lib")\n' >>"$short/target.cmake"
+    target=(-G Ninja "-DCMAKE_TOOLCHAIN_FILE=$short/target.cmake" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+      "-DCMAKE_IGNORE_PREFIX_PATH=$brew_prefix" "-DCMAKE_SYSTEM_IGNORE_PREFIX_PATH=$brew_prefix;/usr/local")
+    if [ "$1" = vulkan-server ]; then
+      vulkan_cross_files "$short"
+      vulkan=("-DVulkan_INCLUDE_DIR=$short/include" "-DVulkan_LIBRARY=$short/vulkan-1.lib" "-DVulkan_GLSLC_EXECUTABLE=$brew_prefix/bin/glslc"
+        "-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN=$short/host.cmake" "-DSPIRV-Headers_DIR=$brew_prefix/opt/spirv-headers/share/cmake/SPIRV-Headers")
+    fi
+  else
+    target=(-G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL)
+  fi
+  cmake -S "$short/sp" -B "$short/sp-b" "${target[@]}" -DSPM_BUILD_TEST=OFF -DSPM_ENABLE_SHARED=OFF -DSPM_ENABLE_TCMALLOC=OFF >"$short/sp.log" 2>&1 ||
+    { tail -40 "$short/sp.log"; return 1; }
+  cmake --build "$short/sp-b" --config Release --target sentencepiece-static -j 8 >>"$short/sp.log" 2>&1 ||
+    { tail -40 "$short/sp.log"; return 1; }
+  library="$(find "$short/sp-b/src" -maxdepth 2 -name 'sentencepiece.lib')"
+  # Only this header: the source folder also holds a common.h that hides nemo-speech's own.
+  cp "$short/sp/src/sentencepiece_processor.h" "$short/include/"
+  (cd "$short/src" && cmake --preset "$1" -B "$short/b" "${target[@]}" ${vulkan[@]+"${vulkan[@]}"} -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF \
+    -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON \
+    "-DSENTENCEPIECE_LIB=$library" "-DSENTENCEPIECE_INCLUDE_DIR=$short/include" \
+    -DNEMO_SPEECH_BUILD_TTS=OFF -DNEMO_SPEECH_BUILD_NMT=OFF -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF >"$short/configure.log" 2>&1) ||
+    { tail -40 "$short/configure.log"; return 1; }
+  cmake --build "$short/b" --config Release --target nemo_speech_cli -j 8 >"$short/build.log" 2>&1 ||
+    { grep -E 'FAILED|error' "$short/build.log" | head -40; return 1; }
+  from="$(dirname "$(find "$short/b/bin" -name nemo-speech.exe)")"
+  cp "$from"/*.exe "$from"/*.dll "$(dirname "$(find "$runtime/$2" -name nemo-speech.exe)")/"
+  find "$runtime/$2" \( -name 'nemo_speech_tts*.dll' -o -name 'nemo_speech_nmt*.dll' -o -name 'nemo_speech_asr_c.dll' \) -delete
+  rm -rf "$short"
+}
+
 windows_common() {
   if [ "$(uname -s)" = Darwin ]; then
     windows_whisper_vulkan_from_mac
@@ -229,22 +302,19 @@ windows_common() {
     windows_whisper_cpu
   fi
   nemo_zip 4ed9740e361e4653f56c3dce7d1e81883a1c8b831c1bd7d01567fff1130b5b05 windows-x86_64-cpu.zip nemo
+  windows_nemo_build cpu-server nemo
   vc_runtime_into "$runtime/whisper/Release"
   voice_model_into "$runtime/whisper/Release"
   vc_runtime_into "$runtime/whisper-vulkan"
   windows_onnxruntime
-  fetch "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_WIN_TAG/$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" "$work/ffmpeg.zip"
-  rm -rf "$runtime/ffmpeg" "$work/ffmpeg" && mkdir -p "$runtime/ffmpeg" "$work/ffmpeg" && unzip -q -o "$work/ffmpeg.zip" -d "$work/ffmpeg"
-  find "$work/ffmpeg" -type f \( -name ffmpeg.exe -o -name ffprobe.exe -o -name LICENSE.txt \) -exec cp {} "$runtime/ffmpeg/" \;
-  printf 'FFmpeg built by BtbN/FFmpeg-Builds: https://github.com/BtbN/FFmpeg-Builds/releases/tag/%s\nFile: %s (SHA-256 %s)\n' \
-    "$FFMPEG_WIN_TAG" "$FFMPEG_WIN_ZIP" "$FFMPEG_WIN_SHA256" > "$runtime/ffmpeg/BUILD.txt"
+  ffmpeg_into_runtime "my-ffmpeg-$MY_FFMPEG_TAG-windows-x64-av.zip" "$MY_FFMPEG_WIN_SHA256"
 }
 
 case "$distribution" in
   macos) mac_nemo; mac_whisper; mac_ffmpeg; mac_onnxruntime; mac_separate_coreml ;;
   # A GeForce runs nemo-speech on the CUDA runtime the app downloads, so no Vulkan nemo-speech ships.
   windows-geforce) windows_common; rm -rf "$runtime/nemo-vulkan" ;;
-  windows-radeon) windows_common; nemo_zip 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce windows-x86_64-vulkan.zip nemo-vulkan ;;
+  windows-radeon) windows_common; nemo_zip 72b3b8b41bfe2be0320eff4e9d310594e4f99deefcde4a157799a039656963ce windows-x86_64-vulkan.zip nemo-vulkan; windows_nemo_build vulkan-server nemo-vulkan ;;
   *) echo "unknown distribution: $distribution" >&2; exit 2 ;;
 esac
 du -sh "$runtime"/*

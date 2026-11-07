@@ -4,7 +4,7 @@ Bundled in the release builds:
 
 | Component | Use | License |
 | --- | --- | --- |
-| [FFmpeg](https://ffmpeg.org/) (LGPL build; `runtime/ffmpeg/` holds its license and `BUILD.txt`, which says how it was built; the macOS source is in each GitHub release as `ffmpeg-macos-source.tar.xz`, the Windows build names its [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) release) | audio extraction, frame sampling | LGPL-2.1-or-later |
+| [FFmpeg](https://ffmpeg.org/) with [dav1d](https://code.videolan.org/videolan/dav1d), the LGPL build from [my-ffmpeg](https://github.com/kkkaoru/my-ffmpeg) (not an official FFmpeg build; `runtime/ffmpeg/` holds the licenses, and [its release](https://github.com/kkkaoru/my-ffmpeg/releases/tag/n8.0.1-1) holds the sources and how it was configured) | audio extraction, frame sampling | LGPL-2.1-or-later; dav1d BSD-2-Clause |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp), built with `scripts/release/whisper-cpp.patch` | transcription runtime (Vulkan and CPU in both Windows builds, Metal on macOS) | MIT |
 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | speaker separation runtime (CPU in both Windows builds, Vulkan in the Radeon build, Metal on macOS) | Apache-2.0 |
 | [Vibrato](https://github.com/daac-tools/vibrato) with MeCab IPADIC (`resources/ipadic-*`) | Japanese phrase boundaries for caption breaks | MIT/Apache-2.0; IPADIC license in `resources/ipadic-COPYING` |
