@@ -273,7 +273,8 @@ windows_nemo_build() { # preset folder
         "-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN=$short/host.cmake" "-DSPIRV-Headers_DIR=$brew_prefix/opt/spirv-headers/share/cmake/SPIRV-Headers")
     fi
   else
-    target=(-G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL)
+    # The preset asks for Ninja, which would need the compiler's environment; CMake marks the Visual Studio it finds.
+    target=(-G "$(cmake --help | sed -n 's/^\* \(Visual Studio[^=]*[^= ]\) *=.*/\1/p')" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL)
   fi
   cmake -S "$short/sp" -B "$short/sp-b" "${target[@]}" -DSPM_BUILD_TEST=OFF -DSPM_ENABLE_SHARED=OFF -DSPM_ENABLE_TCMALLOC=OFF >"$short/sp.log" 2>&1 ||
     { tail -40 "$short/sp.log"; return 1; }
