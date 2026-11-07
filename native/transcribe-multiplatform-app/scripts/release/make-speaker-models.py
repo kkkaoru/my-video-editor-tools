@@ -150,7 +150,7 @@ def checkpoint_id(url: str, header: dict, data_start: int) -> str:
 
 
 def partial_checkpoint(url: str, header: dict, data_start: int, target: Path) -> None:
-    """A valid safetensors of only the kept tensors, so the official conversion reads it unchanged."""
+    """A valid safetensors of only the kept tensors, which the official conversion reads as is."""
     if target.is_file():
         return
     kept = sorted(
