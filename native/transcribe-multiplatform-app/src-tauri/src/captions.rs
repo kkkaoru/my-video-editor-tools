@@ -1980,12 +1980,14 @@ fn stack_simultaneous(
                 metrics,
                 settings,
             );
+            share_left_edge(&mut cues[first..last], metrics, settings);
         }
         first = last;
     }
 }
 
-/// With several speakers, every caption starts at the same place: the left edge of the widest one.
+/// Rows shown together start at the left edge of the widest one, which stays where it was: the block as a
+/// whole keeps its centre, and a caption alone is not moved.
 fn share_left_edge(cues: &mut [Cue], metrics: &Metrics, settings: &Settings) {
     let one_speaker = cues
         .windows(2)
@@ -2130,7 +2132,6 @@ pub fn build_cues(
         });
     }
     stack_simultaneous(&mut cues, &grows_down, info, metrics, settings);
-    share_left_edge(&mut cues, metrics, settings);
     Ok((cues, faceless))
 }
 
@@ -2308,7 +2309,7 @@ mod tests {
     }
 
     #[test]
-    fn several_speakers_start_at_the_left_edge_of_the_widest_caption() {
+    fn rows_shown_together_start_at_the_left_edge_of_the_widest_which_keeps_its_centre() {
         let settings = Settings::default();
         let mut cues = [placed(1, "aaaaaaaa", 100.0), placed(2, "aa", 100.0)];
         share_left_edge(&mut cues, &ROW_METRICS, &settings);
