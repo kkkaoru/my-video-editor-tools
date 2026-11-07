@@ -133,7 +133,7 @@ it("runs one screen's sweep and Web Vitals", () => {
     "--project=chromium",
     "--workers=1",
     "--grep",
-    "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).*( / ja / light| / de / dark)$)",
+    "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).* / ja / light$)",
   ]);
   expect(commandOf(["src/view/HelpPane.tsx"], "Web Vitals")).toStrictEqual([
     "bunx",

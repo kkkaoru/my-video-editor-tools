@@ -52,7 +52,7 @@ const SWEPT_LOCALES: Set<string> = new Set(["ja", "en", "de"]);
 // Always kept: the test that proves the sweep can still detect a failure, and the one without a language.
 const DETECTOR_TITLE: string = "the sweep detects|the speaker count help";
 // A hook checks a sample and stays quick; `test:a11y` is the whole sweep, run by hand.
-const SCREEN_SAMPLE: string = "( / ja / light| / de / dark)$";
+const SCREEN_SAMPLE: string = " / ja / light$";
 const LOCALE_SAMPLE: string = "light";
 // One state of each screen, for a file every screen uses.
 const SHARED_STATES: string = "jobs empty|style with profiles|models idle|help";

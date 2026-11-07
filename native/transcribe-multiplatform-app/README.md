@@ -143,7 +143,7 @@ A Windows distribution is chosen when building: `bunx tauri build --bundles nsis
 `transcribe-app --headless VIDEO` runs the same pipeline without a window. `TRANSCRIBE_DATA_DIR` and
 `TRANSCRIBE_RESOURCE_DIR` override where data and bundled files live.
 
-Quality checks run before a commit, not in CI, and only for what changed: `bun run check:changed` runs what the staged files need, and `bun run test:a11y:changed` only the WCAG part. The WCAG part is a sample in one browser: the changed screen in two language and theme pairs, or one state of each screen for a shared file. The whole sweep runs only by hand, with `bun run test:a11y`. Install the hook once per clone:
+Quality checks run before a commit, not in CI, and only for what changed: `bun run check:changed` runs what the staged files need, and `bun run test:a11y:changed` only the WCAG part. The WCAG part is a sample in one browser: the changed screen in one language and theme, or one state of each screen for a shared file. The whole sweep runs only by hand, with `bun run test:a11y`. Install the hook once per clone:
 
 ```sh
 git config --local hook.transcribe-app.event pre-commit

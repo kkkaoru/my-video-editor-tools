@@ -32,7 +32,7 @@ it("samples each screen for a sweep or build change", () => {
 it("samples the changed screen and the others when a shared file comes with it", () => {
   expect(sweepScope(["src/view/JobsPane.tsx", "src/view/fields.tsx"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs? ).*( / ja / light| / de / dark)$|(jobs empty|style with profiles|models idle|help) / ja / light$)",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs? ).* / ja / light$|(jobs empty|style with profiles|models idle|help) / ja / light$)",
     vitalsGrep: "stay good: (jobs? |jobs empty)",
   });
 });
@@ -40,7 +40,7 @@ it("samples the changed screen and the others when a shared file comes with it",
 it("sweeps one screen for its own file and strips the repository path", () => {
   expect(sweepScope(["native/transcribe-multiplatform-app/src/view/ModelsPane.tsx"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(models? ).*( / ja / light| / de / dark)$)",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(models? ).* / ja / light$)",
     vitalsGrep: "stay good: (models )",
   });
 });
@@ -48,7 +48,7 @@ it("sweeps one screen for its own file and strips the repository path", () => {
 it("sweeps both screens for a component they share, without repeats", () => {
   expect(sweepScope(["src/view/ConfirmButton.tsx", "src/view/StylePane.tsx"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(style |speaker names|models? ).*( / ja / light| / de / dark)$)",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(style |speaker names|models? ).* / ja / light$)",
     vitalsGrep: "stay good: (style |models )",
   });
 });
@@ -68,7 +68,7 @@ it("needs no sweep for a language outside the covered three", () => {
 it("sweeps the help screen for its images", () => {
   expect(sweepScope(["public/help/ja/start.webp"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).*( / ja / light| / de / dark)$)",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).* / ja / light$)",
     vitalsGrep: "stay good: (help)",
   });
 });
