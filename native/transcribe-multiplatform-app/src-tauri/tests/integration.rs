@@ -3,6 +3,7 @@
 
 use serde_json::Value;
 use std::fs::{self, File};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -2111,6 +2112,79 @@ fn the_mac_app_is_signed_so_that_it_can_load_onnx_runtime() {
         serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
     assert_eq!(config["bundle"]["macOS"]["signingIdentity"], "-");
     assert_eq!(config["bundle"]["macOS"]["hardenedRuntime"], false);
+}
+
+/// An hour and a bit: the second batch starts inside the first and takes over where both agree.
+#[test]
+fn long_audio_is_heard_in_overlapping_batches_joined_where_they_agree() {
+    let root = scratch("transcribe-batches");
+    let paths = with_tools(&root);
+    let audio = root.join("a.wav");
+    let head = pcm_wav(&[]);
+    let mut wav = fs::File::create(&audio).unwrap();
+    wav.write_all(&head[..4]).unwrap();
+    wav.write_all(&(36_u32 + 118_400_000).to_le_bytes())
+        .unwrap();
+    wav.write_all(&head[8..40]).unwrap();
+    wav.write_all(&118_400_000_u32.to_le_bytes()).unwrap();
+    wav.set_len(44 + 118_400_000).unwrap();
+    let log = root.join("whisper-calls.log");
+    write_tool(
+        &paths.bundled_runtime_dir().join("whisper/whisper-cli"),
+        &format!(
+            r#"
+echo "$*" >> "{log}"
+case "$*" in *"-mc 0"*) fresh=1 ;; *) fresh=0 ;; esac
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-of" ]; then out="$2"; fi
+  shift
+done
+case "$fresh:$out" in
+  1:*) body='{{"offsets":{{"from":0,"to":1000}},"text":"fresh","tokens":[{{"text":"fresh","offsets":{{"from":0,"to":1000}}}}]}}' ;;
+  *batch-0) body='{{"offsets":{{"from":0,"to":3600000}},"text":"x","tokens":[
+    {{"text":"はじめの","offsets":{{"from":0,"to":1000}}}},
+    {{"text":"おなじはなしです","offsets":{{"from":3541000,"to":3542000}}}},
+    {{"text":"おわ","offsets":{{"from":3599000,"to":3600000}}}}]}}' ;;
+  *) body='{{"offsets":{{"from":1000,"to":2000}},"text":"おなじはなしです","tokens":[{{"text":"おなじはなしです","offsets":{{"from":1000,"to":2000}}}}]}},
+    {{"offsets":{{"from":60000,"to":62000}},"text":"again","tokens":[{{"text":"again","offsets":{{"from":60000,"to":62000}}}}]}},
+    {{"offsets":{{"from":62000,"to":64000}},"text":"again","tokens":[{{"text":"again","offsets":{{"from":62000,"to":64000}}}}]}},
+    {{"offsets":{{"from":100000,"to":101000}},"text":"つづき","tokens":[{{"text":"つづき","offsets":{{"from":100000,"to":101000}}}}]}}' ;;
+esac
+printf '{{"transcription":[%s]}}' "$body" > "$out.json"
+"#,
+            log = log.display(),
+        ),
+    );
+    let mut seen = Vec::new();
+    let words = engines::transcribe(
+        &tools_in(&paths),
+        &root.join("model.bin"),
+        &audio,
+        "ja",
+        &root,
+        &CancelToken::default(),
+        &mut |fraction| seen.push(fraction),
+    )
+    .unwrap();
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| (word.text.as_str(), word.start))
+            .collect::<Vec<_>>(),
+        vec![
+            ("はじめの", 0.0),
+            ("おなじはなしです", 3541.0),
+            ("fresh", 3598.0),
+            ("つづき", 3640.0),
+        ]
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 3);
+    assert!(calls.lines().next().unwrap().contains("asr-batch-0.wav"));
+    assert!(calls.lines().nth(1).unwrap().contains("asr-batch-1.wav"));
+    assert!(calls.lines().nth(2).unwrap().contains("asr-loop-0.wav"));
+    assert!(!root.join("asr-batch-0.wav").exists());
+    assert!(!root.join("asr-batch-1.wav").exists());
 }
 
 /// The notices name what FFmpeg's license asks for, so they travel with the app.

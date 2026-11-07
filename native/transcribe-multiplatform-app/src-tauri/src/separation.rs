@@ -11,7 +11,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -56,6 +56,22 @@ pub fn cut_clips(wav: &Path, clips: &[(f64, f64, PathBuf)]) -> AppResult<()> {
             .map_err(io_context(format!("read {}", wav.display())))?;
         write_atomic(file, &write_float_wav(&decode_samples(&raw, layout.float)))
     })
+}
+
+/// Copies `[start, end)` seconds into a file of its own as they are, without holding them in memory.
+pub fn copy_span(wav: &Path, span: (f64, f64), target: &Path) -> AppResult<()> {
+    let mut source = File::open(wav).map_err(io_context(format!("read {}", wav.display())))?;
+    let layout =
+        wav_layout(&mut source).map_err(|error| invalid(&wav.display().to_string(), error))?;
+    let (first, bytes) = layout.slice(span.0, span.1);
+    let mut out =
+        File::create(target).map_err(io_context(format!("write {}", target.display())))?;
+    let header = u32::try_from(bytes).map_err(|error| invalid(TOOL_NAME, error))?;
+    out.write_all(&wav_head(header, layout.float))
+        .and_then(|()| source.seek(SeekFrom::Start(first)))
+        .and_then(|_| std::io::copy(&mut Read::take(&mut source, bytes), &mut out))
+        .map(|_| ())
+        .map_err(io_context(format!("write {}", target.display())))
 }
 
 /// One 16 kHz mono clip and where its two tracks go; the order of the tracks means nothing.
@@ -737,5 +753,29 @@ mod tests {
             .unwrap_err()
             .to_string()
             .ends_with("is missing"));
+    }
+
+    #[test]
+    fn a_span_is_copied_as_it_is() {
+        let root = scratch("copy-span");
+        let wav = root.join("a.wav");
+        let samples: Vec<i16> = (0..1600).collect();
+        std::fs::write(&wav, write_wav(&samples)).unwrap();
+        let target = root.join("span.wav");
+        copy_span(&wav, (0.01, 0.02), &target).unwrap();
+        let copied = std::fs::read(&target).unwrap();
+        assert_eq!(read_wav(&copied).unwrap().len(), 160);
+        assert_eq!(copied[44..46], 160_i16.to_le_bytes());
+        assert_eq!(copied[copied.len() - 2..], 319_i16.to_le_bytes());
+    }
+
+    #[test]
+    fn a_span_of_something_unreadable_is_an_error() {
+        let root = scratch("copy-span-bad");
+        let missing = copy_span(&root.join("absent"), (0.0, 1.0), &root.join("o"));
+        assert!(missing.unwrap_err().to_string().starts_with("read "));
+        std::fs::write(root.join("bad.wav"), b"not a wav").unwrap();
+        let bad = copy_span(&root.join("bad.wav"), (0.0, 1.0), &root.join("o"));
+        assert!(bad.is_err());
     }
 }

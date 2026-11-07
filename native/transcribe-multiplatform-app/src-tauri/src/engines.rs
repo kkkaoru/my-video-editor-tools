@@ -8,7 +8,8 @@ use crate::paths::AppPaths;
 use crate::process::{
     background_command, run_capture, run_with_progress, run_with_ticks, CancelToken,
 };
-use crate::separation::{cut_clips, wav_head, wav_layout, WavLayout};
+use crate::separation::{copy_span, cut_clips, wav_head, wav_layout, WavLayout};
+use crate::whisper_seam::spliced_batches;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -61,7 +62,7 @@ const TOKEN_TIMING_ARGS: [&str; 2] = ["-dtw", "large.v3.turbo"];
 /// its recall on speech that was fine, so only the looped ranges run this way.
 const NO_ROLLING_CONTEXT_ARGS: [&str; 2] = ["-mc", "0"];
 /// What the text of a segment is judged without: only the words can repeat.
-const NOT_SPOKEN: &str = "、。!?！？,.・「」『』…ー~〜-";
+pub(crate) const NOT_SPOKEN: &str = "、。!?！？,.・「」『』…ー~〜-";
 /// A loop is at least this many characters said again, or the same short text this many times, since
 /// a person does say `そうそう` twice.
 const LOOP_UNIT_CHARACTERS: usize = 4;
@@ -71,6 +72,10 @@ const UNIT_LOOP_REPEATS: usize = 3;
 const LONGEST_LOOP_UNIT_CHARACTERS: usize = 40;
 /// Around a looped range: the loop starts a little before the first segment that shows it.
 const LOOP_MARGIN_SECONDS: f64 = 2.0;
+/// Longer audio goes in batches of this, each its own process, so memory does not grow with the length.
+const LONGEST_WHISPER_BATCH_SECONDS: f64 = 3600.0;
+/// What two batches both hear, so they can be joined where they agree.
+const WHISPER_BATCH_OVERLAP_SECONDS: f64 = 60.0;
 /// Of the transcription stage's progress; the loops are usually a small part of a video.
 const FIRST_PASS_PROGRESS: f64 = 0.9;
 /// Files per whisper-cli run, as two long paths each must stay under Windows's 32 KB command line.
@@ -646,7 +651,73 @@ fn with_cpu_fallback<T>(
     }
 }
 
-/// Runs whisper.cpp once for the text and each word's warped time.
+/// Each batch's words and looped ranges in the clock of the whole audio, joined where the batches agree.
+fn heard_in_batches(
+    tools: &Tools,
+    run: &WhisperRun<'_>,
+    source: (&Path, &Path),
+    spans: &[TimeRange],
+    progress: &mut dyn FnMut(f64),
+) -> AppResult<(Vec<Word>, Vec<TimeRange>)> {
+    let (wav, work) = source;
+    let total = spans.last().map_or(0.0, |span| span.1);
+    let mut joined: Vec<Word> = Vec::new();
+    let mut ranges: Vec<TimeRange> = Vec::new();
+    for (index, span) in spans.iter().enumerate() {
+        let base = work.join(format!("asr-batch-{index}"));
+        let clip = WhisperClip {
+            wav: base.with_extension("wav"),
+            base: base.clone(),
+        };
+        copy_span(wav, *span, &clip.wav)?;
+        let heard = transcribe_files(tools, run, std::slice::from_ref(&clip), &mut |fraction| {
+            progress((span.0 + fraction * (span.1 - span.0)) / total);
+        })?;
+        // Batches take a lot of disk; only the words are needed from here on.
+        let _ = std::fs::remove_file(&clip.wav);
+        let moved = heard.into_iter().flatten().map(|word| Word {
+            start: word.start + span.0,
+            end: word.end + span.0,
+            ..word
+        });
+        joined = if index == 0 {
+            moved.collect()
+        } else {
+            spliced_batches(joined, moved.collect(), (span.0, spans[index - 1].1))
+        };
+        ranges.extend(
+            looped_ranges_of(&base)
+                .into_iter()
+                .map(|range| (range.0 + span.0, range.1 + span.0)),
+        );
+    }
+    close_warped_words(&mut joined);
+    ranges.sort_by(|left, right| left.0.total_cmp(&right.0));
+    Ok((joined, ranges.into_iter().fold(Vec::new(), with_merged)))
+}
+
+fn looped_ranges_of(base: &Path) -> Vec<TimeRange> {
+    std::fs::read(base.with_extension("json"))
+        .ok()
+        .and_then(|json| whisper_segments(&json).ok())
+        .map_or_else(Vec::new, |segments| looped_ranges(&segments))
+}
+
+/// The batches of `wav`; audio that fits one, or whose length cannot be read here, runs whole.
+fn whisper_batches(wav: &Path) -> Vec<TimeRange> {
+    File::open(wav)
+        .ok()
+        .and_then(|mut file| wav_layout(&mut file).ok())
+        .map_or_else(Vec::new, |layout| {
+            overlapping_spans(
+                layout.seconds(),
+                LONGEST_WHISPER_BATCH_SECONDS,
+                WHISPER_BATCH_OVERLAP_SECONDS,
+            )
+        })
+}
+
+/// Runs whisper.cpp for the text and each word's warped time.
 pub fn transcribe(
     tools: &Tools,
     model: &Path,
@@ -656,11 +727,6 @@ pub fn transcribe(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(f64),
 ) -> AppResult<Vec<Word>> {
-    let base = work.join("asr");
-    let clip = WhisperClip {
-        wav: wav.to_path_buf(),
-        base: base.clone(),
-    };
     let run = WhisperRun {
         model,
         language,
@@ -668,14 +734,22 @@ pub fn transcribe(
         without_gpu: tools.whisper_without_gpu,
         context: &[],
     };
-    let heard = transcribe_files(tools, &run, &[clip], &mut |fraction| {
-        progress(fraction * FIRST_PASS_PROGRESS);
-    })?;
-    let words: Vec<Word> = heard.into_iter().flatten().collect();
-    let ranges = std::fs::read(base.with_extension("json"))
-        .ok()
-        .and_then(|json| whisper_segments(&json).ok())
-        .map_or_else(Vec::new, |segments| looped_ranges(&segments));
+    let mut first_pass = |fraction: f64| progress(fraction * FIRST_PASS_PROGRESS);
+    let spans = whisper_batches(wav);
+    let (words, ranges) = if spans.len() > 1 {
+        heard_in_batches(tools, &run, (wav, work), &spans, &mut first_pass)?
+    } else {
+        let base = work.join("asr");
+        let clip = WhisperClip {
+            wav: wav.to_path_buf(),
+            base: base.clone(),
+        };
+        let heard = transcribe_files(tools, &run, &[clip], &mut first_pass)?;
+        (
+            heard.into_iter().flatten().collect(),
+            looped_ranges_of(&base),
+        )
+    };
     let redone = redo_ranges(tools, &run, wav, work, &ranges, &mut |fraction| {
         progress(FIRST_PASS_PROGRESS + fraction * (1.0 - FIRST_PASS_PROGRESS));
     });
@@ -1011,18 +1085,26 @@ fn wait_for_server(agent: &ureq::Agent, base: &str, stop: &CancelToken) -> AppRe
     ))
 }
 
-/// The requests long audio goes in; audio that fits one request is sent whole.
-fn speaker_spans(seconds: f64) -> Vec<TimeRange> {
+/// The parts long audio goes in; audio that fits one is left whole.
+fn overlapping_spans(seconds: f64, longest: f64, overlap: f64) -> Vec<TimeRange> {
     let mut spans = Vec::new();
     let mut start = 0.0;
     loop {
-        let end = (start + LONGEST_SPEAKER_REQUEST_SECONDS).min(seconds);
+        let end = (start + longest).min(seconds);
         spans.push((start, end));
         if end >= seconds {
             return spans;
         }
-        start = end - SPEAKER_REQUEST_OVERLAP_SECONDS;
+        start = end - overlap;
     }
+}
+
+fn speaker_spans(seconds: f64) -> Vec<TimeRange> {
+    overlapping_spans(
+        seconds,
+        LONGEST_SPEAKER_REQUEST_SECONDS,
+        SPEAKER_REQUEST_OVERLAP_SECONDS,
+    )
 }
 
 /// One span of `wav` as a form field, read as it is sent so it never sits in memory.

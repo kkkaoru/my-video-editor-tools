@@ -24,6 +24,7 @@ pub mod shell;
 pub mod speakers;
 pub mod updater;
 pub mod whisper_ggml;
+pub mod whisper_seam;
 
 use error::AppResult;
 use eta::Progress;
