@@ -25,6 +25,11 @@ const FIRST_SPEAKER: u32 = 1;
 const MIN_TURN_SECONDS: f64 = 1.0;
 /// Two speakers talk at once when their words coincide for this long; less is timing error (0.22 s).
 const SIMULTANEOUS_SECONDS: f64 = 0.25;
+/// A turn takes whoever speaks most this far around it. Measured against delivered captions, this halves
+/// the changes of speaker and keeps the share of the right colour; 8 s starts to lose it.
+const STEADY_WINDOW_SECONDS: f64 = 4.0;
+/// Turns at once with another speaker's for this long are two voices, not a wavering number.
+const TRULY_TOGETHER_SECONDS: f64 = 1.0;
 /// `speaker_subtitles.STACK_GAP`: the space between rows of captions shown together.
 const ROW_GAP_PX: f64 = 12.0;
 /// `caption_display_hold.LINGER`: a pause this long ends a page, and nothing is shown over it.
@@ -302,6 +307,75 @@ pub fn metrics_for(info: &VideoInfo, settings: &Settings) -> Metrics {
 
 fn overlap(word: &Word, turn: &SpeakerTurn) -> f64 {
     (word.end.min(turn.end) - word.start.max(turn.start)).max(0.0)
+}
+
+fn turn_order(left: &SpeakerTurn, right: &SpeakerTurn) -> std::cmp::Ordering {
+    left.start.total_cmp(&right.start)
+}
+
+/// The number a turn should show: its own, unless others speak longer around it. Real overlaps stay.
+fn steady_speaker(turn: &SpeakerTurn, near: &[SpeakerTurn]) -> u32 {
+    let shared = |other: &SpeakerTurn, from: f64, to: f64| {
+        (other.end.min(to) - other.start.max(from)).max(0.0)
+    };
+    let together = near.iter().any(|other| {
+        other.speaker != turn.speaker
+            && shared(other, turn.start, turn.end) >= TRULY_TOGETHER_SECONDS
+    });
+    if together {
+        return turn.speaker;
+    }
+    let middle = (turn.start + turn.end) / 2.0;
+    let (from, to) = (
+        middle - STEADY_WINDOW_SECONDS / 2.0,
+        middle + STEADY_WINDOW_SECONDS / 2.0,
+    );
+    let mut amounts: Vec<(u32, f64)> = vec![(turn.speaker, turn.end - turn.start)];
+    for other in near {
+        let share = shared(other, from, to);
+        match amounts
+            .iter_mut()
+            .find(|(speaker, _)| *speaker == other.speaker)
+        {
+            Some((_, total)) => *total += share,
+            None => amounts.push((other.speaker, share)),
+        }
+    }
+    // The turn's own number comes first, so a tie keeps it.
+    amounts
+        .iter()
+        .fold((turn.speaker, f64::MIN), |best, entry| {
+            if entry.1 > best.1 {
+                *entry
+            } else {
+                best
+            }
+        })
+        .0
+}
+
+/// Steadies the model's numbers, which flicker between voices it finds alike within a few seconds.
+#[must_use]
+pub fn steadied_turns(turns: &[SpeakerTurn]) -> Vec<SpeakerTurn> {
+    let mut ordered = turns.to_vec();
+    ordered.sort_by(turn_order);
+    let longest = ordered
+        .iter()
+        .map(|turn| turn.end - turn.start)
+        .fold(0.0, f64::max);
+    ordered
+        .iter()
+        .map(|turn| {
+            let middle = (turn.start + turn.end) / 2.0;
+            let reach = STEADY_WINDOW_SECONDS / 2.0 + longest;
+            let first = ordered.partition_point(|other| other.start < middle - reach);
+            let last = ordered.partition_point(|other| other.start <= middle + reach);
+            SpeakerTurn {
+                speaker: steady_speaker(turn, &ordered[first..last]),
+                ..*turn
+            }
+        })
+        .collect()
 }
 
 /// The speaker whose turns cover the word longest; on a tie, whoever spoke the word before.
@@ -1940,6 +2014,62 @@ pub fn build_cues(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn turn(start: f64, end: f64, speaker: u32) -> SpeakerTurn {
+        SpeakerTurn {
+            start,
+            end,
+            speaker,
+        }
+    }
+
+    fn steady_numbers(turns: &[SpeakerTurn]) -> Vec<u32> {
+        steadied_turns(turns)
+            .iter()
+            .map(|turn| turn.speaker)
+            .collect()
+    }
+
+    #[test]
+    fn a_short_turn_inside_someone_elses_speech_takes_their_number() {
+        assert_eq!(
+            steady_numbers(&[turn(0.0, 2.0, 1), turn(2.0, 2.4, 2), turn(2.4, 5.0, 1)]),
+            vec![1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn a_long_turn_keeps_its_number_among_short_ones() {
+        assert_eq!(
+            steady_numbers(&[turn(0.0, 0.5, 1), turn(0.5, 5.0, 2), turn(5.0, 5.5, 3)]),
+            vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn voices_at_once_for_a_second_stay_apart() {
+        assert_eq!(
+            steady_numbers(&[turn(0.0, 3.0, 1), turn(1.0, 2.5, 2)]),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn a_tie_keeps_a_turns_own_number() {
+        assert_eq!(
+            steady_numbers(&[turn(0.0, 1.0, 1), turn(1.0, 2.0, 2)]),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn turns_come_back_in_time_order() {
+        assert_eq!(
+            steadied_turns(&[turn(10.0, 11.0, 2), turn(0.0, 1.0, 1)])[0].start,
+            0.0
+        );
+        assert_eq!(steadied_turns(&[]).len(), 0);
+    }
 
     /// The layout expectations below were calibrated on FCPXML, which scales titles and strokes itself.
     fn fcpxml_settings() -> Settings {

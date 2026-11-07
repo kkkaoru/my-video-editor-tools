@@ -1,6 +1,8 @@
 //! One dropped video to finished subtitle files, with staged progress.
 
-use crate::captions::{assign_speakers, build_cues, metrics_for, Metrics, SpeakerTurn, Word};
+use crate::captions::{
+    assign_speakers, build_cues, metrics_for, steadied_turns, Metrics, SpeakerTurn, Word,
+};
 use crate::catalog::{self, Backend, Hardware, ModelEntry, RunsOn, SpeakerPlan};
 use crate::engines::{self, DiarizeModel, Tools, VideoInfo, WhisperClip};
 use crate::error::{io_context, AppError, AppResult, UserError};
@@ -374,7 +376,10 @@ fn separate_speakers(
         resources: &run.paths.resources,
     };
     let turns = engines::diarize(run.tools, &model, run.wav, run.work, run.cancel, on_tick)?;
-    Ok(limit_speakers(&turns, run.settings.speaker_count))
+    Ok(steadied_turns(&limit_speakers(
+        &turns,
+        run.settings.speaker_count,
+    )))
 }
 
 /// What one step of the early part of a job leaves behind.
