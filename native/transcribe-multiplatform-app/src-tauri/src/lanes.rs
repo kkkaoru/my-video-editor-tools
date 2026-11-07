@@ -317,12 +317,13 @@ struct Choice {
 fn choose_rows(
     tracks: Vec<Track>,
     first_sound: &[char],
-    deep: bool,
     segmenter: &Segmenter,
 ) -> AppResult<Choice> {
     // A first pass stuck in a loop says nothing about the tracks, and is no text to fall back on.
-    let first_is_sound = !loops(first_sound);
-    let by_support = first_is_sound && !deep;
+    // Three people at once are held to it too: of 17 such ranges in an hour, rows unchecked said 39
+    // characters and found 0.532 of the delivered captions, with made-up closing phrases and one
+    // voice read twice; checked, 22 characters and 0.569.
+    let by_support = !loops(first_sound);
     let count = tracks.len();
     let mut kept = Vec::with_capacity(count);
     for track in tracks {
@@ -358,7 +359,7 @@ fn choose_rows(
             || rows
                 .iter()
                 .any(|row| support(&row.sound, first_sound) < ROW_SUPPORT));
-    if unsure || (first_is_sound && same > 0 && rows.len() == 1) {
+    if unsure || (by_support && same > 0 && rows.len() == 1) {
         rows.clear();
     }
     Ok(Choice {
@@ -645,14 +646,14 @@ pub fn with_rows(
 
     let mut result: Vec<Word> = Vec::with_capacity(words.len());
     let mut rest = words.as_slice();
-    for (at, (range, tracks)) in ranges.iter().zip(prepared).enumerate() {
+    for (range, tracks) in ranges.iter().zip(prepared) {
         let inside_from = rest.partition_point(|word| middle(word) < range.start);
         result.extend_from_slice(&rest[..inside_from]);
         rest = &rest[inside_from..];
         let inside_to = rest.partition_point(|word| middle(word) < range.end);
         let first = &rest[..inside_to];
         let first_sound = sounds(&text_of(first), segmenter)?;
-        let choice = choose_rows(tracks, &first_sound, deep[at], segmenter)?;
+        let choice = choose_rows(tracks, &first_sound, segmenter)?;
         stats.dropped_tracks += choice.dropped;
         stats.same_text += choice.same;
         stats.unsure_ranges += usize::from(choice.unsure);
@@ -917,7 +918,6 @@ mod tests {
         let choice = choose_rows(
             vec![track("今日はいい天気ですね"), track("全然違う言葉ばかり")],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -941,7 +941,6 @@ mod tests {
                 track("明日は雨が降るそうです"),
             ],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -957,7 +956,6 @@ mod tests {
                 track("明日は雨が降るそうですが傘は持っていきません"),
             ],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -973,7 +971,6 @@ mod tests {
                 track("ご視聴ありがとうございました"),
             ],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -984,7 +981,6 @@ mod tests {
         let same = choose_rows(
             vec![track("今日はいい天気ですね"), track("今日はいい天気です")],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -1000,7 +996,6 @@ mod tests {
                 track("うんうんうんうんうんうんうんうんうんうん"),
             ],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -1042,7 +1037,6 @@ mod tests {
         let choice = choose_rows(
             vec![track("今日はいい天気ですね"), track("今日はいい天気です")],
             &first,
-            false,
             test_segmenter(),
         )
         .unwrap();
@@ -1050,8 +1044,8 @@ mod tests {
     }
 
     #[test]
-    fn deep_tracks_lose_only_stock_phrases_short_ones_and_repeats() {
-        let first = sound("全然関係ない");
+    fn with_a_looping_first_pass_tracks_lose_only_stock_phrases_short_ones_and_repeats() {
+        let first = sound("ありがとうありがとうありがとうありがとう");
         let choice = choose_rows(
             vec![
                 track("今日はいい天気ですね"),
@@ -1061,7 +1055,6 @@ mod tests {
                 track("お疲れ様でした"),
             ],
             &first,
-            true,
             test_segmenter(),
         )
         .unwrap();
@@ -1069,15 +1062,14 @@ mod tests {
     }
 
     #[test]
-    fn deep_tracks_repeating_each_other_keep_one_of_each_voice() {
+    fn with_a_looping_first_pass_repeated_tracks_keep_one_of_each_voice() {
         let choice = choose_rows(
             vec![
                 track("今日はいい天気ですね"),
                 track("今日はいい天気ですね"),
                 track("明日は雨が降るそうです"),
             ],
-            &sound("x"),
-            true,
+            &sound("ありがとうありがとうありがとうありがとう"),
             test_segmenter(),
         )
         .unwrap();
@@ -1201,7 +1193,12 @@ mod tests {
     fn three_people_at_once_go_through_the_model_twice_for_four_tracks() {
         let words = vec![
             said(5.0, 8.5, "最初の言葉です", 1),
-            said(9.5, 11.5, "全部が混ざった言葉です", 1),
+            said(
+                9.5,
+                11.5,
+                "今日はいい天気ですね明日は雨が降るそうです昨日は風が強かったです",
+                1,
+            ),
             said(12.5, 14.0, "最後の言葉です", 1),
         ];
         let turns = [turn(9.0, 12.0, 1), turn(9.0, 12.0, 2), turn(9.0, 12.0, 3)];
@@ -1230,6 +1227,30 @@ mod tests {
             .collect();
         speakers.sort_unstable();
         assert_eq!(speakers, vec![Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn three_people_at_once_whose_tracks_the_first_pass_did_not_hear_keep_the_first_pass() {
+        let words = vec![
+            said(5.0, 8.5, "最初の言葉です", 1),
+            said(9.5, 11.5, "週スケジュールと出してるから", 1),
+            said(12.5, 14.0, "最後の言葉です", 1),
+        ];
+        let turns = [turn(9.0, 12.0, 1), turn(9.0, 12.0, 2), turn(9.0, 12.0, 3)];
+        let (out, stats, _) = run_rows(
+            "deep-unheard",
+            words,
+            &turns,
+            &[
+                ("lane-0-0-0", "手術削りと出してるから"),
+                ("lane-0-0-1", "明日は雨が降るそうです"),
+                ("lane-0-1-0", "昨日は風が強かったです"),
+                ("lane-0-1-1", "ご視聴ありがとうございました"),
+            ],
+        );
+        assert_eq!(stats.rows, BTreeMap::from([(1, 1)]));
+        assert!(!format!("{out:?}").contains("手術"), "{out:?}");
+        assert!(format!("{out:?}").contains("週スケジュール"), "{out:?}");
     }
 
     #[test]
