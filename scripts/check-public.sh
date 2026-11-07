@@ -39,7 +39,7 @@ check_path() {
         native/transcribe-multiplatform-app/src-tauri/Cargo.toml|native/transcribe-multiplatform-app/src-tauri/Cargo.lock|native/transcribe-multiplatform-app/src-tauri/build.rs|native/transcribe-multiplatform-app/src-tauri/tauri.conf.json|native/transcribe-multiplatform-app/src-tauri/capabilities/default.json) ;;
         native/transcribe-multiplatform-app/public/licenses.js) ;;
         native/transcribe-multiplatform-app/separate-coreml/.gitignore|native/transcribe-multiplatform-app/separate-coreml/Package.swift|native/transcribe-multiplatform-app/separate-coreml/Sources/*/*.swift|native/transcribe-multiplatform-app/separate-coreml/Tests/*) ;;
-        native/transcribe-multiplatform-app/src-tauri/src/*.rs|native/transcribe-multiplatform-app/src-tauri/src/drt_template/*.xml|native/transcribe-multiplatform-app/src-tauri/tests/*.rs|native/transcribe-multiplatform-app/src-tauri/examples/*.rs) ;;
+        native/transcribe-multiplatform-app/src-tauri/src/*.rs|native/transcribe-multiplatform-app/src-tauri/src/capcut-template.json|native/transcribe-multiplatform-app/src-tauri/src/drt_template/*.xml|native/transcribe-multiplatform-app/src-tauri/tests/*.rs|native/transcribe-multiplatform-app/src-tauri/examples/*.rs) ;;
         native/transcribe-multiplatform-app/src-tauri/resources/ipadic-*|native/transcribe-multiplatform-app/src-tauri/resources/whisper-vocab.json|native/transcribe-multiplatform-app/src-tauri/resources/face_detection_yunet_2023mar.onnx|native/transcribe-multiplatform-app/src-tauri/icons/*.png|native/transcribe-multiplatform-app/src-tauri/icons/*.ico|native/transcribe-multiplatform-app/src-tauri/icons/*.icns) ;;
         '') ;;
         *) printf 'Unapproved public path: %s\n' "$1" >&2; return 1 ;;
