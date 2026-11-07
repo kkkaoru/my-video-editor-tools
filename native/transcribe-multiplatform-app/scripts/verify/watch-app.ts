@@ -24,7 +24,8 @@ const WATCHED: string[] = [
 ];
 const SETTLE_MS: number = 30_000;
 const TEST_FILE: RegExp = /\.test\.tsx?$/;
-const APP_EXECUTABLE: string = "Transcribe Captions.app/Contents/MacOS";
+// The name, not the whole command line: a shell that mentions the path would count as the app.
+const APP_PROCESS: string = "transcribe-app";
 const RECHECK_MS: number = 30_000;
 
 const modifiedAt = (path: string): number => statSync(join(APP_DIR, path)).mtimeMs;
@@ -41,7 +42,7 @@ const newestIn = (path: string): number =>
 const newestSource = (): number => Math.max(...WATCHED.map(newestIn));
 
 const appIsOpen = (): boolean =>
-  spawnSync("pgrep", ["-f", APP_EXECUTABLE], { encoding: "utf8" }).stdout.trim() !== "";
+  spawnSync("pgrep", ["-x", APP_PROCESS], { encoding: "utf8" }).stdout.trim() !== "";
 
 /** Only a newer source is a change, because the build itself fires watch events on these folders. */
 export const mayBuild = (newest: number, built: number, appOpen: boolean): boolean =>
