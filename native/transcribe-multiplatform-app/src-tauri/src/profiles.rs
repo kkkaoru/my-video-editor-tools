@@ -21,6 +21,10 @@ pub struct CaptionLook {
     pub font_family: String,
     pub font_ratio: f64,
     pub line_height: f64,
+    #[serde(default = "crate::settings::default_row_spacing")]
+    pub row_spacing: f64,
+    #[serde(default = "crate::settings::default_rows_share_left")]
+    pub rows_share_left: bool,
     pub width_ratio: f64,
     pub safe_left_percent: f64,
     pub safe_right_percent: f64,
@@ -47,6 +51,8 @@ impl CaptionLook {
             font_family: settings.font_family.clone(),
             font_ratio: settings.font_ratio,
             line_height: settings.line_height,
+            row_spacing: settings.row_spacing,
+            rows_share_left: settings.rows_share_left,
             width_ratio: settings.width_ratio,
             safe_left_percent: settings.safe_left_percent,
             safe_right_percent: settings.safe_right_percent,
@@ -63,6 +69,8 @@ impl CaptionLook {
             font_family: self.font_family,
             font_ratio: self.font_ratio,
             line_height: self.line_height,
+            row_spacing: self.row_spacing,
+            rows_share_left: self.rows_share_left,
             width_ratio: self.width_ratio,
             safe_left_percent: self.safe_left_percent,
             safe_right_percent: self.safe_right_percent,

@@ -913,9 +913,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!((thickness * 10_000.0).round(), 1045.0);
+        assert_eq!((thickness * 10_000.0).round(), 1682.0);
+        // The default fill is thickened, which takes an element of its own; there is no rim.
+        assert!(lua.contains("Enabled5"), "{lua}");
         assert!(!lua.contains("Enabled4"), "{lua}");
-        assert!(!lua.contains("Enabled5"), "{lua}");
         assert!(!lua.contains("Enabled3"), "{lua}");
     }
 
@@ -985,7 +986,7 @@ mod tests {
 
     #[test]
     fn a_shadow_follows_the_outline_when_there_is_no_rim() {
-        let mut settings = Settings::default();
+        let mut settings = crate::settings::earlier_look();
         settings.palette[0].shadow = Some("#FF8800".to_owned());
         let bytes = render(
             &transcript(VERTICAL, vec![cue(1.0, 2.0, Some(1), &["はい"])]),
@@ -1013,7 +1014,7 @@ mod tests {
 
     #[test]
     fn a_shadow_keeps_the_glyph_shape_without_any_edge() {
-        let mut settings = Settings::default();
+        let mut settings = crate::settings::earlier_look();
         settings.palette[0].outline_width = 0.0;
         settings.palette[0].shadow = Some("#FF8800".to_owned());
         let bytes = render(

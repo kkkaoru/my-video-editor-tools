@@ -26,7 +26,6 @@ const WRITING_SUFFIX: &str = ".writing";
 const MICROSECONDS_PER_SECOND: f64 = 1_000_000.0;
 /// Measured in CapCut: glyph height over frame height, per unit of its font size.
 const FONT_SIZE_PER_FRAME_HEIGHT: f64 = 0.0102;
-const OUTLINE_WIDTH: f64 = 0.08;
 /// CapCut draws an outline only with this bit set on the text.
 const OUTLINE_FLAG: u64 = 8;
 const NO_FLAGS: u64 = 7;
@@ -132,7 +131,13 @@ fn lanes_of(spans: &[(i64, i64)]) -> Vec<usize> {
         .collect()
 }
 
-fn text_content(line: &str, fill: &str, outline: Option<&str>, size: f64, font: &Value) -> String {
+fn text_content(
+    line: &str,
+    fill: &str,
+    outline: Option<(&str, f64)>,
+    size: f64,
+    font: &Value,
+) -> String {
     let solid = |color: &str| {
         json!({
             "alpha": 1.0,
@@ -145,9 +150,9 @@ fn text_content(line: &str, fill: &str, outline: Option<&str>, size: f64, font: 
         "range": [0, line.encode_utf16().count()],
         "size": size,
     });
-    if let Some(color) = outline {
+    if let Some((color, width)) = outline {
         let mut stroke = solid(color);
-        stroke["width"] = json!(OUTLINE_WIDTH);
+        stroke["width"] = json!(width);
         style["strokes"] = json!([stroke]);
     }
     json!({ "styles": [style], "text": line }).to_string()
@@ -162,7 +167,8 @@ struct Parts {
 
 fn cue_text(cue: &Cue, parts: &Parts, settings: &Settings, base_size: f64) -> Value {
     let color = settings.color_for(cue.speaker);
-    let outline = (color.outline_width > 0.0).then_some(color.outline.as_str());
+    let outline =
+        (color.outline_width > 0.0).then_some((color.outline.as_str(), color.outline_width));
     let size = base_size * cue.scale;
     let line = cue.lines.join("\n");
     let template: Value =
@@ -172,7 +178,7 @@ fn cue_text(cue: &Cue, parts: &Parts, settings: &Settings, base_size: f64) -> Va
     text["content"] = json!(text_content(&line, &color.fill, outline, size, font));
     text["text_color"] = json!(color.fill);
     text["font_size"] = json!(size);
-    text["border_color"] = json!(outline.unwrap_or(""));
+    text["border_color"] = json!(outline.map_or("", |(hex, _)| hex));
     text["check_flag"] = json!(if outline.is_some() {
         NO_FLAGS | OUTLINE_FLAG
     } else {
@@ -555,9 +561,14 @@ mod tests {
         assert_eq!(plain["styles"][0]["range"], json!([0, 3]));
         assert_eq!(plain["styles"][0]["strokes"], Value::Null);
         assert_eq!(plain["styles"][0]["font"], json!({ "path": "f" }));
-        let edged: Value =
-            serde_json::from_str(&text_content("a", "#FFFFFF", Some("#000000"), 5.0, &font))
-                .unwrap();
-        assert_eq!(edged["styles"][0]["strokes"][0]["width"], 0.08);
+        let edged: Value = serde_json::from_str(&text_content(
+            "a",
+            "#FFFFFF",
+            Some(("#000000", 0.16)),
+            5.0,
+            &font,
+        ))
+        .unwrap();
+        assert_eq!(edged["styles"][0]["strokes"][0]["width"], 0.16);
     }
 }

@@ -16,7 +16,9 @@ const DEFAULT_SHADOW_OFFSET: f64 = 0.03;
 const DEFAULT_SHADOW_BLUR: f64 = 5.0;
 /// 1: `.drt` became the default subtitle format, for people who already had settings too.
 /// 2: a rim of no width became transparent, as it is by default.
-const SETTINGS_VERSION: u64 = 2;
+/// 3: the default fill and outline became thicker, for those who never changed them.
+const SETTINGS_VERSION: u64 = 3;
+const TRANSPARENT_RIM_VERSION: u64 = 2;
 const UI_LANGUAGES: [&str; 8] = ["en", "ja", "zh-Hans", "zh-Hant", "ko", "de", "fr", "es"];
 /// Speaker 1 is white on a black outline. The others follow the repository's `SINGLE_FILL` rule: a dark
 /// fill at 7:1 or better against the white band, with the black rim keeping it readable on any video.
@@ -30,7 +32,12 @@ const FONT_FAMILY: &str = "Noto Sans JP";
 /// 52 px at 1080p: the repository's single-speaker caption size.
 const DEFAULT_FONT_RATIO: f64 = 0.048;
 /// Style 20's white band is about 11% of the font size on each side.
-const DEFAULT_OUTLINE_RATIO: f64 = 0.115;
+const DEFAULT_OUTLINE_RATIO: f64 = 0.16;
+/// The defaults until version 3: a thin glyph in a thin band, hard to read at several rows.
+const EARLIER_OUTLINE_RATIO: f64 = 0.115;
+const DEFAULT_FILL_WIDTH: f64 = 0.025;
+/// From one row's middle to the next, as a multiple of the font size.
+const DEFAULT_ROW_SPACING: f64 = 1.45;
 /// Style 20's rim: 3 units per side at font size 88, outside the band.
 const DEFAULT_RIM_RATIO: f64 = 3.0 / 88.0;
 const DEFAULT_WIDTH_RATIO: f64 = 0.9;
@@ -172,6 +179,12 @@ pub struct Settings {
     pub font_ratio: f64,
     /// Distance between caption lines as a multiple of the font size.
     pub line_height: f64,
+    /// Distance between the rows of voices at once, as a multiple of the font size.
+    #[serde(default = "default_row_spacing")]
+    pub row_spacing: f64,
+    /// With several speakers, every caption starts at one left edge.
+    #[serde(default = "default_rows_share_left")]
+    pub rows_share_left: bool,
     /// Longest caption line as a fraction of the frame width.
     pub width_ratio: f64,
     /// Left and right margins captions keep clear of, as percent of the frame width.
@@ -204,7 +217,7 @@ impl Default for Settings {
         Self {
             palette: std::iter::once(SpeakerColor {
                 fill: FIRST_SPEAKER_FILL.to_owned(),
-                fill_width: 0.0,
+                fill_width: DEFAULT_FILL_WIDTH,
                 outline: FIRST_SPEAKER_OUTLINE.to_owned(),
                 outline_width: DEFAULT_OUTLINE_RATIO,
                 rim: None,
@@ -219,6 +232,8 @@ impl Default for Settings {
             font_family: FONT_FAMILY.to_owned(),
             font_ratio: DEFAULT_FONT_RATIO,
             line_height: DEFAULT_LINE_HEIGHT,
+            row_spacing: DEFAULT_ROW_SPACING,
+            rows_share_left: true,
             width_ratio: DEFAULT_WIDTH_RATIO,
             safe_left_percent: DEFAULT_SAFE_PERCENT,
             safe_right_percent: DEFAULT_SAFE_PERCENT,
@@ -249,6 +264,14 @@ const fn default_shadow_blur() -> f64 {
     DEFAULT_SHADOW_BLUR
 }
 
+pub(crate) const fn default_row_spacing() -> f64 {
+    DEFAULT_ROW_SPACING
+}
+
+pub(crate) const fn default_rows_share_left() -> bool {
+    true
+}
+
 const fn default_outline_width() -> f64 {
     DEFAULT_OUTLINE_RATIO
 }
@@ -257,7 +280,7 @@ const fn default_outline_width() -> f64 {
 fn white_outlined(fill: &str) -> SpeakerColor {
     SpeakerColor {
         fill: fill.to_owned(),
-        fill_width: 0.0,
+        fill_width: DEFAULT_FILL_WIDTH,
         outline: DEFAULT_WHITE.to_owned(),
         outline_width: DEFAULT_OUTLINE_RATIO,
         rim: None,
@@ -327,7 +350,7 @@ pub(crate) fn migrate_look(look: &mut Value) {
     let outline = look
         .get("outline_ratio")
         .and_then(Value::as_f64)
-        .unwrap_or(DEFAULT_OUTLINE_RATIO);
+        .unwrap_or(EARLIER_OUTLINE_RATIO);
     let rim = look
         .get("rim_ratio")
         .and_then(Value::as_f64)
@@ -358,6 +381,20 @@ fn migrate_color(color: &mut Value, outline: f64, rim: f64) {
     }
 }
 
+/// Only values still at the earlier defaults: anyone who chose a width keeps it.
+fn thicken_default_look(color: &mut Value) {
+    let Some(fields) = color.as_object_mut() else {
+        return;
+    };
+    let width = |name: &str| fields.get(name).and_then(Value::as_f64);
+    let untouched = width("outline_width") == Some(EARLIER_OUTLINE_RATIO)
+        && width("fill_width").unwrap_or(0.0) == 0.0;
+    if untouched {
+        fields.insert("outline_width".to_owned(), json!(DEFAULT_OUTLINE_RATIO));
+        fields.insert("fill_width".to_owned(), json!(DEFAULT_FILL_WIDTH));
+    }
+}
+
 fn clear_widthless_rim(color: &mut Value) {
     let Some(fields) = color.as_object_mut() else {
         return;
@@ -378,11 +415,37 @@ fn parse_settings(text: &str) -> serde_json::Result<Settings> {
             fields.insert("subtitle_format".to_owned(), json!("drt"));
         }
     }
-    if saved_version.unwrap_or(0) < SETTINGS_VERSION {
+    let version = saved_version.unwrap_or(0);
+    if version < SETTINGS_VERSION {
         let palette = value.get_mut("palette").and_then(Value::as_array_mut);
-        palette.into_iter().flatten().for_each(clear_widthless_rim);
+        palette.into_iter().flatten().for_each(|color| {
+            if version < TRANSPARENT_RIM_VERSION {
+                clear_widthless_rim(color);
+            }
+            thicken_default_look(color);
+        });
     }
     serde_json::from_value(value)
+}
+
+/// The look before version 3, for tests whose figures are about layout rather than the defaults.
+#[cfg(test)]
+pub(crate) fn earlier_look() -> Settings {
+    let defaults = Settings::default();
+    Settings {
+        row_spacing: 2.0,
+        palette: defaults
+            .palette
+            .iter()
+            .cloned()
+            .map(|color| SpeakerColor {
+                fill_width: 0.0,
+                outline_width: EARLIER_OUTLINE_RATIO,
+                ..color
+            })
+            .collect(),
+        ..defaults
+    }
 }
 
 impl SpeakerColor {
@@ -415,6 +478,7 @@ impl Settings {
         self.palette.iter().try_for_each(validate_color)?;
         validate_ratio("font_ratio", self.font_ratio, 0.01, 0.3)?;
         validate_ratio("line_height", self.line_height, 1.0, 3.0)?;
+        validate_ratio("row_spacing", self.row_spacing, 1.0, 3.0)?;
         validate_ratio("width_ratio", self.width_ratio, 0.2, 1.0)?;
         validate_ratio(
             "safe_left_percent",
@@ -807,6 +871,36 @@ mod tests {
     }
 
     #[test]
+    fn only_the_earlier_default_widths_become_the_thicker_ones() {
+        let parsed = parse_settings(
+            r##"{"settings_version":2,"palette":[
+              {"fill":"#FFFFFF","outline":"#000000","outline_width":0.115},
+              {"fill":"#FFFFFF","outline":"#000000","outline_width":0.2},
+              {"fill":"#FFFFFF","fill_width":0.05,"outline":"#000000","outline_width":0.115}
+            ]}"##,
+        )
+        .unwrap();
+        assert_eq!(parsed.palette[0].outline_width, 0.16);
+        assert_eq!(parsed.palette[0].fill_width, 0.025);
+        assert_eq!(parsed.palette[1].outline_width, 0.2);
+        assert_eq!(parsed.palette[1].fill_width, 0.0);
+        assert_eq!(parsed.palette[2].outline_width, 0.115);
+        assert_eq!(parsed.palette[2].fill_width, 0.05);
+    }
+
+    #[test]
+    fn a_row_spacing_out_of_range_is_refused() {
+        let settings = Settings {
+            row_spacing: 0.5,
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.validate().unwrap_err().to_string(),
+            "row_spacing must be between 1 and 3, got 0.5"
+        );
+    }
+
+    #[test]
     fn a_saved_ass_choice_becomes_the_capcut_project_that_replaced_it() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-format-ass");
         let _ = std::fs::remove_dir_all(&root);
@@ -858,11 +952,11 @@ mod tests {
         migrated.subtitle_format = SubtitleFormat::Fcpxml;
         migrated.save(&file).unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert_eq!(saved["settings_version"], 2);
+        assert_eq!(saved["settings_version"], 3);
         assert_eq!(saved["subtitle_format"], "fcpxml");
         let reloaded = Settings::load(&file).unwrap();
         assert_eq!(reloaded.subtitle_format, SubtitleFormat::Fcpxml);
-        assert_eq!(reloaded.settings_version, 2);
+        assert_eq!(reloaded.settings_version, 3);
     }
 
     #[test]
@@ -1079,9 +1173,9 @@ mod tests {
             settings.palette[0],
             SpeakerColor {
                 fill: "#FFFFFF".to_owned(),
-                fill_width: 0.0,
+                fill_width: 0.025,
                 outline: "#000000".to_owned(),
-                outline_width: 0.115,
+                outline_width: 0.16,
                 rim: None,
                 rim_width: 3.0 / 88.0,
                 shadow: None,
@@ -1092,14 +1186,14 @@ mod tests {
         );
         assert_eq!(settings.palette[1].outline, "#FFFFFF");
         assert_eq!(settings.palette[1].rim, None);
-        assert_eq!(settings.widest_edge_ratio(), 0.115);
+        assert_eq!(settings.widest_edge_ratio(), 0.185);
     }
 
     #[test]
     fn a_transparent_rim_adds_no_edge_and_its_width_is_not_checked() {
         let mut settings = Settings::default();
         settings.palette[1].rim_width = 9.0;
-        assert_eq!(settings.palette[1].edge_ratio(), 0.115);
+        assert_eq!(settings.palette[1].edge_ratio(), 0.185);
         assert!(settings.validate().is_ok());
         settings.palette[1].rim = Some("#112233".to_owned());
         assert_eq!(
@@ -1136,7 +1230,7 @@ mod tests {
         settings.palette[3].fill_width = 0.02;
         settings.palette[3].rim = Some("#000000".to_owned());
         settings.palette[3].rim_width = 0.03;
-        assert_eq!(settings.widest_edge_ratio(), 0.165);
+        assert_eq!(settings.widest_edge_ratio(), 0.21);
     }
 
     #[test]
@@ -1197,7 +1291,7 @@ mod tests {
         .unwrap();
         let settings = Settings::load(&file).unwrap();
         assert_eq!(settings.palette[0].rim, None);
-        assert_eq!(settings.palette[0].outline_width, 0.115);
+        assert_eq!(settings.palette[0].outline_width, 0.16);
     }
 
     #[test]
@@ -1238,7 +1332,7 @@ mod tests {
                 fill: "#111111".to_owned(),
                 fill_width: 0.0,
                 outline: "#222222".to_owned(),
-                outline_width: 0.115,
+                outline_width: 0.16,
                 rim: None,
                 rim_width: 0.0,
                 shadow: None,

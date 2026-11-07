@@ -811,7 +811,7 @@ mod tests {
             &[cue(Some(1), "はい")],
             &INFO,
             &METRICS,
-            &Settings::default(),
+            &crate::settings::earlier_look(),
         );
         assert!(
             out.contains(
@@ -928,7 +928,7 @@ mod tests {
             Vec::new(),
             vec![cue(Some(1), "はい")],
         );
-        let out = render_fcpxml(&transcript, &Settings::default());
+        let out = render_fcpxml(&transcript, &crate::settings::earlier_look());
         assert!(
             out.contains("<adjust-transform position=\"0.000 -40.741\"/>"),
             "{out}"
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn a_white_band_stacks_band_and_fill_titles_without_a_rim() {
-        let settings = Settings::default();
+        let settings = crate::settings::earlier_look();
         let out = fcp_title(0, 0, &cue(Some(2), "A&B"), &INFO, &METRICS, &settings);
         assert_eq!(
             out,
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn fcpxml_keeps_captions_shown_together_on_separate_lanes_and_scales_them() {
-        let settings = Settings::default();
+        let settings = crate::settings::earlier_look();
         let mut small = cue(Some(1), "a");
         small.scale = 0.5;
         let title = fcp_title(0, 1, &small, &INFO, &METRICS, &settings);

@@ -30,8 +30,6 @@ const SIMULTANEOUS_SECONDS: f64 = 0.25;
 const STEADY_WINDOW_SECONDS: f64 = 4.0;
 /// Turns at once with another speaker's for this long are two voices, not a wavering number.
 const TRULY_TOGETHER_SECONDS: f64 = 1.0;
-/// `speaker_subtitles.STACK_GAP`: the space between rows of captions shown together.
-const ROW_GAP_PX: f64 = 12.0;
 /// `caption_display_hold.LINGER`: a pause this long ends a page, and nothing is shown over it.
 const CUE_BREAK_PAUSE_SECONDS: f64 = 0.5;
 /// Nobody pauses this long inside one morpheme: a longer gap there is a real break, a shorter one
@@ -1805,7 +1803,9 @@ fn stack_rows(
 ) {
     let frame_h = f64::from(info.height);
     let short_edge = f64::from(info.width.min(info.height)) / REFERENCE_SHORT_EDGE;
-    let (margin, gap) = (MARGIN_PX * short_edge, ROW_GAP_PX * short_edge);
+    let margin = MARGIN_PX * short_edge;
+    // `row_spacing` runs from one row's middle to the next; the rows' heights already hold the line box.
+    let gap = (settings.row_spacing - EM_LINE_HEIGHT) * metrics.font_px * metrics.rendered_scale;
     let height_of = |cue: &Cue| block_height(cue.lines.len(), metrics, settings);
     let mut speakers: Vec<Option<u32>> = cues.iter().map(|cue| cue.speaker).collect();
     speakers.sort_unstable();
@@ -1881,6 +1881,23 @@ fn stack_simultaneous(
         }
         first = last;
     }
+}
+
+/// With several speakers, every caption starts at the same place: the left edge of the widest one.
+fn share_left_edge(cues: &mut [Cue], metrics: &Metrics, settings: &Settings) {
+    let one_speaker = cues
+        .windows(2)
+        .all(|pair| pair[0].speaker == pair[1].speaker);
+    if !settings.rows_share_left || one_speaker {
+        return;
+    }
+    let half_width = |cue: &Cue| block_width(&cue.lines, metrics, settings) * cue.scale / 2.0;
+    let left = cues
+        .iter()
+        .map(|cue| cue.x - half_width(cue))
+        .fold(f64::INFINITY, f64::min);
+    cues.iter_mut()
+        .for_each(|cue| cue.x = left + half_width(cue));
 }
 
 /// A page timed into silence starts when the voice does. Only later, never earlier: a page whose
@@ -2008,6 +2025,7 @@ pub fn build_cues(
         });
     }
     stack_simultaneous(&mut cues, &grows_down, info, metrics, settings);
+    share_left_edge(&mut cues, metrics, settings);
     Ok((cues, faceless))
 }
 
@@ -2071,11 +2089,74 @@ mod tests {
         assert_eq!(steadied_turns(&[]).len(), 0);
     }
 
+    fn placed(speaker: u32, line: &str, x: f64) -> Cue {
+        Cue {
+            start: 0.0,
+            end: 1.0,
+            speaker: Some(speaker),
+            lines: vec![line.to_owned()],
+            x,
+            y: 0.0,
+            scale: 1.0,
+        }
+    }
+
+    const ROW_METRICS: Metrics = Metrics {
+        font_px: 10.0,
+        outline_px: 1.0,
+        max_line_px: 1000.0,
+        glyphs: None,
+        rendered_scale: 1.0,
+    };
+
+    #[test]
+    fn the_default_rows_sit_closer_than_the_earlier_ones_and_follow_the_setting() {
+        let row_gap = |row_spacing: f64| {
+            let settings = Settings {
+                row_spacing,
+                ..fcpxml_settings()
+            };
+            let metrics = metrics_for(&FULL_HD, &settings);
+            let mut cues = [placed(1, "a", 960.0), placed(2, "b", 960.0)];
+            cues[0].y = 900.0;
+            stack_rows(&mut cues, false, &FULL_HD, &metrics, &settings);
+            ((cues[0].y - cues[1].y) / metrics.font_px / metrics.rendered_scale * 100.0).round()
+        };
+        assert_eq!(row_gap(Settings::default().row_spacing), 145.0);
+        assert_eq!(row_gap(1.0), 100.0);
+        assert_eq!(row_gap(2.5), 250.0);
+    }
+
+    #[test]
+    fn several_speakers_start_at_the_left_edge_of_the_widest_caption() {
+        let settings = Settings::default();
+        let mut cues = [placed(1, "aaaaaaaa", 100.0), placed(2, "aa", 100.0)];
+        share_left_edge(&mut cues, &ROW_METRICS, &settings);
+        let edge = |cue: &Cue| cue.x - block_width(&cue.lines, &ROW_METRICS, &settings) / 2.0;
+        assert_eq!(edge(&cues[0]), edge(&cues[1]));
+        assert_eq!(cues[0].x, 100.0);
+        assert!(cues[1].x < 100.0);
+    }
+
+    #[test]
+    fn one_speaker_or_the_setting_off_leaves_captions_centred() {
+        let mut one = [placed(1, "aaaa", 100.0), placed(1, "a", 100.0)];
+        share_left_edge(&mut one, &ROW_METRICS, &Settings::default());
+        assert_eq!((one[0].x, one[1].x), (100.0, 100.0));
+        let off = Settings {
+            rows_share_left: false,
+            ..Settings::default()
+        };
+        let mut two = [placed(1, "aaaa", 100.0), placed(2, "a", 100.0)];
+        share_left_edge(&mut two, &ROW_METRICS, &off);
+        assert_eq!((two[0].x, two[1].x), (100.0, 100.0));
+    }
+
     /// The layout expectations below were calibrated on FCPXML, which scales titles and strokes itself.
     fn fcpxml_settings() -> Settings {
         Settings {
             subtitle_format: SubtitleFormat::Fcpxml,
-            ..Settings::default()
+            ..crate::settings::earlier_look()
         }
     }
 
@@ -4137,7 +4218,7 @@ mod tests {
         );
         assert_eq!(
             rows(&cues, &settings, &FULL_HD),
-            vec![(Some(1), 868.0, 960.0), (Some(2), 765.0, 856.0)]
+            vec![(Some(1), 868.0, 960.0), (Some(2), 767.0, 859.0)]
         );
         assert_eq!(cues[0].scale, 1.0);
     }
@@ -4154,7 +4235,7 @@ mod tests {
         by_speaker.sort_by_key(|row| row.0);
         assert_eq!(
             by_speaker,
-            vec![(Some(1), 868.0, 960.0), (Some(2), 765.0, 856.0)]
+            vec![(Some(1), 868.0, 960.0), (Some(2), 767.0, 859.0)]
         );
     }
 
@@ -4342,7 +4423,7 @@ mod tests {
         let (cues, _) = build_cues(&words, &[], &FULL_HD, &settings, test_segmenter()).unwrap();
         assert_eq!(
             rows(&cues, &settings, &FULL_HD),
-            vec![(Some(1), 120.0, 212.0), (Some(2), 224.0, 315.0)]
+            vec![(Some(1), 120.0, 212.0), (Some(2), 221.0, 313.0)]
         );
     }
 
