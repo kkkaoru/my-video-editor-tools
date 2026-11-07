@@ -1,6 +1,15 @@
 // Runs with bun: drives the real prune script against a throwaway build directory inside node_modules/.cache.
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 
@@ -83,7 +92,41 @@ it("caps the directory rust-analyzer writes to as well", () => {
   addFullTarget(root, "src-tauri/target");
   prune(root, "128", false);
   expect(existsSync(join(root, "src-tauri/target/debug"))).toBe(false);
-  expect(existsSync(join(root, "src-tauri/target/release/bundle/app"))).toBe(true);
+});
+
+it("always removes a release build beside rust-analyzer's and test scratch", () => {
+  const root: string = fakeApp();
+  addFile(root, "src-tauri/target/release/bundle/app", 1024);
+  addFile(root, "src-tauri/target/tmp/a", 1024);
+  addFile(root, "shared/tmp/a", 1024);
+  addFile(root, "shared/release/bundle/app", 1024);
+  prune(root, "8192", false);
+  expect(existsSync(join(root, "src-tauri/target/release"))).toBe(false);
+  expect(existsSync(join(root, "src-tauri/target/tmp"))).toBe(false);
+  expect(existsSync(join(root, "shared/tmp"))).toBe(false);
+  expect(existsSync(join(root, "shared/release/bundle/app"))).toBe(true);
+});
+
+it("drops the release build's intermediates last, over the budget", () => {
+  const root: string = fakeApp();
+  addFile(root, "shared/release/deps/a", MEBIBYTE);
+  addFile(root, "shared/release/bundle/app", 1024);
+  prune(root, "128", false);
+  expect(existsSync(join(root, "shared/release/deps"))).toBe(false);
+  expect(existsSync(join(root, "shared/release/bundle/app"))).toBe(true);
+});
+
+it("keeps only the current version's BOOTH zips", () => {
+  const root: string = fakeApp();
+  addFile(root, "src-tauri/tauri.conf.json", 0);
+  writeFileSync(join(root, "src-tauri/tauri.conf.json"), '{\n  "version": "1.2.3",\n}\n');
+  addFile(root, "dist-local/booth/macos-arm64-v1.2.2-Transcribe-Captions.zip", 1);
+  addFile(root, "dist-local/booth/macos-arm64-Transcribe-Captions-v1.2.3.zip", 1);
+  addFile(root, "dist-local/booth/macos-arm64-v1.2.3-Transcribe-Captions.zip", 1);
+  prune(root, "8192", false);
+  expect(readdirSync(join(root, "dist-local/booth"))).toStrictEqual([
+    "macos-arm64-v1.2.3-Transcribe-Captions.zip",
+  ]);
 });
 
 it("touches nothing while cargo is running", () => {
