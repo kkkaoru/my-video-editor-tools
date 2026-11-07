@@ -325,6 +325,100 @@ pub fn render_ttml(
     )
 }
 
+fn ass_clock(seconds: f64) -> String {
+    let (hours, minutes, whole, millis) = split_clock(seconds);
+    format!("{hours}:{minutes:02}:{whole:02}.{:02}", millis / 10)
+}
+
+/// `#RRGGBB` as ASS writes it: alpha first, then blue, green and red.
+fn ass_color(hex: &str) -> String {
+    let digits = hex.trim_start_matches('#');
+    let part = |range: std::ops::Range<usize>| digits.get(range).unwrap_or("00");
+    format!("&H00{}{}{}", part(4..6), part(2..4), part(0..2))
+}
+
+/// `{` opens an override and a backslash starts a code, so neither may reach the file as written.
+fn ass_line(line: &str) -> String {
+    line.replace('\\', "\u{FF3C}")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+        .replace('\n', " ")
+}
+
+fn ass_style(number: usize, color: &SpeakerColor, font: &str, metrics: &Metrics) -> String {
+    let outline_color = if color.outline_width > 0.0 {
+        &color.outline
+    } else {
+        &color.fill
+    };
+    let fill = ass_color(&color.fill);
+    let edge = ass_color(outline_color);
+    format!(
+        "Style: Speaker{number},{font},{size},{fill},{fill},{edge},&H00000000,0,0,0,0,100,100,0,0,1,{width:.1},0,5,0,0,0,1\n",
+        size = metrics.font_px,
+        width = (color.fill_width + color.outline_width) * metrics.font_px,
+    )
+}
+
+/// ASS may show several events at once, so every caption keeps its own event and place, and voices
+/// at once stay on their own rows. It has one outline, so the rim is left out as in TTML.
+#[must_use]
+pub fn render_ass(
+    cues: &[Cue],
+    info: &VideoInfo,
+    metrics: &Metrics,
+    settings: &Settings,
+) -> String {
+    let style_of = |speaker: Option<u32>| speaker.unwrap_or(1).max(1) as usize;
+    let most = cues
+        .iter()
+        .map(|cue| style_of(cue.speaker))
+        .max()
+        .unwrap_or(1);
+    // A comma ends the field in a style line.
+    let font = settings.font_family.replace(',', " ");
+    let styles: String = (1..=most)
+        .map(|number| {
+            let color = settings.color_for(u32::try_from(number).ok());
+            ass_style(number, color, &font, metrics)
+        })
+        .collect();
+    let events: String = cues
+        .iter()
+        .map(|cue| {
+            let text: Vec<String> = cue.lines.iter().map(|line| ass_line(line)).collect();
+            let sized = if cue.scale < 1.0 {
+                format!("\\fs{:.1}", metrics.font_px * cue.scale)
+            } else {
+                String::new()
+            };
+            format!(
+                "Dialogue: 0,{},{},Speaker{},,0,0,0,,{{\\an5\\pos({:.0},{:.0}){sized}}}{}\n",
+                ass_clock(cue.start),
+                ass_clock(cue.end),
+                style_of(cue.speaker),
+                cue.x,
+                cue.y,
+                text.join("\\N"),
+            )
+        })
+        .collect();
+    format!(
+        concat!(
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\n",
+            "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n",
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, ",
+            "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, ",
+            "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{styles}\n",
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n{events}",
+        ),
+        width = info.width,
+        height = info.height,
+        styles = styles,
+        events = events,
+    )
+}
+
 /// `n/den s` snapped to the frame grid, as FCPXML requires.
 fn fcp_time(seconds: f64, info: &VideoInfo) -> String {
     let frames =
@@ -582,7 +676,14 @@ fn sibling(base: &Path, extension: &str) -> PathBuf {
 }
 
 const TRANSCRIPT_EXTENSION: &str = ".transcript.json";
-const OUTPUT_EXTENSIONS: [&str; 5] = [".drt", ".ttml", ".srt", ".fcpxml", TRANSCRIPT_EXTENSION];
+const OUTPUT_EXTENSIONS: [&str; 6] = [
+    ".drt",
+    ".ttml",
+    ".srt",
+    ".ass",
+    ".fcpxml",
+    TRANSCRIPT_EXTENSION,
+];
 
 /// A base path beside the video that clobbers none of an earlier run's files.
 #[must_use]
@@ -664,6 +765,16 @@ fn subtitle_file(
             .into_bytes(),
         ),
         SubtitleFormat::Srt => (".srt", render_srt(&transcript.cues, settings).into_bytes()),
+        SubtitleFormat::Ass => (
+            ".ass",
+            render_ass(
+                &transcript.cues,
+                &transcript.info,
+                &transcript.metrics,
+                settings,
+            )
+            .into_bytes(),
+        ),
     })
 }
 
@@ -779,6 +890,18 @@ mod tests {
     }
 
     #[test]
+    fn ass_clock_writes_hundredths_and_colours_are_blue_first() {
+        assert_eq!(ass_clock(3723.004), "1:02:03.00");
+        assert_eq!(ass_clock(1.25), "0:00:01.25");
+        assert_eq!(ass_color("#005A9C"), "&H009C5A00");
+    }
+
+    #[test]
+    fn ass_text_cannot_become_an_override() {
+        assert_eq!(ass_line("a{b}c\\d"), "a\\{b\\}c\u{FF3C}d");
+    }
+
+    #[test]
     fn srt_has_clocks_and_speaker_colour() {
         let out = render_srt(&[cue(Some(2), "A&B")], &Settings::default());
         assert_eq!(
@@ -791,6 +914,41 @@ mod tests {
     fn clocks_handle_hours() {
         assert_eq!(srt_clock(3723.004), "01:02:03,004");
         assert_eq!(ttml_clock(3723.004), "01:02:03.004");
+    }
+
+    #[test]
+    fn ass_has_a_style_per_speaker_and_each_caption_keeps_its_place() {
+        let out = render_ass(
+            &[cue(Some(2), "A{B}")],
+            &INFO,
+            &METRICS,
+            &Settings::default(),
+        );
+        assert!(
+            out.starts_with("[Script Info]\nScriptType: v4.00+\n"),
+            "{out}"
+        );
+        assert!(out.contains("\nStyle: Speaker1,"), "{out}");
+        assert!(out.contains("\nStyle: Speaker2,"), "{out}");
+        assert!(out.contains(",&H009C5A00,&H009C5A00,"), "{out}");
+        assert!(
+            out.contains("Dialogue: 0,0:00:01.50,0:00:03.25,Speaker2,,0,0,0,,{\\an5\\pos("),
+            "{out}"
+        );
+        assert!(out.ends_with(")}A\\{B\\}\n"), "{out}");
+    }
+
+    #[test]
+    fn an_ass_caption_too_tall_for_the_frame_says_its_size() {
+        let small = Cue {
+            scale: 0.5,
+            lines: vec!["a".to_owned(), "b".to_owned()],
+            ..cue(None, "x")
+        };
+        let out = render_ass(&[small], &INFO, &METRICS, &Settings::default());
+        assert!(out.contains("\\fs"), "{out}");
+        assert!(out.contains("Speaker1,,0,0,0,,"), "{out}");
+        assert!(out.ends_with("}a\\Nb\n"), "{out}");
     }
 
     #[test]
@@ -1290,6 +1448,17 @@ mod tests {
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         (returned, on_disk)
+    }
+
+    #[test]
+    fn the_ass_format_writes_an_ass_file_and_the_transcript() {
+        assert_eq!(
+            written_names(SubtitleFormat::Ass, "ass"),
+            (
+                vec!["a.ass".to_owned()],
+                vec!["a.ass".to_owned(), "a.transcript.json".to_owned()]
+            )
+        );
     }
 
     #[test]

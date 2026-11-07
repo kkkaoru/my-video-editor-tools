@@ -285,7 +285,7 @@ pub fn metrics_for(info: &VideoInfo, settings: &Settings) -> Metrics {
     let rendered_scale = match settings.subtitle_format {
         // A timeline is drawn at FCPXML's measured size, so the two formats look the same.
         SubtitleFormat::Drt | SubtitleFormat::Fcpxml => fcpxml_title_scale(info),
-        SubtitleFormat::Ttml | SubtitleFormat::Srt => 1.0,
+        SubtitleFormat::Ttml | SubtitleFormat::Srt | SubtitleFormat::Ass => 1.0,
     };
     // Whole pixels: the transcript stores this, and a whole number reads back exactly.
     let max_line_px = (usable - 2.0 * block_edge(font_px, outline_px, settings))
@@ -380,7 +380,7 @@ fn glyph_width(c: char, metrics: &Metrics) -> f64 {
 fn block_edge(font_px: f64, outline_px: f64, settings: &Settings) -> f64 {
     match settings.subtitle_format {
         SubtitleFormat::Drt | SubtitleFormat::Fcpxml => outline_px / font_px * PERCENT,
-        SubtitleFormat::Ttml | SubtitleFormat::Srt => outline_px,
+        SubtitleFormat::Ttml | SubtitleFormat::Srt | SubtitleFormat::Ass => outline_px,
     }
 }
 

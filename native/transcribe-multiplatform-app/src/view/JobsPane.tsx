@@ -66,7 +66,7 @@ interface StepRowProps {
 
 const SECONDS_PER_MINUTE: number = 60;
 const MAX_SPEAKER_COUNT: number = 8;
-const SUBTITLE_FORMATS: SubtitleFormat[] = ["drt", "fcpxml", "ttml", "srt"];
+const SUBTITLE_FORMATS: SubtitleFormat[] = ["drt", "fcpxml", "ttml", "srt", "ass"];
 const PERCENT: number = 100;
 const FOLDERS: RegExp = /^.*[\\/]/s;
 const BEFORE_EXTENSION: RegExp = /^.*\./s;

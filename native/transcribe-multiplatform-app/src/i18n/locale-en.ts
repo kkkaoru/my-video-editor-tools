@@ -156,6 +156,7 @@ export const enMessages: Messages = {
     drt: "DaVinci Resolve timeline of Text+ clips: colours, outlines, outer edges and shadows",
     ttml: "Styled subtitles (colour, outline, position)",
     srt: "Subtitles with words and times (colours may not show; no outlines or positions)",
+    ass: "Subtitles with times, colours, an outline and positions (some apps do not use all of them)",
     fcpxml: "Timeline with titles",
     json: "Transcript data for writing again",
   },
@@ -229,6 +230,7 @@ export const enMessages: Messages = {
     fcpxml: "FCPXML shows no shadow. Choose DRT to use one.",
     ttml: "TTML shows no outer edge or shadow. Choose DRT to use them.",
     srt: "SRT keeps only the text colour: no outlines, outer edges or shadows. Choose DRT to use them.",
+    ass: "ASS has no outer edge or shadow. CapCut reads only the words and times.",
   },
   shadowLabel: "Shadow",
   shadowColor: "Shadow colour",
@@ -395,6 +397,7 @@ export const enMessages: Messages = {
               ".fcpxml: subtitles video editing software can read, together with the video.",
               ".ttml: subtitles with colours and positions.",
               ".srt: subtitles with words and times. Colours may not show. There are no outlines or positions.",
+              ".ass: subtitles for apps such as CapCut. They hold colours, an outline and positions; whether those show depends on the app.",
               ".transcript.json: the data used to write subtitles again. Please keep it.",
             ],
           },
@@ -445,6 +448,21 @@ export const enMessages: Messages = {
             notes: [
               "Each subtitle is 2 or 3 layers on top of each other. To change the words, change every layer.",
             ],
+          },
+          {
+            heading: "Bring an ASS file into CapCut",
+            intro: "CapCut reads the words and times of an .ass file. Voices at once appear on several rows.",
+            steps: [
+              "Choose ASS in “{subtitleFormat}” and make the subtitles.",
+              "Open a project in CapCut, put the video on the timeline, and move the playhead to the start.",
+              "On the Captions tab, choose Add captions, then Import file, and pick the .ass file.",
+              "Point at the .ass file in the list and press +. The subtitles start at the playhead.",
+            ],
+            notes: [
+              "CapCut does not use each speaker's colours, outlines or positions. Set them under Text in CapCut (checked with CapCut 9.5.0 for Mac).",
+              "The names on CapCut's screen can differ by language and version.",
+            ],
+            link: { label: "Open CapCut's help", url: "https://www.capcut.com/help/how-to-import-subtitles" },
           },
           {
             heading: "When to use the other types",

@@ -116,6 +116,8 @@ pub enum SubtitleFormat {
     Fcpxml,
     Ttml,
     Srt,
+    /// Advanced SubStation Alpha: colours, one outline and positions, for editors that read it.
+    Ass,
 }
 
 /// How the app's own window looks.

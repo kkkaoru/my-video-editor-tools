@@ -163,6 +163,7 @@ export const esMessages: Messages = {
     drt: "Subtítulos Text+ para DaVinci Resolve, con colores, bordes, bordes exteriores y sombras",
     ttml: "Subtítulos con estilo (color, contorno, posición)",
     srt: "Subtítulos con palabras y tiempos (puede que sin colores; sin bordes ni posiciones)",
+    ass: "Subtítulos con tiempos, colores, contorno y posición (no todas las aplicaciones usan todo)",
     fcpxml: "Línea de tiempo con títulos",
     json: "Datos de transcripción para reescribir",
   },
@@ -237,6 +238,7 @@ export const esMessages: Messages = {
     fcpxml: "FCPXML no muestra sombra. Elige DRT para usarla.",
     ttml: "TTML no muestra borde exterior ni sombra. Elige DRT para usarlos.",
     srt: "SRT solo conserva el color del texto: sin borde, borde exterior ni sombra. Elige DRT para usarlos.",
+    ass: "ASS no tiene borde exterior ni sombra. CapCut lee solo el texto y los tiempos.",
   },
   shadowLabel: "Sombra",
   shadowColor: "Color de la sombra",
@@ -404,6 +406,7 @@ export const esMessages: Messages = {
               ".fcpxml: los subtítulos junto con el vídeo, para programas de edición.",
               ".ttml: subtítulos con colores y posiciones.",
               ".srt: subtítulos con palabras y tiempos. Puede que no se vean los colores. No lleva bordes ni posiciones.",
+              ".ass: subtítulos para aplicaciones como CapCut. Incluyen colores, contorno y posición; que se vean depende de la aplicación.",
               ".transcript.json: los datos para volver a escribir los subtítulos. Consérvalo.",
             ],
           },
@@ -454,6 +457,25 @@ export const esMessages: Messages = {
             notes: [
               "Cada subtítulo tiene 2 o 3 capas una sobre otra. Para cambiar las palabras, cambia todas las capas.",
             ],
+          },
+          {
+            heading: "Abrir un archivo ASS en CapCut",
+            intro:
+              "CapCut lee el texto y los tiempos de un archivo .ass. Las voces a la vez aparecen en varias líneas.",
+            steps: [
+              "Elige ASS en «{subtitleFormat}» y crea los subtítulos.",
+              "Abre un proyecto en CapCut, pon el vídeo en la línea de tiempo y lleva el cabezal al principio.",
+              "En la pestaña Subtítulos, elige Añadir subtítulos, luego Importar archivo, y selecciona el archivo .ass.",
+              "Señala el archivo .ass en la lista y pulsa +. Los subtítulos empiezan en el cabezal.",
+            ],
+            notes: [
+              "CapCut no usa los colores, contornos ni posiciones de cada hablante. Ajústalos en Texto dentro de CapCut (comprobado con CapCut 9.5.0 para Mac).",
+              "Los nombres en la pantalla de CapCut pueden cambiar según el idioma y la versión.",
+            ],
+            link: {
+              label: "Abrir la ayuda de CapCut",
+              url: "https://www.capcut.com/es-es/help/how-to-import-subtitles",
+            },
           },
           {
             heading: "Cuándo usar los otros tipos",

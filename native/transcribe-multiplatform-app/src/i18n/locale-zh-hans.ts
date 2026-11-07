@@ -147,6 +147,7 @@ export const zhHansMessages: Messages = {
     drt: "导入 DaVinci Resolve 的 Text+ 字幕。包含颜色、描边、外描边和阴影",
     ttml: "带样式的字幕（颜色、描边、位置）",
     srt: "只有文字和时间的字幕(颜色可能不显示,没有描边和位置)",
+    ass: "包含时间、颜色、描边和位置的字幕(部分应用不会全部显示)",
     fcpxml: "含标题的时间线",
     json: "用于重新写出的转录数据",
   },
@@ -219,6 +220,7 @@ export const zhHansMessages: Messages = {
     fcpxml: "FCPXML 不显示阴影。要使用阴影，请选择 DRT。",
     ttml: "TTML 不显示外描边和阴影。要使用它们，请选择 DRT。",
     srt: "SRT 只保留文字颜色，没有描边、外描边和阴影。要使用它们，请选择 DRT。",
+    ass: "ASS 没有外边框和阴影。CapCut 只读取文字和时间。",
   },
   shadowLabel: "阴影",
   shadowColor: "阴影颜色",
@@ -366,6 +368,7 @@ export const zhHansMessages: Messages = {
               ".fcpxml：视频剪辑软件能读取的文件，字幕和视频在一起。",
               ".ttml：带颜色和位置的字幕文件。",
               ".srt：只有文字和时间的字幕。颜色可能不显示。没有描边和位置。",
+              ".ass:可用于 CapCut 等应用的字幕。包含颜色、描边和位置,是否显示取决于应用。",
               ".transcript.json：重新写字幕时用的数据。请不要删除。",
             ],
           },
@@ -412,6 +415,24 @@ export const zhHansMessages: Messages = {
               "时间线上会出现视频和字幕。时间线就是按时间顺序排列视频的地方。",
             ],
             notes: ["每条字幕由 2 到 3 层叠成。修改文字时，要改每一层。"],
+          },
+          {
+            heading: "把 ASS 导入 CapCut",
+            intro: "CapCut 读取 .ass 的文字和时间。同时说话的部分显示在多行。",
+            steps: [
+              "在“{subtitleFormat}”中选择 ASS,然后制作字幕。",
+              "在 CapCut 中打开项目,把视频放到时间线上,并把播放头移到开头。",
+              "在“字幕”标签页选择“添加字幕”,再用“导入文件”选择 .ass。",
+              "把指针移到列表中的 .ass 上,按 +。字幕从播放头的位置开始。",
+            ],
+            notes: [
+              "CapCut 不会使用每位说话人的颜色、描边和位置。请在 CapCut 的“文本”中设置(已在 Mac 版 CapCut 9.5.0 确认)。",
+              "CapCut 画面上的名称可能因语言和版本而不同。这篇帮助没有简体中文版,链接打开繁体中文版。",
+            ],
+            link: {
+              label: "打开 CapCut 帮助",
+              url: "https://www.capcut.com/zh-tw/help/how-to-import-subtitles",
+            },
           },
           {
             heading: "什么时候用其他格式",

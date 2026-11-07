@@ -1,12 +1,26 @@
 // Runs with bun: the help page quotes real button names, in every language, with a correct outline.
-import { cleanup, render, screen } from "@testing-library/preact";
-import { afterEach, expect, it } from "vitest";
+
+import { invoke } from "@tauri-apps/api/core";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ALL_LANGUAGE_MESSAGES } from "../i18n/language.ts";
+import { deMessages } from "../i18n/locale-de.ts";
 import { enMessages } from "../i18n/locale-en.ts";
+import { esMessages } from "../i18n/locale-es.ts";
+import { frMessages } from "../i18n/locale-fr.ts";
 import { jaMessages } from "../i18n/locale-ja.ts";
+import { koMessages } from "../i18n/locale-ko.ts";
+import { zhHansMessages } from "../i18n/locale-zh-hans.ts";
+import { zhHantMessages } from "../i18n/locale-zh-hant.ts";
 import { format, type HelpPart, type HelpSection, type Messages } from "../i18n/messages.ts";
 import { MessagesContext } from "../i18n/use-messages.ts";
 import { HelpPane, helpLabels, ResolveFigureList } from "./HelpPane.tsx";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+beforeEach((): void => {
+  vi.mocked(invoke).mockReset();
+});
 
 const PLACEHOLDER: RegExp = /\{\w+\}/;
 const FILE_NAME: RegExp = /Transcribe-Captions-[\w.-]+/g;
@@ -124,7 +138,9 @@ const listSizes = ({ help: { sections } }: Messages): string =>
 
 it("gives every language the same number of topics, steps and notes", () => {
   expect(new Set(ALL_LANGUAGE_MESSAGES.map(listSizes))).toStrictEqual(
-    new Set(["3/6 3/4 3/1 4/7 0/4 0/5 0/4 5/3 4/1 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/1 3/2 3/0 0/2 3/2 3/3 2/0"]),
+    new Set([
+      "3/6 3/4 3/1 4/7 0/4 0/6 0/4 5/3 4/1 4/2 0/3 4/2 3/0 3/2 3/2 3/2 4/5 3/1 3/2 3/0 0/2 3/2 3/3 2/0",
+    ]),
   );
 });
 
@@ -257,4 +273,55 @@ it("says Nemotron only tells speakers apart, and Whisper does the transcribing",
       "With automatic detection or 2 or more speakers, Whisper turbo, the Nemotron 3.5 encoder and MossFormer2 run. Whisper turbo always does the transcribing; Nemotron only tells speakers apart.",
     ).tagName,
   ).toBe("P");
+});
+
+it("opens CapCut's help in the browser, for the language shown", () => {
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  render(<HelpPane />);
+  fireEvent.click(screen.getByRole("button", { name: "Open CapCut's help" }));
+  expect(vi.mocked(invoke).mock.calls).toStrictEqual([
+    ["open_help_link", { url: "https://www.capcut.com/help/how-to-import-subtitles" }],
+  ]);
+  expect(screen.getByText("https://www.capcut.com/help/how-to-import-subtitles").tagName).toBe("SPAN");
+});
+
+it("logs a help page that could not open, and leaves its address on the page", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation((): void => undefined);
+  vi.mocked(invoke).mockRejectedValue(new Error("no browser"));
+  render(<HelpPane />);
+  fireEvent.click(screen.getByRole("button", { name: "Open CapCut's help" }));
+  await waitFor((): void => {
+    expect(logged.mock.calls[0]?.[0]).toBe(
+      "opening https://www.capcut.com/help/how-to-import-subtitles failed",
+    );
+  });
+  logged.mockRestore();
+});
+
+it("links each language to CapCut's page in that language", () => {
+  const urls: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries({
+      ja: jaMessages,
+      en: enMessages,
+      de: deMessages,
+      es: esMessages,
+      fr: frMessages,
+      ko: koMessages,
+      hans: zhHansMessages,
+      hant: zhHantMessages,
+    }).map(([name, messages]): [string, string | undefined] => [
+      name,
+      messages.help.sections.editor.parts[2]?.link?.url,
+    ]),
+  );
+  expect(urls).toStrictEqual({
+    ja: "https://www.capcut.com/ja-jp/help/how-to-import-subtitles",
+    en: "https://www.capcut.com/help/how-to-import-subtitles",
+    de: "https://www.capcut.com/de-de/help/how-to-import-subtitles",
+    es: "https://www.capcut.com/es-es/help/how-to-import-subtitles",
+    fr: "https://www.capcut.com/fr-fr/help/how-to-import-subtitles",
+    ko: "https://www.capcut.com/ko-kr/help/how-to-import-subtitles",
+    hans: "https://www.capcut.com/zh-tw/help/how-to-import-subtitles",
+    hant: "https://www.capcut.com/zh-tw/help/how-to-import-subtitles",
+  });
 });

@@ -510,12 +510,13 @@ it("keeps a saved speaker count, whatever models there are", () => {
   expect(screen.getByRole("combobox", { name: "Number of speakers" }).textContent).toBe("3 speakers (Heavy)");
 });
 
-it("offers the three subtitle formats by their names", () => {
+it("offers the subtitle formats by their names", () => {
   expect(subtitleFormatOptions()).toStrictEqual([
     { value: "drt", label: "DRT", disabled: false },
     { value: "fcpxml", label: "FCPXML", disabled: false },
     { value: "ttml", label: "TTML", disabled: false },
     { value: "srt", label: "SRT", disabled: false },
+    { value: "ass", label: "ASS", disabled: false },
   ]);
 });
 
@@ -723,7 +724,7 @@ it("rewrites the chosen subtitle files", async () => {
   });
   expect(vi.mocked(open).mock.calls[0]?.[0]).toStrictEqual({
     multiple: true,
-    filters: [{ name: "Subtitle files", extensions: ["drt", "fcpxml", "srt", "ttml", "json"] }],
+    filters: [{ name: "Subtitle files", extensions: ["drt", "fcpxml", "srt", "ttml", "ass", "json"] }],
   });
 });
 

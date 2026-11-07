@@ -317,7 +317,7 @@ it("survives a subscription that fails to stop", async () => {
 });
 
 it("lists the subtitle files the picker offers", () => {
-  expect(SUBTITLE_EXTENSIONS).toStrictEqual(["drt", "fcpxml", "srt", "ttml", "json"]);
+  expect(SUBTITLE_EXTENSIONS).toStrictEqual(["drt", "fcpxml", "srt", "ttml", "ass", "json"]);
 });
 
 it("keeps only subtitle paths, in any case", () => {
