@@ -1,19 +1,15 @@
-// Runs with bun: when the watcher may reopen the running app on a new build.
+// Runs with bun: when the watcher may rebuild the app.
 import { expect, it } from "vitest";
-import { mayRelaunch } from "./watch-app.ts";
+import { mayBuild } from "./watch-app.ts";
 
-it("never reopens during a job, even with nobody at the Mac", () => {
-  expect(mayRelaunch({ jobRunning: true, frontmost: false, idleSeconds: 600 })).toBe(false);
+it("builds a newer source while the app is closed", () => {
+  expect(mayBuild(2, 1, false)).toBe(true);
 });
 
-it("waits while the person is using the app", () => {
-  expect(mayRelaunch({ jobRunning: false, frontmost: true, idleSeconds: 3 })).toBe(false);
+it("waits while the app is open, because a bundle in use must not be replaced", () => {
+  expect(mayBuild(2, 1, true)).toBe(false);
 });
 
-it("reopens the front app once the person has stopped", () => {
-  expect(mayRelaunch({ jobRunning: false, frontmost: true, idleSeconds: 20 })).toBe(true);
-});
-
-it("reopens at once when the app is in the background", () => {
-  expect(mayRelaunch({ jobRunning: false, frontmost: false, idleSeconds: 0 })).toBe(true);
+it("does nothing when no source is newer, so a build cannot start another", () => {
+  expect(mayBuild(1, 1, false)).toBe(false);
 });

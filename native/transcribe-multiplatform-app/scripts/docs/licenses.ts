@@ -220,10 +220,17 @@ export const collectAll = (): FoundPackage[] => [
   ...shippedNodePackages(APP_DIR),
 ];
 
+/** The file sits under a folder the app watcher builds on, so an unchanged rewrite would start another build. */
+export function writeIfChanged(path: string, text: string): void {
+  if (!existsSync(path) || readFileSync(path, "utf8") !== text) {
+    writeFileSync(path, text);
+  }
+}
+
 if (import.meta.main) {
   const list: LicenseList = buildList(collectAll());
   mkdirSync(dirname(OUTPUT), { recursive: true });
-  writeFileSync(OUTPUT, serialized(list));
+  writeIfChanged(OUTPUT, serialized(list));
   const missing: number = list.entries.filter(({ text }: LicenseEntry): boolean => text === null).length;
   console.log(
     `licenses: ${list.entries.length} packages, ${missing} without a license text, ${list.texts.length} texts`,

@@ -1,5 +1,5 @@
 // Runs with bun: the list holds what the build ships and what each package says, and it is up to date.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
@@ -12,6 +12,7 @@ import {
   serialized,
   shippedCrates,
   shippedNodePackages,
+  writeIfChanged,
 } from "./licenses.ts";
 
 const ROOT: string = join(import.meta.dirname, "../../node_modules/.cache/licenses-test");
@@ -164,6 +165,22 @@ it("refuses a required node package that is not installed", () => {
     JSON.stringify({ name: "broken", version: "1.0.0", dependencies: { lost: "1" } }),
   );
   expect(() => shippedNodePackages(join(ROOT, "broken"))).toThrow("lost is not installed: run bun install");
+});
+
+it("leaves a file with the same text untouched and replaces a different one", () => {
+  const path: string = join(ROOT, "same.js");
+  file("same.js", "a");
+  utimesSync(path, 1000, 1000);
+  writeIfChanged(path, "a");
+  expect(statSync(path).mtimeMs).toBe(1_000_000);
+  writeIfChanged(path, "b");
+  expect(readFileSync(path, "utf8")).toBe("b");
+});
+
+it("writes a file that is not there yet", () => {
+  const path: string = join(ROOT, "new.js");
+  writeIfChanged(path, "c");
+  expect(readFileSync(path, "utf8")).toBe("c");
 });
 
 it("is up to date with the dependencies", { timeout: 120_000 }, () => {
