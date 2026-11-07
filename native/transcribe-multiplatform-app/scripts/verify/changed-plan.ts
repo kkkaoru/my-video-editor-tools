@@ -1,5 +1,5 @@
 // Runs with bun: decides which checks a list of changed app files needs, as plain data.
-import { type SweepScope, sweepScope } from "./a11y-scope.ts";
+import { SHARED_SCOPE, type SweepScope, sweepScope } from "./a11y-scope.ts";
 
 export interface Check {
   name: string;
@@ -30,7 +30,8 @@ const RUST_SOURCE: RegExp = /^src-tauri\/(src|tests)\/.*\.rs$/;
 const RUST_MODULE: RegExp = /^src-tauri\/src\/([a-z_]+)\.rs$/;
 const COVERAGE_SCRIPT: string = "../scripts/verify/check-rust-coverage.sh";
 const SWEEP_CONFIG: string[] = ["--config", "tests/a11y/playwright.config.ts"];
-const SWEEP_PROJECTS: string[] = ["--project=webkit", "--project=chromium"];
+// One browser and one worker: a hook has to stay quick. `test:a11y` runs both browsers by hand.
+const SWEEP_PROJECTS: string[] = ["--project=chromium", "--workers=1"];
 const CLIPPY_FEATURES: string[][] = [[], ["--features", "windows-geforce"], ["--features", "windows-radeon"]];
 
 const inApp = (name: string, command: string[]): Check => ({ name, directory: "app", command });
@@ -143,9 +144,6 @@ function sweepChecks(scope: SweepScope): Check[] {
   if (scope.kind === "none") {
     return [];
   }
-  if (scope.kind === "all") {
-    return [sweep([]), vitals([])];
-  }
   return [
     sweep(["--grep", scope.grep]),
     ...(scope.vitalsGrep === null ? [] : [vitals(["--grep", scope.vitalsGrep])]),
@@ -161,6 +159,6 @@ export function planChecks(input: PlanInput): Check[] {
     ...shellChecks(input.files),
     ...vitestChecks(input.files, whole),
     ...rustChecks(input),
-    ...sweepChecks(input.everything ? { kind: "all" } : sweepScope(input.files)),
+    ...sweepChecks(input.everything ? SHARED_SCOPE : sweepScope(input.files)),
   ];
 }

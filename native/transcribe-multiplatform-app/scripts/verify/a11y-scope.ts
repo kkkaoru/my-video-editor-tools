@@ -7,7 +7,7 @@ export interface PartialSweep {
   vitalsGrep: string | null;
 }
 
-export type SweepScope = { kind: "none" } | { kind: "all" } | PartialSweep;
+export type SweepScope = { kind: "none" } | PartialSweep;
 
 interface ScreenRule {
   file: RegExp;
@@ -19,16 +19,16 @@ interface FileImpact {
   titles: string[];
   vitals: string[];
   locales: string[];
-  all: boolean;
+  shared: boolean;
 }
 
 const APP_PREFIX: RegExp = /^native\/transcribe-multiplatform-app\//;
 const TEST_FILE: RegExp = /\.test\.tsx?$/;
 const LOCALE_FILE: RegExp = /^src\/i18n\/locale-([a-z-]+)\.ts$/;
-// Anything else that can reach the rendered page; an unlisted file here widens the sweep to every state.
+// Anything else that can reach the rendered page; an unlisted file here runs the shared sample below.
 const UI_FILE: RegExp =
   /^(src\/|public\/|tests\/a11y\/|index\.html$|package\.json$|bun\.lock$|vite\.config\.ts$)/;
-const JOBS: string = "jobs? |the speaker count help";
+const JOBS: string = "jobs? ";
 const STYLE: string = "style |speaker names";
 const MODELS: string = "models? ";
 const HELP: string = "help ";
@@ -49,14 +49,21 @@ const SCREEN_RULES: ScreenRule[] = [
 ];
 // The languages the sweep covers; the others share their layout, and unit tests check their structure.
 const SWEPT_LOCALES: Set<string> = new Set(["ja", "en", "de"]);
-// Always kept: the test that proves the sweep can still detect a failure.
-const DETECTOR_TITLE: string = "the sweep detects";
+// Always kept: the test that proves the sweep can still detect a failure, and the one without a language.
+const DETECTOR_TITLE: string = "the sweep detects|the speaker count help";
+// A hook checks a sample and stays quick; `test:a11y` is the whole sweep, run by hand.
+const SCREEN_SAMPLE: string = "( / ja / light| / de / dark)$";
+const LOCALE_SAMPLE: string = "light";
+// One state of each screen, for a file every screen uses.
+const SHARED_STATES: string = "jobs empty|style with profiles|models idle|help";
+const SHARED_SAMPLE: string = " / ja / light$";
+const SHARED_VITALS: string = "jobs empty";
 
 const localeImpact = (locale: string): FileImpact => ({
   titles: [],
   vitals: [],
   locales: [locale],
-  all: false,
+  shared: false,
 });
 
 function impactOf(appPath: string): FileImpact {
@@ -65,7 +72,7 @@ function impactOf(appPath: string): FileImpact {
     return localeImpact(locale);
   }
   const rule = SCREEN_RULES.find(({ file }: ScreenRule): boolean => file.test(appPath));
-  return { titles: rule?.titles ?? [], vitals: rule?.vitals ?? [], locales: [], all: rule === undefined };
+  return { titles: rule?.titles ?? [], vitals: rule?.vitals ?? [], locales: [], shared: rule === undefined };
 }
 
 const isUnsweptLocale = (appPath: string): boolean => {
@@ -79,16 +86,20 @@ const isUiFile = (appPath: string): boolean =>
 const unique = (values: string[]): string[] => [...new Set(values)];
 
 /** Titles look like "<state> / <locale> / <theme>", and Playwright matches them after the file name. */
-const toGrep = (titles: string[], locales: string[]): string =>
+const toGrep = (titles: string[], locales: string[], shared: boolean): string =>
   [
-    `\\.spec\\.ts (${[DETECTOR_TITLE, ...titles].join("|")})`,
-    ...locales.map((locale: string): string => ` / ${locale}( / (light|dark))?$`),
+    `\\.spec\\.ts (${[
+      DETECTOR_TITLE,
+      ...(titles.length > 0 ? [`(${titles.join("|")}).*${SCREEN_SAMPLE}`] : []),
+      ...(shared ? [`(${SHARED_STATES})${SHARED_SAMPLE}`] : []),
+    ].join("|")})`,
+    ...locales.map((locale: string): string => ` / ${locale} / ${LOCALE_SAMPLE}$`),
   ].join("|");
 
 const toVitalsGrep = (vitals: string[]): string | null =>
   vitals.length > 0 ? `stay good: (${vitals.join("|")})` : null;
 
-/** The sweep a change needs. Paths may be relative to the repository or to the app. */
+/** The sample a change needs. Paths may be relative to the repository or to the app. */
 export function sweepScope(changedFiles: string[]): SweepScope {
   const impacts: FileImpact[] = changedFiles
     .map((path: string): string => path.replace(APP_PREFIX, ""))
@@ -97,14 +108,26 @@ export function sweepScope(changedFiles: string[]): SweepScope {
   if (impacts.length === 0) {
     return { kind: "none" };
   }
-  return impacts.some(({ all }: FileImpact): boolean => all)
-    ? { kind: "all" }
-    : {
-        kind: "some",
-        grep: toGrep(
-          unique(impacts.flatMap(({ titles }: FileImpact): string[] => titles)),
-          unique(impacts.flatMap(({ locales }: FileImpact): string[] => locales)),
-        ),
-        vitalsGrep: toVitalsGrep(unique(impacts.flatMap(({ vitals }: FileImpact): string[] => vitals))),
-      };
+  const shared: boolean = impacts.some((impact: FileImpact): boolean => impact.shared);
+  return {
+    kind: "some",
+    grep: toGrep(
+      unique(impacts.flatMap(({ titles }: FileImpact): string[] => titles)),
+      unique(impacts.flatMap(({ locales }: FileImpact): string[] => locales)),
+      shared,
+    ),
+    vitalsGrep: toVitalsGrep(
+      unique([
+        ...impacts.flatMap(({ vitals }: FileImpact): string[] => vitals),
+        ...(shared ? [SHARED_VITALS] : []),
+      ]),
+    ),
+  };
 }
+
+/** A deleted file can be used by anything, and its name says nothing: the sample every shared file gets. */
+export const SHARED_SCOPE: SweepScope = {
+  kind: "some",
+  grep: toGrep([], [], true),
+  vitalsGrep: toVitalsGrep([SHARED_VITALS]),
+};

@@ -130,10 +130,10 @@ it("runs one screen's sweep and Web Vitals", () => {
     "test",
     "--config",
     "tests/a11y/playwright.config.ts",
-    "--project=webkit",
     "--project=chromium",
+    "--workers=1",
     "--grep",
-    "\\.spec\\.ts (the sweep detects|help )",
+    "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).*( / ja / light| / de / dark)$)",
   ]);
   expect(commandOf(["src/view/HelpPane.tsx"], "Web Vitals")).toStrictEqual([
     "bunx",

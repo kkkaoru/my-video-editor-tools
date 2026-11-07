@@ -3,16 +3,16 @@ import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/te
 
 const PREVIEW_PORT: number = 4173;
 const PREVIEW_URL: string = `http://127.0.0.1:${PREVIEW_PORT}`;
-// A CI runner has 3 slow cores: fewer workers and more time, the same checks and thresholds.
+// One browser at a time: a sweep shares this machine with long jobs, and browsers are what it costs them.
+const WORKERS: number = 1;
 const ON_CI: boolean = process.env.CI !== undefined;
-const WORKERS: number = ON_CI ? 2 : 4;
 const VITALS_SPEC: RegExp = /web-vitals\.spec\.ts/;
 const TEST_TIMEOUT_MS: number = ON_CI ? 120_000 : 30_000;
 
 const config: PlaywrightTestConfig = defineConfig({
   testDir: ".",
   outputDir: "../../node_modules/.cache/playwright-results",
-  fullyParallel: true,
+  fullyParallel: false,
   workers: WORKERS,
   timeout: TEST_TIMEOUT_MS,
   retries: ON_CI ? 1 : 0,

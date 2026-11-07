@@ -1,6 +1,6 @@
 // Runs with bun: vitest for the sweep scope.
 import { expect, it } from "vitest";
-import { sweepScope } from "./a11y-scope.ts";
+import { SHARED_SCOPE, sweepScope } from "./a11y-scope.ts";
 
 it("needs no sweep when only tests, Rust or documents change", () => {
   expect(
@@ -13,22 +13,34 @@ it("needs no sweep when only tests, Rust or documents change", () => {
   ).toStrictEqual({ kind: "none" });
 });
 
-it("sweeps everything for a file used across screens", () => {
-  expect(sweepScope(["src/entry/styles.css"])).toStrictEqual({ kind: "all" });
+it("samples each screen for a file used across screens", () => {
+  expect(sweepScope(["src/entry/styles.css"])).toStrictEqual({
+    kind: "some",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs empty|style with profiles|models idle|help) / ja / light$)",
+    vitalsGrep: "stay good: (jobs empty)",
+  });
 });
 
-it("sweeps everything for a sweep or build change", () => {
-  expect(sweepScope(["tests/a11y/fixtures.ts"])).toStrictEqual({ kind: "all" });
+it("samples each screen for a sweep or build change", () => {
+  expect(sweepScope(["tests/a11y/fixtures.ts"])).toStrictEqual({
+    kind: "some",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs empty|style with profiles|models idle|help) / ja / light$)",
+    vitalsGrep: "stay good: (jobs empty)",
+  });
 });
 
-it("sweeps everything when a shared file comes with a screen file", () => {
-  expect(sweepScope(["src/view/JobsPane.tsx", "src/view/fields.tsx"])).toStrictEqual({ kind: "all" });
+it("samples the changed screen and the others when a shared file comes with it", () => {
+  expect(sweepScope(["src/view/JobsPane.tsx", "src/view/fields.tsx"])).toStrictEqual({
+    kind: "some",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs? ).*( / ja / light| / de / dark)$|(jobs empty|style with profiles|models idle|help) / ja / light$)",
+    vitalsGrep: "stay good: (jobs? |jobs empty)",
+  });
 });
 
 it("sweeps one screen for its own file and strips the repository path", () => {
   expect(sweepScope(["native/transcribe-multiplatform-app/src/view/ModelsPane.tsx"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|models? )",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(models? ).*( / ja / light| / de / dark)$)",
     vitalsGrep: "stay good: (models )",
   });
 });
@@ -36,7 +48,7 @@ it("sweeps one screen for its own file and strips the repository path", () => {
 it("sweeps both screens for a component they share, without repeats", () => {
   expect(sweepScope(["src/view/ConfirmButton.tsx", "src/view/StylePane.tsx"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|style |speaker names|models? )",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(style |speaker names|models? ).*( / ja / light| / de / dark)$)",
     vitalsGrep: "stay good: (style |models )",
   });
 });
@@ -44,7 +56,7 @@ it("sweeps both screens for a component they share, without repeats", () => {
 it("sweeps one covered language for its text", () => {
   expect(sweepScope(["src/i18n/locale-de.ts"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects)| / de( / (light|dark))?$",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help)| / de / light$",
     vitalsGrep: null,
   });
 });
@@ -56,7 +68,15 @@ it("needs no sweep for a language outside the covered three", () => {
 it("sweeps the help screen for its images", () => {
   expect(sweepScope(["public/help/ja/start.webp"])).toStrictEqual({
     kind: "some",
-    grep: "\\.spec\\.ts (the sweep detects|help )",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(help ).*( / ja / light| / de / dark)$)",
     vitalsGrep: "stay good: (help)",
+  });
+});
+
+it("samples each screen after a file is deleted", () => {
+  expect(SHARED_SCOPE).toStrictEqual({
+    kind: "some",
+    grep: "\\.spec\\.ts (the sweep detects|the speaker count help|(jobs empty|style with profiles|models idle|help) / ja / light$)",
+    vitalsGrep: "stay good: (jobs empty)",
   });
 });
