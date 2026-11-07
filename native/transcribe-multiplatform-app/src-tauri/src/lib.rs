@@ -60,7 +60,7 @@ pub fn run_headless(video: &Path) -> AppResult<JobOutcome> {
 
 fn print_outcome(outcome: &JobOutcome) -> AppResult<()> {
     let line = serde_json::to_string(outcome)
-        .map_err(|error| error::AppError::Invalid(error.to_string()))?;
+        .map_err(error::invalid)?;
     println!("{line}");
     Ok(())
 }

@@ -66,7 +66,7 @@ pub fn copy_span(wav: &Path, span: (f64, f64), target: &Path) -> AppResult<()> {
     let (first, bytes) = layout.slice(span.0, span.1);
     let mut out =
         File::create(target).map_err(io_context(format!("write {}", target.display())))?;
-    let header = u32::try_from(bytes).map_err(|error| invalid(TOOL_NAME, error))?;
+    let header = u32::try_from(bytes).map_err(tool_failure)?;
     out.write_all(&wav_head(header, layout.float))
         .and_then(|()| source.seek(SeekFrom::Start(first)))
         .and_then(|_| std::io::copy(&mut Read::take(&mut source, bytes), &mut out))
@@ -91,6 +91,18 @@ struct SeparationRequest {
 
 pub(crate) fn invalid(context: &str, error: impl std::fmt::Display) -> AppError {
     AppError::Invalid(format!("{context}: {error}"))
+}
+
+fn tool_failure(error: impl std::fmt::Display) -> AppError {
+    invalid(TOOL_NAME, error)
+}
+
+fn setup_failure(error: impl std::fmt::Display) -> AppError {
+    invalid("set up MossFormer2", error)
+}
+
+fn message(error: impl ToString) -> String {
+    error.to_string()
 }
 
 /// The ONNX Runtime library in the bundle.
@@ -133,7 +145,7 @@ pub fn separate_clips(
         clips: clips.to_vec(),
     };
     let file = run.work.join(REQUEST_FILE);
-    let text = serde_json::to_vec(&request).map_err(|error| invalid(TOOL_NAME, error))?;
+    let text = serde_json::to_vec(&request).map_err(tool_failure)?;
     write_atomic(&file, &text)?;
     let mut command = onnx_runtime_command(run.exe);
     command.args(run.flag).arg(&file);
@@ -142,7 +154,7 @@ pub fn separate_clips(
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let searched =
             std::iter::once(folder.to_path_buf()).chain(std::env::split_paths(&inherited));
-        let path = std::env::join_paths(searched).map_err(|error| invalid(TOOL_NAME, error))?;
+        let path = std::env::join_paths(searched).map_err(tool_failure)?;
         command.env("PATH", path);
     }
     run_with_progress(command, TOOL_NAME, run.cancel, |line| {
@@ -172,11 +184,11 @@ pub(crate) fn environment(library: &Path) -> AppResult<&'static Environment> {
     ENVIRONMENT
         .get_or_init(|| {
             ort::init_from(library)
-                .map_err(|error| error.to_string())?
+                .map_err(message)?
                 // People's speech passes through here; nothing about it may leave the machine.
                 .with_telemetry(false)
                 .build()
-                .map_err(|error| error.to_string())
+                .map_err(message)
         })
         .as_ref()
         .map_err(|error| invalid("load ONNX Runtime", error))
@@ -190,15 +202,15 @@ pub fn run_request(file: &Path) -> AppResult<()> {
     // shortcut: no GPU provider of ONNX Runtime has run this model yet; the catalog's `min_gpu_memory_gib`
     // of 0 keeps it on the CPU, and a provider registered here is all a GPU run would need.
     let RunsOn::Cpu = request.runs_on else {
-        return Err(invalid(TOOL_NAME, "no GPU provider is available"));
+        return Err(tool_failure("no GPU provider is available"));
     };
     let mut builder = Session::builder(environment(&request.library)?)
-        .map_err(|error| invalid("set up MossFormer2", error))?
+        .map_err(setup_failure)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|error| invalid("set up MossFormer2", error))?
+        .map_err(setup_failure)?
         // Same output and speed; an 8 s range peaks at 1.65 GB instead of 2.4 GB.
         .with_memory_pattern(false)
-        .map_err(|error| invalid("set up MossFormer2", error))?;
+        .map_err(setup_failure)?;
     let mut session = builder
         .commit_from_file(&request.model)
         .map_err(|error| invalid("load MossFormer2", error))?;
@@ -233,16 +245,14 @@ fn separate_clip(session: &mut Session, clip: &SeparationClip) -> AppResult<()> 
 
 fn run_model(session: &mut Session, wave: Vec<f32>) -> AppResult<Vec<Vec<f32>>> {
     let shape = [1, wave.len()];
-    let input = Tensor::from_array((shape, wave)).map_err(|error| invalid(TOOL_NAME, error))?;
+    let input = Tensor::from_array((shape, wave)).map_err(tool_failure)?;
     let outputs = session
         .run(ort::inputs![INPUT_NAME => input])
-        .map_err(|error| invalid(TOOL_NAME, error))?;
+        .map_err(tool_failure)?;
     let value = outputs
         .get(OUTPUT_NAME)
-        .ok_or_else(|| invalid(TOOL_NAME, "the model gave no tracks"))?;
-    let (shape, data) = value
-        .try_extract_tensor::<f32>()
-        .map_err(|error| invalid(TOOL_NAME, error))?;
+        .ok_or_else(|| tool_failure("the model gave no tracks"))?;
+    let (shape, data) = value.try_extract_tensor::<f32>().map_err(tool_failure)?;
     split_tracks(shape, data)
 }
 
@@ -329,13 +339,9 @@ impl WavLayout {
 /// Reads only the headers, so an hour of audio stays on the disk: 16-bit as `extract_audio` writes
 /// it, or float as a track is written.
 pub(crate) fn wav_layout(reader: &mut (impl Read + Seek)) -> Result<WavLayout, String> {
-    let length = reader
-        .seek(SeekFrom::End(0))
-        .map_err(|error| error.to_string())?;
+    let length = reader.seek(SeekFrom::End(0)).map_err(message)?;
     let mut riff = [0_u8; RIFF_HEADER_BYTES];
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|error| error.to_string())?;
+    reader.seek(SeekFrom::Start(0)).map_err(message)?;
     if reader.read_exact(&mut riff).is_err() || &riff[..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
         return Err("not a WAV file".to_owned());
     }
@@ -343,20 +349,14 @@ pub(crate) fn wav_layout(reader: &mut (impl Read + Seek)) -> Result<WavLayout, S
     let mut float = None;
     let mut chunk = [0_u8; CHUNK_HEADER_BYTES];
     while at + CHUNK_HEADER_BYTES as u64 <= length {
-        reader
-            .seek(SeekFrom::Start(at))
-            .map_err(|error| error.to_string())?;
-        reader
-            .read_exact(&mut chunk)
-            .map_err(|error| error.to_string())?;
+        reader.seek(SeekFrom::Start(at)).map_err(message)?;
+        reader.read_exact(&mut chunk).map_err(message)?;
         let size = u64::from(little_u32(&chunk, 4));
         let body = at + CHUNK_HEADER_BYTES as u64;
         let available = size.min(length - body);
         if &chunk[..4] == b"fmt " && available >= FORMAT_CHUNK_BYTES as u64 {
             let mut format = [0_u8; FORMAT_CHUNK_BYTES];
-            reader
-                .read_exact(&mut format)
-                .map_err(|error| error.to_string())?;
+            reader.read_exact(&mut format).map_err(message)?;
             float = Some(format_is_float(&format)?);
         } else if let (b"data", Some(float)) = (&chunk[..4], float) {
             return Ok(WavLayout {

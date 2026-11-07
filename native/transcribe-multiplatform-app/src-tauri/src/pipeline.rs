@@ -229,14 +229,17 @@ struct RowRun<'a> {
     deep: bool,
 }
 
+fn catalogued(id: &str) -> AppResult<&'static ModelEntry> {
+    catalog::find_entry(id).ok_or_else(|| AppError::Invalid(format!("{id} is not in the catalog")))
+}
+
 fn separate_on_onnx(
     run: &RowRun<'_>,
     clips: &[SeparationClip],
     tick: &dyn Fn(Stage, f64),
 ) -> AppResult<()> {
     let exe = std::env::current_exe().map_err(io_context("find the app"))?;
-    let entry = catalog::find_entry(catalog::MOSSFORMER2_ID)
-        .ok_or_else(|| AppError::Invalid("MossFormer2 is not in the catalog".to_owned()))?;
+    let entry = catalogued(catalog::MOSSFORMER2_ID)?;
     let model = catalog::locate(entry, run.paths, &run.settings.model_dirs).ok_or_else(|| {
         UserError::ModelMissing {
             model: entry.id.to_owned(),
@@ -263,8 +266,7 @@ fn separate_on_coreml(
     clips: &[SeparationClip],
     tick: &dyn Fn(Stage, f64),
 ) -> AppResult<()> {
-    let entry = catalog::find_entry(catalog::MOSSFORMER2_COREML_ID)
-        .ok_or_else(|| AppError::Invalid("MossFormer2 is not in the catalog".to_owned()))?;
+    let entry = catalogued(catalog::MOSSFORMER2_COREML_ID)?;
     let model = catalog::locate(entry, run.paths, &run.settings.model_dirs).ok_or_else(|| {
         UserError::ModelMissing {
             model: entry.id.to_owned(),
@@ -740,6 +742,14 @@ pub fn relayout_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_outside_the_catalog_is_named() {
+        assert_eq!(
+            catalogued("nope").unwrap_err().to_string(),
+            "nope is not in the catalog"
+        );
+    }
 
     fn turn_step(stage: Stage, run: StepRun<'_>) -> Step<'_> {
         Step { stage, run }

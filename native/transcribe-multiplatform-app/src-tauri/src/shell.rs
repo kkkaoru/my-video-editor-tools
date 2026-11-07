@@ -212,6 +212,10 @@ fn configure<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         .invoke_handler(handler())
 }
 
+fn window_failure(error: tauri::Error) -> crate::error::AppError {
+    crate::error::AppError::Invalid(format!("window runtime: {error}"))
+}
+
 fn launch<R: Runtime>(
     builder: Builder<R>,
     context: tauri::Context<R>,
@@ -220,7 +224,7 @@ fn launch<R: Runtime>(
     configure(builder)
         .setup(move |app| manage_service(app.handle(), paths).map_err(Into::into))
         .run(context)
-        .map_err(|error| crate::error::AppError::Invalid(format!("window runtime: {error}")))
+        .map_err(window_failure)
 }
 
 /// Starts the desktop app.
@@ -383,6 +387,56 @@ mod tests {
             .unwrap()
             .starts_with("update failed:"));
         assert_eq!(*heard.lock().unwrap(), vec!["1.0".to_owned()]);
+    }
+
+    #[test]
+    fn a_command_called_before_the_app_is_ready_answers_with_an_error() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(handler())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        assert!(call(&window, "check_update", json!({})).is_err());
+        assert!(call(&window, "install_update", json!({})).is_err());
+        assert!(call(&window, "font_families", json!({})).is_err());
+        assert!(call(&window, "reset_models", json!({})).is_err());
+        assert!(call(&window, "delete_model", json!({ "id": "x" })).is_err());
+    }
+
+    #[test]
+    fn deleting_a_model_needs_to_be_told_which() {
+        let (_app, window) = app_window("delete-no-id");
+        assert!(call(&window, "delete_model", json!({})).is_err());
+    }
+
+    #[test]
+    fn installing_before_the_updater_is_ready_answers_with_an_error() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-test/shell-no-updater");
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = AppPaths {
+            data: root.join("data"),
+            resources: root.join("resources"),
+            hf_hub: None,
+        };
+        let app = tauri::test::mock_builder()
+            .invoke_handler(handler())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        assert!(app.manage(start_service(app.handle(), paths).unwrap()));
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        assert!(call(&window, "install_update", json!({})).is_err());
+    }
+
+    #[test]
+    fn a_runtime_failure_says_it_came_from_the_window() {
+        assert_eq!(
+            window_failure(tauri::Error::FailedToReceiveMessage).to_string(),
+            "window runtime: failed to receive message"
+        );
     }
 
     #[test]

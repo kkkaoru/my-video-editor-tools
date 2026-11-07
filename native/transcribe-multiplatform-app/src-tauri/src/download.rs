@@ -211,15 +211,21 @@ fn verify_and_publish(
     std::fs::rename(partial, destination).map_err(io_context("publish download"))
 }
 
+fn archive_failure(error: impl std::fmt::Display) -> AppError {
+    AppError::Download(format!("archive: {error}"))
+}
+
+fn parent_of(path: &Path) -> AppResult<&Path> {
+    path.parent()
+        .ok_or_else(|| AppError::Invalid(format!("{} has no parent folder", path.display())))
+}
+
 fn unpack_archive(archive: &Path, folder: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(io_context("open archive"))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|error| AppError::Download(format!("archive: {error}")))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(archive_failure)?;
     std::fs::create_dir_all(folder).map_err(io_context("create runtime folder"))?;
     for index in 0..zip.len() {
-        let mut member = zip
-            .by_index(index)
-            .map_err(|error| AppError::Download(format!("archive: {error}")))?;
+        let mut member = zip.by_index(index).map_err(archive_failure)?;
         // enclosed_name rejects absolute paths and `..`, so a bad archive cannot escape the folder.
         let Some(relative) = member.enclosed_name() else {
             return Err(AppError::Download(format!(
@@ -259,9 +265,7 @@ fn download_file(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(DownloadProgress),
 ) -> AppResult<()> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| AppError::Invalid("download path has no parent".into()))?;
+    let parent = parent_of(destination)?;
     std::fs::create_dir_all(parent).map_err(io_context(format!("create {}", parent.display())))?;
     let partial = partial_path(destination);
     let url = transfer_file.url();
@@ -302,9 +306,7 @@ fn unpack_once(archive: &Path) -> AppResult<()> {
     if marker.exists() {
         return Ok(());
     }
-    let folder = archive
-        .parent()
-        .ok_or_else(|| AppError::Invalid("archive has no parent".into()))?;
+    let folder = parent_of(archive)?;
     unpack_archive(archive, folder)?;
     File::create(&marker)
         .map(drop)
@@ -363,6 +365,17 @@ pub fn download_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ignore_progress(_: DownloadProgress) {}
+
+    #[test]
+    fn a_path_without_a_parent_folder_says_which() {
+        assert_eq!(
+            parent_of(Path::new("/")).unwrap_err().to_string(),
+            "/ has no parent folder"
+        );
+        assert_eq!(parent_of(Path::new("/a/b")).unwrap(), Path::new("/a"));
+    }
     use crate::catalog::UrlKind;
     use crate::error::AppError;
     use std::io::Cursor;
@@ -525,7 +538,7 @@ mod tests {
         std::fs::write(partial_path(&destination), b"hello ").unwrap();
         let url = serve(HELLO, true, Duration::ZERO);
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(&destination).unwrap(),
             b"hello world".to_vec()
@@ -540,7 +553,7 @@ mod tests {
         std::fs::write(partial_path(&destination), b"junk").unwrap();
         let url = serve(HELLO, false, Duration::ZERO);
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(&destination).unwrap(),
             b"hello world".to_vec()
@@ -552,7 +565,7 @@ mod tests {
         let paths = scratch("mismatch");
         let url = serve(HELLO, true, Duration::ZERO);
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, "00")]);
-        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -576,7 +589,7 @@ mod tests {
             11,
             HELLO_SHA256,
         )]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(&destination).unwrap(),
             b"hello world".to_vec()
@@ -590,7 +603,7 @@ mod tests {
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::fs::write(&destination, b"keep").unwrap();
         let entry = entry_of(vec![file_spec(NO_SERVER.to_owned(), "m.bin", 4, "00")]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), b"keep".to_vec());
     }
 
@@ -601,7 +614,7 @@ mod tests {
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
         let cancel = CancelToken::default();
         cancel.cancel();
-        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        let result = download_entry(entry, &paths, &cancel, &mut ignore_progress);
         assert!(matches!(result, Err(AppError::Cancelled)));
         let destination = paths.models_dir().join("test-model/m.bin");
         assert!(!destination.exists());
@@ -617,7 +630,7 @@ mod tests {
             11,
             HELLO_SHA256,
         )]);
-        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress)
             .unwrap_err()
             .to_string();
         assert!(
@@ -670,7 +683,7 @@ mod tests {
             archive.len() as u64,
             "00",
         )]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         let folder = paths.models_dir().join("test-model");
         assert_eq!(
             std::fs::read_to_string(folder.join("sub/a.txt")).unwrap(),
@@ -741,7 +754,7 @@ mod tests {
         std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
         std::fs::write(&shared, b"keep").unwrap();
         let entry = entry_of(vec![file_spec(NO_SERVER.to_owned(), "m.bin", 4, "00")]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert!(!paths.models_dir().join("test-model/m.bin").exists());
     }
 
@@ -753,7 +766,7 @@ mod tests {
         std::fs::write(&shared, b"short").unwrap();
         let url = serve(HELLO, true, Duration::ZERO);
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
             b"hello world".to_vec()
@@ -772,7 +785,7 @@ mod tests {
             11,
             HELLO_SHA256,
         )]);
-        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress)
             .unwrap_err()
             .to_string();
         assert!(
@@ -811,7 +824,7 @@ mod tests {
             request
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert!(server.join().unwrap().contains("range: bytes=6-\r\n"));
         assert_eq!(
             std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
@@ -834,7 +847,7 @@ mod tests {
                 .unwrap();
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        let error = download_entry(entry, &paths, &CancelToken::default(), &mut |_| {})
+        let error = download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress)
             .unwrap_err()
             .to_string();
         // A retry would reach the closed listener and fail differently.
@@ -851,7 +864,7 @@ mod tests {
             11,
             HELLO_SHA256,
         )]);
-        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        let result = download_entry(entry, &paths, &cancel, &mut ignore_progress);
         assert!(matches!(result, Err(AppError::Interrupted(_))));
     }
 
@@ -871,7 +884,7 @@ mod tests {
             drop(silent);
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
             b"hello world".to_vec()
@@ -901,7 +914,7 @@ mod tests {
                 .unwrap();
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
             b"hello world".to_vec()
@@ -927,7 +940,7 @@ mod tests {
             });
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(paths.models_dir().join("test-model/m.bin")).unwrap(),
             b"hello world".to_vec()
@@ -956,7 +969,7 @@ mod tests {
             (asked_first, asked_second)
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         let (asked_first, asked_second) = server.join().unwrap();
         assert!(asked_first.contains("range: bytes=6-\r\n"), "{asked_first}");
         assert!(
@@ -989,7 +1002,7 @@ mod tests {
             request
         });
         let entry = entry_of(vec![file_spec(url, "m.bin", 11, HELLO_SHA256)]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert!(server.join().unwrap().contains("range: bytes=6-\r\n"));
     }
 
@@ -1014,7 +1027,7 @@ mod tests {
             11,
             HELLO_SHA256,
         )]);
-        let result = download_entry(entry, &paths, &cancel, &mut |_| {});
+        let result = download_entry(entry, &paths, &cancel, &mut ignore_progress);
         assert!(matches!(result, Err(AppError::Cancelled)));
     }
 
@@ -1036,10 +1049,10 @@ mod tests {
             archive.len() as u64,
             "00",
         )]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert!(folder.join("tool.zip.unpacked").is_file());
         std::fs::remove_file(folder.join("a.txt")).unwrap();
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert!(!folder.join("a.txt").exists());
     }
 
@@ -1061,10 +1074,10 @@ mod tests {
             archive.len() as u64,
             "00",
         )]);
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         std::fs::remove_file(folder.join("a.txt")).unwrap();
         std::fs::remove_file(folder.join("tool.zip.unpacked")).unwrap();
-        download_entry(entry, &paths, &CancelToken::default(), &mut |_| {}).unwrap();
+        download_entry(entry, &paths, &CancelToken::default(), &mut ignore_progress).unwrap();
         assert_eq!(
             std::fs::read(folder.join("a.txt")).unwrap(),
             b"first".to_vec()

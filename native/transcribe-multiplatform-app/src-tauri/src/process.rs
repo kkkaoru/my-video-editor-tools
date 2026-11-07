@@ -179,6 +179,8 @@ pub fn run_capture(mut command: Command, tool: &str) -> AppResult<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn ignore_line(_: &str) {}
+
     #[test]
     fn carriage_returns_split_progress_lines() {
         let (sender, receiver) = mpsc::channel();
@@ -210,7 +212,7 @@ mod tests {
     fn a_failing_tool_reports_its_stderr() {
         let mut command = background_command(Path::new("/bin/sh"));
         command.args(["-c", "echo first >&2; echo second >&2; exit 3"]);
-        let error = run_with_progress(command, "fake", &CancelToken::default(), |_| {})
+        let error = run_with_progress(command, "fake", &CancelToken::default(), ignore_line)
             .unwrap_err()
             .to_string();
         assert!(error.starts_with("fake failed: "), "{error}");
@@ -237,7 +239,7 @@ mod tests {
         command.args(["-c", "exec sleep 30"]);
         let token = CancelToken::default();
         token.cancel();
-        let result = run_with_progress(command, "fake", &token, |_| {});
+        let result = run_with_progress(command, "fake", &token, ignore_line);
         assert!(matches!(result, Err(AppError::Cancelled)));
     }
 
@@ -254,7 +256,7 @@ mod tests {
     fn a_long_failure_keeps_only_the_last_lines() {
         let mut command = background_command(Path::new("/bin/sh"));
         command.args(["-c", "echo 1 >&2; echo 2 >&2; echo 3 >&2; echo 4 >&2; echo 5 >&2; echo 6 >&2; echo 7 >&2; echo 8 >&2; echo 9 >&2; echo 10 >&2; echo 11 >&2; echo 12 >&2; echo 13 >&2; exit 1"]);
-        let error = run_with_progress(command, "fake", &CancelToken::default(), |_| {})
+        let error = run_with_progress(command, "fake", &CancelToken::default(), ignore_line)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -266,7 +268,7 @@ mod tests {
     #[test]
     fn a_tool_that_cannot_start_names_the_tool_in_progress_mode() {
         let command = background_command(Path::new("/nonexistent/tool"));
-        let error = run_with_progress(command, "tool", &CancelToken::default(), |_| {})
+        let error = run_with_progress(command, "tool", &CancelToken::default(), ignore_line)
             .unwrap_err()
             .to_string();
         assert!(error.starts_with("start tool: "), "{error}");

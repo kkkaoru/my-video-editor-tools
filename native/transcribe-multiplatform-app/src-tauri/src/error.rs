@@ -90,6 +90,11 @@ pub enum AppError {
 
 pub type AppResult<T> = Result<T, AppError>;
 
+/// For what the app itself made and cannot read, such as its own template.
+pub fn invalid(error: impl std::fmt::Display) -> AppError {
+    AppError::Invalid(error.to_string())
+}
+
 /// Attaches the failed step to an I/O error.
 pub fn io_context(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> AppError {
     let context = context.into();
@@ -117,6 +122,11 @@ impl Serialize for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_keeps_the_message() {
+        assert_eq!(invalid("broken").to_string(), "broken");
+    }
 
     #[test]
     fn io_context_names_the_failed_step() {

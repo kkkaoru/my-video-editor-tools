@@ -424,6 +424,8 @@ pub fn convert(source: &Path, output: &Path, mut progress: impl FnMut(f64)) -> A
 mod tests {
     use super::*;
 
+    fn ignore_progress(_: f64) {}
+
     #[test]
     fn hf_names_map_to_openai_names() {
         assert_eq!(
@@ -603,7 +605,7 @@ mod tests {
             &[1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0],
         );
         let output = root.join("ggml.bin");
-        convert(&source, &output, |_| {}).unwrap();
+        convert(&source, &output, ignore_progress).unwrap();
         let file = std::fs::read(&output).unwrap();
         assert_eq!(
             record(&file, "encoder.conv1.weight", 24, 12),
@@ -623,9 +625,13 @@ mod tests {
             r#"{"encoder.ln_post.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#,
             &[0, 0],
         );
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(
             error,
             "not a Whisper checkpoint: encoder.conv1.weight is missing"
@@ -640,9 +646,13 @@ mod tests {
             r#"{"encoder.conv1.weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
             &[0, 0, 0, 0],
         );
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(
             error,
             "encoder.conv1.weight: expected F16 weights, got \"F32\""
@@ -653,9 +663,13 @@ mod tests {
     fn a_header_that_is_not_json_is_refused() {
         let root = scratch("broken");
         safetensors(&root.join("in.safetensors"), "{", &[]);
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(
             error,
             "safetensors header: EOF while parsing an object at line 1 column 1"
@@ -666,9 +680,13 @@ mod tests {
     fn a_header_that_is_not_an_object_is_refused() {
         let root = scratch("array");
         safetensors(&root.join("in.safetensors"), "[]", &[]);
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(error, "safetensors header is not an object");
     }
 
@@ -680,9 +698,13 @@ mod tests {
             r#"{"encoder.conv1.weight":{"dtype":"F16","shape":[1]}}"#,
             &[],
         );
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(error, "encoder.conv1.weight: missing data offset");
         let root = scratch("no-shape");
         safetensors(
@@ -690,9 +712,13 @@ mod tests {
             r#"{"encoder.conv1.weight":{"dtype":"F16","data_offsets":[0,2]}}"#,
             &[],
         );
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(error, "encoder.conv1.weight: missing shape");
     }
 
@@ -702,7 +728,7 @@ mod tests {
         let source = root.join("in.safetensors");
         std::fs::write(&source, u64::MAX.to_le_bytes()).unwrap();
         assert_eq!(
-            convert(&source, &root.join("out.bin"), |_| {})
+            convert(&source, &root.join("out.bin"), ignore_progress)
                 .unwrap_err()
                 .to_string(),
             "safetensors header is too large: 18446744073709551615 bytes"
@@ -717,7 +743,7 @@ mod tests {
         file.extend_from_slice(b"{}");
         std::fs::write(&source, file).unwrap();
         assert_eq!(
-            convert(&source, &root.join("out.bin"), |_| {})
+            convert(&source, &root.join("out.bin"), ignore_progress)
                 .unwrap_err()
                 .to_string(),
             "read safetensors header: failed to fill whole buffer"
@@ -730,7 +756,7 @@ mod tests {
         let source = root.join("in.safetensors");
         std::fs::write(&source, b"abc").unwrap();
         assert_eq!(
-            convert(&source, &root.join("out.bin"), |_| {})
+            convert(&source, &root.join("out.bin"), ignore_progress)
                 .unwrap_err()
                 .to_string(),
             "read safetensors header: failed to fill whole buffer"
@@ -748,7 +774,7 @@ mod tests {
                 "encoder.positional_embedding":{"dtype":"F16","shape":[1,1],"data_offsets":[4,6]}}"#,
             &[0, 0x3C, 0, 0x3C, 0, 0x3C],
         );
-        assert!(convert(&source, &root.join("out.bin"), |_| {}).is_ok());
+        assert!(convert(&source, &root.join("out.bin"), ignore_progress).is_ok());
     }
 
     #[test]
@@ -760,16 +786,20 @@ mod tests {
                     "encoder.positional_embedding":{"dtype":"F16","shape":[1,1],"data_offsets":[8,10]}}"#,
             &[0, 0],
         );
-        let error = convert(&root.join("in.safetensors"), &root.join("out.bin"), |_| {})
-            .unwrap_err()
-            .to_string();
+        let error = convert(
+            &root.join("in.safetensors"),
+            &root.join("out.bin"),
+            ignore_progress,
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(error, "copy tensor: failed to fill whole buffer");
     }
 
     #[test]
     fn a_missing_source_or_output_folder_names_the_path() {
         let root = scratch("paths");
-        let error = convert(&root.join("absent"), &root.join("out.bin"), |_| {})
+        let error = convert(&root.join("absent"), &root.join("out.bin"), ignore_progress)
             .unwrap_err()
             .to_string();
         assert!(error.starts_with("open "), "{error}");
@@ -781,7 +811,7 @@ mod tests {
         let error = convert(
             &root.join("in.safetensors"),
             &root.join("no/such/out.bin"),
-            |_| {},
+            ignore_progress,
         )
         .unwrap_err()
         .to_string();

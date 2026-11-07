@@ -3,7 +3,7 @@
 //! template is what CapCut itself wrote, without the identifiers of the machine it was written on.
 
 use crate::captions::Cue;
-use crate::error::{io_context, AppError, AppResult};
+use crate::error::{invalid, io_context, AppError, AppResult};
 use crate::export::Transcript;
 use crate::settings::Settings;
 use serde_json::{json, Value};
@@ -75,9 +75,11 @@ fn user_projects_folder() -> AppResult<PathBuf> {
     if let Some(folder) = std::env::var_os(PROJECTS_OVERRIDE) {
         return existing_folder(PathBuf::from(folder));
     }
-    let local = cfg!(windows)
-        .then(|| std::env::var_os("LOCALAPPDATA"))
-        .flatten();
+    let local = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+    } else {
+        None
+    };
     let home = std::env::var_os("HOME").unwrap_or_default();
     existing_folder(projects_folder(
         Path::new(&home),
@@ -186,8 +188,7 @@ fn draft_of(
     settings: &Settings,
     ids: &mut Ids,
 ) -> AppResult<(Value, String)> {
-    let parse_error = |error: serde_json::Error| AppError::Invalid(error.to_string());
-    let template: Value = serde_json::from_str(TEMPLATE).map_err(parse_error)?;
+    let template: Value = serde_json::from_str(TEMPLATE).map_err(invalid)?;
     let mut draft = template["draft"].clone();
     let parts = Parts {
         text: draft["materials"]["texts"][0].clone(),
@@ -261,19 +262,17 @@ fn draft_of(
 }
 
 fn free_name(projects: &Path, stem: &str) -> String {
-    let taken = |name: &str| projects.join(name).exists();
-    if !taken(stem) {
-        return stem.to_owned();
+    let mut name = stem.to_owned();
+    let mut number = 1_u32;
+    while projects.join(&name).exists() {
+        number += 1;
+        name = format!("{stem}-{number}");
     }
-    (2_u32..)
-        .map(|number| format!("{stem}-{number}"))
-        .find(|name| !taken(name))
-        .unwrap_or_else(|| stem.to_owned())
+    name
 }
 
 fn write_json(path: &Path, value: &Value) -> AppResult<()> {
-    let text =
-        serde_json::to_string(value).map_err(|error| AppError::Invalid(error.to_string()))?;
+    let text = serde_json::to_string(value).map_err(invalid)?;
     std::fs::write(path, text).map_err(io_context("write the CapCut project"))
 }
 
@@ -329,8 +328,7 @@ pub fn write_project_in(
             "layoutOrientation": 1,
         }),
     )?;
-    let template: Value =
-        serde_json::from_str(TEMPLATE).map_err(|error| AppError::Invalid(error.to_string()))?;
+    let template: Value = serde_json::from_str(TEMPLATE).map_err(invalid)?;
     let mut meta = template["meta"].clone();
     meta["draft_id"] = json!(ids.next());
     meta["draft_name"] = json!(name);
