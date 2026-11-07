@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Prints the tiny Core ML models CoreMLWindowModelTests holds, as base64. Needs coremltools."""
+
 import base64
 
 from coremltools.models import datatypes

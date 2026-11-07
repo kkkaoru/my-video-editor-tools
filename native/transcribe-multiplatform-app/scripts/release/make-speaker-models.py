@@ -23,6 +23,7 @@ runs a whole model, so the rest is kept as small stand-ins of the shapes the pro
                   The app appends the zeros (engines.rs), so only the header ships.
 The output cannot transcribe.
 """
+
 import argparse
 import base64
 import hashlib
@@ -226,7 +227,9 @@ def official_encoder(source: Path, work: Path, identity: str) -> Path:
 
 
 def is_later_layer(name: str) -> bool:
-    return any(name.startswith(prefix) and not name.startswith(f"{prefix}0.") for prefix in LATER_LAYERS)
+    return any(
+        name.startswith(prefix) and not name.startswith(f"{prefix}0.") for prefix in LATER_LAYERS
+    )
 
 
 def small_shape(name: str, shape: Iterable[int]) -> tuple[int, ...]:
@@ -261,7 +264,9 @@ def small_tokenizer(encoded: str) -> str:
     """The sentencepiece model with its first pieces, without the self test that would need the rest."""
     fields = list(proto_fields(base64.b64decode(encoded)))
     pieces = [field for number, field in fields if number == SPM_PIECES_FIELD][:SMALL_PIECES]
-    rest = [field for number, field in fields if number not in (SPM_PIECES_FIELD, SPM_TEST_DATA_FIELD)]
+    rest = [
+        field for number, field in fields if number not in (SPM_PIECES_FIELD, SPM_TEST_DATA_FIELD)
+    ]
     return base64.b64encode(b"".join(pieces + rest)).decode()
 
 
@@ -285,7 +290,9 @@ def speaker_encoder(official: Path, target: Path) -> None:
             continue
         kind = field.types[0]
         sub = field.types[-1] if kind == gguf.GGUFValueType.ARRAY else None
-        writer.add_key_value(field.name, overrides.get(field.name, field.contents()), kind, sub_type=sub)
+        writer.add_key_value(
+            field.name, overrides.get(field.name, field.contents()), kind, sub_type=sub
+        )
     for tensor in reader.tensors:
         if is_later_layer(tensor.name):
             continue
@@ -391,7 +398,11 @@ def key_value(key: str, kind: int, sub: int | None, value: object) -> bytes:
     }
 
     def scalar(scalar_kind: int, item: object) -> bytes:
-        return text(item) if scalar_kind == gguf.GGUFValueType.STRING else struct.pack(scalars[scalar_kind], item)
+        return (
+            text(item)
+            if scalar_kind == gguf.GGUFValueType.STRING
+            else struct.pack(scalars[scalar_kind], item)
+        )
 
     head = text(key) + struct.pack("<I", int(kind))
     if kind != gguf.GGUFValueType.ARRAY:
@@ -408,7 +419,10 @@ def decoder_head(vocabulary: Path, header: dict, target: Path) -> tuple[int, int
     groups = int(reader.fields[f"{ARCHITECTURE}.ssm.group_count"].contents())
     pairs = []
     for key, field in reader.fields.items():
-        if key.startswith("GGUF.") or key in (gguf.Keys.General.FILE_TYPE, gguf.Keys.General.QUANTIZATION_VERSION):
+        if key.startswith("GGUF.") or key in (
+            gguf.Keys.General.FILE_TYPE,
+            gguf.Keys.General.QUANTIZATION_VERSION,
+        ):
             continue
         value = field.contents()
         if key == f"{ARCHITECTURE}.block_count":
@@ -418,8 +432,19 @@ def decoder_head(vocabulary: Path, header: dict, target: Path) -> tuple[int, int
         elif key in PER_LAYER_KEYS:
             value = value[:LAYERS]
         kind = field.types[0]
-        pairs.append(key_value(key, kind, field.types[-1] if kind == gguf.GGUFValueType.ARRAY else None, value))
-    pairs.append(key_value(gguf.Keys.General.QUANTIZATION_VERSION, gguf.GGUFValueType.UINT32, None, QUANTIZATION_VERSION))
+        pairs.append(
+            key_value(
+                key, kind, field.types[-1] if kind == gguf.GGUFValueType.ARRAY else None, value
+            )
+        )
+    pairs.append(
+        key_value(
+            gguf.Keys.General.QUANTIZATION_VERSION,
+            gguf.GGUFValueType.UINT32,
+            None,
+            QUANTIZATION_VERSION,
+        )
+    )
     pairs.append(key_value(gguf.Keys.General.FILE_TYPE, gguf.GGUFValueType.UINT32, None, FILE_TYPE))
     tensors = decoder_tensors(header, groups)
     table = []
@@ -429,7 +454,12 @@ def decoder_head(vocabulary: Path, header: dict, target: Path) -> tuple[int, int
         table.append(b"".join(struct.pack("<Q", size) for size in tensor.shape))
         table.append(struct.pack("<IQ", tensor.kind, offset))
         offset += padded(tensor_bytes(tensor))
-    body = b"GGUF" + struct.pack("<IQQ", FORMAT_VERSION, len(tensors), len(pairs)) + b"".join(pairs) + b"".join(table)
+    body = (
+        b"GGUF"
+        + struct.pack("<IQQ", FORMAT_VERSION, len(tensors), len(pairs))
+        + b"".join(pairs)
+        + b"".join(table)
+    )
     head = body + b"\0" * (padded(len(body)) - len(body))
     target.write_bytes(head)
     return len(head), len(head) + offset
@@ -444,7 +474,9 @@ def sha256(path: Path) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--nemo-speech-cpp", type=Path, required=True)
     parser.add_argument("--llama-cpp", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
@@ -461,7 +493,9 @@ def main() -> None:
     encoder = work / ENCODER_NAME
     speaker_encoder(official, encoder)
     head = work / HEAD_NAME
-    head_size, full_size = decoder_head(vocabulary_only(source, work, identity, nemo, llama), header, head)
+    head_size, full_size = decoder_head(
+        vocabulary_only(source, work, identity, nemo, llama), header, head
+    )
     print(f"{encoder.name} {encoder.stat().st_size} sha256 {sha256(encoder)}")
     print(f"{head.name} {head_size} extends to {full_size} sha256 {sha256(head)}")
 
