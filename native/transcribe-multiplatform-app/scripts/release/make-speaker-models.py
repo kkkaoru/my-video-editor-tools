@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds Nemotron 3.5's speaker-only encoder and the decoder stand-in's header from NVIDIA's release.
+"""Builds Nemotron 3.5's speaker-only encoder and the decoder stand-in's header from the release.
 
 Usage: make-speaker-models.py --nemo-speech-cpp DIR --llama-cpp DIR --work DIR
 
@@ -8,7 +8,7 @@ Inputs:
   model.safetensors are read: about 1.7 GB of perception.* and ctc_timestamp.*, and 8 KiB per tensor
   for the checkpoint id.
   --nemo-speech-cpp  A NVIDIA/NeMo-Speech.cpp v0.3.0 checkout (commit 20999cc9), for conversion/.
-  --llama-cpp        llama.cpp at the commit that checkout pins (bd4f514d), for convert_hf_to_gguf.py,
+  --llama-cpp        llama.cpp at the commit that checkout pins (bd4f514d), for convert_hf_to_gguf,
                      conversion/ and gguf-py/.
 Python needs torch, safetensors, numpy, pyyaml, tqdm, transformers and tokenizers.
 
@@ -16,9 +16,9 @@ Python needs torch, safetensors, numpy, pyyaml, tqdm, transformers and tokenizer
 runs a whole model, so the rest is kept as small stand-ins of the shapes the program asks for:
   Speaker branch  diar.*, preprocessor.fb, fusion.diar_norm: NVIDIA's weights through the official
                   conversion to F16, not quantized.
-  Speech branch   asr.*, the other fusion.*, ctc.*: settings cut down to one small layer, weights zero.
+  Speech branch   asr.*, the other fusion.*, ctc.*: settings cut to one small layer, weights zero.
                   They feed the decoder and the word timestamps, and no speaker result reads them.
-  CTC tokenizer   Cut to its first pieces: the program only compares its size with the head's vocabulary.
+  CTC tokenizer   Cut to its first pieces: the program only compares its size with the vocabulary.
   Decoder         The header holds NVIDIA's vocabulary and settings with one layer and zero weights.
                   The app appends the zeros (engines.rs), so only the header ships.
 The output cannot transcribe.
@@ -59,7 +59,7 @@ DATA_WORKERS = 8
 RETRIES = 4
 
 # The stand-in's sizes: one layer of two heads. The head size is the speaker branch's own, because
-# flash attention takes a fixed list of them per backend and the branch needs that one to run at all.
+# flash attention takes a fixed list of them per backend and the branch needs that one to run.
 SMALL_MODEL = 128
 SMALL_HEADS = 2
 SMALL_HEAD = SMALL_MODEL // SMALL_HEADS
@@ -141,7 +141,7 @@ def checkpoint_id(url: str, header: dict, data_start: int) -> str:
 
     digest = hashlib.sha256()
     with ThreadPoolExecutor(ID_WORKERS) as pool:
-        for name, (first, last) in zip(names, pool.map(edges, names)):
+        for name, (first, last) in zip(names, pool.map(edges, names), strict=True):
             info = header[name]
             digest.update(f"{name}|{info['dtype']}|{info['shape']}|".encode())
             digest.update(first)
@@ -150,7 +150,7 @@ def checkpoint_id(url: str, header: dict, data_start: int) -> str:
 
 
 def partial_checkpoint(url: str, header: dict, data_start: int, target: Path) -> None:
-    """A valid safetensors holding only the kept tensors, so the official conversion reads it unchanged."""
+    """A valid safetensors of only the kept tensors, so the official conversion reads it unchanged."""
     if target.is_file():
         return
     kept = sorted(
@@ -189,7 +189,7 @@ def chunks(begin: int, end: int, place: int) -> Iterator[tuple[int, int, int]]:
 
 
 def fetch_source(source: Path) -> tuple[str, dict]:
-    """The official files; the header and the id are cached, because they take thousands of requests."""
+    """The official files; the header and the id are cached: they take thousands of requests."""
     for name in SOURCE_FILES:
         target = source / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +238,7 @@ def small_shape(name: str, shape: Iterable[int]) -> tuple[int, ...]:
 
 
 def proto_fields(data: bytes) -> Iterator[tuple[int, bytes]]:
-    """Field numbers and whole encoded fields of a protobuf message holding only length-delimited fields."""
+    """Field numbers and whole encoded fields of a protobuf message of length-delimited fields."""
 
     def varint(start: int) -> tuple[int, int]:
         value, shift, position = 0, 0, start
@@ -261,7 +261,7 @@ def proto_fields(data: bytes) -> Iterator[tuple[int, bytes]]:
 
 
 def small_tokenizer(encoded: str) -> str:
-    """The sentencepiece model with its first pieces, without the self test that would need the rest."""
+    """The sentencepiece model with its first pieces, without the self test needing the rest."""
     fields = list(proto_fields(base64.b64decode(encoded)))
     pieces = [field for number, field in fields if number == SPM_PIECES_FIELD][:SMALL_PIECES]
     rest = [
@@ -271,7 +271,7 @@ def small_tokenizer(encoded: str) -> str:
 
 
 def speaker_encoder(official: Path, target: Path) -> None:
-    """The official file with the speech branch's settings and weights replaced by the small stand-in."""
+    """The official file with the speech branch's settings and weights replaced by the stand-in."""
     import gguf
     import numpy as np
 
@@ -342,7 +342,7 @@ def vocabulary_only(source: Path, work: Path, identity: str, nemo: Path, llama: 
 
 
 def decoder_tensors(header: dict, groups: int) -> list[Tensor]:
-    """The real decoder's shapes, reversed to ggml's order. The large tables take the smallest common type."""
+    """The real decoder's shapes, reversed to ggml's order. Large tables take the smallest type."""
     layer = "llm.model.layers.0."
 
     def shape(name: str) -> tuple[int, ...]:
