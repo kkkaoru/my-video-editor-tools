@@ -11,7 +11,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -30,6 +30,12 @@ const INPUT_NAME: &str = "wave";
 const OUTPUT_NAME: &str = "tracks";
 const TRACK_COUNT: usize = 2;
 const SAMPLE_RATE: u32 = 16_000;
+/// Against delivered captions, on 23 clips not used to choose it, characters found went from 0.758
+/// to 0.789 (95% interval of the gain +0.015 to +0.046), and from 0.758 to 0.797 on the 4 used.
+/// 250 Hz was worse, 100 Hz weaker. FFmpeg's levelling did no better, and the bundled build has no audio filters.
+const WHISPER_HIGHPASS_HZ: f64 = 200.0;
+const READ_AUDIO: &str = "read the audio for Whisper";
+const WRITE_AUDIO: &str = "write the audio for Whisper";
 const FULL_SCALE: f32 = 32_768.0;
 const SILENCE_FLOOR: f32 = 1e-12;
 const WAV_FORMAT_PCM: u16 = 1;
@@ -415,6 +421,77 @@ pub(crate) fn wav_head(data_bytes: u32, float: bool) -> Vec<u8> {
     out
 }
 
+/// A 12 dB per octave Butterworth high-pass (the RBJ biquad), the same as FFmpeg's `highpass`.
+struct Highpass {
+    b0: f64,
+    b1: f64,
+    a1: f64,
+    a2: f64,
+    inputs: (f64, f64),
+    outputs: (f64, f64),
+}
+
+impl Highpass {
+    fn new(hertz: f64) -> Self {
+        let angle = std::f64::consts::TAU * hertz / f64::from(SAMPLE_RATE);
+        let alpha = angle.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2);
+        let scale = 1.0 + alpha;
+        Self {
+            b0: (1.0 + angle.cos()) / 2.0 / scale,
+            b1: -(1.0 + angle.cos()) / scale,
+            a1: -2.0 * angle.cos() / scale,
+            a2: (1.0 - alpha) / scale,
+            inputs: (0.0, 0.0),
+            outputs: (0.0, 0.0),
+        }
+    }
+
+    fn next(&mut self, input: f64) -> f64 {
+        let output = self.b0 * (input + self.inputs.1) + self.b1 * self.inputs.0
+            - self.a1 * self.outputs.0
+            - self.a2 * self.outputs.1;
+        self.inputs = (input, self.inputs.0);
+        self.outputs = (output, self.outputs.0);
+        output
+    }
+}
+
+/// Writes the 16-bit audio `extract_audio` made without the rumble below `WHISPER_HIGHPASS_HZ`.
+/// Times stay the same, sample for sample.
+pub fn highpass_for_whisper(source: &Path, out: &Path) -> AppResult<()> {
+    let mut reader = BufReader::new(File::open(source).map_err(io_context(READ_AUDIO))?);
+    let layout = wav_layout(&mut reader).map_err(AppError::Invalid)?;
+    if layout.float {
+        return Err(AppError::Invalid("not 16-bit audio".to_owned()));
+    }
+    reader
+        .seek(SeekFrom::Start(layout.data_start))
+        .map_err(io_context(READ_AUDIO))?;
+    let mut writer = BufWriter::new(File::create(out).map_err(io_context(WRITE_AUDIO))?);
+    let samples = layout.data_bytes / 2;
+    writer
+        .write_all(&wav_head(
+            u32::try_from(samples * 2).unwrap_or(u32::MAX),
+            false,
+        ))
+        .map_err(io_context(WRITE_AUDIO))?;
+    let mut filter = Highpass::new(WHISPER_HIGHPASS_HZ);
+    let mut pair = [0_u8; 2];
+    (0..samples).try_for_each(|_| {
+        reader
+            .read_exact(&mut pair)
+            .map_err(io_context(READ_AUDIO))?;
+        let filtered = filter.next(f64::from(i16::from_le_bytes(pair)));
+        let sample = filtered
+            .round()
+            .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+        writer
+            .write_all(&sample.to_le_bytes())
+            .map_err(io_context(WRITE_AUDIO))
+    })?;
+    writer.flush().map_err(io_context(WRITE_AUDIO))
+}
+
 /// 32-bit float: restoring the level can take a quiet track past full scale, where 16 bits would clip it.
 fn write_float_wav(samples: &[f32]) -> Vec<u8> {
     let data_bytes = samples.len() as u32 * 4;
@@ -777,5 +854,85 @@ mod tests {
         std::fs::write(root.join("bad.wav"), b"not a wav").unwrap();
         let bad = copy_span(&root.join("bad.wav"), (0.0, 1.0), &root.join("o"));
         assert!(bad.is_err());
+    }
+
+    fn tone(hertz: f64, samples: usize) -> Vec<i16> {
+        (0..samples)
+            .map(|index| {
+                let at = index as f64 / f64::from(SAMPLE_RATE);
+                (10_000.0 * (std::f64::consts::TAU * hertz * at).sin()) as i16
+            })
+            .collect()
+    }
+
+    fn peak_after_start(wav: &[u8]) -> f32 {
+        let samples = read_wav(wav).unwrap();
+        samples[4000..]
+            .iter()
+            .fold(0.0_f32, |top, one| top.max(one.abs()))
+            * FULL_SCALE
+    }
+
+    fn filtered_peak(name: &str, hertz: f64) -> f32 {
+        let root =
+            std::env::temp_dir().join(format!("transcribe-highpass-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (source, out) = (root.join("a.wav"), root.join("b.wav"));
+        std::fs::write(&source, write_wav(&tone(hertz, 16_000))).unwrap();
+        highpass_for_whisper(&source, &out).unwrap();
+        let written = std::fs::read(&out).unwrap();
+        assert_eq!(written.len(), 44 + 32_000);
+        std::fs::remove_dir_all(&root).unwrap();
+        peak_after_start(&written)
+    }
+
+    #[test]
+    fn the_rumble_goes_and_the_voice_stays() {
+        assert!(filtered_peak("low", 50.0) < 800.0);
+        let voice = filtered_peak("voice", 1000.0);
+        assert!((9_500.0..=10_500.0).contains(&voice), "{voice}");
+    }
+
+    #[test]
+    fn the_cut_is_half_power_at_its_frequency() {
+        let at_cut = filtered_peak("cut", WHISPER_HIGHPASS_HZ);
+        assert!((6_800.0..=7_400.0).contains(&at_cut), "{at_cut}");
+    }
+
+    #[test]
+    fn highpass_reports_audio_it_cannot_use() {
+        let root =
+            std::env::temp_dir().join(format!("transcribe-highpass-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (bad, float, good, out) = (
+            root.join("bad"),
+            root.join("float"),
+            root.join("good"),
+            root.join("out"),
+        );
+        std::fs::write(&bad, b"not audio").unwrap();
+        std::fs::write(&float, write_float_wav(&[0.0])).unwrap();
+        std::fs::write(&good, write_wav(&[1, 2])).unwrap();
+        assert_eq!(
+            highpass_for_whisper(&root.join("absent"), &out)
+                .unwrap_err()
+                .to_string(),
+            format!("{READ_AUDIO}: No such file or directory (os error 2)")
+        );
+        assert_eq!(
+            highpass_for_whisper(&bad, &out).unwrap_err().to_string(),
+            "not a WAV file"
+        );
+        assert_eq!(
+            highpass_for_whisper(&float, &out).unwrap_err().to_string(),
+            "not 16-bit audio"
+        );
+        assert_eq!(
+            highpass_for_whisper(&good, &root.join("absent/out"))
+                .unwrap_err()
+                .to_string(),
+            format!("{WRITE_AUDIO}: No such file or directory (os error 2)")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

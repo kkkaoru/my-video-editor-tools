@@ -17,7 +17,7 @@ use crate::morphology::Segmenter;
 use crate::paths::AppPaths;
 use crate::process::CancelToken;
 use crate::schedule::{self, ExecutionPlan};
-use crate::separation::{self, SeparationClip, SeparationRun};
+use crate::separation::{self, highpass_for_whisper, SeparationClip, SeparationRun};
 use crate::settings::{Anchor, Settings, SubtitleFormat};
 use crate::speakers::limit_speakers;
 use crate::whisper_ggml;
@@ -514,6 +514,8 @@ pub fn run_job(
             report(Stage::ExtractAudio, Some(fraction));
         },
     )?;
+    let speech = work.0.join("speech.wav");
+    highpass_for_whisper(&wav, &speech)?;
     let voice = engines::voice_spans(&tools, &wav)?;
     let (mut words, mut turns, mut faces) = (Vec::new(), Vec::new(), Vec::new());
     for group in &execution.groups {
@@ -521,6 +523,7 @@ pub fn run_job(
             .iter()
             .filter_map(|stage| -> Option<Step<'_>> {
                 let (tools, whisper, wav, work) = (&tools, &whisper, &wav, &work);
+                let speech = &speech;
                 let (speaker_model, faces_from, info) = (&speaker_model, &faces_from, &info);
                 match stage {
                     Stage::Transcribe => Some(Step {
@@ -530,7 +533,7 @@ pub fn run_job(
                             let words = engines::transcribe(
                                 tools,
                                 whisper,
-                                wav,
+                                speech,
                                 &settings.language,
                                 &work.0,
                                 cancel,
