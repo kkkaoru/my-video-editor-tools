@@ -53,7 +53,6 @@ export const frMessages: Messages = {
   speakerLoadLight: "Léger",
   speakerLoadHeavy: "Charge élevée",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Utilise Whisper seulement, sans isolation des voix ni séparation des voix.",
   speakerLoadHeavyDetail:
     "Distingue les voix, ce qui prend beaucoup plus de temps et de RAM ou de mémoire GPU.",
   speakerFiguresNote:

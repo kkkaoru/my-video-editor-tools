@@ -50,7 +50,6 @@ export const jaMessages: Messages = {
   speakerLoadLight: "軽量",
   speakerLoadHeavy: "高負荷",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Whisper だけで処理します。声の分離も話す人の聞き分けもしません。",
   speakerLoadHeavyDetail: "話す人を聞き分けるので、時間が大きく増え、RAM や GPU メモリも多く使います。",
   speakerFiguresNote:
     "Whisper は CPU で、約 1 時間の動画 1 本に約 {whisperCpuMinutes} 分でした (やり直しなし)。数値は 1 台の Mac での実測で、動画とパソコンで変わります。Windows の RAM と GPU メモリは計測していません。",

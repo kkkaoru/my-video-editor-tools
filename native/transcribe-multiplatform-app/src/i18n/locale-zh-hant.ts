@@ -47,7 +47,6 @@ export const zhHantMessages: Messages = {
   speakerLoadLight: "輕量",
   speakerLoadHeavy: "高負載",
   speakerOptionLoad: "{label}（{load}）",
-  speakerLoadLightDetail: "只使用 Whisper，不進行聲音分離和說話者分離。",
   speakerLoadHeavyDetail: "要分辨說話者，處理時間會大幅增加，也會占用更多記憶體或顯示記憶體。",
   speakerFiguresNote:
     "Whisper 用 CPU 處理一段約 1 小時的影片約需 {whisperCpuMinutes} 分鐘（沒有重新轉寫）。這些數值是在一台 Mac 上實測的，會因影片和電腦而異。Windows 的記憶體和顯示記憶體尚未測量。",

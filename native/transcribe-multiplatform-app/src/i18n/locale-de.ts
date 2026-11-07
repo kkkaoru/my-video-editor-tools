@@ -52,7 +52,6 @@ export const deMessages: Messages = {
   speakerLoadLight: "Leicht",
   speakerLoadHeavy: "Hohe Last",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Nutzt nur Whisper, ohne Stimmentrennung und Sprechertrennung.",
   speakerLoadHeavyDetail:
     "Unterscheidet die Stimmen. Das dauert viel länger und braucht viel mehr RAM oder GPU-Speicher.",
   speakerFiguresNote:

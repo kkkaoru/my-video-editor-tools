@@ -48,7 +48,6 @@ export const koMessages: Messages = {
   speakerLoadLight: "가벼움",
   speakerLoadHeavy: "고부하",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Whisper만 사용하며, 음성 분리와 화자 분리는 하지 않습니다.",
   speakerLoadHeavyDetail: "화자를 구별하므로 시간이 크게 늘고 RAM이나 GPU 메모리도 많이 씁니다.",
   speakerFiguresNote:
     "Whisper는 CPU에서 약 1시간 동영상 1개에 약 {whisperCpuMinutes}분 걸렸습니다(다시 실행 없음). 이 수치는 Mac 한 대에서 측정했으며 동영상과 컴퓨터에 따라 달라집니다. Windows의 RAM과 GPU 메모리는 측정하지 않았습니다.",

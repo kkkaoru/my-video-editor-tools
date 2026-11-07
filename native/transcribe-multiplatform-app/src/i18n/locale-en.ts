@@ -48,7 +48,6 @@ export const enMessages: Messages = {
   speakerLoadLight: "Light",
   speakerLoadHeavy: "Heavy",
   speakerOptionLoad: "{label} ({load})",
-  speakerLoadLightDetail: "Uses Whisper only, with no voice separation or speaker separation.",
   speakerLoadHeavyDetail:
     "Tells the voices apart, so it takes much longer and uses much more RAM or GPU memory.",
   speakerFiguresNote:

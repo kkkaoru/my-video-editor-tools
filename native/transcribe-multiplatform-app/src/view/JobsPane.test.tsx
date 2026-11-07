@@ -24,6 +24,8 @@ const SETTINGS: Settings = {
   palette: [],
   font_family: "Sans",
   font_ratio: 0.05,
+  row_spacing: 1.45,
+  rows_share_left: true,
   width_ratio: 0.8,
   safe_left_percent: 5,
   safe_right_percent: 5,
@@ -428,9 +430,9 @@ const loadText = (): string | null | undefined =>
 const planText = (): string | null | undefined =>
   document.querySelector('[data-slot="speaker-plan"]')?.textContent;
 
-it("says one speaker is light, in words and not only by its icon, with no facts about the heavy models", () => {
+it("says nothing about load or the heavy models for one speaker", () => {
   showSpeakers(1, null);
-  expect(loadText()).toBe("Light: Uses Whisper only, with no voice separation or speaker separation.");
+  expect(loadText()).toBe(undefined);
   expect(document.querySelector('[data-slot="speaker-facts"]')).toBe(null);
 });
 
@@ -667,6 +669,8 @@ it("says subtitle files follow the selected profile", () => {
               palette: [],
               font_family: "Sans",
               font_ratio: 0.05,
+              row_spacing: 1.45,
+              rows_share_left: true,
               line_height: 1.4,
               width_ratio: 0.8,
               safe_left_percent: 5,

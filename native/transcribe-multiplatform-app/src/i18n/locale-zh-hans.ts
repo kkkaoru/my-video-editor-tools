@@ -47,7 +47,6 @@ export const zhHansMessages: Messages = {
   speakerLoadLight: "轻量",
   speakerLoadHeavy: "高负载",
   speakerOptionLoad: "{label}（{load}）",
-  speakerLoadLightDetail: "只使用 Whisper，不进行声音分离和说话人分离。",
   speakerLoadHeavyDetail: "要区分说话人，处理时间会大幅增加，也会占用更多内存或显存。",
   speakerFiguresNote:
     "Whisper 用 CPU 处理一段约 1 小时的视频约需 {whisperCpuMinutes} 分钟（没有重新转写）。这些数值是在一台 Mac 上实测的，会因视频和电脑而异。Windows 的内存和显存尚未测量。",

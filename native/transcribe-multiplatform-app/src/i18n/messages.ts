@@ -146,7 +146,6 @@ export interface Messages {
   speakerLoadLight: string;
   speakerLoadHeavy: string;
   speakerOptionLoad: string;
-  speakerLoadLightDetail: string;
   speakerLoadHeavyDetail: string;
   /** The figures in these texts come from speaker-figures.ts. */
   speakerFiguresNote: string;

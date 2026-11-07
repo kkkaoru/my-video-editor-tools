@@ -1,5 +1,5 @@
 // Runs with bun: drop target, readiness note and the job list.
-import { CheckIcon, CircleIcon, FeatherIcon, FlameIcon, LoaderIcon, UploadIcon } from "lucide-preact";
+import { CheckIcon, CircleIcon, FlameIcon, LoaderIcon, UploadIcon } from "lucide-preact";
 import type { VNode } from "preact";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -135,17 +135,14 @@ export const speakerCountOptions = (messages: Messages): SelectOption[] => [
   ),
 ];
 
-const SpeakerLoad = ({ heavy }: { heavy: boolean }): VNode => {
+const SpeakerLoad = (): VNode => {
   const messages: Messages = useMessages();
-  const Icon = heavy ? FlameIcon : FeatherIcon;
   return (
     <p data-slot="speaker-load" className="text-muted-foreground">
-      <Icon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
-      <span className="font-medium text-foreground">
-        {heavy ? messages.speakerLoadHeavy : messages.speakerLoadLight}
-      </span>
+      <FlameIcon className="mr-1 inline size-4 align-text-bottom" aria-hidden="true" />
+      <span className="font-medium text-foreground">{messages.speakerLoadHeavy}</span>
       {": "}
-      {heavy ? messages.speakerLoadHeavyDetail : messages.speakerLoadLightDetail}
+      {messages.speakerLoadHeavyDetail}
     </p>
   );
 };
@@ -491,7 +488,7 @@ export function JobsPane({ store, snapshot, onOpenModels }: JobsPaneProps): VNod
               store.updateSettings({ ...snapshot.settings, speaker_count: Number(value) })
             }
           />
-          <SpeakerLoad heavy={heavy} />
+          {heavy ? <SpeakerLoad /> : null}
           {heavy ? <SpeakerPlanField store={store} snapshot={snapshot} /> : null}
         </div>
         <div className="grid w-full max-w-sm grid-cols-1 gap-1">
