@@ -66,7 +66,8 @@ interface StepRowProps {
 
 const SECONDS_PER_MINUTE: number = 60;
 const MAX_SPEAKER_COUNT: number = 8;
-const SUBTITLE_FORMATS: SubtitleFormat[] = ["drt", "fcpxml", "ttml", "srt", "ass"];
+const SUBTITLE_FORMATS: SubtitleFormat[] = ["drt", "fcpxml", "ttml", "srt", "capcut"];
+const CAPCUT_PROJECT: string = "com.lveditor.draft";
 const PERCENT: number = 100;
 const FOLDERS: RegExp = /^.*[\\/]/s;
 const BEFORE_EXTENSION: RegExp = /^.*\./s;
@@ -96,7 +97,8 @@ export const remainingText = (seconds: number | null, messages: Messages): strin
 };
 
 export const outputPurpose = (path: string, messages: Messages): string => {
-  const extension: string = path.replace(BEFORE_EXTENSION, "");
+  // A CapCut project is a folder, whose name has no extension to go by.
+  const extension: string = path.includes(CAPCUT_PROJECT) ? "capcut" : path.replace(BEFORE_EXTENSION, "");
   return messages.outputPurposes[extension] ?? extension;
 };
 
@@ -152,7 +154,7 @@ export const subtitleFormatOptions = (): SelectOption[] =>
   SUBTITLE_FORMATS.map(
     (format: SubtitleFormat): SelectOption => ({
       value: format,
-      label: format.toUpperCase(),
+      label: format === "capcut" ? "CapCut" : format.toUpperCase(),
       disabled: false,
     }),
   );

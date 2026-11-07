@@ -18,9 +18,6 @@ const HOVER_EVENTS: ReadonlySet<string> = new Set(["enter", "over"]);
 
 export const fetchSnapshot = (): Promise<Snapshot> => invoke<Snapshot>("snapshot");
 
-/** The backend opens only the help pages it lists, in the default browser. */
-export const openHelpLink = (url: string): Promise<void> => invoke<void>("open_help_link", { url });
-
 export const saveSettings = (settings: Settings): Promise<Snapshot> =>
   invoke<Snapshot>("save_settings", { settings });
 

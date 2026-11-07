@@ -36,7 +36,7 @@ const VIDEO_PATTERN: RegExp = /\.(mp4|mov|mkv|m4v|webm|avi|mts|mxf|ts)$/i;
 const SUBTITLE_PATTERN: RegExp = /\.(drt|fcpxml|srt|ttml|transcript\.json)$/i;
 
 export const VIDEO_EXTENSIONS: string[] = ["mp4", "mov", "mkv", "m4v", "webm", "avi", "mts", "mxf", "ts"];
-export const SUBTITLE_EXTENSIONS: string[] = ["drt", "fcpxml", "srt", "ttml", "ass", "json"];
+export const SUBTITLE_EXTENSIONS: string[] = ["drt", "fcpxml", "srt", "ttml", "json"];
 
 const isBackendError = (error: unknown): error is BackendError =>
   typeof error === "object" && error !== null && "code" in error && typeof error.code === "string";

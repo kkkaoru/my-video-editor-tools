@@ -1,9 +1,6 @@
 // Runs with bun: how to use the app, in plain words; button names come from the labels the app really shows.
-import { ExternalLinkIcon } from "lucide-preact";
 import type { VNode } from "preact";
-import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
-import { openHelpLink } from "../backend/backend.ts";
 import { format, type HelpPart, type HelpSections, type Messages, type Params } from "../i18n/messages.ts";
 import { SPEAKER_FIGURES } from "../i18n/speaker-figures.ts";
 import { useMessages } from "../i18n/use-messages.ts";
@@ -152,15 +149,8 @@ const ResolveFigure = ({ name }: { name: ResolveFigureName }): VNode => {
 export const ResolveFigureList = ({ names }: { names: ResolveFigureName[] }): VNode[] =>
   names.map((name: ResolveFigureName): VNode => <ResolveFigure key={name} name={name} />);
 
-/** The address stays on the page, so a browser that does not open still leaves a way there. */
-const openInBrowser = (url: string): void => {
-  openHelpLink(url).catch((error: unknown): void => {
-    console.error(`opening ${url} failed`, error);
-  });
-};
-
 const HelpPartView = ({
-  part: { heading, intro, steps, notes, link },
+  part: { heading, intro, steps, notes },
   labels,
   image,
   figuresOf,
@@ -189,15 +179,6 @@ const HelpPartView = ({
           ),
         )}
       </ul>
-    )}
-    {link === undefined ? null : (
-      <p className="grid justify-items-start gap-1">
-        <Button variant="outline" onClick={(): void => openInBrowser(link.url)}>
-          {link.label}
-          <ExternalLinkIcon aria-hidden="true" />
-        </Button>
-        <span className="text-sm break-all text-muted-foreground">{link.url}</span>
-      </p>
     )}
   </div>
 );

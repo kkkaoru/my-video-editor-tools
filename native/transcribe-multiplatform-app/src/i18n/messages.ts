@@ -47,18 +47,11 @@ export interface ErrorMessages {
 }
 
 /** One h3 block of the help page; `steps` is a numbered list, `notes` a plain one. */
-/** A page outside the app, opened in the browser; the backend opens only the ones it lists. */
-export interface HelpLink {
-  label: string;
-  url: string;
-}
-
 export interface HelpPart {
   heading: string;
   intro: string;
   steps: string[];
   notes: string[];
-  link?: HelpLink;
 }
 
 export interface HelpSection {

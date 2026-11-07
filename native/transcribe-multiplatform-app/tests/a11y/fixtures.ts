@@ -341,8 +341,8 @@ export const UI_STATES: UiState[] = [
   state("jobs subtitle format srt", "jobs", {
     snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "srt" } }),
   }),
-  state("jobs subtitle format ass", "jobs", {
-    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "ass" } }),
+  state("jobs subtitle format capcut", "jobs", {
+    snapshot: snapshot({ settings: { ...snapshot({}).settings, subtitle_format: "capcut" } }),
   }),
   state("jobs subtitle format list open", "jobs", { steps: ["open-subtitle-format"] }),
   state("jobs heavy", "jobs", {

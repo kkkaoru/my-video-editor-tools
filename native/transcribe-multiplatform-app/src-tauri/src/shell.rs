@@ -1,7 +1,7 @@
 //! Tauri wiring: thin commands over `Service`, and events forwarded to the window.
 
 use crate::catalog;
-use crate::error::{io_context, AppError, AppResult};
+use crate::error::AppResult;
 use crate::paths::AppPaths;
 use crate::profiles::CaptionLook;
 use crate::service::{AppEvent, EventSink, Service, Snapshot};
@@ -12,24 +12,6 @@ use std::sync::Arc;
 use tauri::ipc::Invoke;
 use tauri::{AppHandle, Builder, Emitter, Manager, Runtime, State};
 
-/// CapCut's page on importing subtitles, for each language it has one in.
-const HELP_LINKS: [&str; 7] = [
-    "https://www.capcut.com/help/how-to-import-subtitles",
-    "https://www.capcut.com/ja-jp/help/how-to-import-subtitles",
-    "https://www.capcut.com/de-de/help/how-to-import-subtitles",
-    "https://www.capcut.com/es-es/help/how-to-import-subtitles",
-    "https://www.capcut.com/fr-fr/help/how-to-import-subtitles",
-    "https://www.capcut.com/ko-kr/help/how-to-import-subtitles",
-    "https://www.capcut.com/zh-tw/help/how-to-import-subtitles",
-];
-#[cfg(windows)]
-const BROWSER_OPENER: &str = "rundll32";
-#[cfg(windows)]
-const BROWSER_OPENER_ARGS: [&str; 1] = ["url.dll,FileProtocolHandler"];
-#[cfg(not(windows))]
-const BROWSER_OPENER: &str = "open";
-#[cfg(not(windows))]
-const BROWSER_OPENER_ARGS: [&str; 0] = [];
 const JOB_EVENT: &str = "job";
 const DOWNLOAD_EVENT: &str = "download";
 const UPDATE_PROGRESS_EVENT: &str = "update-progress";
@@ -61,24 +43,6 @@ async fn install_update<R: Runtime>(
         |update, bytes| updater::apply_and_restart(&app, update, bytes),
     )
     .await
-}
-
-/// The command that opens a help page in the default browser; anything but these pages is refused.
-fn help_link_command(url: &str) -> AppResult<std::process::Command> {
-    if !HELP_LINKS.contains(&url) {
-        return Err(AppError::Invalid(format!("not a help page: {url}")));
-    }
-    let mut command = std::process::Command::new(BROWSER_OPENER);
-    command.args(BROWSER_OPENER_ARGS).arg(url);
-    Ok(command)
-}
-
-#[tauri::command]
-fn open_help_link(url: String) -> AppResult<()> {
-    help_link_command(&url)?
-        .spawn()
-        .map(|_| ())
-        .map_err(io_context("open the help page"))
 }
 
 #[tauri::command]
@@ -189,7 +153,6 @@ fn delete_model(service: State<'_, Service>, id: String) -> AppResult<Snapshot> 
 fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         snapshot,
-        open_help_link,
         save_settings,
         add_videos,
         relayout_transcript,
@@ -273,21 +236,6 @@ pub fn run() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_the_listed_help_pages_can_be_opened() {
-        let command = help_link_command(HELP_LINKS[1]).unwrap();
-        assert_eq!(
-            command.get_args().last().unwrap(),
-            "https://www.capcut.com/ja-jp/help/how-to-import-subtitles"
-        );
-        assert_eq!(
-            help_link_command("https://example.com/")
-                .unwrap_err()
-                .to_string(),
-            "not a help page: https://example.com/"
-        );
-    }
     use serde_json::{json, Value};
     use tauri::ipc::{CallbackFn, InvokeBody};
     use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};

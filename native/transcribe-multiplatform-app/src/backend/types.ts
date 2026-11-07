@@ -54,7 +54,7 @@ export interface Profile {
 }
 
 export type UiTheme = "system" | "light" | "dark";
-export type SubtitleFormat = "drt" | "fcpxml" | "ttml" | "srt" | "ass";
+export type SubtitleFormat = "drt" | "fcpxml" | "ttml" | "srt" | "capcut";
 
 export interface Settings extends CaptionLook {
   language: string;

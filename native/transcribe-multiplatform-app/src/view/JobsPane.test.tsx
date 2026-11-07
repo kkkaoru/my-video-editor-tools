@@ -130,6 +130,9 @@ it("rounds the time left up to whole minutes", () => {
 
 it("names what each output file is for", () => {
   expect(outputPurpose("/a.ttml", enMessages)).toBe("Styled subtitles (colour, outline, position)");
+  expect(outputPurpose("/u/CapCut/com.lveditor.draft/clip.v2", enMessages)).toBe(
+    "A CapCut project (words, times, positions and speaker colours)",
+  );
   expect(outputPurpose("/a.srt", enMessages)).toBe(
     "Subtitles with words and times (colours may not show; no outlines or positions)",
   );
@@ -516,7 +519,7 @@ it("offers the subtitle formats by their names", () => {
     { value: "fcpxml", label: "FCPXML", disabled: false },
     { value: "ttml", label: "TTML", disabled: false },
     { value: "srt", label: "SRT", disabled: false },
-    { value: "ass", label: "ASS", disabled: false },
+    { value: "capcut", label: "CapCut", disabled: false },
   ]);
 });
 
@@ -724,7 +727,7 @@ it("rewrites the chosen subtitle files", async () => {
   });
   expect(vi.mocked(open).mock.calls[0]?.[0]).toStrictEqual({
     multiple: true,
-    filters: [{ name: "Subtitle files", extensions: ["drt", "fcpxml", "srt", "ttml", "ass", "json"] }],
+    filters: [{ name: "Subtitle files", extensions: ["drt", "fcpxml", "srt", "ttml", "json"] }],
   });
 });
 

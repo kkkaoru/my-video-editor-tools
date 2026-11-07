@@ -116,8 +116,10 @@ pub enum SubtitleFormat {
     Fcpxml,
     Ttml,
     Srt,
-    /// Advanced SubStation Alpha: colours, one outline and positions, for editors that read it.
-    Ass,
+    /// A project in CapCut's own folder: its subtitle import drops places and colours.
+    /// `ass` is the format it replaced, kept so a saved choice still loads.
+    #[serde(alias = "ass")]
+    Capcut,
 }
 
 /// How the app's own window looks.
@@ -802,6 +804,19 @@ mod tests {
         settings.palette.push(white_outlined("#123456"));
         assert_eq!(settings.color_for(Some(8)).fill, "#006262");
         assert_eq!(settings.color_for(Some(9)).fill, "#FFFFFF");
+    }
+
+    #[test]
+    fn a_saved_ass_choice_becomes_the_capcut_project_that_replaced_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target-test/settings-format-ass");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.json");
+        std::fs::write(&file, br#"{"settings_version":1,"subtitle_format":"ass"}"#).unwrap();
+        assert_eq!(
+            Settings::load(&file).unwrap().subtitle_format,
+            SubtitleFormat::Capcut
+        );
     }
 
     #[test]

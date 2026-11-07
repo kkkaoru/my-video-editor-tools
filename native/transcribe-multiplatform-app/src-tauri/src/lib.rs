@@ -7,6 +7,7 @@ pub mod drt;
 pub mod engines;
 pub mod error;
 pub mod eta;
+pub mod capcut;
 pub mod export;
 pub mod face;
 pub mod fonts;
