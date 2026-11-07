@@ -376,10 +376,7 @@ fn separate_speakers(
         resources: &run.paths.resources,
     };
     let turns = engines::diarize(run.tools, &model, run.wav, run.work, run.cancel, on_tick)?;
-    Ok(steadied_turns(&limit_speakers(
-        &turns,
-        run.settings.speaker_count,
-    )))
+    Ok(limit_speakers(&turns, run.settings.speaker_count))
 }
 
 /// What one step of the early part of a job leaves behind.
@@ -590,7 +587,8 @@ pub fn run_job(
     }
     let speakers_missing = speaker_model.is_some() && turns.is_empty();
     if speaker_model.is_some() {
-        assign_speakers(&mut words, &turns);
+        // Only the colours: finding where voices overlap needs the model's turns as they came.
+        assign_speakers(&mut words, &steadied_turns(&turns));
     } else {
         words.iter_mut().for_each(|word| word.speaker = Some(1));
     }

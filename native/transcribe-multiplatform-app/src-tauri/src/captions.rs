@@ -30,6 +30,8 @@ const SIMULTANEOUS_SECONDS: f64 = 0.25;
 const STEADY_WINDOW_SECONDS: f64 = 4.0;
 /// Turns at once with another speaker's for this long are two voices, not a wavering number.
 const TRULY_TOGETHER_SECONDS: f64 = 1.0;
+/// Enough of one voice around a change of speaker to read the phrase it falls in.
+const PHRASE_CONTEXT_WORDS: usize = 24;
 /// `caption_display_hold.LINGER`: a pause this long ends a page, and nothing is shown over it.
 const CUE_BREAK_PAUSE_SECONDS: f64 = 0.5;
 /// Nobody pauses this long inside one morpheme: a longer gap there is a real break, a shorter one
@@ -1657,6 +1659,106 @@ fn keep_words_whole(words: &mut [Word], turns: &[Turn], segmenter: &Segmenter) -
     Ok(())
 }
 
+/// The words of `speaker` next to `from` in `order`, nearest first, as far as a sentence could matter.
+fn own_words(
+    words: &[Word],
+    order: impl Iterator<Item = usize>,
+    speaker: Option<u32>,
+) -> Vec<usize> {
+    order
+        .filter(|index| words[*index].speaker == speaker)
+        .take(PHRASE_CONTEXT_WORDS)
+        .collect()
+}
+
+/// A change of speaker in the middle of a phrase or a run of nouns is the model's mistake: nobody takes over
+/// at "1週間|前じゃん". Each voice's words are read on their own, so rows beside them cannot split the phrase,
+/// and the shorter side up to the phrase's edge takes the longer side's speaker. Anywhere else stays: measured
+/// against delivered captions, merging up to the end of a sentence loses 6.5 points of the right colour,
+/// because people in conversation do take over there. `words` are in time order.
+pub fn keep_phrases_whole(words: &mut [Word], segmenter: &Segmenter) -> AppResult<()> {
+    let in_time_order: Vec<usize> = (0..words.len()).collect();
+    let together = simultaneous_stretches(words, &in_time_order);
+    let at_once = |moment: f64| {
+        together
+            .iter()
+            .any(|(from, to)| (*from..=*to).contains(&moment))
+    };
+    for at in 1..words.len() {
+        let (before, after) = (words[at - 1].speaker, words[at].speaker);
+        let gap = words[at].start - words[at - 1].end;
+        // Sounding at once is two voices, whatever the words say, and each one's row stays as it is.
+        if before == after
+            || !(0.0..=CUE_BREAK_PAUSE_SECONDS).contains(&gap)
+            || at_once(words[at].start)
+        {
+            continue;
+        }
+        let mut left = own_words(words, (0..at).rev(), before);
+        left.reverse();
+        let right = own_words(words, at..words.len(), after);
+        let text_of = |indexes: &[usize]| -> String {
+            indexes
+                .iter()
+                .map(|index| words[*index].text.as_str())
+                .collect()
+        };
+        let (left_text, right_text) = (text_of(&left), text_of(&right));
+        let text = format!("{left_text}{right_text}");
+        if !is_japanese(&text) {
+            continue;
+        }
+        let edges: HashSet<usize> = segmenter
+            .boundaries(&text)?
+            .phrases
+            .iter()
+            .filter(|phrase| phrase.class != BreakClass::Compound)
+            .map(|phrase| phrase.offset)
+            .collect();
+        let change = left_text.chars().count();
+        if edges.contains(&change) {
+            continue;
+        }
+        let mut offset = change;
+        let left_part: Vec<usize> = left
+            .iter()
+            .rev()
+            .copied()
+            .take_while(|index| {
+                offset -= words[*index].text.chars().count();
+                !edges.contains(&(offset + words[*index].text.chars().count()))
+                    || offset + words[*index].text.chars().count() == change
+            })
+            .collect();
+        let mut reached = change;
+        let right_part: Vec<usize> = right
+            .iter()
+            .copied()
+            .take_while(|index| {
+                let open = reached == change || !edges.contains(&reached);
+                reached += words[*index].text.chars().count();
+                open
+            })
+            .collect();
+        let seconds = |indexes: &[usize]| -> f64 {
+            indexes
+                .iter()
+                .map(|index| words[*index].end - words[*index].start)
+                .sum()
+        };
+        let left_is_a_row = at_once(words[at - 1].start);
+        let (moved, speaker) = if left_is_a_row || seconds(&left_part) >= seconds(&right_part) {
+            (right_part, before)
+        } else {
+            (left_part, after)
+        };
+        moved
+            .iter()
+            .for_each(|index| words[*index].speaker = speaker);
+    }
+    Ok(())
+}
+
 /// Takes the flicker out of the diarizer's labels: a brief turn right beside other speech joins its
 /// neighbour, shortest first, and no word is split between two speakers. Real overlap stays as it is.
 pub fn smooth_speakers(words: &mut [Word], segmenter: &Segmenter) -> AppResult<()> {
@@ -1931,6 +2033,9 @@ pub fn build_cues(
     let mut placer = FacePlacer::new(faces, info, metrics, settings);
     let rate = f64::from(info.fps_num) / f64::from(info.fps_den);
     let mut shown = display_words(words, info.duration);
+    // In time order, so the end of a row and the words after it read as the one phrase they are.
+    shown.sort_by(|left, right| left.start.total_cmp(&right.start));
+    keep_phrases_whole(&mut shown, segmenter)?;
     // Voices at once first: their words, one after the other, must not read as flickering labels.
     let apart = speakers_apart(&shown);
     let talk_at_once = apart.is_some();
@@ -2046,6 +2151,81 @@ mod tests {
             .iter()
             .map(|turn| turn.speaker)
             .collect()
+    }
+
+    fn said(text: &str, start: f64, end: f64, speaker: u32) -> Word {
+        Word {
+            text: text.to_owned(),
+            start,
+            end,
+            speaker: Some(speaker),
+        }
+    }
+
+    fn speakers_of(words: &[Word]) -> Vec<Option<u32>> {
+        words.iter().map(|word| word.speaker).collect()
+    }
+
+    #[test]
+    fn a_run_of_nouns_cut_between_two_speakers_goes_to_the_one_who_says_more_of_it() {
+        let mut words = vec![
+            said("先週", 0.0, 1.0, 2),
+            said("は", 1.0, 1.2, 2),
+            said("1週間", 1.2, 2.5, 2),
+            said("前", 2.8, 3.1, 1),
+            said("じゃん", 3.1, 3.5, 1),
+        ];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(
+            speakers_of(&words),
+            vec![Some(2), Some(2), Some(2), Some(2), Some(2)]
+        );
+    }
+
+    #[test]
+    fn words_right_after_a_row_join_it_and_the_row_stays_as_it_is() {
+        let mut words = vec![
+            said("今日", 0.0, 2.0, 1),
+            said("先週", 0.5, 1.5, 2),
+            said("1週間", 1.5, 2.5, 2),
+            said("前じゃん", 2.8, 5.0, 3),
+        ];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(
+            speakers_of(&words),
+            vec![Some(1), Some(2), Some(2), Some(2)]
+        );
+    }
+
+    #[test]
+    fn voices_at_once_stay_apart_even_inside_a_run_of_nouns() {
+        let mut words = vec![said("1週間", 0.0, 2.0, 1), said("前じゃん", 1.5, 3.0, 2)];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(speakers_of(&words), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn a_new_person_may_start_where_a_sentence_ends() {
+        let mut words = vec![
+            said("行きました。", 0.0, 2.0, 1),
+            said("本当ですか", 2.1, 4.0, 2),
+        ];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(speakers_of(&words), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn a_long_pause_lets_the_speaker_change_even_inside_a_sentence() {
+        let mut words = vec![said("1週間", 0.0, 2.0, 1), said("前じゃん", 3.0, 5.0, 2)];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(speakers_of(&words), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn other_languages_keep_the_speakers_as_they_are() {
+        let mut words = vec![said("one ", 0.0, 2.0, 1), said("week", 2.0, 4.0, 2)];
+        keep_phrases_whole(&mut words, test_segmenter()).unwrap();
+        assert_eq!(speakers_of(&words), vec![Some(1), Some(2)]);
     }
 
     #[test]
