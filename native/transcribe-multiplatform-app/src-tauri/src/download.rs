@@ -1,7 +1,8 @@
 //! Resumable, hash-verified downloads of catalogued files.
 
 use crate::catalog::{
-    locate_file, unpacked_marker, FileSpec, ModelEntry, Role, GEFORCE_RUNTIME_ID,
+    locate_file, unpacked_marker, FileSpec, ModelEntry, Role, EARLIER_GEFORCE_FOLDER,
+    GEFORCE_FOLDER, GEFORCE_RUNTIME_ID,
 };
 use crate::error::{io_context, AppError, AppResult};
 use crate::paths::AppPaths;
@@ -244,7 +245,7 @@ fn destination_for(entry: &ModelEntry, file: &FileSpec, paths: &AppPaths) -> Pat
     if entry.role == Role::Runtime && entry.id == GEFORCE_RUNTIME_ID {
         return paths
             .downloaded_runtime_dir()
-            .join("geforce")
+            .join(GEFORCE_FOLDER)
             .join(file.path);
     }
     paths.models_dir().join(entry.id).join(file.path)
@@ -310,6 +311,15 @@ fn unpack_once(archive: &Path) -> AppResult<()> {
         .map_err(io_context("mark archive unpacked"))
 }
 
+/// About half a gigabyte the app no longer runs, once its replacement is on the way.
+fn remove_earlier_runtime(paths: &AppPaths) -> AppResult<()> {
+    let earlier = paths.downloaded_runtime_dir().join(EARLIER_GEFORCE_FOLDER);
+    if earlier.exists() {
+        std::fs::remove_dir_all(&earlier).map_err(io_context("remove the earlier runtime"))?;
+    }
+    Ok(())
+}
+
 /// Downloads every file of the entry; files already present at the right size are kept.
 pub fn download_entry(
     entry: &ModelEntry,
@@ -320,6 +330,9 @@ pub fn download_entry(
     let entry_bytes: u64 = entry.files.iter().map(|file| file.size).sum();
     let mut earlier_bytes = 0;
     let own_models = [paths.models_dir()];
+    if entry.id == GEFORCE_RUNTIME_ID {
+        remove_earlier_runtime(paths)?;
+    }
     for file in entry.files {
         let destination = destination_for(entry, file, paths);
         // Variants share files such as the 1.6 GB encoder: one copy anywhere is enough.
@@ -442,6 +455,17 @@ mod tests {
     }
 
     #[test]
+    fn the_earlier_runtime_goes_and_a_missing_one_is_fine() {
+        let paths = scratch("earlier-runtime");
+        let earlier = paths.downloaded_runtime_dir().join("geforce/nemo");
+        std::fs::create_dir_all(&earlier).unwrap();
+        std::fs::write(earlier.join("nemo-speech.exe"), b"old").unwrap();
+        remove_earlier_runtime(&paths).unwrap();
+        assert!(!paths.downloaded_runtime_dir().join("geforce").exists());
+        remove_earlier_runtime(&paths).unwrap();
+    }
+
+    #[test]
     fn partial_files_sit_beside_the_destination() {
         assert_eq!(
             partial_path(Path::new("/m/a.gguf")),
@@ -464,7 +488,7 @@ mod tests {
         );
         assert_eq!(
             destination_for(runtime, &runtime.files[0], &paths),
-            PathBuf::from("/d/runtime/geforce/nemo/nemo-speech-cuda.zip")
+            PathBuf::from("/d/runtime/geforce-session/nemo/nemo-speech-cuda.zip")
         );
     }
 

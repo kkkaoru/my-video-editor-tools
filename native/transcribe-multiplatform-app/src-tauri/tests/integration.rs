@@ -400,7 +400,7 @@ fn a_job_converts_the_whisper_checkpoint_once() {
 fn a_job_uses_the_downloaded_cuda_tools_on_a_geforce() {
     let root = scratch("job-cuda");
     let paths = ready(&root);
-    let geforce = paths.downloaded_runtime_dir().join("geforce");
+    let geforce = paths.downloaded_runtime_dir().join("geforce-session");
     write_tool(
         &geforce.join("nemo/nemo-speech"),
         "echo 'cuda build ran' >&2; exit 7",
@@ -1008,13 +1008,13 @@ fn downloaded_cuda_tools_override_the_bundled_ones_only_when_asked() {
     write_tool(
         &paths
             .downloaded_runtime_dir()
-            .join("geforce/nemo/release/nemo-speech"),
+            .join("geforce-session/nemo/release/nemo-speech"),
         "",
     );
     assert!(Tools::locate(&paths, Backend::Cuda)
         .unwrap()
         .nemo
-        .ends_with("data/runtime/geforce/nemo/release/nemo-speech"));
+        .ends_with("data/runtime/geforce-session/nemo/release/nemo-speech"));
     assert!(Tools::locate(&paths, Backend::Cuda)
         .unwrap()
         .whisper
@@ -1788,21 +1788,27 @@ fn face_models_and_the_runtime_are_located_by_their_own_rules() {
     assert_eq!(catalog::locate(runtime, &paths, &[]), None);
     sparse(&paths.yunet_model(), 1);
     sparse(&root.join("data/models/avatar-face-caption-v2.onnx"), 1);
+    // The earlier runtime's server forgets speakers between requests: not installed.
+    sparse(
+        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip.unpacked"),
+        0,
+    );
+    assert_eq!(catalog::locate(runtime, &paths, &[]), None);
     // A running download has only its partial file and folders: not installed yet.
     sparse(
-        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip.part"),
+        &root.join("data/runtime/geforce-session/nemo/nemo-speech-cuda.zip.part"),
         1,
     );
     assert!(catalog::locate(yunet, &paths, &[]).is_some());
     assert!(catalog::locate(avatar, &paths, &[]).is_some());
     assert_eq!(catalog::locate(runtime, &paths, &[]), None);
     sparse(
-        &root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip.unpacked"),
+        &root.join("data/runtime/geforce-session/nemo/nemo-speech-cuda.zip.unpacked"),
         0,
     );
     assert!(catalog::locate(runtime, &paths, &[])
         .unwrap()
-        .ends_with("data/runtime/geforce"));
+        .ends_with("data/runtime/geforce-session"));
 }
 
 #[test]
@@ -2985,14 +2991,14 @@ fn the_cuda_runtime_pairs_with_the_vulkan_transcriber() {
     write_tool(
         &paths
             .downloaded_runtime_dir()
-            .join("geforce/nemo/nemo-speech"),
+            .join("geforce-session/nemo/nemo-speech"),
         "",
     );
     let tools = Tools::locate(&paths, Backend::Cuda).unwrap();
     assert_eq!(tools.backend, Backend::Cuda);
     assert!(tools
         .nemo
-        .ends_with("data/runtime/geforce/nemo/nemo-speech"));
+        .ends_with("data/runtime/geforce-session/nemo/nemo-speech"));
     assert!(tools
         .whisper
         .ends_with("resources/runtime/whisper-vulkan/whisper-cli"));

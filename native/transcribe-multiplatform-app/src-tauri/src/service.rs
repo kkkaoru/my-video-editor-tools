@@ -232,7 +232,7 @@ fn known_entry(id: &str) -> AppResult<&'static ModelEntry> {
 
 fn own_folder(entry: &ModelEntry, paths: &AppPaths) -> PathBuf {
     if entry.id == catalog::GEFORCE_RUNTIME_ID {
-        paths.downloaded_runtime_dir().join("geforce")
+        paths.downloaded_runtime_dir().join(catalog::GEFORCE_FOLDER)
     } else {
         paths.models_dir().join(entry.id)
     }
@@ -836,7 +836,7 @@ mod tests {
     fn deleting_the_runtime_uses_the_runtime_folder() {
         let root = scratch("delete-runtime");
         let (service, _events) = started(&root);
-        let owned = root.join("data/runtime/geforce/nemo/x.dll");
+        let owned = root.join("data/runtime/geforce-session/nemo/x.dll");
         std::fs::create_dir_all(owned.parent().unwrap()).unwrap();
         std::fs::write(&owned, b"x").unwrap();
         service.delete_model("geforce-runtime").unwrap();
@@ -1249,7 +1249,7 @@ mod tests {
         let (service, _events) = started(&root);
         let model = root.join("data/models/whisper-large-v3-turbo/a.gguf");
         let interrupted = root.join("data/models/whisper-large-v3-turbo/model.safetensors.part");
-        let runtime = root.join("data/runtime/geforce/nemo/x.dll");
+        let runtime = root.join("data/runtime/geforce-session/nemo/x.dll");
         let external = root.join("user-models/a.gguf");
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
         std::fs::create_dir_all(interrupted.parent().unwrap()).unwrap();

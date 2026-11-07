@@ -1,7 +1,7 @@
 //! Drives the bundled tools: ffmpeg/ffprobe for media, whisper.cpp for words, nemo-speech for speakers.
 
 use crate::captions::{SpeakerTurn, VoiceSpan, Word};
-use crate::catalog::{Backend, ModelEntry, Role};
+use crate::catalog::{Backend, ModelEntry, Role, GEFORCE_FOLDER};
 use crate::error::{io_context, AppError, AppResult, UserError};
 use crate::paths::write_atomic;
 use crate::paths::AppPaths;
@@ -13,7 +13,6 @@ use crate::whisper_seam::spliced_batches;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::net::TcpListener;
@@ -33,8 +32,6 @@ const SPEAKER_DECODER_HEAD_SHA256: &str =
 const SPEAKER_DECODER_BYTES: u64 = 445_521_952;
 /// `nemo-speech` refuses longer audio per request (`kMaxDurationSeconds`, 3600), whatever the model.
 const LONGEST_SPEAKER_REQUEST_SECONDS: f64 = 3600.0;
-/// Long audio goes in overlapping requests; this much in common tells whose number is whose.
-const SPEAKER_REQUEST_OVERLAP_SECONDS: f64 = 300.0;
 /// A server runs one job, so one name is enough for the requests of its video.
 const SPEAKER_SESSION: &str = "video";
 const CPU_DEVICE: &str = "cpu";
@@ -164,7 +161,12 @@ impl Tools {
     pub fn locate(paths: &AppPaths, backend: Backend) -> AppResult<Self> {
         let bundled = paths.bundled_runtime_dir();
         let nemo_root = match backend {
-            Backend::Cuda => Some(paths.downloaded_runtime_dir().join("geforce/nemo")),
+            Backend::Cuda => Some(
+                paths
+                    .downloaded_runtime_dir()
+                    .join(GEFORCE_FOLDER)
+                    .join("nemo"),
+            ),
             Backend::Vulkan => Some(bundled.join("nemo-vulkan")),
             Backend::Default | Backend::SpeakersOnCpu => None,
         };
@@ -1101,21 +1103,13 @@ fn overlapping_spans(seconds: f64, longest: f64, overlap: f64) -> Vec<TimeRange>
     }
 }
 
-fn speaker_spans(seconds: f64, keeps_speakers: bool) -> Vec<TimeRange> {
-    overlapping_spans(
-        seconds,
-        LONGEST_SPEAKER_REQUEST_SECONDS,
-        if keeps_speakers {
-            0.0
-        } else {
-            SPEAKER_REQUEST_OVERLAP_SECONDS
-        },
-    )
+fn speaker_spans(seconds: f64) -> Vec<TimeRange> {
+    overlapping_spans(seconds, LONGEST_SPEAKER_REQUEST_SECONDS, 0.0)
 }
 
 /// The form fields that tie a request to the ones before it; audio in one request needs none.
-fn session_fields(parts: usize, index: usize, keeps_speakers: bool) -> String {
-    if !keeps_speakers || parts < 2 {
+fn session_fields(parts: usize, index: usize) -> String {
+    if parts < 2 {
         return String::new();
     }
     let last = index + 1 == parts;
@@ -1171,21 +1165,10 @@ fn post_audio(
     Ok(answer)
 }
 
-/// Every build the app ships carries `scripts/release/nemo-speech.patch`, which keeps who is who between
-/// requests. The CUDA runtime is NVIDIA's own download, so its numbers have to be stitched afterwards.
-fn server_keeps_speakers(backend: Backend) -> bool {
-    backend != Backend::Cuda
-}
-
 /// Asks once the server is up, request by request. Its speaker branch needs no decoding, so a
 /// transcript the alignment cannot place (one character outside its vocabulary loses a whole
 /// recording's word times) costs nothing here.
-fn ask_for_turns(
-    port: u16,
-    wav: &Path,
-    stop: &CancelToken,
-    keeps_speakers: bool,
-) -> AppResult<Vec<SpeakerTurn>> {
+fn ask_for_turns(port: u16, wav: &Path, stop: &CancelToken) -> AppResult<Vec<SpeakerTurn>> {
     let agent = local_agent();
     let base = format!("http://{LOOPBACK}:{port}");
     let mut source = File::open(wav).map_err(io_context("read the audio for speakers"))?;
@@ -1194,26 +1177,17 @@ fn ask_for_turns(
     drop(source);
     wait_for_server(&agent, &base, stop)?;
     let url = format!("{base}/v1/audio/diarizations");
-    let spans = speaker_spans(layout.seconds(), keeps_speakers);
+    let spans = speaker_spans(layout.seconds());
     let mut parts = Vec::with_capacity(spans.len());
     for (index, span) in spans.iter().enumerate() {
         if stop.is_cancelled() {
             return Err(server_failure("the speaker server stopped"));
         }
-        let fields = session_fields(spans.len(), index, keeps_speakers);
+        let fields = session_fields(spans.len(), index);
         let answer = post_audio(&agent, &url, wav, &layout, *span, &fields)?;
         parts.push((*span, parse_speaker_segments(&answer)?));
     }
-    Ok(if keeps_speakers {
-        turns_of_one_session(parts)
-    } else {
-        stitched_turns(
-            parts
-                .into_iter()
-                .map(|(span, turns)| (span, moved_turns(turns, span.0)))
-                .collect(),
-        )
-    })
+    Ok(turns_of_one_session(parts))
 }
 
 fn turn_by_start(left: &SpeakerTurn, right: &SpeakerTurn) -> std::cmp::Ordering {
@@ -1228,93 +1202,6 @@ fn turns_of_one_session(parts: Vec<(TimeRange, Vec<SpeakerTurn>)>) -> Vec<Speake
     let mut turns: Vec<SpeakerTurn> = parts.into_iter().flat_map(|(_, turns)| turns).collect();
     turns.sort_by(turn_by_start);
     turns
-}
-
-fn moved_turns(turns: Vec<SpeakerTurn>, offset: f64) -> Vec<SpeakerTurn> {
-    turns
-        .into_iter()
-        .map(|turn| SpeakerTurn {
-            start: turn.start + offset,
-            end: turn.end + offset,
-            ..turn
-        })
-        .collect()
-}
-
-fn shared_seconds(left: &SpeakerTurn, right: &SpeakerTurn, range: TimeRange) -> f64 {
-    let start = left.start.max(right.start).max(range.0);
-    let end = left.end.min(right.end).min(range.1);
-    (end - start).max(0.0)
-}
-
-fn by_most_shared(left: &(u32, u32, f64), right: &(u32, u32, f64)) -> std::cmp::Ordering {
-    right.2.total_cmp(&left.2)
-}
-
-/// Which number of the earlier turns each number of `later` is, by who speaks together in `range`.
-/// A voice the overlap does not hear gets a number of its own.
-fn matched_speakers(
-    earlier: &[SpeakerTurn],
-    later: &[SpeakerTurn],
-    range: TimeRange,
-) -> HashMap<u32, u32> {
-    let mut shared: HashMap<(u32, u32), f64> = HashMap::new();
-    for old in earlier.iter().filter(|turn| turn.end > range.0) {
-        for new in later.iter().filter(|turn| turn.start < range.1) {
-            *shared.entry((new.speaker, old.speaker)).or_default() +=
-                shared_seconds(old, new, range);
-        }
-    }
-    let mut pairs: Vec<(u32, u32, f64)> = shared
-        .into_iter()
-        .filter(|(_, seconds)| *seconds > 0.0)
-        .map(|((new, old), seconds)| (new, old, seconds))
-        .collect();
-    pairs.sort_by(by_most_shared);
-    let mut matched = HashMap::new();
-    let mut taken = HashSet::new();
-    for (new, old, _) in pairs {
-        if !matched.contains_key(&new) && taken.insert(old) {
-            matched.insert(new, old);
-        }
-    }
-    matched
-}
-
-/// One list of turns from overlapping requests: each request speaks up to the middle of its overlap.
-fn stitched_turns(parts: Vec<(TimeRange, Vec<SpeakerTurn>)>) -> Vec<SpeakerTurn> {
-    let mut joined: Vec<SpeakerTurn> = Vec::new();
-    let mut heard_until = 0.0_f64;
-    for ((start, end), turns) in parts {
-        heard_until = heard_until.max(start);
-        if joined.is_empty() {
-            joined = turns;
-            heard_until = end;
-            continue;
-        }
-        let overlap = (start, heard_until);
-        let middle = (start + heard_until) / 2.0;
-        let matched = matched_speakers(&joined, &turns, overlap);
-        let mut unused = joined.iter().map(|turn| turn.speaker).max().unwrap_or(0);
-        let mut named: HashMap<u32, u32> = matched;
-        joined.retain(|turn| turn.start < middle);
-        joined
-            .iter_mut()
-            .for_each(|turn| turn.end = turn.end.min(middle));
-        for turn in turns.into_iter().filter(|turn| turn.end > middle) {
-            let speaker = *named.entry(turn.speaker).or_insert_with(|| {
-                unused += 1;
-                unused
-            });
-            joined.push(SpeakerTurn {
-                start: turn.start.max(middle),
-                speaker,
-                ..turn
-            });
-        }
-        heard_until = end;
-    }
-    joined
 }
 
 /// Cancelling wins; then the answer; then why the server died, which says more than a lost connection.
@@ -1381,7 +1268,7 @@ fn turns_from_server(
     let stop = CancelToken::default();
     std::thread::scope(|scope| {
         let answer = scope.spawn(|| {
-            let turns = ask_for_turns(port, wav, &stop, server_keeps_speakers(tools.backend));
+            let turns = ask_for_turns(port, wav, &stop);
             stop.cancel();
             turns
         });
@@ -1816,45 +1703,28 @@ mod tests {
 
     #[test]
     fn audio_that_fits_one_request_goes_whole() {
-        assert_eq!(speaker_spans(3600.0, true), vec![(0.0, 3600.0)]);
-        assert_eq!(speaker_spans(0.0, false), vec![(0.0, 0.0)]);
+        assert_eq!(speaker_spans(3600.0), vec![(0.0, 3600.0)]);
+        assert_eq!(speaker_spans(0.0), vec![(0.0, 0.0)]);
     }
 
     #[test]
-    fn long_audio_goes_in_overlapping_requests() {
+    fn long_audio_goes_in_requests_without_overlap() {
         assert_eq!(
-            speaker_spans(7000.0, false),
-            vec![(0.0, 3600.0), (3300.0, 6900.0), (6600.0, 7000.0)]
-        );
-    }
-
-    #[test]
-    fn only_the_downloaded_cuda_server_does_not_keep_speakers() {
-        assert!(server_keeps_speakers(Backend::Default));
-        assert!(server_keeps_speakers(Backend::Vulkan));
-        assert!(server_keeps_speakers(Backend::SpeakersOnCpu));
-        assert!(!server_keeps_speakers(Backend::Cuda));
-    }
-
-    #[test]
-    fn a_server_that_keeps_speakers_gets_requests_without_overlap() {
-        assert_eq!(
-            speaker_spans(7300.0, true),
+            speaker_spans(7300.0),
             vec![(0.0, 3600.0), (3600.0, 7200.0), (7200.0, 7300.0)]
         );
     }
 
     #[test]
     fn only_the_last_request_of_a_session_says_it_is_the_last() {
-        assert_eq!(session_fields(1, 0, true), "");
-        assert_eq!(session_fields(2, 0, false), "");
-        let first = session_fields(2, 0, true);
+        assert_eq!(session_fields(1, 0), "");
+        let first = session_fields(2, 0);
         assert!(
             first.contains("name=\"session\"\r\n\r\nvideo\r\n"),
             "{first}"
         );
         assert!(first.contains("name=\"final\"\r\n\r\nfalse\r\n"), "{first}");
-        let last = session_fields(2, 1, true);
+        let last = session_fields(2, 1);
         assert!(last.contains("name=\"final\"\r\n\r\ntrue\r\n"), "{last}");
     }
 
@@ -1884,47 +1754,6 @@ mod tests {
             end,
             speaker,
         }
-    }
-
-    #[test]
-    fn requests_agree_on_who_is_who_through_their_overlap() {
-        let parts = vec![
-            (
-                (0.0, 100.0),
-                vec![
-                    voice(0.0, 50.0, 1),
-                    voice(70.0, 80.0, 1),
-                    voice(85.0, 100.0, 2),
-                ],
-            ),
-            (
-                (60.0, 160.0),
-                vec![
-                    voice(68.0, 82.0, 2),
-                    voice(84.0, 110.0, 1),
-                    voice(150.0, 160.0, 3),
-                ],
-            ),
-        ];
-        assert_eq!(
-            stitched_turns(parts),
-            vec![
-                voice(0.0, 50.0, 1),
-                voice(70.0, 80.0, 1),
-                voice(80.0, 82.0, 1),
-                voice(84.0, 110.0, 2),
-                voice(150.0, 160.0, 3),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_single_request_keeps_its_turns_and_numbers() {
-        let parts = vec![((0.0, 10.0), vec![voice(1.0, 2.0, 2), voice(1.5, 3.0, 1)])];
-        assert_eq!(
-            stitched_turns(parts),
-            vec![voice(1.0, 2.0, 2), voice(1.5, 3.0, 1)]
-        );
     }
 
     #[test]

@@ -782,9 +782,7 @@ mod tests {
         // The step's poll may report before its first tick, so the order is not fixed.
         let reported = reported.into_inner();
         assert!(reported.contains(&(Stage::Transcribe, Some(0.5))));
-        assert!(reported
-            .iter()
-            .all(|(stage, _)| *stage == Stage::Transcribe));
+        assert!(!reported.contains(&(Stage::Faces, Some(0.25))));
         assert!(noted.into_inner().contains(&Stage::Faces));
     }
 

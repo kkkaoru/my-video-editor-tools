@@ -76,7 +76,12 @@ pub const AVATAR_YOLO_ID: &str = "avatar-face-yolo";
 const AVATAR_YOLO_NAME: &str = "avatar-face-caption-v2.onnx";
 pub const GEFORCE_RUNTIME_ID: &str = "geforce-runtime";
 const NEMO_CUDA_URL: &str =
-    "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip";
+    "https://github.com/kkkaoru/my-video-editor-tools/releases/download/nemo-speech-cuda-v0.3.0-1/nemo-speech-0.3.0-session-1-windows-x86_64-cuda.zip";
+/// Named apart from the earlier NVIDIA build's `geforce`, whose server forgets speakers between requests:
+/// that copy must not count as installed.
+pub const GEFORCE_FOLDER: &str = "geforce-session";
+/// The folder of the runtime before speakers were kept between requests; a new download replaces it.
+pub const EARLIER_GEFORCE_FOLDER: &str = "geforce";
 type ToolQuery = (&'static str, &'static [&'static str]);
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -234,8 +239,8 @@ const WHISPER_FILES: [FileSpec; 1] = [FileSpec {
 const GEFORCE_FILES: [FileSpec; 1] = [FileSpec {
     url_kind: UrlKind::Direct(NEMO_CUDA_URL),
     path: "nemo/nemo-speech-cuda.zip",
-    size: 508_625_181,
-    sha256: "d0d32ae1bf6ee0534767a47b2aa0e9e2ff6fe39643465c0baae9301d04f6ed42",
+    size: 506_468_573,
+    sha256: "7fdc76789d34aae64f8f843f140a1e7a6fd673ba1bc6b79379e95d4d9296c9f8",
 }];
 
 /// Every model and runtime the app knows.
@@ -304,7 +309,7 @@ pub const CATALOG: [ModelEntry; 7] = [
         id: GEFORCE_RUNTIME_ID,
         role: Role::Runtime,
         label: "GeForce CUDA runtime for speakers (optional)",
-        source_url: "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/tag/v0.3.0",
+        source_url: "https://github.com/kkkaoru/my-video-editor-tools/releases/tag/nemo-speech-cuda-v0.3.0-1",
         files: &GEFORCE_FILES,
         min_ram_gib: 0,
         min_gpu_memory_gib: 0,
@@ -639,7 +644,7 @@ pub(crate) fn unpacked_marker(archive: &Path) -> PathBuf {
 
 /// A running, stopped or half-unpacked download has no marker, so it does not count as installed.
 fn locate_runtime(paths: &AppPaths) -> Option<PathBuf> {
-    let folder = paths.downloaded_runtime_dir().join("geforce");
+    let folder = paths.downloaded_runtime_dir().join(GEFORCE_FOLDER);
     unpacked_marker(&folder.join(GEFORCE_FILES[0].path))
         .is_file()
         .then_some(folder)
@@ -984,7 +989,7 @@ mod tests {
             backend_for(&geforce("RTX 4090", 24), &paths),
             Backend::SpeakersOnCpu
         );
-        let archive = root.join("data/runtime/geforce/nemo/nemo-speech-cuda.zip");
+        let archive = root.join("data/runtime/geforce-session/nemo/nemo-speech-cuda.zip");
         std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
         std::fs::write(&archive, b"downloaded but not unpacked yet").unwrap();
         assert_eq!(
@@ -1067,7 +1072,7 @@ mod tests {
     #[test]
     fn direct_files_have_no_repository_and_may_be_archives() {
         let file = GEFORCE_FILES[0];
-        assert_eq!(file.url(), "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.3.0/nemo-speech-0.3.0-windows-x86_64-cuda.zip");
+        assert_eq!(file.url(), "https://github.com/kkkaoru/my-video-editor-tools/releases/download/nemo-speech-cuda-v0.3.0-1/nemo-speech-0.3.0-session-1-windows-x86_64-cuda.zip");
         assert_eq!(file.hf_repo(), None);
         assert!(file.is_archive());
         assert!(!WHISPER_FILES[0].is_archive());
